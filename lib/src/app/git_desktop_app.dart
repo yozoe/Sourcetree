@@ -64,6 +64,8 @@ class _RepositoryWorkspaceScreenState
       case RepositoryAction.refresh:
       case RepositoryAction.retry:
         ref.read(repositorySessionProvider.notifier).refresh();
+      case RepositoryAction.commit:
+        _showCommitDialog();
       default:
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -72,6 +74,29 @@ class _RepositoryWorkspaceScreenState
           ),
         );
     }
+  }
+
+  Future<void> _showCommitDialog() async {
+    final message = await showDialog<String>(
+      context: context,
+      builder: (BuildContext context) => const _CommitDialog(),
+    );
+    if (message == null || !mounted) {
+      return;
+    }
+
+    final created = await ref
+        .read(repositorySessionProvider.notifier)
+        .createCommit(message);
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(created ? '已创建提交。' : '提交未完成，请查看仓库错误信息。'),
+        duration: const Duration(seconds: 3),
+      ),
+    );
   }
 
   @override
@@ -89,6 +114,74 @@ class _RepositoryWorkspaceScreenState
           onChangeStageToggled: controller.toggleStage,
         ),
       ),
+    );
+  }
+}
+
+class _CommitDialog extends StatefulWidget {
+  const _CommitDialog();
+
+  @override
+  State<_CommitDialog> createState() => _CommitDialogState();
+}
+
+class _CommitDialogState extends State<_CommitDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _messageController = TextEditingController();
+
+  @override
+  void dispose() {
+    _messageController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (!(_formKey.currentState?.validate() ?? false)) {
+      return;
+    }
+    Navigator.of(context).pop(_messageController.text);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('创建提交'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 520),
+        child: Form(
+          key: _formKey,
+          child: TextFormField(
+            controller: _messageController,
+            autofocus: true,
+            minLines: 5,
+            maxLines: 10,
+            textCapitalization: TextCapitalization.sentences,
+            decoration: const InputDecoration(
+              alignLabelWithHint: true,
+              border: OutlineInputBorder(),
+              hintText: '简要说明这次提交的改动',
+              labelText: '提交信息',
+            ),
+            validator: (String? value) {
+              if (value == null || value.trim().isEmpty) {
+                return '请输入提交信息。';
+              }
+              return null;
+            },
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton.icon(
+          onPressed: _submit,
+          icon: const Icon(Icons.check_circle_outline),
+          label: const Text('提交'),
+        ),
+      ],
     );
   }
 }

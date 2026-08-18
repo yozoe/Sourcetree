@@ -326,6 +326,46 @@ final class RepositorySessionController
     }
   }
 
+  /// Commits exactly the files currently staged in the repository index.
+  ///
+  /// Returns whether Git created the commit and the following refresh finished
+  /// successfully. Git hooks are intentionally allowed to run.
+  Future<bool> createCommit(String message) async {
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        status.stagedEntries.isEmpty ||
+        state.phase == RepositorySessionPhase.loading) {
+      return false;
+    }
+
+    if (message.trim().isEmpty) {
+      throw ArgumentError.value(message, 'message', 'Commit message is empty.');
+    }
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.createCommit(repository, message: message);
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
   Future<String> _readGitVersion() async {
     final result = await _runner.run(
       GitInvocation(

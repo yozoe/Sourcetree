@@ -39,4 +39,30 @@ void main() {
       expect(state.requestedPath, nonRepository.path);
     },
   );
+
+  test(
+    'creates a commit from staged changes and refreshes the session',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', '# Git Desktop\n');
+      await repository.runGit(['add', '--', 'README.md']);
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+
+      expect(
+        container.read(repositorySessionProvider).status!.stagedEntries,
+        isNotEmpty,
+      );
+      expect(await controller.createCommit('Create README'), isTrue);
+
+      final state = container.read(repositorySessionProvider);
+      expect(state.phase, RepositorySessionPhase.ready);
+      expect(state.status!.entries, isEmpty);
+      expect(state.commits.single.subject, 'Create README');
+    },
+  );
 }

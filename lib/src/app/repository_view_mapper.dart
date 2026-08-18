@@ -44,6 +44,19 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
   final commits = _mapCommits(state, branch);
   final selectedCommit = _findCommit(state.commits, state.selectedCommitId);
 
+  final disabledActions = <RepositoryAction>{
+    RepositoryAction.cloneRepository,
+    RepositoryAction.initializeRepository,
+    RepositoryAction.fetch,
+    RepositoryAction.pull,
+    RepositoryAction.push,
+    RepositoryAction.createBranch,
+  };
+  if (status.stagedEntries.isEmpty ||
+      state.phase == RepositorySessionPhase.loading) {
+    disabledActions.add(RepositoryAction.commit);
+  }
+
   return RepositoryViewData(
     name: path.basename(repository.workTreeRoot ?? repository.commonDirectory),
     path: repository.commandDirectory,
@@ -115,15 +128,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
           state.phase == RepositorySessionPhase.error,
       gitVersion: state.gitVersion,
     ),
-    disabledActions: const {
-      RepositoryAction.cloneRepository,
-      RepositoryAction.initializeRepository,
-      RepositoryAction.fetch,
-      RepositoryAction.pull,
-      RepositoryAction.push,
-      RepositoryAction.createBranch,
-      RepositoryAction.commit,
-    },
+    disabledActions: disabledActions,
     searchQuery: state.searchQuery,
   );
 }

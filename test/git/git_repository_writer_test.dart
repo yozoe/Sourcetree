@@ -94,4 +94,36 @@ void main() {
       throwsA(isA<GitException>()),
     );
   });
+
+  test(
+    'creates a commit from the staged index using a stdin message',
+    () async {
+      await fixture.writeFile('README.md', '# Git Desktop\n');
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+      final before = await reader.readStatus(repository);
+      await writer.stagePath(repository, before.entries.single.path);
+
+      await writer.createCommit(repository, message: 'Create README');
+
+      final after = await reader.readStatus(repository);
+      final history = await reader.readRecentHistory(repository);
+      expect(after.entries, isEmpty);
+      expect(history, hasLength(1));
+      expect(history.single.subject, 'Create README');
+      expect((await fixture.runGit(['rev-parse', 'HEAD'])).exitCode, 0);
+    },
+  );
+
+  test('rejects an empty commit message before running Git', () async {
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await expectLater(
+      writer.createCommit(repository, message: '  \n\t '),
+      throwsA(isA<ArgumentError>()),
+    );
+  });
 }
