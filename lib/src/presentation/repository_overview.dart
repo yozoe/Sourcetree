@@ -1,0 +1,2327 @@
+import 'dart:math' as math;
+
+import 'package:flutter/material.dart';
+
+import 'models/repository_overview_view_data.dart';
+
+export 'models/repository_overview_view_data.dart';
+
+typedef RepositoryActionCallback = void Function(RepositoryAction action);
+typedef RepositoryRefCallback = void Function(RepositoryRefViewData ref);
+typedef RepositoryCommitCallback = void Function(CommitViewData commit);
+typedef RepositoryChangeCallback =
+    void Function(RepositoryChangeViewData? change);
+
+/// Interaction surface for [RepositoryOverview].
+///
+/// Callbacks are intentionally event-only: Git execution, confirmation and
+/// state changes stay in the application layer.
+final class RepositoryOverviewCallbacks {
+  const RepositoryOverviewCallbacks({
+    this.onAction,
+    this.onSearchChanged,
+    this.onRefSelected,
+    this.onCommitSelected,
+    this.onChangeSelected,
+    this.onLayoutChanged,
+  });
+
+  final RepositoryActionCallback? onAction;
+  final ValueChanged<String>? onSearchChanged;
+  final RepositoryRefCallback? onRefSelected;
+  final RepositoryCommitCallback? onCommitSelected;
+  final RepositoryChangeCallback? onChangeSelected;
+  final ValueChanged<RepositoryOverviewLayout>? onLayoutChanged;
+}
+
+/// High-density, responsive desktop repository workspace.
+///
+/// Layout behavior:
+/// - >= 1180 px: resizable refs, history/changes and details columns.
+/// - 760–1179 px: refs plus history with a lower tabbed inspector.
+/// - < 760 px: one pane at a time, selected with an accessible compact switcher.
+class RepositoryOverview extends StatefulWidget {
+  const RepositoryOverview({
+    super.key,
+    required this.data,
+    this.callbacks = const RepositoryOverviewCallbacks(),
+    this.initialLayout = const RepositoryOverviewLayout(),
+  });
+
+  final RepositoryOverviewViewData data;
+  final RepositoryOverviewCallbacks callbacks;
+  final RepositoryOverviewLayout initialLayout;
+
+  @override
+  State<RepositoryOverview> createState() => _RepositoryOverviewState();
+}
+
+enum _InspectorTab { changes, details }
+
+enum _CompactPane { refs, history, changes, details }
+
+class _RepositoryOverviewState extends State<RepositoryOverview> {
+  late RepositoryOverviewLayout _layout = widget.initialLayout;
+  _InspectorTab _inspectorTab = _InspectorTab.changes;
+  _CompactPane _compactPane = _CompactPane.history;
+
+  @override
+  void didUpdateWidget(RepositoryOverview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.initialLayout != widget.initialLayout) {
+      _layout = widget.initialLayout;
+    }
+  }
+
+  void _updateLayout(RepositoryOverviewLayout next) {
+    setState(() => _layout = next);
+    widget.callbacks.onLayoutChanged?.call(next);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final RepositoryViewData? repository = widget.data.repository;
+
+    if (widget.data.state == RepositoryOverviewState.noRepository) {
+      return _NoRepositoryView(
+        data: widget.data,
+        onAction: widget.callbacks.onAction,
+      );
+    }
+
+    if (repository == null &&
+        widget.data.state == RepositoryOverviewState.loading) {
+      return _LoadingView(data: widget.data);
+    }
+
+    if (repository == null &&
+        widget.data.state == RepositoryOverviewState.error) {
+      return _ErrorView(data: widget.data, onAction: widget.callbacks.onAction);
+    }
+
+    if (repository == null) {
+      return _ErrorView(
+        data: const RepositoryOverviewViewData.error(message: '仓库视图缺少可显示的数据。'),
+        onAction: widget.callbacks.onAction,
+      );
+    }
+
+    return ColoredBox(
+      color: Theme.of(context).colorScheme.surface,
+      child: SafeArea(
+        child: Column(
+          children: [
+            _RepositoryToolbar(
+              repository: repository,
+              callbacks: widget.callbacks,
+            ),
+            Expanded(
+              child: Stack(
+                children: [
+                  LayoutBuilder(
+                    builder:
+                        (BuildContext context, BoxConstraints constraints) {
+                          if (constraints.maxWidth >= 1180) {
+                            return _buildWide(repository, constraints);
+                          }
+                          if (constraints.maxWidth >= 760) {
+                            return _buildMedium(repository, constraints);
+                          }
+                          return _buildCompact(repository);
+                        },
+                  ),
+                  if (widget.data.state == RepositoryOverviewState.loading)
+                    const _StaleDataLoadingOverlay(),
+                  if (widget.data.state == RepositoryOverviewState.error)
+                    _StaleDataErrorBanner(
+                      message: widget.data.message ?? '刷新仓库失败',
+                      onRetry: widget.callbacks.onAction == null
+                          ? null
+                          : () => widget.callbacks.onAction!(
+                              RepositoryAction.retry,
+                            ),
+                    ),
+                ],
+              ),
+            ),
+            _RepositoryStatusBar(data: repository.footer),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildWide(RepositoryViewData repository, BoxConstraints constraints) {
+    final double navigationWidth = _layout.navigationWidth.clamp(
+      176,
+      math.min(320, constraints.maxWidth * .28),
+    );
+    final double detailsWidth = _layout.detailsWidth.clamp(
+      280,
+      math.min(480, constraints.maxWidth * .38),
+    );
+    final double changesHeight = _layout.changesHeight.clamp(
+      168,
+      math.max(168, constraints.maxHeight * .62),
+    );
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SizedBox(
+          width: navigationWidth,
+          child: _RefsNavigation(
+            repository: repository,
+            onSelected: widget.callbacks.onRefSelected,
+          ),
+        ),
+        _ResizeDivider(
+          axis: Axis.vertical,
+          semanticsLabel: '调整引用导航宽度',
+          onDelta: (double delta) => _updateLayout(
+            _layout.copyWith(navigationWidth: navigationWidth + delta),
+          ),
+        ),
+        Expanded(
+          child: Column(
+            children: [
+              Expanded(
+                child: _HistoryPane(
+                  repository: repository,
+                  onSelected: widget.callbacks.onCommitSelected,
+                ),
+              ),
+              _ResizeDivider(
+                axis: Axis.horizontal,
+                semanticsLabel: '调整改动面板高度',
+                onDelta: (double delta) => _updateLayout(
+                  _layout.copyWith(changesHeight: changesHeight - delta),
+                ),
+              ),
+              SizedBox(
+                height: changesHeight,
+                child: _ChangesPane(
+                  repository: repository,
+                  onSelected: widget.callbacks.onChangeSelected,
+                ),
+              ),
+            ],
+          ),
+        ),
+        _ResizeDivider(
+          axis: Axis.vertical,
+          semanticsLabel: '调整提交详情宽度',
+          onDelta: (double delta) => _updateLayout(
+            _layout.copyWith(detailsWidth: detailsWidth - delta),
+          ),
+        ),
+        SizedBox(
+          width: detailsWidth,
+          child: _CommitDetailsPane(details: repository.selectedCommit),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildMedium(
+    RepositoryViewData repository,
+    BoxConstraints constraints,
+  ) {
+    final double navigationWidth = _layout.navigationWidth.clamp(
+      176,
+      math.min(280, constraints.maxWidth * .34),
+    );
+    final double changesHeight = _layout.changesHeight.clamp(
+      180,
+      math.max(180, constraints.maxHeight * .58),
+    );
+
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        SizedBox(
+          width: navigationWidth,
+          child: _RefsNavigation(
+            repository: repository,
+            onSelected: widget.callbacks.onRefSelected,
+          ),
+        ),
+        _ResizeDivider(
+          axis: Axis.vertical,
+          semanticsLabel: '调整引用导航宽度',
+          onDelta: (double delta) => _updateLayout(
+            _layout.copyWith(navigationWidth: navigationWidth + delta),
+          ),
+        ),
+        Expanded(
+          child: Column(
+            children: [
+              Expanded(
+                child: _HistoryPane(
+                  repository: repository,
+                  onSelected: widget.callbacks.onCommitSelected,
+                ),
+              ),
+              _ResizeDivider(
+                axis: Axis.horizontal,
+                semanticsLabel: '调整检查器高度',
+                onDelta: (double delta) => _updateLayout(
+                  _layout.copyWith(changesHeight: changesHeight - delta),
+                ),
+              ),
+              SizedBox(
+                height: changesHeight,
+                child: _TabbedInspector(
+                  selectedTab: _inspectorTab,
+                  onTabChanged: (_InspectorTab tab) {
+                    setState(() => _inspectorTab = tab);
+                  },
+                  repository: repository,
+                  onChangeSelected: widget.callbacks.onChangeSelected,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  Widget _buildCompact(RepositoryViewData repository) {
+    final Widget pane = switch (_compactPane) {
+      _CompactPane.refs => _RefsNavigation(
+        repository: repository,
+        onSelected: widget.callbacks.onRefSelected,
+      ),
+      _CompactPane.history => _HistoryPane(
+        repository: repository,
+        onSelected: widget.callbacks.onCommitSelected,
+      ),
+      _CompactPane.changes => _ChangesPane(
+        repository: repository,
+        onSelected: widget.callbacks.onChangeSelected,
+      ),
+      _CompactPane.details => _CommitDetailsPane(
+        details: repository.selectedCommit,
+      ),
+    };
+
+    return Column(
+      children: [
+        _CompactPaneSwitcher(
+          selected: _compactPane,
+          onSelected: (_CompactPane pane) {
+            setState(() => _compactPane = pane);
+          },
+          changeCount: repository.changes.length,
+        ),
+        Expanded(child: pane),
+      ],
+    );
+  }
+}
+
+class _RepositoryToolbar extends StatelessWidget {
+  const _RepositoryToolbar({required this.repository, required this.callbacks});
+
+  final RepositoryViewData repository;
+  final RepositoryOverviewCallbacks callbacks;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    return Material(
+      color: colors.surfaceContainerLow,
+      child: Container(
+        height: 54,
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: colors.outlineVariant)),
+        ),
+        child: LayoutBuilder(
+          builder: (BuildContext context, BoxConstraints constraints) {
+            final bool showLabels = constraints.maxWidth >= 940;
+            final bool showPath = constraints.maxWidth >= 680;
+
+            return Row(
+              children: [
+                const SizedBox(width: 12),
+                Icon(
+                  Icons.account_tree_outlined,
+                  size: 20,
+                  color: colors.primary,
+                  semanticLabel: 'Git 仓库',
+                ),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 260),
+                    child: Column(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          repository.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.titleSmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        if (showPath)
+                          Text(
+                            repository.path,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 8),
+                _BranchChip(repository: repository),
+                const SizedBox(width: 8),
+                VerticalDivider(
+                  width: 17,
+                  indent: 10,
+                  endIndent: 10,
+                  color: colors.outlineVariant,
+                ),
+                Expanded(
+                  child: SingleChildScrollView(
+                    scrollDirection: Axis.horizontal,
+                    child: Row(
+                      children: [
+                        _ToolbarAction(
+                          action: RepositoryAction.openRepository,
+                          icon: Icons.folder_open_outlined,
+                          label: '打开仓库',
+                          showLabel: showLabels,
+                          repository: repository,
+                          onAction: callbacks.onAction,
+                        ),
+                        _ToolbarAction(
+                          action: RepositoryAction.fetch,
+                          icon: Icons.sync,
+                          label: '获取',
+                          showLabel: showLabels,
+                          repository: repository,
+                          onAction: callbacks.onAction,
+                        ),
+                        _ToolbarAction(
+                          action: RepositoryAction.pull,
+                          icon: Icons.south,
+                          label: '拉取',
+                          showLabel: showLabels,
+                          repository: repository,
+                          onAction: callbacks.onAction,
+                        ),
+                        _ToolbarAction(
+                          action: RepositoryAction.push,
+                          icon: Icons.north,
+                          label: '推送',
+                          showLabel: showLabels,
+                          repository: repository,
+                          onAction: callbacks.onAction,
+                        ),
+                        _ToolbarAction(
+                          action: RepositoryAction.createBranch,
+                          icon: Icons.call_split,
+                          label: '分支',
+                          showLabel: showLabels,
+                          repository: repository,
+                          onAction: callbacks.onAction,
+                        ),
+                        _ToolbarAction(
+                          action: RepositoryAction.commit,
+                          icon: Icons.check_circle_outline,
+                          label: '提交',
+                          showLabel: showLabels,
+                          repository: repository,
+                          onAction: callbacks.onAction,
+                          badge: repository.stagedChangeCount,
+                        ),
+                        _ToolbarAction(
+                          action: RepositoryAction.refresh,
+                          icon: Icons.refresh,
+                          label: '刷新',
+                          showLabel: false,
+                          repository: repository,
+                          onAction: callbacks.onAction,
+                          isBusy: repository.isRefreshing,
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+                if (constraints.maxWidth >= 620)
+                  SizedBox(
+                    width: constraints.maxWidth >= 940 ? 220 : 150,
+                    child: _HistorySearchField(
+                      query: repository.searchQuery,
+                      onChanged: callbacks.onSearchChanged,
+                    ),
+                  ),
+                const SizedBox(width: 10),
+              ],
+            );
+          },
+        ),
+      ),
+    );
+  }
+}
+
+class _BranchChip extends StatelessWidget {
+  const _BranchChip({required this.repository});
+
+  final RepositoryViewData repository;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    final String branchLabel = repository.isDetachedHead
+        ? 'HEAD ${repository.headOid ?? repository.currentBranch}'
+        : repository.currentBranch;
+    final String trackingLabel = [
+      if (repository.ahead > 0) '↑${repository.ahead}',
+      if (repository.behind > 0) '↓${repository.behind}',
+    ].join(' ');
+
+    return Semantics(
+      label: repository.isDetachedHead
+          ? '游离 HEAD，$branchLabel'
+          : '当前分支 $branchLabel',
+      child: Tooltip(
+        message: trackingLabel.isEmpty
+            ? branchLabel
+            : '$branchLabel，$trackingLabel',
+        child: Container(
+          constraints: const BoxConstraints(maxWidth: 190),
+          padding: const EdgeInsets.symmetric(horizontal: 9, vertical: 5),
+          decoration: BoxDecoration(
+            color: colors.secondaryContainer,
+            borderRadius: BorderRadius.circular(7),
+          ),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Icon(
+                repository.isDetachedHead ? Icons.link_off : Icons.call_split,
+                size: 14,
+                color: colors.onSecondaryContainer,
+              ),
+              const SizedBox(width: 5),
+              Flexible(
+                child: Text(
+                  branchLabel,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                    color: colors.onSecondaryContainer,
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              if (trackingLabel.isNotEmpty) ...[
+                const SizedBox(width: 5),
+                Text(
+                  trackingLabel,
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: colors.onSecondaryContainer,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ],
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _ToolbarAction extends StatelessWidget {
+  const _ToolbarAction({
+    required this.action,
+    required this.icon,
+    required this.label,
+    required this.showLabel,
+    required this.repository,
+    required this.onAction,
+    this.badge = 0,
+    this.isBusy = false,
+  });
+
+  final RepositoryAction action;
+  final IconData icon;
+  final String label;
+  final bool showLabel;
+  final RepositoryViewData repository;
+  final RepositoryActionCallback? onAction;
+  final int badge;
+  final bool isBusy;
+
+  @override
+  Widget build(BuildContext context) {
+    final bool enabled =
+        onAction != null && !repository.disabledActions.contains(action);
+    final Widget iconWidget = isBusy
+        ? const SizedBox.square(
+            dimension: 16,
+            child: CircularProgressIndicator(strokeWidth: 2),
+          )
+        : Badge(
+            isLabelVisible: badge > 0,
+            label: Text('$badge'),
+            child: Icon(icon, size: 18),
+          );
+
+    return Tooltip(
+      message: label,
+      child: Semantics(
+        button: true,
+        label: label,
+        enabled: enabled,
+        child: showLabel
+            ? TextButton.icon(
+                onPressed: enabled ? () => onAction!(action) : null,
+                icon: iconWidget,
+                label: Text(label),
+                style: TextButton.styleFrom(
+                  visualDensity: VisualDensity.compact,
+                  padding: const EdgeInsets.symmetric(horizontal: 9),
+                ),
+              )
+            : IconButton(
+                onPressed: enabled ? () => onAction!(action) : null,
+                icon: iconWidget,
+                tooltip: label,
+                visualDensity: VisualDensity.compact,
+              ),
+      ),
+    );
+  }
+}
+
+class _HistorySearchField extends StatelessWidget {
+  const _HistorySearchField({required this.query, required this.onChanged});
+
+  final String query;
+  final ValueChanged<String>? onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return Semantics(
+      textField: true,
+      label: '搜索提交历史',
+      child: TextFormField(
+        initialValue: query,
+        onChanged: onChanged,
+        enabled: onChanged != null,
+        style: Theme.of(context).textTheme.bodySmall,
+        decoration: const InputDecoration(
+          hintText: '搜索提交',
+          prefixIcon: Icon(Icons.search, size: 17),
+          isDense: true,
+          contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          border: OutlineInputBorder(),
+        ),
+      ),
+    );
+  }
+}
+
+class _RefsNavigation extends StatelessWidget {
+  const _RefsNavigation({required this.repository, required this.onSelected});
+
+  final RepositoryViewData repository;
+  final RepositoryRefCallback? onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final Map<RepositoryRefKind, List<RepositoryRefViewData>> sections = {
+      for (final RepositoryRefKind kind in RepositoryRefKind.values)
+        kind: repository.refs
+            .where((RepositoryRefViewData ref) => ref.kind == kind)
+            .toList(growable: false),
+    };
+
+    return Material(
+      color: Theme.of(context).colorScheme.surfaceContainerLowest,
+      child: CustomScrollView(
+        slivers: [
+          const SliverToBoxAdapter(
+            child: _PaneHeader(title: '仓库', icon: Icons.folder_open_outlined),
+          ),
+          for (final RepositoryRefKind kind in RepositoryRefKind.values)
+            if (sections[kind]!.isNotEmpty) ...[
+              SliverToBoxAdapter(
+                child: _SectionHeader(
+                  title: _refKindLabel(kind),
+                  count: sections[kind]!.length,
+                ),
+              ),
+              SliverList.builder(
+                itemCount: sections[kind]!.length,
+                itemBuilder: (BuildContext context, int index) {
+                  final RepositoryRefViewData ref = sections[kind]![index];
+                  return _RefTile(
+                    ref: ref,
+                    onTap: onSelected == null ? null : () => onSelected!(ref),
+                  );
+                },
+              ),
+            ],
+          if (repository.refs.isEmpty)
+            const SliverFillRemaining(
+              hasScrollBody: false,
+              child: _PaneEmptyState(
+                icon: Icons.call_split,
+                title: '暂无引用',
+                message: '分支、远端和标签会显示在这里。',
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+String _refKindLabel(RepositoryRefKind kind) {
+  return switch (kind) {
+    RepositoryRefKind.workspace => '工作区',
+    RepositoryRefKind.localBranch => '分支',
+    RepositoryRefKind.remoteBranch => '远端',
+    RepositoryRefKind.tag => '标签',
+    RepositoryRefKind.stash => '贮藏',
+  };
+}
+
+IconData _refKindIcon(RepositoryRefKind kind) {
+  return switch (kind) {
+    RepositoryRefKind.workspace => Icons.edit_note,
+    RepositoryRefKind.localBranch => Icons.call_split,
+    RepositoryRefKind.remoteBranch => Icons.cloud_outlined,
+    RepositoryRefKind.tag => Icons.sell_outlined,
+    RepositoryRefKind.stash => Icons.inventory_2_outlined,
+  };
+}
+
+class _RefTile extends StatelessWidget {
+  const _RefTile({required this.ref, required this.onTap});
+
+  final RepositoryRefViewData ref;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    final String tracking = [
+      if (ref.ahead > 0) '↑${ref.ahead}',
+      if (ref.behind > 0) '↓${ref.behind}',
+    ].join(' ');
+
+    return Semantics(
+      button: true,
+      selected: ref.isSelected,
+      label: '${_refKindLabel(ref.kind)} ${ref.label}',
+      child: Tooltip(
+        message: ref.secondaryLabel ?? ref.label,
+        waitDuration: const Duration(milliseconds: 650),
+        child: InkWell(
+          onTap: onTap,
+          child: Container(
+            height: 31,
+            padding: const EdgeInsets.only(left: 14, right: 8),
+            color: ref.isSelected ? colors.secondaryContainer : null,
+            child: Row(
+              children: [
+                Icon(
+                  ref.isCurrent
+                      ? Icons.radio_button_checked
+                      : _refKindIcon(ref.kind),
+                  size: 15,
+                  color: ref.isCurrent
+                      ? colors.primary
+                      : colors.onSurfaceVariant,
+                ),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Text(
+                    ref.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontWeight: ref.isCurrent ? FontWeight.w600 : null,
+                      color: ref.isSelected
+                          ? colors.onSecondaryContainer
+                          : null,
+                    ),
+                  ),
+                ),
+                if (tracking.isNotEmpty)
+                  Text(
+                    tracking,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: colors.onSurfaceVariant,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  )
+                else if (ref.childCount case final int count)
+                  Text(
+                    '$count',
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: colors.onSurfaceVariant,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _HistoryPane extends StatelessWidget {
+  const _HistoryPane({required this.repository, required this.onSelected});
+
+  final RepositoryViewData repository;
+  final RepositoryCommitCallback? onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      child: Column(
+        children: [
+          _PaneHeader(
+            title: '历史',
+            icon: Icons.history,
+            trailing: '${repository.commits.length} 个提交',
+          ),
+          const _HistoryColumnHeader(),
+          Expanded(
+            child: repository.commits.isEmpty
+                ? const _PaneEmptyState(
+                    icon: Icons.commit,
+                    title: '暂无提交',
+                    message: '空仓库的首次提交会显示在这里。',
+                  )
+                : ListView.builder(
+                    itemExtent: 38,
+                    itemCount: repository.commits.length,
+                    itemBuilder: (BuildContext context, int index) {
+                      final CommitViewData commit = repository.commits[index];
+                      return _CommitRow(
+                        commit: commit,
+                        onTap: onSelected == null
+                            ? null
+                            : () => onSelected!(commit),
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _HistoryColumnHeader extends StatelessWidget {
+  const _HistoryColumnHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    return Container(
+      height: 25,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerLow,
+        border: Border(
+          bottom: BorderSide(color: colors.outlineVariant),
+          top: BorderSide(color: colors.outlineVariant),
+        ),
+      ),
+      child: Row(
+        children: [
+          const SizedBox(width: 68),
+          Expanded(child: Text('描述', style: theme.textTheme.labelSmall)),
+          SizedBox(
+            width: 108,
+            child: Text('作者', style: theme.textTheme.labelSmall),
+          ),
+          SizedBox(
+            width: 86,
+            child: Text(
+              '日期',
+              textAlign: TextAlign.end,
+              style: theme.textTheme.labelSmall,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CommitRow extends StatelessWidget {
+  const _CommitRow({required this.commit, required this.onTap});
+
+  final CommitViewData commit;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    return Semantics(
+      button: true,
+      selected: commit.isSelected,
+      label:
+          '${commit.subject}，${commit.author}，${commit.relativeDate}，提交 ${commit.shortOid}',
+      child: Tooltip(
+        message: '${commit.subject}\n${commit.oid}',
+        waitDuration: const Duration(milliseconds: 750),
+        child: InkWell(
+          onTap: onTap,
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            decoration: BoxDecoration(
+              color: commit.isSelected ? colors.secondaryContainer : null,
+              border: Border(
+                bottom: BorderSide(
+                  color: colors.outlineVariant.withValues(alpha: .5),
+                ),
+              ),
+            ),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 68,
+                  child: CustomPaint(
+                    painter: _CommitGraphPainter(
+                      graph: commit.graph,
+                      colors: _graphColors(colors),
+                      selected: commit.isSelected,
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: Row(
+                    children: [
+                      if (commit.isMerge)
+                        Padding(
+                          padding: const EdgeInsets.only(right: 5),
+                          child: Icon(
+                            Icons.merge,
+                            size: 13,
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                      Flexible(
+                        child: Text(
+                          commit.subject,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            fontWeight: commit.isHead ? FontWeight.w600 : null,
+                          ),
+                        ),
+                      ),
+                      for (final String ref in commit.refs.take(2))
+                        Padding(
+                          padding: const EdgeInsets.only(left: 5),
+                          child: _RefLabel(label: ref),
+                        ),
+                    ],
+                  ),
+                ),
+                SizedBox(
+                  width: 108,
+                  child: Text(
+                    commit.author,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 86,
+                  child: Text(
+                    commit.relativeDate,
+                    textAlign: TextAlign.end,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _CommitGraphPainter extends CustomPainter {
+  const _CommitGraphPainter({
+    required this.graph,
+    required this.colors,
+    required this.selected,
+  });
+
+  final CommitGraphViewData graph;
+  final List<Color> colors;
+  final bool selected;
+
+  static const double laneSpacing = 12;
+  static const double laneStart = 8;
+
+  Color _color(int index) => colors[index.abs() % colors.length];
+
+  double _laneX(int lane) => laneStart + lane.clamp(0, 4) * laneSpacing;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final double centerY = size.height / 2;
+
+    for (final int activeLane in graph.activeLanes) {
+      final Paint linePaint = Paint()
+        ..color = _color(activeLane).withValues(alpha: selected ? .95 : .78)
+        ..strokeWidth = 1.6
+        ..style = PaintingStyle.stroke;
+      canvas.drawLine(
+        Offset(_laneX(activeLane), 0),
+        Offset(_laneX(activeLane), size.height),
+        linePaint,
+      );
+    }
+
+    final int colorIndex = graph.colorIndex;
+    final Paint branchPaint = Paint()
+      ..color = _color(colorIndex).withValues(alpha: selected ? 1 : .9)
+      ..strokeWidth = 1.8
+      ..style = PaintingStyle.stroke;
+    for (final int parentLane in graph.parentLanes) {
+      canvas.drawLine(
+        Offset(_laneX(graph.lane), centerY),
+        Offset(_laneX(parentLane), size.height),
+        branchPaint,
+      );
+    }
+
+    final Paint dotPaint = Paint()
+      ..color = _color(colorIndex)
+      ..style = PaintingStyle.fill;
+    canvas.drawCircle(Offset(_laneX(graph.lane), centerY), 4.1, dotPaint);
+    canvas.drawCircle(
+      Offset(_laneX(graph.lane), centerY),
+      2,
+      Paint()
+        ..color = selected ? colors.first : const Color(0xFFFFFFFF)
+        ..style = PaintingStyle.fill,
+    );
+  }
+
+  @override
+  bool shouldRepaint(_CommitGraphPainter oldDelegate) {
+    return oldDelegate.graph != graph ||
+        oldDelegate.selected != selected ||
+        oldDelegate.colors != colors;
+  }
+}
+
+List<Color> _graphColors(ColorScheme colors) => [
+  colors.primary,
+  colors.tertiary,
+  colors.secondary,
+  colors.error,
+  colors.primaryContainer,
+];
+
+class _RefLabel extends StatelessWidget {
+  const _RefLabel({required this.label});
+
+  final String label;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    return Container(
+      constraints: const BoxConstraints(maxWidth: 100),
+      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+      decoration: BoxDecoration(
+        color: colors.tertiaryContainer,
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+          color: colors.onTertiaryContainer,
+          fontSize: 10,
+        ),
+      ),
+    );
+  }
+}
+
+class _ChangesPane extends StatelessWidget {
+  const _ChangesPane({required this.repository, required this.onSelected});
+
+  final RepositoryViewData repository;
+  final RepositoryChangeCallback? onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      child: Column(
+        children: [
+          _PaneHeader(
+            title: '文件状态',
+            icon: Icons.difference_outlined,
+            trailing:
+                '${repository.stagedChangeCount} 已暂存 · ${repository.unstagedChangeCount} 未暂存',
+          ),
+          Expanded(
+            child: LayoutBuilder(
+              builder: (BuildContext context, BoxConstraints constraints) {
+                if (constraints.maxWidth < 530) {
+                  return repository.selectedChange == null
+                      ? _ChangeList(
+                          changes: repository.changes,
+                          onSelected: onSelected,
+                        )
+                      : _DiffPreview(
+                          diff: repository.diff,
+                          onBack: onSelected == null
+                              ? null
+                              : () => onSelected!(null),
+                        );
+                }
+                return Row(
+                  children: [
+                    SizedBox(
+                      width: math.min(286, constraints.maxWidth * .38),
+                      child: _ChangeList(
+                        changes: repository.changes,
+                        onSelected: onSelected,
+                      ),
+                    ),
+                    VerticalDivider(
+                      width: 1,
+                      color: Theme.of(context).colorScheme.outlineVariant,
+                    ),
+                    Expanded(child: _DiffPreview(diff: repository.diff)),
+                  ],
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _ChangeList extends StatelessWidget {
+  const _ChangeList({required this.changes, required this.onSelected});
+
+  final List<RepositoryChangeViewData> changes;
+  final RepositoryChangeCallback? onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    if (changes.isEmpty) {
+      return const _PaneEmptyState(
+        icon: Icons.task_alt,
+        title: '工作区干净',
+        message: '没有需要提交的文件改动。',
+      );
+    }
+
+    return ListView.builder(
+      itemExtent: 34,
+      itemCount: changes.length,
+      itemBuilder: (BuildContext context, int index) {
+        final RepositoryChangeViewData change = changes[index];
+        return _ChangeTile(
+          change: change,
+          onTap: onSelected == null ? null : () => onSelected!(change),
+        );
+      },
+    );
+  }
+}
+
+class _ChangeTile extends StatelessWidget {
+  const _ChangeTile({required this.change, required this.onTap});
+
+  final RepositoryChangeViewData change;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    final String fileName = change.path.split('/').last;
+    final int slash = change.path.lastIndexOf('/');
+    final String parentPath = slash <= 0 ? '' : change.path.substring(0, slash);
+    final String stats = [
+      if (change.additions case final int value) '+$value',
+      if (change.deletions case final int value) '−$value',
+    ].join(' ');
+
+    return Semantics(
+      button: true,
+      selected: change.isSelected,
+      label:
+          '${change.isStaged ? "已暂存" : "未暂存"}，${_changeKindLabel(change.kind)}，${change.path}',
+      child: Tooltip(
+        message: change.path,
+        waitDuration: const Duration(milliseconds: 650),
+        child: InkWell(
+          onTap: onTap,
+          child: Container(
+            color: change.isSelected ? colors.secondaryContainer : null,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Row(
+              children: [
+                _ChangeStatusBadge(kind: change.kind),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          fileName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall,
+                        ),
+                      ),
+                      if (parentPath.isNotEmpty) ...[
+                        const SizedBox(width: 5),
+                        Flexible(
+                          child: Text(
+                            parentPath,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: colors.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                if (stats.isNotEmpty)
+                  Text(
+                    stats,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: colors.onSurfaceVariant,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+                const SizedBox(width: 6),
+                Icon(
+                  change.isStaged
+                      ? Icons.check_box
+                      : Icons.check_box_outline_blank,
+                  size: 15,
+                  color: change.isStaged
+                      ? colors.primary
+                      : colors.onSurfaceVariant,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+String _changeKindLabel(RepositoryChangeKind kind) {
+  return switch (kind) {
+    RepositoryChangeKind.modified => '已修改',
+    RepositoryChangeKind.added => '已添加',
+    RepositoryChangeKind.deleted => '已删除',
+    RepositoryChangeKind.renamed => '已重命名',
+    RepositoryChangeKind.copied => '已复制',
+    RepositoryChangeKind.untracked => '未跟踪',
+    RepositoryChangeKind.conflicted => '有冲突',
+  };
+}
+
+class _ChangeStatusBadge extends StatelessWidget {
+  const _ChangeStatusBadge({required this.kind});
+
+  final RepositoryChangeKind kind;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    final (String, Color) display = switch (kind) {
+      RepositoryChangeKind.modified => ('M', colors.primary),
+      RepositoryChangeKind.added => ('A', colors.tertiary),
+      RepositoryChangeKind.deleted => ('D', colors.error),
+      RepositoryChangeKind.renamed => ('R', colors.secondary),
+      RepositoryChangeKind.copied => ('C', colors.secondary),
+      RepositoryChangeKind.untracked => ('?', colors.onSurfaceVariant),
+      RepositoryChangeKind.conflicted => ('!', colors.error),
+    };
+
+    return Container(
+      width: 18,
+      height: 18,
+      alignment: Alignment.center,
+      decoration: BoxDecoration(
+        color: display.$2.withValues(alpha: .14),
+        borderRadius: BorderRadius.circular(4),
+      ),
+      child: Text(
+        display.$1,
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+          color: display.$2,
+          fontWeight: FontWeight.w700,
+        ),
+      ),
+    );
+  }
+}
+
+class _DiffPreview extends StatelessWidget {
+  const _DiffPreview({required this.diff, this.onBack});
+
+  final DiffViewData diff;
+  final VoidCallback? onBack;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    if (diff.path == null) {
+      return const _PaneEmptyState(
+        icon: Icons.article_outlined,
+        title: '选择文件以查看差异',
+        message: '差异内容将在此处显示。',
+      );
+    }
+    if (diff.isBinary || diff.isTooLarge) {
+      return _PaneEmptyState(
+        icon: diff.isBinary ? Icons.data_object : Icons.warning_amber,
+        title: diff.isBinary ? '二进制文件' : '文件过大',
+        message:
+            diff.notice ??
+            (diff.isBinary ? '此文件无法显示文本差异。' : '为保持界面响应，已跳过差异预览。'),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          height: 27,
+          padding: const EdgeInsets.symmetric(horizontal: 9),
+          alignment: Alignment.centerLeft,
+          decoration: BoxDecoration(
+            color: colors.surfaceContainerLow,
+            border: Border(bottom: BorderSide(color: colors.outlineVariant)),
+          ),
+          child: Row(
+            children: [
+              if (onBack != null) ...[
+                Tooltip(
+                  message: '返回文件列表',
+                  child: InkWell(
+                    onTap: onBack,
+                    borderRadius: BorderRadius.circular(4),
+                    child: const Padding(
+                      padding: EdgeInsets.symmetric(horizontal: 3),
+                      child: Icon(Icons.arrow_back, size: 15),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 5),
+              ],
+              Expanded(
+                child: Text(
+                  diff.path!,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(
+                    context,
+                  ).textTheme.labelSmall?.copyWith(fontFamily: 'monospace'),
+                ),
+              ),
+            ],
+          ),
+        ),
+        Expanded(
+          child: diff.lines.isEmpty
+              ? const _PaneEmptyState(
+                  icon: Icons.horizontal_rule,
+                  title: '没有文本差异',
+                  message: 'Git 没有返回可显示的补丁。',
+                )
+              : ListView.builder(
+                  itemExtent: 20,
+                  itemCount: diff.lines.length,
+                  itemBuilder: (BuildContext context, int index) {
+                    return _DiffLine(line: diff.lines[index]);
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+class _DiffLine extends StatelessWidget {
+  const _DiffLine({required this.line});
+
+  final DiffLineViewData line;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    final Color? background = switch (line.kind) {
+      DiffLineKind.addition => colors.tertiaryContainer.withValues(alpha: .46),
+      DiffLineKind.deletion => colors.errorContainer.withValues(alpha: .46),
+      DiffLineKind.hunkHeader => colors.primaryContainer.withValues(alpha: .5),
+      DiffLineKind.fileHeader => colors.surfaceContainerHigh,
+      _ => null,
+    };
+    final Color foreground = switch (line.kind) {
+      DiffLineKind.addition => colors.onTertiaryContainer,
+      DiffLineKind.deletion => colors.onErrorContainer,
+      DiffLineKind.hunkHeader => colors.onPrimaryContainer,
+      _ => colors.onSurface,
+    };
+
+    return Container(
+      color: background,
+      child: Row(
+        children: [
+          _LineNumber(value: line.oldLineNumber),
+          _LineNumber(value: line.newLineNumber),
+          Expanded(
+            child: Text(
+              line.text,
+              maxLines: 1,
+              overflow: TextOverflow.clip,
+              softWrap: false,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: foreground,
+                fontFamily: 'monospace',
+                fontSize: 11,
+                height: 1.45,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _LineNumber extends StatelessWidget {
+  const _LineNumber({required this.value});
+
+  final int? value;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    return Container(
+      width: 38,
+      padding: const EdgeInsets.only(right: 5),
+      alignment: Alignment.centerRight,
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerLow.withValues(alpha: .7),
+        border: Border(right: BorderSide(color: colors.outlineVariant)),
+      ),
+      child: Text(
+        value?.toString() ?? '',
+        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+          color: colors.onSurfaceVariant,
+          fontFamily: 'monospace',
+          fontFeatures: const [FontFeature.tabularFigures()],
+        ),
+      ),
+    );
+  }
+}
+
+class _CommitDetailsPane extends StatelessWidget {
+  const _CommitDetailsPane({required this.details});
+
+  final CommitDetailsViewData? details;
+
+  @override
+  Widget build(BuildContext context) {
+    final CommitDetailsViewData? details = this.details;
+    return Material(
+      color: Theme.of(context).colorScheme.surfaceContainerLowest,
+      child: Column(
+        children: [
+          const _PaneHeader(title: '提交详情', icon: Icons.info_outline),
+          Expanded(
+            child: details == null
+                ? const _PaneEmptyState(
+                    icon: Icons.commit,
+                    title: '选择一个提交',
+                    message: '作者、提交信息和统计会显示在这里。',
+                  )
+                : _CommitDetailsContent(details: details),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CommitDetailsContent extends StatelessWidget {
+  const _CommitDetailsContent({required this.details});
+
+  final CommitDetailsViewData details;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    return SelectionArea(
+      child: ListView(
+        padding: const EdgeInsets.all(14),
+        children: [
+          Text(
+            details.subject,
+            style: theme.textTheme.titleSmall?.copyWith(
+              fontWeight: FontWeight.w600,
+              height: 1.35,
+            ),
+          ),
+          if (details.refs.isNotEmpty) ...[
+            const SizedBox(height: 9),
+            Wrap(
+              spacing: 5,
+              runSpacing: 5,
+              children: [
+                for (final String ref in details.refs) _RefLabel(label: ref),
+              ],
+            ),
+          ],
+          const SizedBox(height: 13),
+          _MetadataRow(
+            label: '作者',
+            value: details.authorEmail == null
+                ? details.author
+                : '${details.author} <${details.authorEmail}>',
+          ),
+          _MetadataRow(label: '日期', value: details.authoredAt),
+          _MetadataRow(label: '提交', value: details.oid, monospace: true),
+          if (details.parents.isNotEmpty)
+            _MetadataRow(
+              label: '父级',
+              value: details.parents.join('\n'),
+              monospace: true,
+            ),
+          if (details.body?.trim().isNotEmpty ?? false) ...[
+            const SizedBox(height: 12),
+            Divider(color: colors.outlineVariant),
+            const SizedBox(height: 7),
+            Text(
+              details.body!,
+              style: theme.textTheme.bodySmall?.copyWith(height: 1.5),
+            ),
+          ],
+          const SizedBox(height: 14),
+          Divider(color: colors.outlineVariant),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 13,
+            runSpacing: 6,
+            children: [
+              _StatLabel(
+                icon: Icons.description_outlined,
+                value: '${details.changedFiles} 个文件',
+                color: colors.onSurfaceVariant,
+              ),
+              _StatLabel(
+                icon: Icons.add,
+                value: '+${details.additions}',
+                color: colors.tertiary,
+              ),
+              _StatLabel(
+                icon: Icons.remove,
+                value: '−${details.deletions}',
+                color: colors.error,
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MetadataRow extends StatelessWidget {
+  const _MetadataRow({
+    required this.label,
+    required this.value,
+    this.monospace = false,
+  });
+
+  final String label;
+  final String value;
+  final bool monospace;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 7),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          SizedBox(
+            width: 38,
+            child: Text(
+              label,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              style: theme.textTheme.labelSmall?.copyWith(
+                fontFamily: monospace ? 'monospace' : null,
+                height: 1.4,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StatLabel extends StatelessWidget {
+  const _StatLabel({
+    required this.icon,
+    required this.value,
+    required this.color,
+  });
+
+  final IconData icon;
+  final String value;
+  final Color color;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 14, color: color),
+        const SizedBox(width: 3),
+        Text(
+          value,
+          style: Theme.of(context).textTheme.labelSmall?.copyWith(color: color),
+        ),
+      ],
+    );
+  }
+}
+
+class _TabbedInspector extends StatelessWidget {
+  const _TabbedInspector({
+    required this.selectedTab,
+    required this.onTabChanged,
+    required this.repository,
+    required this.onChangeSelected,
+  });
+
+  final _InspectorTab selectedTab;
+  final ValueChanged<_InspectorTab> onTabChanged;
+  final RepositoryViewData repository;
+  final RepositoryChangeCallback? onChangeSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        _DenseTabBar<_InspectorTab>(
+          selected: selectedTab,
+          tabs: const {
+            _InspectorTab.changes: ('文件状态', Icons.difference_outlined),
+            _InspectorTab.details: ('提交详情', Icons.info_outline),
+          },
+          onSelected: onTabChanged,
+        ),
+        Expanded(
+          child: switch (selectedTab) {
+            _InspectorTab.changes => _ChangesPane(
+              repository: repository,
+              onSelected: onChangeSelected,
+            ),
+            _InspectorTab.details => _CommitDetailsPane(
+              details: repository.selectedCommit,
+            ),
+          },
+        ),
+      ],
+    );
+  }
+}
+
+class _CompactPaneSwitcher extends StatelessWidget {
+  const _CompactPaneSwitcher({
+    required this.selected,
+    required this.onSelected,
+    required this.changeCount,
+  });
+
+  final _CompactPane selected;
+  final ValueChanged<_CompactPane> onSelected;
+  final int changeCount;
+
+  @override
+  Widget build(BuildContext context) {
+    return _DenseTabBar<_CompactPane>(
+      selected: selected,
+      tabs: {
+        _CompactPane.refs: const ('引用', Icons.account_tree_outlined),
+        _CompactPane.history: const ('历史', Icons.history),
+        _CompactPane.changes: (
+          changeCount > 0 ? '改动 $changeCount' : '改动',
+          Icons.difference_outlined,
+        ),
+        _CompactPane.details: const ('详情', Icons.info_outline),
+      },
+      onSelected: onSelected,
+    );
+  }
+}
+
+class _DenseTabBar<T> extends StatelessWidget {
+  const _DenseTabBar({
+    required this.selected,
+    required this.tabs,
+    required this.onSelected,
+  });
+
+  final T selected;
+  final Map<T, (String, IconData)> tabs;
+  final ValueChanged<T> onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    return Material(
+      color: colors.surfaceContainerLow,
+      child: Container(
+        height: 37,
+        decoration: BoxDecoration(
+          border: Border(bottom: BorderSide(color: colors.outlineVariant)),
+        ),
+        child: Row(
+          children: [
+            for (final MapEntry<T, (String, IconData)> tab in tabs.entries)
+              Expanded(
+                child: Semantics(
+                  button: true,
+                  selected: selected == tab.key,
+                  label: tab.value.$1,
+                  child: InkWell(
+                    onTap: () => onSelected(tab.key),
+                    child: Container(
+                      decoration: BoxDecoration(
+                        border: Border(
+                          bottom: BorderSide(
+                            width: 2,
+                            color: selected == tab.key
+                                ? colors.primary
+                                : Colors.transparent,
+                          ),
+                        ),
+                      ),
+                      child: Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(tab.value.$2, size: 15),
+                          const SizedBox(width: 5),
+                          Flexible(
+                            child: Text(
+                              tab.value.$1,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context).textTheme.labelMedium,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _PaneHeader extends StatelessWidget {
+  const _PaneHeader({required this.title, required this.icon, this.trailing});
+
+  final String title;
+  final IconData icon;
+  final String? trailing;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    return Container(
+      height: 34,
+      padding: const EdgeInsets.symmetric(horizontal: 10),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerLow,
+        border: Border(bottom: BorderSide(color: colors.outlineVariant)),
+      ),
+      child: Row(
+        children: [
+          Icon(icon, size: 16, color: colors.onSurfaceVariant),
+          const SizedBox(width: 6),
+          Text(
+            title,
+            style: theme.textTheme.labelLarge?.copyWith(
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+          const Spacer(),
+          if (trailing != null)
+            Text(
+              trailing!,
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: colors.onSurfaceVariant,
+                fontFeatures: const [FontFeature.tabularFigures()],
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SectionHeader extends StatelessWidget {
+  const _SectionHeader({required this.title, required this.count});
+
+  final String title;
+  final int count;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(12, 12, 8, 4),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              title.toUpperCase(),
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: colors.onSurfaceVariant,
+                fontWeight: FontWeight.w700,
+                letterSpacing: .55,
+              ),
+            ),
+          ),
+          Text(
+            '$count',
+            style: theme.textTheme.labelSmall?.copyWith(
+              color: colors.onSurfaceVariant,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PaneEmptyState extends StatelessWidget {
+  const _PaneEmptyState({
+    required this.icon,
+    required this.title,
+    required this.message,
+  });
+
+  final IconData icon;
+  final String title;
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(18),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 28, color: colors.onSurfaceVariant),
+            const SizedBox(height: 9),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: theme.textTheme.titleSmall?.copyWith(
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _RepositoryStatusBar extends StatelessWidget {
+  const _RepositoryStatusBar({required this.data});
+
+  final RepositoryFooterViewData data;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    final bool isRunning = data.operationLabel != null;
+
+    return Semantics(
+      liveRegion: isRunning || data.hasWarnings,
+      label: data.operationLabel ?? data.message,
+      child: Container(
+        height: 28,
+        padding: const EdgeInsets.symmetric(horizontal: 10),
+        decoration: BoxDecoration(
+          color: colors.surfaceContainerLow,
+          border: Border(top: BorderSide(color: colors.outlineVariant)),
+        ),
+        child: Row(
+          children: [
+            if (isRunning) ...[
+              SizedBox.square(
+                dimension: 13,
+                child: CircularProgressIndicator(
+                  strokeWidth: 1.7,
+                  value: data.operationProgress,
+                ),
+              ),
+              const SizedBox(width: 7),
+            ] else
+              Icon(
+                data.hasWarnings
+                    ? Icons.warning_amber_rounded
+                    : Icons.check_circle_outline,
+                size: 14,
+                color: data.hasWarnings
+                    ? colors.error
+                    : colors.onSurfaceVariant,
+              ),
+            const SizedBox(width: 6),
+            Expanded(
+              child: Text(
+                data.operationLabel ?? data.message,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: theme.textTheme.labelSmall,
+              ),
+            ),
+            if (data.gitVersion != null)
+              Text(
+                data.gitVersion!,
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: colors.onSurfaceVariant,
+                ),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ResizeDivider extends StatelessWidget {
+  const _ResizeDivider({
+    required this.axis,
+    required this.semanticsLabel,
+    required this.onDelta,
+  });
+
+  final Axis axis;
+  final String semanticsLabel;
+  final ValueChanged<double> onDelta;
+
+  @override
+  Widget build(BuildContext context) {
+    final Color dividerColor = Theme.of(context).colorScheme.outlineVariant;
+    final bool vertical = axis == Axis.vertical;
+
+    return Semantics(
+      label: semanticsLabel,
+      slider: true,
+      child: MouseRegion(
+        cursor: vertical
+            ? SystemMouseCursors.resizeColumn
+            : SystemMouseCursors.resizeRow,
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onHorizontalDragUpdate: vertical
+              ? (DragUpdateDetails details) => onDelta(details.delta.dx)
+              : null,
+          onVerticalDragUpdate: vertical
+              ? null
+              : (DragUpdateDetails details) => onDelta(details.delta.dy),
+          child: Container(
+            width: vertical ? 5 : double.infinity,
+            height: vertical ? double.infinity : 5,
+            alignment: Alignment.center,
+            child: Container(
+              width: vertical ? 1 : double.infinity,
+              height: vertical ? double.infinity : 1,
+              color: dividerColor,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _NoRepositoryView extends StatelessWidget {
+  const _NoRepositoryView({required this.data, required this.onAction});
+
+  final RepositoryOverviewViewData data;
+  final RepositoryActionCallback? onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    return _StandaloneStateView(
+      icon: Icons.account_tree_outlined,
+      title: data.title ?? '开始使用 Git 仓库',
+      message: data.message ?? '打开现有仓库、克隆远端项目，或创建一个新仓库。',
+      actions: [
+        _StateAction(
+          label: '打开仓库',
+          icon: Icons.folder_open,
+          action: RepositoryAction.openRepository,
+          primary: true,
+        ),
+      ],
+      onAction: onAction,
+    );
+  }
+}
+
+class _LoadingView extends StatelessWidget {
+  const _LoadingView({required this.data});
+
+  final RepositoryOverviewViewData data;
+
+  @override
+  Widget build(BuildContext context) {
+    return _StandaloneStateView(
+      progress: true,
+      icon: Icons.folder_open_outlined,
+      title: data.title ?? '正在读取仓库',
+      message: data.message ?? '正在识别仓库并加载状态与提交历史…',
+      actions: const [],
+    );
+  }
+}
+
+class _ErrorView extends StatelessWidget {
+  const _ErrorView({required this.data, required this.onAction});
+
+  final RepositoryOverviewViewData data;
+  final RepositoryActionCallback? onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    final String technicalDetails = data.technicalDetails?.trim() ?? '';
+    return _StandaloneStateView(
+      icon: Icons.error_outline,
+      title: data.title ?? '无法打开仓库',
+      message: data.message ?? '读取仓库时发生错误。',
+      details: technicalDetails.isEmpty ? null : technicalDetails,
+      actions: const [
+        _StateAction(
+          label: '重试',
+          icon: Icons.refresh,
+          action: RepositoryAction.retry,
+          primary: true,
+        ),
+        _StateAction(
+          label: '选择其他仓库',
+          icon: Icons.folder_open,
+          action: RepositoryAction.openRepository,
+        ),
+      ],
+      onAction: onAction,
+    );
+  }
+}
+
+class _StateAction {
+  const _StateAction({
+    required this.label,
+    required this.icon,
+    required this.action,
+    this.primary = false,
+  });
+
+  final String label;
+  final IconData icon;
+  final RepositoryAction action;
+  final bool primary;
+}
+
+class _StandaloneStateView extends StatelessWidget {
+  const _StandaloneStateView({
+    required this.icon,
+    required this.title,
+    required this.message,
+    required this.actions,
+    this.details,
+    this.progress = false,
+    this.onAction,
+  });
+
+  final IconData icon;
+  final String title;
+  final String message;
+  final String? details;
+  final bool progress;
+  final List<_StateAction> actions;
+  final RepositoryActionCallback? onAction;
+
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    return ColoredBox(
+      color: colors.surface,
+      child: SafeArea(
+        child: Center(
+          child: SingleChildScrollView(
+            padding: const EdgeInsets.all(24),
+            child: ConstrainedBox(
+              constraints: const BoxConstraints(maxWidth: 520),
+              child: Semantics(
+                liveRegion: progress,
+                child: Card(
+                  elevation: 0,
+                  color: colors.surfaceContainerLow,
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(16),
+                    side: BorderSide(color: colors.outlineVariant),
+                  ),
+                  child: Padding(
+                    padding: const EdgeInsets.all(28),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        if (progress)
+                          const SizedBox.square(
+                            dimension: 34,
+                            child: CircularProgressIndicator(strokeWidth: 3),
+                          )
+                        else
+                          Container(
+                            width: 54,
+                            height: 54,
+                            decoration: BoxDecoration(
+                              color: colors.primaryContainer,
+                              borderRadius: BorderRadius.circular(14),
+                            ),
+                            child: Icon(
+                              icon,
+                              size: 28,
+                              color: colors.onPrimaryContainer,
+                            ),
+                          ),
+                        const SizedBox(height: 18),
+                        Text(
+                          title,
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.headlineSmall?.copyWith(
+                            fontWeight: FontWeight.w600,
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        Text(
+                          message,
+                          textAlign: TextAlign.center,
+                          style: theme.textTheme.bodyMedium?.copyWith(
+                            color: colors.onSurfaceVariant,
+                            height: 1.45,
+                          ),
+                        ),
+                        if (details != null) ...[
+                          const SizedBox(height: 14),
+                          Container(
+                            width: double.infinity,
+                            constraints: const BoxConstraints(maxHeight: 120),
+                            padding: const EdgeInsets.all(10),
+                            decoration: BoxDecoration(
+                              color: colors.surfaceContainerHighest,
+                              borderRadius: BorderRadius.circular(7),
+                            ),
+                            child: SelectionArea(
+                              child: SingleChildScrollView(
+                                child: Text(
+                                  details!,
+                                  style: theme.textTheme.labelSmall?.copyWith(
+                                    fontFamily: 'monospace',
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                        if (actions.isNotEmpty) ...[
+                          const SizedBox(height: 22),
+                          Wrap(
+                            alignment: WrapAlignment.center,
+                            spacing: 9,
+                            runSpacing: 9,
+                            children: [
+                              for (final _StateAction action in actions)
+                                action.primary
+                                    ? FilledButton.icon(
+                                        onPressed: onAction == null
+                                            ? null
+                                            : () => onAction!(action.action),
+                                        icon: Icon(action.icon, size: 18),
+                                        label: Text(action.label),
+                                      )
+                                    : OutlinedButton.icon(
+                                        onPressed: onAction == null
+                                            ? null
+                                            : () => onAction!(action.action),
+                                        icon: Icon(action.icon, size: 18),
+                                        label: Text(action.label),
+                                      ),
+                            ],
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _StaleDataLoadingOverlay extends StatelessWidget {
+  const _StaleDataLoadingOverlay();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Positioned(
+      left: 0,
+      right: 0,
+      top: 0,
+      child: LinearProgressIndicator(minHeight: 2),
+    );
+  }
+}
+
+class _StaleDataErrorBanner extends StatelessWidget {
+  const _StaleDataErrorBanner({required this.message, required this.onRetry});
+
+  final String message;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    return Positioned(
+      left: 10,
+      right: 10,
+      top: 8,
+      child: Material(
+        color: colors.errorContainer,
+        elevation: 2,
+        borderRadius: BorderRadius.circular(8),
+        child: Semantics(
+          liveRegion: true,
+          child: Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            child: Row(
+              children: [
+                Icon(
+                  Icons.error_outline,
+                  size: 17,
+                  color: colors.onErrorContainer,
+                ),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Text(
+                    message,
+                    maxLines: 2,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: colors.onErrorContainer,
+                    ),
+                  ),
+                ),
+                TextButton(onPressed: onRetry, child: const Text('重试')),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}

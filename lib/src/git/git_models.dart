@@ -1,0 +1,323 @@
+import 'dart:convert';
+
+/// A repository identity that remains distinct for linked worktrees.
+final class GitRepositoryId {
+  const GitRepositoryId({
+    required this.commonDirectory,
+    required this.workTreeRoot,
+  });
+
+  final String commonDirectory;
+  final String? workTreeRoot;
+
+  @override
+  bool operator ==(Object other) {
+    return other is GitRepositoryId &&
+        other.commonDirectory == commonDirectory &&
+        other.workTreeRoot == workTreeRoot;
+  }
+
+  @override
+  int get hashCode => Object.hash(commonDirectory, workTreeRoot);
+
+  @override
+  String toString() => '$commonDirectory::${workTreeRoot ?? '<bare>'}';
+}
+
+/// A recognized Git repository or linked worktree.
+final class GitRepository {
+  const GitRepository({
+    required this.id,
+    required this.openedPath,
+    required this.gitDirectory,
+    required this.commonDirectory,
+    required this.workTreeRoot,
+    required this.isBare,
+    required this.isInsideWorkTree,
+  });
+
+  final GitRepositoryId id;
+  final String openedPath;
+  final String gitDirectory;
+  final String commonDirectory;
+  final String? workTreeRoot;
+  final bool isBare;
+  final bool isInsideWorkTree;
+
+  bool get isLinkedWorktree =>
+      !isBare && gitDirectory != commonDirectory && workTreeRoot != null;
+
+  String get commandDirectory => workTreeRoot ?? commonDirectory;
+}
+
+/// A Git pathname with its exact bytes retained.
+///
+/// Git paths are byte strings on Unix. [display] is deliberately lossy only
+/// when a path is not valid UTF-8; callers that need identity must use
+/// [rawBytes].
+final class GitPath {
+  GitPath(List<int> rawBytes) : rawBytes = List<int>.unmodifiable(rawBytes);
+
+  factory GitPath.fromString(String path) => GitPath(utf8.encode(path));
+
+  final List<int> rawBytes;
+
+  String get display => utf8.decode(rawBytes, allowMalformed: true);
+
+  bool get isValidUtf8 {
+    try {
+      utf8.decode(rawBytes);
+      return true;
+    } on FormatException {
+      return false;
+    }
+  }
+
+  @override
+  bool operator ==(Object other) {
+    if (other is! GitPath || other.rawBytes.length != rawBytes.length) {
+      return false;
+    }
+    for (var index = 0; index < rawBytes.length; index++) {
+      if (rawBytes[index] != other.rawBytes[index]) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  @override
+  int get hashCode => Object.hashAll(rawBytes);
+
+  @override
+  String toString() => display;
+}
+
+enum GitFileStatusKind {
+  ordinary,
+  renamed,
+  copied,
+  unmerged,
+  untracked,
+  ignored,
+}
+
+enum GitChangeType {
+  unmodified,
+  modified,
+  typeChanged,
+  added,
+  deleted,
+  renamed,
+  copied,
+  unmerged,
+  untracked,
+  ignored,
+  unknown,
+}
+
+extension GitChangeTypeParsing on GitChangeType {
+  static GitChangeType fromCode(String code) {
+    return switch (code) {
+      '.' || ' ' => GitChangeType.unmodified,
+      'M' => GitChangeType.modified,
+      'T' => GitChangeType.typeChanged,
+      'A' => GitChangeType.added,
+      'D' => GitChangeType.deleted,
+      'R' => GitChangeType.renamed,
+      'C' => GitChangeType.copied,
+      'U' => GitChangeType.unmerged,
+      '?' => GitChangeType.untracked,
+      '!' => GitChangeType.ignored,
+      _ => GitChangeType.unknown,
+    };
+  }
+}
+
+final class GitSubmoduleStatus {
+  const GitSubmoduleStatus({
+    required this.raw,
+    required this.isSubmodule,
+    required this.commitChanged,
+    required this.hasTrackedChanges,
+    required this.hasUntrackedChanges,
+  });
+
+  factory GitSubmoduleStatus.parse(String raw) {
+    if (raw == 'N...') {
+      return const GitSubmoduleStatus(
+        raw: 'N...',
+        isSubmodule: false,
+        commitChanged: false,
+        hasTrackedChanges: false,
+        hasUntrackedChanges: false,
+      );
+    }
+    return GitSubmoduleStatus(
+      raw: raw,
+      isSubmodule: raw.isNotEmpty && raw[0] == 'S',
+      commitChanged: raw.length > 1 && raw[1] == 'C',
+      hasTrackedChanges: raw.length > 2 && raw[2] == 'M',
+      hasUntrackedChanges: raw.length > 3 && raw[3] == 'U',
+    );
+  }
+
+  final String raw;
+  final bool isSubmodule;
+  final bool commitChanged;
+  final bool hasTrackedChanges;
+  final bool hasUntrackedChanges;
+}
+
+/// One entry from `git status --porcelain=v2 -z`.
+final class GitStatusEntry {
+  GitStatusEntry({
+    required this.kind,
+    required this.path,
+    required this.indexStatus,
+    required this.workTreeStatus,
+    this.originalPath,
+    this.submodule,
+    this.renameOrCopyScore,
+    this.headMode,
+    this.indexMode,
+    this.workTreeMode,
+    this.headObjectId,
+    this.indexObjectId,
+    this.stage1Mode,
+    this.stage2Mode,
+    this.stage3Mode,
+    this.stage1ObjectId,
+    this.stage2ObjectId,
+    this.stage3ObjectId,
+  });
+
+  final GitFileStatusKind kind;
+  final GitPath path;
+  final GitPath? originalPath;
+  final GitChangeType indexStatus;
+  final GitChangeType workTreeStatus;
+  final GitSubmoduleStatus? submodule;
+  final int? renameOrCopyScore;
+
+  final String? headMode;
+  final String? indexMode;
+  final String? workTreeMode;
+  final String? headObjectId;
+  final String? indexObjectId;
+
+  final String? stage1Mode;
+  final String? stage2Mode;
+  final String? stage3Mode;
+  final String? stage1ObjectId;
+  final String? stage2ObjectId;
+  final String? stage3ObjectId;
+
+  bool get isConflicted =>
+      kind == GitFileStatusKind.unmerged ||
+      indexStatus == GitChangeType.unmerged ||
+      workTreeStatus == GitChangeType.unmerged;
+
+  bool get hasStagedChange =>
+      indexStatus != GitChangeType.unmodified &&
+      indexStatus != GitChangeType.untracked &&
+      indexStatus != GitChangeType.ignored;
+
+  bool get hasWorkTreeChange =>
+      workTreeStatus != GitChangeType.unmodified &&
+      workTreeStatus != GitChangeType.ignored;
+}
+
+final class GitBranchStatus {
+  const GitBranchStatus({
+    this.objectId,
+    this.head,
+    this.upstream,
+    this.ahead = 0,
+    this.behind = 0,
+    this.stashCount = 0,
+    this.isDetached = false,
+    this.isUnborn = false,
+  });
+
+  final String? objectId;
+  final String? head;
+  final String? upstream;
+  final int ahead;
+  final int behind;
+  final int stashCount;
+  final bool isDetached;
+  final bool isUnborn;
+}
+
+final class GitStatusSnapshot {
+  GitStatusSnapshot({
+    required this.branch,
+    required List<GitStatusEntry> entries,
+    Map<String, String> additionalHeaders = const {},
+  }) : entries = List<GitStatusEntry>.unmodifiable(entries),
+       additionalHeaders = Map<String, String>.unmodifiable(additionalHeaders);
+
+  final GitBranchStatus branch;
+  final List<GitStatusEntry> entries;
+  final Map<String, String> additionalHeaders;
+
+  bool get isClean => entries.isEmpty;
+
+  Iterable<GitStatusEntry> get stagedEntries =>
+      entries.where((entry) => entry.hasStagedChange);
+
+  Iterable<GitStatusEntry> get workTreeEntries =>
+      entries.where((entry) => entry.hasWorkTreeChange);
+
+  Iterable<GitStatusEntry> get conflictedEntries =>
+      entries.where((entry) => entry.isConflicted);
+}
+
+final class GitSignature {
+  const GitSignature({
+    required this.name,
+    required this.email,
+    required this.when,
+  });
+
+  final String name;
+  final String email;
+  final DateTime when;
+}
+
+final class GitCommit {
+  GitCommit({
+    required this.objectId,
+    required List<String> parentIds,
+    required this.author,
+    required this.committer,
+    required this.subject,
+    required this.body,
+  }) : parentIds = List<String>.unmodifiable(parentIds);
+
+  final String objectId;
+  final List<String> parentIds;
+  final GitSignature author;
+  final GitSignature committer;
+  final String subject;
+  final String body;
+}
+
+enum GitDiffSource { workingTree, staged }
+
+final class GitUnifiedDiff {
+  GitUnifiedDiff({
+    required this.path,
+    required this.source,
+    required List<int> bytes,
+    required this.text,
+    required this.isTruncated,
+  }) : bytes = List<int>.unmodifiable(bytes);
+
+  final GitPath path;
+  final GitDiffSource source;
+  final List<int> bytes;
+  final String text;
+  final bool isTruncated;
+}
