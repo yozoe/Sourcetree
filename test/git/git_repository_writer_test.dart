@@ -1,0 +1,97 @@
+import 'dart:io';
+
+import 'package:flutter_test/flutter_test.dart';
+import 'package:git_desktop/src/git/git.dart';
+
+import '../support/git_test_repository.dart';
+
+void main() {
+  late GitTestRepository fixture;
+  late GitRepositoryInspector inspector;
+  late GitRepositoryReader reader;
+  late GitRepositoryWriter writer;
+
+  setUp(() async {
+    fixture = await GitTestRepository.create();
+    final runner = GitRunner();
+    inspector = GitRepositoryInspector(runner);
+    reader = GitRepositoryReader(runner);
+    writer = GitRepositoryWriter(runner);
+  });
+
+  tearDown(() => fixture.dispose());
+
+  test(
+    'stages and unstages a tracked file without changing its work tree',
+    () async {
+      await fixture.writeFile('lib/example.dart', 'const version = 1;\n');
+      await fixture.commit('Add example');
+      await fixture.writeFile('lib/example.dart', 'const version = 2;\n');
+
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+      final before = await reader.readStatus(repository);
+      final beforeEntry = before.entries.single;
+      expect(beforeEntry.hasStagedChange, isFalse);
+      expect(beforeEntry.hasWorkTreeChange, isTrue);
+
+      await writer.stagePath(repository, beforeEntry.path);
+      final staged = await reader.readStatus(repository);
+      final stagedEntry = staged.entries.single;
+      expect(stagedEntry.hasStagedChange, isTrue);
+      expect(stagedEntry.hasWorkTreeChange, isFalse);
+
+      await writer.unstagePath(
+        repository,
+        stagedEntry.path,
+        isUnbornBranch: staged.branch.isUnborn,
+      );
+      final unstaged = await reader.readStatus(repository);
+      final unstagedEntry = unstaged.entries.single;
+      expect(unstagedEntry.hasStagedChange, isFalse);
+      expect(unstagedEntry.hasWorkTreeChange, isTrue);
+      expect(
+        await File(
+          '${fixture.workingDirectory.path}${Platform.pathSeparator}lib'
+          '${Platform.pathSeparator}example.dart',
+        ).readAsString(),
+        'const version = 2;\n',
+      );
+    },
+  );
+
+  test('unstages an added file in an unborn branch', () async {
+    await fixture.writeFile('README.md', '# Unborn branch\n');
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+    final untracked = await reader.readStatus(repository);
+    expect(untracked.branch.isUnborn, isTrue);
+
+    await writer.stagePath(repository, untracked.entries.single.path);
+    final staged = await reader.readStatus(repository);
+    final stagedEntry = staged.entries.single;
+    expect(stagedEntry.hasStagedChange, isTrue);
+
+    await writer.unstagePath(
+      repository,
+      stagedEntry.path,
+      isUnbornBranch: staged.branch.isUnborn,
+    );
+    final restored = await reader.readStatus(repository);
+    expect(restored.branch.isUnborn, isTrue);
+    expect(restored.entries.single.kind, GitFileStatusKind.untracked);
+  });
+
+  test('refuses to mutate a path that is not valid UTF-8', () async {
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await expectLater(
+      writer.stagePath(repository, GitPath(const [0xff])),
+      throwsA(isA<GitException>()),
+    );
+  });
+}

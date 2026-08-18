@@ -11,6 +11,8 @@ typedef RepositoryRefCallback = void Function(RepositoryRefViewData ref);
 typedef RepositoryCommitCallback = void Function(CommitViewData commit);
 typedef RepositoryChangeCallback =
     void Function(RepositoryChangeViewData? change);
+typedef RepositoryChangeStageCallback =
+    void Function(RepositoryChangeViewData change);
 
 /// Interaction surface for [RepositoryOverview].
 ///
@@ -23,6 +25,7 @@ final class RepositoryOverviewCallbacks {
     this.onRefSelected,
     this.onCommitSelected,
     this.onChangeSelected,
+    this.onChangeStageToggled,
     this.onLayoutChanged,
   });
 
@@ -31,6 +34,7 @@ final class RepositoryOverviewCallbacks {
   final RepositoryRefCallback? onRefSelected;
   final RepositoryCommitCallback? onCommitSelected;
   final RepositoryChangeCallback? onChangeSelected;
+  final RepositoryChangeStageCallback? onChangeStageToggled;
   final ValueChanged<RepositoryOverviewLayout>? onLayoutChanged;
 }
 
@@ -203,6 +207,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                 child: _ChangesPane(
                   repository: repository,
                   onSelected: widget.callbacks.onChangeSelected,
+                  onStageToggled: widget.callbacks.onChangeStageToggled,
                 ),
               ),
             ],
@@ -278,6 +283,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                   },
                   repository: repository,
                   onChangeSelected: widget.callbacks.onChangeSelected,
+                  onChangeStageToggled: widget.callbacks.onChangeStageToggled,
                 ),
               ),
             ],
@@ -300,6 +306,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
       _CompactPane.changes => _ChangesPane(
         repository: repository,
         onSelected: widget.callbacks.onChangeSelected,
+        onStageToggled: widget.callbacks.onChangeStageToggled,
       ),
       _CompactPane.details => _CommitDetailsPane(
         details: repository.selectedCommit,
@@ -1085,10 +1092,15 @@ class _RefLabel extends StatelessWidget {
 }
 
 class _ChangesPane extends StatelessWidget {
-  const _ChangesPane({required this.repository, required this.onSelected});
+  const _ChangesPane({
+    required this.repository,
+    required this.onSelected,
+    required this.onStageToggled,
+  });
 
   final RepositoryViewData repository;
   final RepositoryChangeCallback? onSelected;
+  final RepositoryChangeStageCallback? onStageToggled;
 
   @override
   Widget build(BuildContext context) {
@@ -1110,6 +1122,7 @@ class _ChangesPane extends StatelessWidget {
                       ? _ChangeList(
                           changes: repository.changes,
                           onSelected: onSelected,
+                          onStageToggled: onStageToggled,
                         )
                       : _DiffPreview(
                           diff: repository.diff,
@@ -1125,6 +1138,7 @@ class _ChangesPane extends StatelessWidget {
                       child: _ChangeList(
                         changes: repository.changes,
                         onSelected: onSelected,
+                        onStageToggled: onStageToggled,
                       ),
                     ),
                     VerticalDivider(
@@ -1144,10 +1158,15 @@ class _ChangesPane extends StatelessWidget {
 }
 
 class _ChangeList extends StatelessWidget {
-  const _ChangeList({required this.changes, required this.onSelected});
+  const _ChangeList({
+    required this.changes,
+    required this.onSelected,
+    required this.onStageToggled,
+  });
 
   final List<RepositoryChangeViewData> changes;
   final RepositoryChangeCallback? onSelected;
+  final RepositoryChangeStageCallback? onStageToggled;
 
   @override
   Widget build(BuildContext context) {
@@ -1167,6 +1186,9 @@ class _ChangeList extends StatelessWidget {
         return _ChangeTile(
           change: change,
           onTap: onSelected == null ? null : () => onSelected!(change),
+          onStageToggled: onStageToggled == null
+              ? null
+              : () => onStageToggled!(change),
         );
       },
     );
@@ -1174,10 +1196,15 @@ class _ChangeList extends StatelessWidget {
 }
 
 class _ChangeTile extends StatelessWidget {
-  const _ChangeTile({required this.change, required this.onTap});
+  const _ChangeTile({
+    required this.change,
+    required this.onTap,
+    required this.onStageToggled,
+  });
 
   final RepositoryChangeViewData change;
   final VoidCallback? onTap;
+  final VoidCallback? onStageToggled;
 
   @override
   Widget build(BuildContext context) {
@@ -1243,15 +1270,34 @@ class _ChangeTile extends StatelessWidget {
                       fontFeatures: const [FontFeature.tabularFigures()],
                     ),
                   ),
-                const SizedBox(width: 6),
-                Icon(
-                  change.isStaged
-                      ? Icons.check_box
-                      : Icons.check_box_outline_blank,
-                  size: 15,
-                  color: change.isStaged
-                      ? colors.primary
-                      : colors.onSurfaceVariant,
+                Tooltip(
+                  message: !change.canToggleStage
+                      ? '冲突或无法安全表示的文件名不能在此暂存'
+                      : change.isStaged
+                      ? '取消暂存 ${change.path}'
+                      : '暂存 ${change.path}',
+                  child: IconButton(
+                    onPressed: onStageToggled == null || !change.canToggleStage
+                        ? null
+                        : onStageToggled,
+                    icon: Icon(
+                      change.isStaged
+                          ? Icons.check_box
+                          : Icons.check_box_outline_blank,
+                      size: 17,
+                    ),
+                    color: change.isStaged
+                        ? colors.primary
+                        : colors.onSurfaceVariant,
+                    disabledColor: colors.onSurface.withValues(alpha: .32),
+                    iconSize: 17,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(
+                      width: 30,
+                      height: 30,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                  ),
                 ),
               ],
             ),
@@ -1663,12 +1709,14 @@ class _TabbedInspector extends StatelessWidget {
     required this.onTabChanged,
     required this.repository,
     required this.onChangeSelected,
+    required this.onChangeStageToggled,
   });
 
   final _InspectorTab selectedTab;
   final ValueChanged<_InspectorTab> onTabChanged;
   final RepositoryViewData repository;
   final RepositoryChangeCallback? onChangeSelected;
+  final RepositoryChangeStageCallback? onChangeStageToggled;
 
   @override
   Widget build(BuildContext context) {
@@ -1687,6 +1735,7 @@ class _TabbedInspector extends StatelessWidget {
             _InspectorTab.changes => _ChangesPane(
               repository: repository,
               onSelected: onChangeSelected,
+              onStageToggled: onChangeStageToggled,
             ),
             _InspectorTab.details => _CommitDetailsPane(
               details: repository.selectedCommit,

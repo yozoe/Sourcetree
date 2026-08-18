@@ -13,6 +13,10 @@ final gitRepositoryReaderProvider = Provider<GitRepositoryReader>(
   (Ref ref) => GitRepositoryReader(ref.watch(gitRunnerProvider)),
 );
 
+final gitRepositoryWriterProvider = Provider<GitRepositoryWriter>(
+  (Ref ref) => GitRepositoryWriter(ref.watch(gitRunnerProvider)),
+);
+
 final repositorySessionProvider =
     NotifierProvider<RepositorySessionController, RepositorySessionState>(
       RepositorySessionController.new,
@@ -117,6 +121,7 @@ final class RepositorySessionController
   late GitRunner _runner;
   late GitRepositoryInspector _inspector;
   late GitRepositoryReader _reader;
+  late GitRepositoryWriter _writer;
   int _repositoryGeneration = 0;
   int _diffGeneration = 0;
 
@@ -125,6 +130,7 @@ final class RepositorySessionController
     _runner = ref.watch(gitRunnerProvider);
     _inspector = ref.watch(gitRepositoryInspectorProvider);
     _reader = ref.watch(gitRepositoryReaderProvider);
+    _writer = ref.watch(gitRepositoryWriterProvider);
     return const RepositorySessionState.empty();
   }
 
@@ -267,6 +273,53 @@ final class RepositorySessionController
       }
       state = state.copyWith(
         isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+    }
+  }
+
+  Future<void> toggleStage(RepositoryChangeViewData change) async {
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        state.phase == RepositorySessionPhase.loading) {
+      return;
+    }
+
+    GitStatusEntry? entry;
+    for (final candidate in status.entries) {
+      if (candidate.path.display == change.path) {
+        entry = candidate;
+        break;
+      }
+    }
+    if (entry == null || entry.isConflicted || !entry.path.isValidUtf8) {
+      return;
+    }
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      if (change.isStaged) {
+        await _writer.unstagePath(
+          repository,
+          entry.path,
+          isUnbornBranch: status.branch.isUnborn,
+        );
+      } else {
+        await _writer.stagePath(repository, entry.path);
+      }
+      await refresh();
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
         message: _friendlyError(error),
         technicalDetails: '$error\n$stackTrace',
       );

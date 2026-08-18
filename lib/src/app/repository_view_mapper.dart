@@ -250,6 +250,7 @@ RepositoryChangeViewData _changeData(
     previousPath: entry.originalPath?.display,
     kind: kind,
     isStaged: staged,
+    canToggleStage: !entry.isConflicted && entry.path.isValidUtf8,
     isSelected:
         selected?.entry.path == entry.path && selected?.source == source,
   );

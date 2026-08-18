@@ -86,6 +86,7 @@ class _RepositoryWorkspaceScreenState
           onSearchChanged: controller.setSearchQuery,
           onCommitSelected: (commit) => controller.selectCommit(commit.oid),
           onChangeSelected: controller.selectChange,
+          onChangeStageToggled: controller.toggleStage,
         ),
       ),
     );

@@ -234,6 +234,7 @@ final class RepositoryChangeViewData {
     this.isStaged = false,
     this.isSelected = false,
     this.isBinary = false,
+    this.canToggleStage = true,
     this.additions,
     this.deletions,
   });
@@ -244,6 +245,7 @@ final class RepositoryChangeViewData {
   final bool isStaged;
   final bool isSelected;
   final bool isBinary;
+  final bool canToggleStage;
   final int? additions;
   final int? deletions;
 }
