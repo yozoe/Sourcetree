@@ -221,6 +221,56 @@ final class GitRepositoryReader {
     return historyParser.parse(result.stdoutBytes).commits;
   }
 
+  /// Reads local branches without parsing human-oriented `git branch` output.
+  Future<List<GitLocalBranch>> readLocalBranches(
+    GitRepository repository,
+  ) async {
+    final result = await runner.run(
+      GitInvocation(
+        arguments: const [
+          '--no-pager',
+          '-c',
+          'color.ui=false',
+          'for-each-ref',
+          '--sort=refname',
+          '--format=%(refname:short)%00%(objectname)%00%(upstream:short)',
+          'refs/heads',
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 4 * 1024 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Reading local branches');
+    if (result.stdoutTruncated) {
+      throw const GitParseException(
+        'Local branch list exceeded the configured output limit.',
+      );
+    }
+
+    final branches = <GitLocalBranch>[];
+    final output = utf8.decode(result.stdoutBytes, allowMalformed: true);
+    for (final record in output.split('\n')) {
+      if (record.isEmpty) {
+        continue;
+      }
+      final fields = record.split('\u0000');
+      if (fields.length != 3 || fields[0].isEmpty || fields[1].isEmpty) {
+        throw GitParseException('Unexpected local branch record: $record');
+      }
+      branches.add(
+        GitLocalBranch(
+          name: fields[0],
+          objectId: fields[1],
+          upstream: fields[2].isEmpty ? null : fields[2],
+        ),
+      );
+    }
+    return List<GitLocalBranch>.unmodifiable(branches);
+  }
+
   /// Reads a unified diff for one literal path.
   ///
   /// The path is always placed after `--`; wildcard/pathspec magic and

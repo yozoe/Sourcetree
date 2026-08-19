@@ -124,6 +124,53 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
+  void _handleReferenceSelected(RepositoryRefViewData reference) {
+    if (reference.kind != RepositoryRefKind.localBranch ||
+        reference.isCurrent) {
+      return;
+    }
+    _confirmSwitchBranch(reference.label);
+  }
+
+  Future<void> _confirmSwitchBranch(String branchName) async {
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('切换分支'),
+        content: Text('切换到 $branchName？仅当工作区和暂存区均无改动时才会执行。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(context).pop(true),
+            icon: const Icon(Icons.swap_horiz),
+            label: const Text('切换'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) {
+      return;
+    }
+
+    final switched = await ref
+        .read(repositorySessionProvider.notifier)
+        .switchToLocalBranch(branchName);
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          switched ? '已切换到 $branchName。' : '未切换分支，请确认工作区干净并查看仓库错误信息。',
+        ),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final session = ref.watch(repositorySessionProvider);
@@ -133,6 +180,7 @@ class _RepositoryWorkspaceScreenState
         data: mapRepositoryOverview(session),
         callbacks: RepositoryOverviewCallbacks(
           onAction: _handleAction,
+          onRefSelected: _handleReferenceSelected,
           onSearchChanged: controller.setSearchQuery,
           onCommitSelected: (commit) => controller.selectCommit(commit.oid),
           onChangeSelected: controller.selectChange,

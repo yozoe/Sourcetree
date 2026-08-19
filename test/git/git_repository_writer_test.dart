@@ -161,4 +161,23 @@ void main() {
       throwsA(isA<ArgumentError>()),
     );
   });
+
+  test('switches to an existing local branch without creating a ref', () async {
+    await fixture.writeFile('README.md', '# Git Desktop\n');
+    await fixture.commit('Initial commit');
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+    await writer.createLocalBranch(repository, name: 'feature/switch-branch');
+
+    await writer.switchToLocalBranch(repository, name: 'feature/switch-branch');
+
+    expect(
+      (await fixture.runGit([
+        'branch',
+        '--show-current',
+      ])).stdout.toString().trim(),
+      'feature/switch-branch',
+    );
+  });
 }

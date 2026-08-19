@@ -48,6 +48,7 @@ final class RepositorySessionState {
     this.requestedPath,
     this.repository,
     this.status,
+    this.localBranches = const [],
     this.commits = const [],
     this.selectedCommitId,
     this.selectedChange,
@@ -66,6 +67,7 @@ final class RepositorySessionState {
   final String? requestedPath;
   final GitRepository? repository;
   final GitStatusSnapshot? status;
+  final List<GitLocalBranch> localBranches;
   final List<GitCommit> commits;
   final String? selectedCommitId;
   final SelectedRepositoryChange? selectedChange;
@@ -81,6 +83,7 @@ final class RepositorySessionState {
     String? requestedPath,
     GitRepository? repository,
     GitStatusSnapshot? status,
+    List<GitLocalBranch>? localBranches,
     List<GitCommit>? commits,
     String? selectedCommitId,
     SelectedRepositoryChange? selectedChange,
@@ -99,6 +102,7 @@ final class RepositorySessionState {
       requestedPath: requestedPath ?? this.requestedPath,
       repository: repository ?? this.repository,
       status: status ?? this.status,
+      localBranches: localBranches ?? this.localBranches,
       commits: commits ?? this.commits,
       selectedCommitId: selectedCommitId ?? this.selectedCommitId,
       selectedChange: clearSelectedChange
@@ -159,6 +163,7 @@ final class RepositorySessionController
 
       final results = await Future.wait<Object>([
         _reader.readStatus(repository),
+        _reader.readLocalBranches(repository),
         _reader.readRecentHistory(repository),
         _readGitVersion(),
       ]);
@@ -167,15 +172,17 @@ final class RepositorySessionController
       }
 
       final status = results[0] as GitStatusSnapshot;
-      final commits = results[1] as List<GitCommit>;
+      final localBranches = results[1] as List<GitLocalBranch>;
+      final commits = results[2] as List<GitCommit>;
       state = RepositorySessionState(
         phase: RepositorySessionPhase.ready,
         requestedPath: normalizedPath,
         repository: repository,
         status: status,
+        localBranches: localBranches,
         commits: commits,
         selectedCommitId: commits.firstOrNull?.objectId,
-        gitVersion: results[2] as String,
+        gitVersion: results[3] as String,
         searchQuery: state.searchQuery,
       );
     } on Object catch (error, stackTrace) {
@@ -390,6 +397,45 @@ final class RepositorySessionController
     );
     try {
       await _writer.createLocalBranch(repository, name: name);
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
+  /// Switches only when the working tree and index are clean.
+  Future<bool> switchToLocalBranch(String name) async {
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        !status.isClean ||
+        state.phase == RepositorySessionPhase.loading) {
+      return false;
+    }
+    if (name.trim().isEmpty) {
+      throw ArgumentError.value(name, 'name', 'Branch name is empty.');
+    }
+    if (status.branch.head == name) {
+      return true;
+    }
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.switchToLocalBranch(repository, name: name);
       await refresh();
       return state.phase == RepositorySessionPhase.ready;
     } on Object catch (error, stackTrace) {

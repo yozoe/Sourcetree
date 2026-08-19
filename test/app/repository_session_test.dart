@@ -92,4 +92,37 @@ void main() {
       'refs/heads/feature/workflow',
     ]);
   });
+
+  test('switches branches only while the repository is clean', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', '# Git Desktop\n');
+    await repository.commit('Initial commit');
+    await repository.runGit(['branch', 'feature/switch-branch']);
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(
+      await controller.switchToLocalBranch('feature/switch-branch'),
+      isTrue,
+    );
+    expect(
+      container.read(repositorySessionProvider).status!.branch.head,
+      'feature/switch-branch',
+    );
+
+    await repository.writeFile('uncommitted.txt', 'do not switch\n');
+    await controller.refresh();
+    expect(await controller.switchToLocalBranch('main'), isFalse);
+    expect(
+      (await repository.runGit([
+        'branch',
+        '--show-current',
+      ])).stdout.toString().trim(),
+      'feature/switch-branch',
+    );
+  });
 }

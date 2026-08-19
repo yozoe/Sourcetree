@@ -76,15 +76,15 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
         childCount: status.entries.length,
         isSelected: true,
       ),
-      if (branch.head != null)
+      for (final localBranch in state.localBranches)
         RepositoryRefViewData(
-          id: 'refs/heads/${branch.head}',
-          label: branchName,
+          id: 'refs/heads/${localBranch.name}',
+          label: localBranch.name,
           kind: RepositoryRefKind.localBranch,
-          secondaryLabel: branch.upstream,
-          isCurrent: true,
-          ahead: branch.ahead,
-          behind: branch.behind,
+          secondaryLabel: localBranch.upstream,
+          isCurrent: localBranch.name == branch.head,
+          ahead: localBranch.name == branch.head ? branch.ahead : 0,
+          behind: localBranch.name == branch.head ? branch.behind : 0,
         ),
       if (branch.upstream != null)
         RepositoryRefViewData(

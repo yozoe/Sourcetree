@@ -120,6 +120,25 @@ void main() {
     expect(stagedDiff.text, contains('+second'));
   });
 
+  test('reads local branches through for-each-ref', () async {
+    const fileName = 'README.md';
+    await File(
+      '${temporaryDirectory.path}${Platform.pathSeparator}$fileName',
+    ).writeAsString('# Git Desktop\n');
+    await _git(temporaryDirectory.path, ['add', '--', fileName]);
+    await _git(temporaryDirectory.path, ['commit', '--quiet', '-m', 'initial']);
+    await _git(temporaryDirectory.path, ['branch', 'feature/list-branches']);
+
+    final repository = (await inspector.inspect(temporaryDirectory.path))!;
+    final branches = await reader.readLocalBranches(repository);
+
+    expect(
+      branches.map((branch) => branch.name),
+      contains('feature/list-branches'),
+    );
+    expect(branches.every((branch) => branch.objectId.isNotEmpty), isTrue);
+  });
+
   test('marks a diff as truncated at its configured byte limit', () async {
     const fileName = 'large.txt';
     final file = File(

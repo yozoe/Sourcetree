@@ -122,6 +122,27 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Creating local branch');
   }
 
+  /// Switches to an existing local branch without creating or overwriting refs.
+  Future<void> switchToLocalBranch(
+    GitRepository repository, {
+    required String name,
+  }) async {
+    if (name.trim().isEmpty) {
+      throw ArgumentError.value(name, 'name', 'Branch name is empty.');
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: ['--no-pager', 'switch', '--', name],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Switching local branch');
+  }
+
   String _requireUtf8Path(GitPath path) {
     if (!path.isValidUtf8) {
       throw const GitException(

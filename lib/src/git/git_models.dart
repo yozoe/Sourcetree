@@ -250,6 +250,19 @@ final class GitBranchStatus {
   final bool isUnborn;
 }
 
+/// A local branch discovered through `git for-each-ref`.
+final class GitLocalBranch {
+  const GitLocalBranch({
+    required this.name,
+    required this.objectId,
+    this.upstream,
+  });
+
+  final String name;
+  final String objectId;
+  final String? upstream;
+}
+
 final class GitStatusSnapshot {
   GitStatusSnapshot({
     required this.branch,
