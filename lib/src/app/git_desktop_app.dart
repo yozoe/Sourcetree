@@ -133,6 +133,8 @@ class _RepositoryWorkspaceScreenState
         _initializeRepository();
       case RepositoryAction.cloneRepository:
         _cloneRepository();
+      case RepositoryAction.cancelClone:
+        ref.read(repositorySessionProvider.notifier).cancelClone();
       case RepositoryAction.refresh:
       case RepositoryAction.retry:
         ref.read(repositorySessionProvider.notifier).refresh();

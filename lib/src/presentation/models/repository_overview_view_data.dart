@@ -8,6 +8,7 @@ enum RepositoryOverviewState { noRepository, loading, ready, error }
 enum RepositoryAction {
   openRepository,
   cloneRepository,
+  cancelClone,
   initializeRepository,
   fetch,
   pull,
@@ -39,6 +40,7 @@ final class RepositoryOverviewViewData {
     this.title,
     this.message,
     this.technicalDetails,
+    this.canCancelOperation = false,
   });
 
   const RepositoryOverviewViewData.noRepository({
@@ -54,11 +56,13 @@ final class RepositoryOverviewViewData {
     String? title,
     String? message,
     RepositoryViewData? staleRepository,
+    bool canCancelOperation = false,
   }) : this._(
          state: RepositoryOverviewState.loading,
          repository: staleRepository,
          title: title,
          message: message,
+         canCancelOperation: canCancelOperation,
        );
 
   const RepositoryOverviewViewData.ready(RepositoryViewData repository)
@@ -82,6 +86,7 @@ final class RepositoryOverviewViewData {
   final String? title;
   final String? message;
   final String? technicalDetails;
+  final bool canCancelOperation;
 }
 
 final class RepositoryViewData {

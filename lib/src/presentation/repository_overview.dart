@@ -95,7 +95,10 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
 
     if (repository == null &&
         widget.data.state == RepositoryOverviewState.loading) {
-      return _LoadingView(data: widget.data);
+      return _LoadingView(
+        data: widget.data,
+        onAction: widget.callbacks.onAction,
+      );
     }
 
     if (repository == null &&
@@ -2117,9 +2120,10 @@ class _NoRepositoryView extends StatelessWidget {
 }
 
 class _LoadingView extends StatelessWidget {
-  const _LoadingView({required this.data});
+  const _LoadingView({required this.data, required this.onAction});
 
   final RepositoryOverviewViewData data;
+  final RepositoryActionCallback? onAction;
 
   @override
   Widget build(BuildContext context) {
@@ -2128,7 +2132,15 @@ class _LoadingView extends StatelessWidget {
       icon: Icons.folder_open_outlined,
       title: data.title ?? '正在读取仓库',
       message: data.message ?? '正在识别仓库并加载状态与提交历史…',
-      actions: const [],
+      actions: [
+        if (data.canCancelOperation)
+          const _StateAction(
+            label: '取消克隆',
+            icon: Icons.cancel_outlined,
+            action: RepositoryAction.cancelClone,
+          ),
+      ],
+      onAction: onAction,
     );
   }
 }

@@ -1,6 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'git_cancellation.dart';
 import 'git_errors.dart';
 import 'git_models.dart';
 import 'git_runner.dart';
@@ -178,6 +179,7 @@ final class GitRepositoryWriter {
   Future<void> cloneRepository({
     required String remoteUrl,
     required String directoryPath,
+    GitCancellationToken? cancellationToken,
   }) async {
     final normalizedUrl = remoteUrl.trim();
     if (normalizedUrl.isEmpty) {
@@ -193,6 +195,7 @@ final class GitRepositoryWriter {
     final result = await runner.run(
       GitInvocation(
         arguments: ['--no-pager', 'clone', '--', normalizedUrl, directory.path],
+        cancellationToken: cancellationToken,
         outputLimit: const GitOutputLimit(
           stdoutBytes: 1024 * 1024,
           stderrBytes: 1024 * 1024,

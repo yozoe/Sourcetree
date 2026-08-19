@@ -18,6 +18,7 @@ RepositoryOverviewViewData mapRepositoryOverview(RepositorySessionState state) {
       title: '正在读取仓库',
       message: state.requestedPath,
       staleRepository: repository,
+      canCancelOperation: state.isCloneRunning,
     ),
     RepositorySessionPhase.ready when repository != null =>
       RepositoryOverviewViewData.ready(repository),

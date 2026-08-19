@@ -1,3 +1,5 @@
+import 'dart:io';
+
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../git/git.dart';
@@ -54,6 +56,7 @@ final class RepositorySessionState {
     this.selectedChange,
     this.diff,
     this.isDiffLoading = false,
+    this.isCloneRunning = false,
     this.searchQuery = '',
     this.gitVersion,
     this.message,
@@ -73,6 +76,7 @@ final class RepositorySessionState {
   final SelectedRepositoryChange? selectedChange;
   final GitUnifiedDiff? diff;
   final bool isDiffLoading;
+  final bool isCloneRunning;
   final String searchQuery;
   final String? gitVersion;
   final String? message;
@@ -89,6 +93,7 @@ final class RepositorySessionState {
     SelectedRepositoryChange? selectedChange,
     GitUnifiedDiff? diff,
     bool? isDiffLoading,
+    bool? isCloneRunning,
     String? searchQuery,
     String? gitVersion,
     String? message,
@@ -110,6 +115,7 @@ final class RepositorySessionState {
           : selectedChange ?? this.selectedChange,
       diff: clearDiff ? null : diff ?? this.diff,
       isDiffLoading: isDiffLoading ?? this.isDiffLoading,
+      isCloneRunning: isCloneRunning ?? this.isCloneRunning,
       searchQuery: searchQuery ?? this.searchQuery,
       gitVersion: gitVersion ?? this.gitVersion,
       message: clearMessage ? null : message ?? this.message,
@@ -128,6 +134,7 @@ final class RepositorySessionController
   late GitRepositoryWriter _writer;
   int _repositoryGeneration = 0;
   int _diffGeneration = 0;
+  GitCancellationToken? _cloneCancellation;
 
   @override
   RepositorySessionState build() {
@@ -241,6 +248,8 @@ final class RepositorySessionController
     }
     _repositoryGeneration++;
     _diffGeneration++;
+    final cancellation = GitCancellationToken();
+    _cloneCancellation = cancellation;
     state = state.copyWith(
       phase: RepositorySessionPhase.loading,
       requestedPath: directoryPath.trim(),
@@ -248,24 +257,34 @@ final class RepositorySessionController
       clearDiff: true,
       clearSelectedChange: true,
       clearMessage: true,
+      isCloneRunning: true,
     );
     try {
       await _writer.cloneRepository(
         remoteUrl: remoteUrl,
         directoryPath: directoryPath,
+        cancellationToken: cancellation,
       );
       await openRepository(directoryPath);
       return state.phase == RepositorySessionPhase.ready;
     } on Object catch (error, stackTrace) {
+      final recovery = await _cloneRecoveryMessage(directoryPath);
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
-        message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        isCloneRunning: false,
+        message: recovery ?? _friendlyError(error),
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
+    } finally {
+      if (identical(_cloneCancellation, cancellation)) {
+        _cloneCancellation = null;
+      }
     }
   }
+
+  void cancelClone() => _cloneCancellation?.cancel();
 
   Future<void> refresh() async {
     final path = state.requestedPath ?? state.repository?.commandDirectory;
@@ -553,9 +572,45 @@ final class RepositorySessionController
       };
     }
     if (error is GitException) {
-      return error.message;
+      return _redactSensitiveText(error.message);
     }
     return '读取仓库时发生未知错误。';
+  }
+
+  Future<String?> _cloneRecoveryMessage(String directoryPath) async {
+    final directory = Directory(directoryPath.trim());
+    if (!await directory.exists()) {
+      return '克隆未完成，目标目录不存在，可重新选择目录后重试。';
+    }
+    final entries = await directory.list(followLinks: false).toList();
+    if (entries.isEmpty) {
+      return '克隆已取消或失败，目标目录仍为空，可以重试。';
+    }
+    final hasGitDirectory = entries.any(
+      (entry) =>
+          entry is Directory &&
+          entry.path.endsWith('${Platform.pathSeparator}.git'),
+    );
+    return hasGitDirectory
+        ? '克隆未完成，目标目录保留了部分 Git 数据。请检查后删除该目录或用命令行恢复。'
+        : '克隆未完成，目标目录已有部分文件。请检查后删除该目录再重试。';
+  }
+
+  String _technicalDetails(Object error, StackTrace stackTrace) =>
+      _redactSensitiveText('$error\n$stackTrace');
+
+  String _redactSensitiveText(String text) {
+    final credentials = RegExp(
+      r'([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^@\s/]+)@',
+      caseSensitive: false,
+    );
+    final token = RegExp(
+      r'([?&](?:access_token|token|password)=)[^&\s]+',
+      caseSensitive: false,
+    );
+    return text
+        .replaceAllMapped(credentials, (match) => '${match[1]}***:***@')
+        .replaceAllMapped(token, (match) => '${match[1]}***');
   }
 }
 
