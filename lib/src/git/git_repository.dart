@@ -271,6 +271,29 @@ final class GitRepositoryReader {
     return List<GitLocalBranch>.unmodifiable(branches);
   }
 
+  /// Returns whether the conventional `origin` remote is configured.
+  Future<bool> hasOriginRemote(GitRepository repository) async {
+    final result = await runner.run(
+      GitInvocation(
+        arguments: const ['--no-pager', 'remote', 'get-url', 'origin'],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 256 * 1024,
+        ),
+      ),
+    );
+    if (result.isSuccess) {
+      return true;
+    }
+    final message = result.stderrText.toLowerCase();
+    if (result.exitCode == 2 && message.contains('no such remote')) {
+      return false;
+    }
+    result.throwIfFailed(operation: 'Reading origin remote');
+    return false;
+  }
+
   /// Reads a unified diff for one literal path.
   ///
   /// The path is always placed after `--`; wildcard/pathspec magic and

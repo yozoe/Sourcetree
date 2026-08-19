@@ -205,6 +205,30 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Cloning repository');
   }
 
+  /// Fetches the conventional `origin` remote without altering the work tree.
+  Future<void> fetchOrigin(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final result = await runner.run(
+      GitInvocation(
+        arguments: const [
+          '--no-pager',
+          'fetch',
+          '--no-recurse-submodules',
+          'origin',
+        ],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 1024 * 1024,
+          stderrBytes: 1024 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Fetching origin');
+  }
+
   String _requireUtf8Path(GitPath path) {
     if (!path.isValidUtf8) {
       throw const GitException(

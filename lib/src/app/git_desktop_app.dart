@@ -135,6 +135,10 @@ class _RepositoryWorkspaceScreenState
         _cloneRepository();
       case RepositoryAction.cancelClone:
         ref.read(repositorySessionProvider.notifier).cancelClone();
+      case RepositoryAction.fetch:
+        ref.read(repositorySessionProvider.notifier).fetchOrigin();
+      case RepositoryAction.cancelFetch:
+        ref.read(repositorySessionProvider.notifier).cancelFetch();
       case RepositoryAction.refresh:
       case RepositoryAction.retry:
         ref.read(repositorySessionProvider.notifier).refresh();

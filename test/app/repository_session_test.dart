@@ -171,4 +171,47 @@ void main() {
       'Initial commit',
     );
   });
+
+  test('fetches origin and refreshes ahead-behind state', () async {
+    final source = await GitTestRepository.create();
+    addTearDown(source.dispose);
+    await source.writeFile('README.md', '# Git Desktop\n');
+    await source.commit('Initial commit');
+    final origin = await source.createBareOrigin();
+    await source.runGit(['push', 'origin', 'main']);
+    final directory = await Directory.systemTemp.createTemp(
+      'git-desktop-fetch-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    expect(
+      await controller.cloneRepository(
+        remoteUrl: origin.path,
+        directoryPath: directory.path,
+      ),
+      isTrue,
+    );
+    await source.writeFile('CHANGELOG.md', '# Changes\n');
+    await source.commit('Add changelog');
+    await source.runGit(['push', 'origin', 'main']);
+
+    expect(await controller.fetchOrigin(), isTrue);
+    final state = container.read(repositorySessionProvider);
+    expect(state.phase, RepositorySessionPhase.ready);
+    expect(state.status!.branch.behind, 1);
+  });
+
+  test('does not fetch when origin is not configured', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(container.read(repositorySessionProvider).hasOriginRemote, isFalse);
+    expect(await controller.fetchOrigin(), isFalse);
+  });
 }

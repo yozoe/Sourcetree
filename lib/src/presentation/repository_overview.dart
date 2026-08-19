@@ -415,12 +415,17 @@ class _RepositoryToolbar extends StatelessWidget {
                           onAction: callbacks.onAction,
                         ),
                         _ToolbarAction(
-                          action: RepositoryAction.fetch,
-                          icon: Icons.sync,
-                          label: '获取',
+                          action: repository.isFetching
+                              ? RepositoryAction.cancelFetch
+                              : RepositoryAction.fetch,
+                          icon: repository.isFetching
+                              ? Icons.cancel_outlined
+                              : Icons.sync,
+                          label: repository.isFetching ? '取消获取' : '获取',
                           showLabel: showLabels,
                           repository: repository,
                           onAction: callbacks.onAction,
+                          isBusy: repository.isFetching,
                         ),
                         _ToolbarAction(
                           action: RepositoryAction.pull,

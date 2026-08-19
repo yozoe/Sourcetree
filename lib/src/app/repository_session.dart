@@ -50,6 +50,7 @@ final class RepositorySessionState {
     this.requestedPath,
     this.repository,
     this.status,
+    this.hasOriginRemote = false,
     this.localBranches = const [],
     this.commits = const [],
     this.selectedCommitId,
@@ -57,6 +58,7 @@ final class RepositorySessionState {
     this.diff,
     this.isDiffLoading = false,
     this.isCloneRunning = false,
+    this.isFetchRunning = false,
     this.searchQuery = '',
     this.gitVersion,
     this.message,
@@ -70,6 +72,7 @@ final class RepositorySessionState {
   final String? requestedPath;
   final GitRepository? repository;
   final GitStatusSnapshot? status;
+  final bool hasOriginRemote;
   final List<GitLocalBranch> localBranches;
   final List<GitCommit> commits;
   final String? selectedCommitId;
@@ -77,6 +80,7 @@ final class RepositorySessionState {
   final GitUnifiedDiff? diff;
   final bool isDiffLoading;
   final bool isCloneRunning;
+  final bool isFetchRunning;
   final String searchQuery;
   final String? gitVersion;
   final String? message;
@@ -87,6 +91,7 @@ final class RepositorySessionState {
     String? requestedPath,
     GitRepository? repository,
     GitStatusSnapshot? status,
+    bool? hasOriginRemote,
     List<GitLocalBranch>? localBranches,
     List<GitCommit>? commits,
     String? selectedCommitId,
@@ -94,6 +99,7 @@ final class RepositorySessionState {
     GitUnifiedDiff? diff,
     bool? isDiffLoading,
     bool? isCloneRunning,
+    bool? isFetchRunning,
     String? searchQuery,
     String? gitVersion,
     String? message,
@@ -107,6 +113,7 @@ final class RepositorySessionState {
       requestedPath: requestedPath ?? this.requestedPath,
       repository: repository ?? this.repository,
       status: status ?? this.status,
+      hasOriginRemote: hasOriginRemote ?? this.hasOriginRemote,
       localBranches: localBranches ?? this.localBranches,
       commits: commits ?? this.commits,
       selectedCommitId: selectedCommitId ?? this.selectedCommitId,
@@ -116,6 +123,7 @@ final class RepositorySessionState {
       diff: clearDiff ? null : diff ?? this.diff,
       isDiffLoading: isDiffLoading ?? this.isDiffLoading,
       isCloneRunning: isCloneRunning ?? this.isCloneRunning,
+      isFetchRunning: isFetchRunning ?? this.isFetchRunning,
       searchQuery: searchQuery ?? this.searchQuery,
       gitVersion: gitVersion ?? this.gitVersion,
       message: clearMessage ? null : message ?? this.message,
@@ -135,6 +143,7 @@ final class RepositorySessionController
   int _repositoryGeneration = 0;
   int _diffGeneration = 0;
   GitCancellationToken? _cloneCancellation;
+  GitCancellationToken? _fetchCancellation;
 
   @override
   RepositorySessionState build() {
@@ -170,6 +179,7 @@ final class RepositorySessionController
 
       final results = await Future.wait<Object>([
         _reader.readStatus(repository),
+        _reader.hasOriginRemote(repository),
         _reader.readLocalBranches(repository),
         _reader.readRecentHistory(repository),
         _readGitVersion(),
@@ -179,17 +189,19 @@ final class RepositorySessionController
       }
 
       final status = results[0] as GitStatusSnapshot;
-      final localBranches = results[1] as List<GitLocalBranch>;
-      final commits = results[2] as List<GitCommit>;
+      final hasOriginRemote = results[1] as bool;
+      final localBranches = results[2] as List<GitLocalBranch>;
+      final commits = results[3] as List<GitCommit>;
       state = RepositorySessionState(
         phase: RepositorySessionPhase.ready,
         requestedPath: normalizedPath,
         repository: repository,
         status: status,
+        hasOriginRemote: hasOriginRemote,
         localBranches: localBranches,
         commits: commits,
         selectedCommitId: commits.firstOrNull?.objectId,
-        gitVersion: results[3] as String,
+        gitVersion: results[4] as String,
         searchQuery: state.searchQuery,
       );
     } on Object catch (error, stackTrace) {
@@ -285,6 +297,45 @@ final class RepositorySessionController
   }
 
   void cancelClone() => _cloneCancellation?.cancel();
+
+  Future<bool> fetchOrigin() async {
+    final repository = state.repository;
+    if (repository == null ||
+        !state.hasOriginRemote ||
+        state.phase == RepositorySessionPhase.loading) {
+      return false;
+    }
+    final cancellation = GitCancellationToken();
+    _fetchCancellation = cancellation;
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isFetchRunning: true,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.fetchOrigin(repository, cancellationToken: cancellation);
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isFetchRunning: false,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      return false;
+    } finally {
+      if (identical(_fetchCancellation, cancellation)) {
+        _fetchCancellation = null;
+      }
+    }
+  }
+
+  void cancelFetch() => _fetchCancellation?.cancel();
 
   Future<void> refresh() async {
     final path = state.requestedPath ?? state.repository?.commandDirectory;

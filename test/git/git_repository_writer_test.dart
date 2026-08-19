@@ -232,4 +232,54 @@ void main() {
       'Initial commit',
     );
   });
+
+  test('fetches origin without changing the checked out branch', () async {
+    await fixture.writeFile('README.md', '# Git Desktop\n');
+    await fixture.commit('Initial commit');
+    final origin = await fixture.createBareOrigin();
+    await fixture.runGit(['push', 'origin', 'main']);
+    final directory = await Directory.systemTemp.createTemp(
+      'git-desktop-fetch-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    await writer.cloneRepository(
+      remoteUrl: origin.path,
+      directoryPath: directory.path,
+    );
+    await fixture.writeFile('CHANGELOG.md', '# Changes\n');
+    final sourceHead = await fixture.commit('Add changelog');
+    await fixture.runGit(['push', 'origin', 'main']);
+    final repository = (await inspector.inspect(directory.path))!;
+
+    await writer.fetchOrigin(repository);
+
+    final remoteHead = await writer.runner.run(
+      GitInvocation(
+        arguments: const ['rev-parse', 'refs/remotes/origin/main'],
+        workingDirectory: directory.path,
+      ),
+    );
+    expect(remoteHead.stdoutText.trim(), sourceHead);
+    expect(
+      (await writer.runner.run(
+        GitInvocation(
+          arguments: const ['branch', '--show-current'],
+          workingDirectory: directory.path,
+        ),
+      )).stdoutText.trim(),
+      'main',
+    );
+  });
+
+  test('honors a cancelled fetch token before starting Git', () async {
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+    final cancellation = GitCancellationToken()..cancel();
+
+    await expectLater(
+      writer.fetchOrigin(repository, cancellationToken: cancellation),
+      throwsA(isA<GitCancelledException>()),
+    );
+  });
 }
