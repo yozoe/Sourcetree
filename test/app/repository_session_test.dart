@@ -65,4 +65,31 @@ void main() {
       expect(state.commits.single.subject, 'Create README');
     },
   );
+
+  test('creates a local branch without changing the active branch', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', '# Git Desktop\n');
+    await repository.commit('Initial commit');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(await controller.createLocalBranch('feature/workflow'), isTrue);
+    expect(
+      (await repository.runGit([
+        'branch',
+        '--show-current',
+      ])).stdout.toString().trim(),
+      'main',
+    );
+    await repository.runGit([
+      'show-ref',
+      '--verify',
+      '--quiet',
+      'refs/heads/feature/workflow',
+    ]);
+  });
 }

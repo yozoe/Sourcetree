@@ -126,4 +126,39 @@ void main() {
       throwsA(isA<ArgumentError>()),
     );
   });
+
+  test('creates a local branch at HEAD without switching branches', () async {
+    await fixture.writeFile('README.md', '# Git Desktop\n');
+    await fixture.commit('Initial commit');
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await writer.createLocalBranch(repository, name: 'feature/create-branch');
+
+    await fixture.runGit([
+      'show-ref',
+      '--verify',
+      '--quiet',
+      'refs/heads/feature/create-branch',
+    ]);
+    expect(
+      (await fixture.runGit([
+        'branch',
+        '--show-current',
+      ])).stdout.toString().trim(),
+      'main',
+    );
+  });
+
+  test('rejects an empty local branch name before running Git', () async {
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await expectLater(
+      writer.createLocalBranch(repository, name: ' \t '),
+      throwsA(isA<ArgumentError>()),
+    );
+  });
 }

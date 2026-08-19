@@ -366,6 +366,43 @@ final class RepositorySessionController
     }
   }
 
+  /// Creates a local branch at HEAD without switching the current work tree.
+  Future<bool> createLocalBranch(String name) async {
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        status.branch.isUnborn ||
+        state.phase == RepositorySessionPhase.loading) {
+      return false;
+    }
+
+    if (name.trim().isEmpty) {
+      throw ArgumentError.value(name, 'name', 'Branch name is empty.');
+    }
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.createLocalBranch(repository, name: name);
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
   Future<String> _readGitVersion() async {
     final result = await _runner.run(
       GitInvocation(

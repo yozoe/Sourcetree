@@ -66,6 +66,8 @@ class _RepositoryWorkspaceScreenState
         ref.read(repositorySessionProvider.notifier).refresh();
       case RepositoryAction.commit:
         _showCommitDialog();
+      case RepositoryAction.createBranch:
+        _showCreateBranchDialog();
       default:
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -99,6 +101,29 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
+  Future<void> _showCreateBranchDialog() async {
+    final name = await showDialog<String>(
+      context: context,
+      builder: (BuildContext context) => const _CreateBranchDialog(),
+    );
+    if (name == null || !mounted) {
+      return;
+    }
+
+    final created = await ref
+        .read(repositorySessionProvider.notifier)
+        .createLocalBranch(name);
+    if (!mounted) {
+      return;
+    }
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(created ? '已创建本地分支 $name。' : '分支未创建，请查看仓库错误信息。'),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
     final session = ref.watch(repositorySessionProvider);
@@ -123,6 +148,72 @@ class _CommitDialog extends StatefulWidget {
 
   @override
   State<_CommitDialog> createState() => _CommitDialogState();
+}
+
+class _CreateBranchDialog extends StatefulWidget {
+  const _CreateBranchDialog();
+
+  @override
+  State<_CreateBranchDialog> createState() => _CreateBranchDialogState();
+}
+
+class _CreateBranchDialogState extends State<_CreateBranchDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _nameController = TextEditingController();
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (!(_formKey.currentState?.validate() ?? false)) {
+      return;
+    }
+    Navigator.of(context).pop(_nameController.text);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('创建本地分支'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Form(
+          key: _formKey,
+          child: TextFormField(
+            controller: _nameController,
+            autofocus: true,
+            decoration: const InputDecoration(
+              border: OutlineInputBorder(),
+              hintText: '例如 feature/new-workflow',
+              labelText: '分支名称',
+              helperText: '分支将从当前 HEAD 创建，不会切换工作区。',
+            ),
+            validator: (String? value) {
+              if (value == null || value.trim().isEmpty) {
+                return '请输入分支名称。';
+              }
+              return null;
+            },
+            onFieldSubmitted: (_) => _submit(),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton.icon(
+          onPressed: _submit,
+          icon: const Icon(Icons.call_split),
+          label: const Text('创建'),
+        ),
+      ],
+    );
+  }
 }
 
 class _CommitDialogState extends State<_CommitDialog> {

@@ -50,8 +50,10 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     RepositoryAction.fetch,
     RepositoryAction.pull,
     RepositoryAction.push,
-    RepositoryAction.createBranch,
   };
+  if (branch.isUnborn || state.phase == RepositorySessionPhase.loading) {
+    disabledActions.add(RepositoryAction.createBranch);
+  }
   if (status.stagedEntries.isEmpty ||
       state.phase == RepositorySessionPhase.loading) {
     disabledActions.add(RepositoryAction.commit);

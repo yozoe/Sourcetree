@@ -99,6 +99,29 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Creating commit');
   }
 
+  /// Creates a new local branch at the current HEAD without checking it out.
+  ///
+  /// Git validates the ref name and refuses to overwrite an existing branch.
+  Future<void> createLocalBranch(
+    GitRepository repository, {
+    required String name,
+  }) async {
+    if (name.trim().isEmpty) {
+      throw ArgumentError.value(name, 'name', 'Branch name is empty.');
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: ['--no-pager', 'branch', '--', name],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Creating local branch');
+  }
+
   String _requireUtf8Path(GitPath path) {
     if (!path.isValidUtf8) {
       throw const GitException(
