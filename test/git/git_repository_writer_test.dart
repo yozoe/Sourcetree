@@ -209,4 +209,27 @@ void main() {
     );
     expect(await inspector.inspect(directory.path), isNull);
   });
+
+  test('clones a local bare remote into an empty directory', () async {
+    await fixture.writeFile('README.md', '# Git Desktop\n');
+    await fixture.commit('Initial commit');
+    final origin = await fixture.createBareOrigin();
+    await fixture.runGit(['push', 'origin', 'main']);
+    final directory = await Directory.systemTemp.createTemp(
+      'git-desktop-clone-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+
+    await writer.cloneRepository(
+      remoteUrl: origin.path,
+      directoryPath: directory.path,
+    );
+
+    final repository = await inspector.inspect(directory.path);
+    expect(repository, isNotNull);
+    expect(
+      (await reader.readRecentHistory(repository!)).single.subject,
+      'Initial commit',
+    );
+  });
 }

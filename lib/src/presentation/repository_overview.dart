@@ -2101,6 +2101,11 @@ class _NoRepositoryView extends StatelessWidget {
           primary: true,
         ),
         _StateAction(
+          label: '克隆仓库',
+          icon: Icons.download_outlined,
+          action: RepositoryAction.cloneRepository,
+        ),
+        _StateAction(
           label: '初始化仓库',
           icon: Icons.create_new_folder_outlined,
           action: RepositoryAction.initializeRepository,

@@ -142,4 +142,33 @@ void main() {
     expect(state.repository!.workTreeRoot, isNotNull);
     expect(state.status!.branch.isUnborn, isTrue);
   });
+
+  test('clones and opens a local bare remote', () async {
+    final source = await GitTestRepository.create();
+    addTearDown(source.dispose);
+    await source.writeFile('README.md', '# Git Desktop\n');
+    await source.commit('Initial commit');
+    final origin = await source.createBareOrigin();
+    await source.runGit(['push', 'origin', 'main']);
+    final directory = await Directory.systemTemp.createTemp(
+      'git-desktop-clone-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+
+    expect(
+      await container
+          .read(repositorySessionProvider.notifier)
+          .cloneRepository(
+            remoteUrl: origin.path,
+            directoryPath: directory.path,
+          ),
+      isTrue,
+    );
+    expect(
+      container.read(repositorySessionProvider).commits.single.subject,
+      'Initial commit',
+    );
+  });
 }

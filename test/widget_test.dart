@@ -10,7 +10,7 @@ void main() {
 
     expect(find.text('打开一个 Git 仓库'), findsOneWidget);
     expect(find.text('打开仓库'), findsOneWidget);
-    expect(find.text('克隆仓库'), findsNothing);
+    expect(find.text('克隆仓库'), findsOneWidget);
     expect(find.text('初始化仓库'), findsOneWidget);
   });
 

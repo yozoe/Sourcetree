@@ -7,8 +7,8 @@ import 'git_runner.dart';
 
 /// Performs the small, explicitly allowed Git mutations used by the P0 UI.
 ///
-/// This class deliberately excludes reset, clean, merge and all remote
-/// operations. Each method accepts a literal path and never invokes a shell.
+/// This class deliberately excludes reset, clean, merge and remote sync
+/// operations. Each method accepts literal inputs and never invokes a shell.
 final class GitRepositoryWriter {
   GitRepositoryWriter(this.runner);
 
@@ -172,6 +172,34 @@ final class GitRepositoryWriter {
       ),
     );
     result.throwIfFailed(operation: 'Initializing repository');
+  }
+
+  /// Clones into an existing empty directory without interpreting the URL.
+  Future<void> cloneRepository({
+    required String remoteUrl,
+    required String directoryPath,
+  }) async {
+    final normalizedUrl = remoteUrl.trim();
+    if (normalizedUrl.isEmpty) {
+      throw ArgumentError.value(remoteUrl, 'remoteUrl', 'Must not be empty.');
+    }
+    final directory = Directory(directoryPath.trim());
+    if (!await directory.exists()) {
+      throw const GitException('The selected directory no longer exists.');
+    }
+    if (!await directory.list(followLinks: false).isEmpty) {
+      throw const GitException('只能克隆到空目录，避免覆盖现有文件。');
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: ['--no-pager', 'clone', '--', normalizedUrl, directory.path],
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 1024 * 1024,
+          stderrBytes: 1024 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Cloning repository');
   }
 
   String _requireUtf8Path(GitPath path) {

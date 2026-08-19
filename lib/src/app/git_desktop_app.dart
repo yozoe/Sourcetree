@@ -90,12 +90,49 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
+  Future<void> _cloneRepository() async {
+    final remoteUrl = await showDialog<String>(
+      context: context,
+      builder: (BuildContext context) => const _CloneDialog(),
+    );
+    if (remoteUrl == null || !mounted) return;
+    final directory = await getDirectoryPath(confirmButtonText: '选择空目录');
+    if (directory == null || !mounted) return;
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('克隆 Git 仓库'),
+        content: const Text('仅当所选目标目录为空时才会继续。克隆可能需要现有 Git 凭据。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('克隆'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+    final cloned = await ref
+        .read(repositorySessionProvider.notifier)
+        .cloneRepository(remoteUrl: remoteUrl, directoryPath: directory);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(cloned ? '已克隆并打开仓库。' : '克隆失败，请查看仓库错误信息。')),
+    );
+  }
+
   void _handleAction(RepositoryAction action) {
     switch (action) {
       case RepositoryAction.openRepository:
         _openRepository();
       case RepositoryAction.initializeRepository:
         _initializeRepository();
+      case RepositoryAction.cloneRepository:
+        _cloneRepository();
       case RepositoryAction.refresh:
       case RepositoryAction.retry:
         ref.read(repositorySessionProvider.notifier).refresh();
@@ -231,6 +268,60 @@ class _CommitDialog extends StatefulWidget {
 
   @override
   State<_CommitDialog> createState() => _CommitDialogState();
+}
+
+class _CloneDialog extends StatefulWidget {
+  const _CloneDialog();
+
+  @override
+  State<_CloneDialog> createState() => _CloneDialogState();
+}
+
+class _CloneDialogState extends State<_CloneDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _urlController = TextEditingController();
+
+  @override
+  void dispose() {
+    _urlController.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    if (_formKey.currentState?.validate() ?? false) {
+      Navigator.of(context).pop(_urlController.text);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('克隆仓库'),
+    content: ConstrainedBox(
+      constraints: const BoxConstraints(maxWidth: 520),
+      child: Form(
+        key: _formKey,
+        child: TextFormField(
+          controller: _urlController,
+          autofocus: true,
+          decoration: const InputDecoration(
+            border: OutlineInputBorder(),
+            labelText: '远端地址',
+            hintText: 'https://… 或 git@host:owner/repository.git',
+          ),
+          validator: (value) =>
+              value == null || value.trim().isEmpty ? '请输入远端地址。' : null,
+          onFieldSubmitted: (_) => _submit(),
+        ),
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('取消'),
+      ),
+      FilledButton(onPressed: _submit, child: const Text('下一步')),
+    ],
+  );
 }
 
 class _CreateBranchDialog extends StatefulWidget {

@@ -230,6 +230,43 @@ final class RepositorySessionController
     }
   }
 
+  Future<bool> cloneRepository({
+    required String remoteUrl,
+    required String directoryPath,
+  }) async {
+    if (remoteUrl.trim().isEmpty ||
+        directoryPath.trim().isEmpty ||
+        state.phase == RepositorySessionPhase.loading) {
+      return false;
+    }
+    _repositoryGeneration++;
+    _diffGeneration++;
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      requestedPath: directoryPath.trim(),
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.cloneRepository(
+        remoteUrl: remoteUrl,
+        directoryPath: directoryPath,
+      );
+      await openRepository(directoryPath);
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
   Future<void> refresh() async {
     final path = state.requestedPath ?? state.repository?.commandDirectory;
     if (path != null) {
