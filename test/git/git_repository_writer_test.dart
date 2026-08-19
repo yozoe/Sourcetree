@@ -180,4 +180,33 @@ void main() {
       'feature/switch-branch',
     );
   });
+
+  test('initializes an empty directory without relying on a shell', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'git-desktop-init-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+
+    await writer.initializeRepository(directory.path);
+
+    final repository = await inspector.inspect(directory.path);
+    expect(repository, isNotNull);
+    expect((await reader.readStatus(repository!)).branch.isUnborn, isTrue);
+  });
+
+  test('refuses to initialize a non-empty directory', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'git-desktop-init-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    await File(
+      '${directory.path}${Platform.pathSeparator}keep.txt',
+    ).writeAsString('keep');
+
+    await expectLater(
+      writer.initializeRepository(directory.path),
+      throwsA(isA<GitException>()),
+    );
+    expect(await inspector.inspect(directory.path), isNull);
+  });
 }

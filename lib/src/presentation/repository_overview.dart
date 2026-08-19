@@ -2100,6 +2100,11 @@ class _NoRepositoryView extends StatelessWidget {
           action: RepositoryAction.openRepository,
           primary: true,
         ),
+        _StateAction(
+          label: '初始化仓库',
+          icon: Icons.create_new_folder_outlined,
+          action: RepositoryAction.initializeRepository,
+        ),
       ],
       onAction: onAction,
     );

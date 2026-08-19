@@ -57,10 +57,45 @@ class _RepositoryWorkspaceScreenState
         .openRepository(directory);
   }
 
+  Future<void> _initializeRepository() async {
+    final directory = await getDirectoryPath(confirmButtonText: '选择空目录');
+    if (directory == null || !mounted) return;
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('初始化 Git 仓库'),
+        content: const Text('仅当所选目录为空时才会继续。Git 将在其中创建 .git 目录。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('初始化'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+    final initialized = await ref
+        .read(repositorySessionProvider.notifier)
+        .initializeRepository(directory);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(initialized ? '已初始化 Git 仓库。' : '初始化失败，请查看仓库错误信息。'),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
   void _handleAction(RepositoryAction action) {
     switch (action) {
       case RepositoryAction.openRepository:
         _openRepository();
+      case RepositoryAction.initializeRepository:
+        _initializeRepository();
       case RepositoryAction.refresh:
       case RepositoryAction.retry:
         ref.read(repositorySessionProvider.notifier).refresh();

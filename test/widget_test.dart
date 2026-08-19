@@ -5,13 +5,13 @@ import 'package:git_desktop/src/app/git_desktop_app.dart';
 import 'package:git_desktop/src/presentation/presentation.dart';
 
 void main() {
-  testWidgets('shows only supported actions on first launch', (tester) async {
+  testWidgets('shows supported actions on first launch', (tester) async {
     await tester.pumpWidget(const ProviderScope(child: GitDesktopApp()));
 
     expect(find.text('打开一个 Git 仓库'), findsOneWidget);
     expect(find.text('打开仓库'), findsOneWidget);
     expect(find.text('克隆仓库'), findsNothing);
-    expect(find.text('初始化仓库'), findsNothing);
+    expect(find.text('初始化仓库'), findsOneWidget);
   });
 
   testWidgets('history search keeps focus while its query updates', (

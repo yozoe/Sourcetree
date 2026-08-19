@@ -198,6 +198,38 @@ final class RepositorySessionController
     }
   }
 
+  /// Initializes only an empty directory, then opens the new repository.
+  Future<bool> initializeRepository(String path) async {
+    final normalizedPath = path.trim();
+    if (normalizedPath.isEmpty ||
+        state.phase == RepositorySessionPhase.loading) {
+      return false;
+    }
+    _repositoryGeneration++;
+    _diffGeneration++;
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      requestedPath: normalizedPath,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.initializeRepository(normalizedPath);
+      await openRepository(normalizedPath);
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
   Future<void> refresh() async {
     final path = state.requestedPath ?? state.repository?.commandDirectory;
     if (path != null) {

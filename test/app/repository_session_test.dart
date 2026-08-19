@@ -125,4 +125,21 @@ void main() {
       'feature/switch-branch',
     );
   });
+
+  test('initializes and opens an empty directory', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'git-desktop-init-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+
+    expect(await controller.initializeRepository(directory.path), isTrue);
+
+    final state = container.read(repositorySessionProvider);
+    expect(state.phase, RepositorySessionPhase.ready);
+    expect(state.repository!.workTreeRoot, isNotNull);
+    expect(state.status!.branch.isUnborn, isTrue);
+  });
 }

@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'git_errors.dart';
 import 'git_models.dart';
@@ -141,6 +142,36 @@ final class GitRepositoryWriter {
       ),
     );
     result.throwIfFailed(operation: 'Switching local branch');
+  }
+
+  /// Initializes an existing empty directory without changing Git settings.
+  Future<void> initializeRepository(String directoryPath) async {
+    final normalizedPath = directoryPath.trim();
+    if (normalizedPath.isEmpty) {
+      throw ArgumentError.value(
+        directoryPath,
+        'directoryPath',
+        'Must not be empty.',
+      );
+    }
+    final directory = Directory(normalizedPath);
+    if (!await directory.exists()) {
+      throw const GitException('The selected directory no longer exists.');
+    }
+    if (!await directory.list(followLinks: false).isEmpty) {
+      throw const GitException('只能初始化空目录，避免意外修改现有文件。');
+    }
+
+    final result = await runner.run(
+      GitInvocation(
+        arguments: ['--no-pager', 'init', '--', directory.path],
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Initializing repository');
   }
 
   String _requireUtf8Path(GitPath path) {
