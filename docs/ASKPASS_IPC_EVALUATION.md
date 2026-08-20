@@ -85,6 +85,7 @@ helper 路径，并生成 `GIT_ASKPASS`、`GIT_TERMINAL_PROMPT=0`、socket 与 n
 - [ ] nonce 重放、错误 UID、第二连接、畸形 UTF-8 和 helper 欺骗测试。
 - [x] 非秘密 IPC 请求的未知字段、非法 nonce 与超长 prompt 校验。
 - [x] 一次性 Flutter Unix socket 的 nonce、单连接、超时、拒绝和清理测试。
+- [x] macOS helper 与 Flutter session 的进程级 socket 往返测试（测试临时编译同一 C 源码）。
 - [ ] Token、用户名密码、SSH passphrase、拒绝认证、网络中断和用户取消测试。
 - [ ] 日志、异常、操作面板和 macOS 诊断包的秘密泄漏扫描。
 - [ ] 真实 Git credential helper、SSH Agent、Keychain 与企业 SSO 的兼容性测试。

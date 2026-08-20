@@ -134,6 +134,60 @@ void main() {
   });
 
   test(
+    'the native helper exchanges one secret only through the session socket',
+    () async {
+      final temporaryDirectory = await Directory.systemTemp.createTemp(
+        'git_desktop_askpass_helper_',
+      );
+      addTearDown(() => temporaryDirectory.delete(recursive: true));
+      final macosDirectory = Directory(
+        '${temporaryDirectory.path}/Git Desktop.app/Contents/MacOS',
+      );
+      await macosDirectory.create(recursive: true);
+      final helper = File(
+        '${macosDirectory.path}/${GitAskPassSession.helperFileName}',
+      );
+      final source = File(
+        '${Directory.current.path}/macos/AskPassHelper/main.c',
+      );
+      final compilation = await Process.run('/usr/bin/clang', <String>[
+        '-std=c11',
+        '-O2',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        source.path,
+        '-o',
+        helper.path,
+      ]);
+      expect(compilation.exitCode, 0, reason: compilation.stderr);
+
+      final session = await GitAskPassSession.start(
+        onPrompt: (request) async {
+          expect(request.kind, GitAskPassPromptKind.password);
+          return 'test-only-secret';
+        },
+      );
+      addTearDown(session.close);
+      final result = await Process.run(
+        helper.path,
+        <String>['Password for https://example.test:'],
+        environment: session.environmentForBundledHelper(
+          appExecutablePath: '${macosDirectory.path}/Git Desktop',
+        ),
+        includeParentEnvironment: false,
+      );
+
+      expect(result.exitCode, 0, reason: result.stderr);
+      expect(result.stdout, 'test-only-secret\n');
+      expect(result.stderr, isEmpty);
+      await session.closed;
+      expect(session.status, GitAskPassSessionStatus.completed);
+    },
+    skip: !Platform.isMacOS,
+  );
+
+  test(
     'treats a cancelled prompt as rejection instead of an empty secret',
     () async {
       final session = await GitAskPassSession.start(
