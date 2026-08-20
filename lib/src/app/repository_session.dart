@@ -36,10 +36,19 @@ enum RepositoryOperationOutcome { running, succeeded, cancelled, failed }
 
 /// A workspace tab for a successfully opened repository or linked worktree.
 final class RepositoryTab {
-  const RepositoryTab({required this.path, required this.label});
+  const RepositoryTab({
+    required this.path,
+    required this.label,
+    String? baseLabel,
+  }) : baseLabel = baseLabel ?? label;
 
   final String path;
+
+  /// The current label rendered in the tab strip.
   final String label;
+
+  /// The repository directory name before duplicate-name disambiguation.
+  final String baseLabel;
 }
 
 final class RepositoryOperationRecord {
@@ -358,7 +367,6 @@ final class RepositorySessionController
         !state.openRepositoryTabs.any((tab) => tab.path == repositoryPath)) {
       return;
     }
-    state = state.copyWith(activeRepositoryTabPath: repositoryPath);
     await openRepository(repositoryPath);
   }
 
@@ -387,18 +395,21 @@ final class RepositorySessionController
   ) {
     final labelCounts = <String, int>{};
     for (final tab in tabs) {
-      labelCounts.update(tab.label, (count) => count + 1, ifAbsent: () => 1);
+      labelCounts.update(
+        tab.baseLabel,
+        (count) => count + 1,
+        ifAbsent: () => 1,
+      );
     }
     return List<RepositoryTab>.unmodifiable([
       for (final tab in tabs)
-        if (labelCounts[tab.label] == 1)
-          tab
-        else
-          RepositoryTab(
-            path: tab.path,
-            label:
-                '${path_utils.basename(path_utils.dirname(tab.path))}/${tab.label}',
-          ),
+        RepositoryTab(
+          path: tab.path,
+          baseLabel: tab.baseLabel,
+          label: labelCounts[tab.baseLabel] == 1
+              ? tab.baseLabel
+              : '${path_utils.basename(path_utils.dirname(tab.path))}/${tab.baseLabel}',
+        ),
     ]);
   }
 

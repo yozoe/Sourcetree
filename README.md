@@ -12,7 +12,8 @@ Push。macOS bundle 的用户主动远端操作可使用单次受控 AskPass；�
 远端和系统凭据兼容性仍在验证中。
 
 已打开或成功克隆的仓库会保留在窗口顶部的横向 tab 中；点击 tab 会切回该仓库并重新
-读取 Git 状态。为避免操作归属混淆，Clone、Fetch、Pull 或 Push 运行期间不允许切换 tab。
+读取 Git 状态。读取失败会保留原先激活的 tab。为避免操作归属混淆，Clone、Fetch、Pull
+或 Push 运行期间不允许切换 tab。
 
 ## 运行
 

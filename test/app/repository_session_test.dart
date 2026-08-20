@@ -54,10 +54,11 @@ void main() {
 
       await controller.openRepository(firstRepository.workingDirectory.path);
       await controller.openRepository(secondRepository.workingDirectory.path);
-      final firstTab = container
+      final initialTabs = container
           .read(repositorySessionProvider)
-          .openRepositoryTabs
-          .first;
+          .openRepositoryTabs;
+      final firstTab = initialTabs.first;
+      final initialLabels = initialTabs.map((tab) => tab.label).toList();
 
       await controller.selectRepositoryTab(firstTab.path);
 
@@ -66,6 +67,39 @@ void main() {
       expect(state.activeRepositoryTabPath, firstTab.path);
       expect(state.repository!.commandDirectory, firstTab.path);
       expect(state.openRepositoryTabs, hasLength(2));
+      expect(
+        state.openRepositoryTabs.map((tab) => tab.label).toList(),
+        initialLabels,
+      );
+    },
+  );
+
+  test(
+    'keeps the previously active tab when a selected repository is unavailable',
+    () async {
+      final firstRepository = await GitTestRepository.create();
+      addTearDown(firstRepository.dispose);
+      final secondRepository = await GitTestRepository.create();
+      addTearDown(secondRepository.dispose);
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+
+      await controller.openRepository(firstRepository.workingDirectory.path);
+      await controller.openRepository(secondRepository.workingDirectory.path);
+      final stateBeforeSelection = container.read(repositorySessionProvider);
+      final unavailableTab = stateBeforeSelection.openRepositoryTabs.first;
+
+      await firstRepository.workingDirectory.delete(recursive: true);
+      await controller.selectRepositoryTab(unavailableTab.path);
+
+      final state = container.read(repositorySessionProvider);
+      expect(state.phase, RepositorySessionPhase.error);
+      expect(state.requestedPath, unavailableTab.path);
+      expect(
+        state.activeRepositoryTabPath,
+        stateBeforeSelection.activeRepositoryTabPath,
+      );
     },
   );
 
