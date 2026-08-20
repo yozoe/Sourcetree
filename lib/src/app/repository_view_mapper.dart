@@ -18,7 +18,8 @@ RepositoryOverviewViewData mapRepositoryOverview(RepositorySessionState state) {
       title: '正在读取仓库',
       message: state.requestedPath,
       staleRepository: repository,
-      canCancelOperation: state.isCloneRunning || state.isFetchRunning,
+      canCancelOperation:
+          state.isCloneRunning || state.isFetchRunning || state.isPullRunning,
     ),
     RepositorySessionPhase.ready when repository != null =>
       RepositoryOverviewViewData.ready(repository),
@@ -56,6 +57,11 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
           !state.isFetchRunning)) {
     disabledActions.add(RepositoryAction.fetch);
   }
+  if (branch.upstream == null ||
+      !status.isClean ||
+      (state.phase == RepositorySessionPhase.loading && !state.isPullRunning)) {
+    disabledActions.add(RepositoryAction.pull);
+  }
   if (branch.isUnborn || state.phase == RepositorySessionPhase.loading) {
     disabledActions.add(RepositoryAction.createBranch);
   }
@@ -74,6 +80,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     isDetachedHead: branch.isDetached,
     isRefreshing: state.phase == RepositorySessionPhase.loading,
     isFetching: state.isFetchRunning,
+    isPulling: state.isPullRunning,
     refs: [
       RepositoryRefViewData(
         id: 'workspace',

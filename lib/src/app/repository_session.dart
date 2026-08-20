@@ -59,6 +59,7 @@ final class RepositorySessionState {
     this.isDiffLoading = false,
     this.isCloneRunning = false,
     this.isFetchRunning = false,
+    this.isPullRunning = false,
     this.searchQuery = '',
     this.gitVersion,
     this.message,
@@ -81,6 +82,7 @@ final class RepositorySessionState {
   final bool isDiffLoading;
   final bool isCloneRunning;
   final bool isFetchRunning;
+  final bool isPullRunning;
   final String searchQuery;
   final String? gitVersion;
   final String? message;
@@ -100,6 +102,7 @@ final class RepositorySessionState {
     bool? isDiffLoading,
     bool? isCloneRunning,
     bool? isFetchRunning,
+    bool? isPullRunning,
     String? searchQuery,
     String? gitVersion,
     String? message,
@@ -124,6 +127,7 @@ final class RepositorySessionState {
       isDiffLoading: isDiffLoading ?? this.isDiffLoading,
       isCloneRunning: isCloneRunning ?? this.isCloneRunning,
       isFetchRunning: isFetchRunning ?? this.isFetchRunning,
+      isPullRunning: isPullRunning ?? this.isPullRunning,
       searchQuery: searchQuery ?? this.searchQuery,
       gitVersion: gitVersion ?? this.gitVersion,
       message: clearMessage ? null : message ?? this.message,
@@ -144,6 +148,7 @@ final class RepositorySessionController
   int _diffGeneration = 0;
   GitCancellationToken? _cloneCancellation;
   GitCancellationToken? _fetchCancellation;
+  GitCancellationToken? _pullCancellation;
 
   @override
   RepositorySessionState build() {
@@ -336,6 +341,55 @@ final class RepositorySessionController
   }
 
   void cancelFetch() => _fetchCancellation?.cancel();
+
+  /// Pulls the configured upstream only into a clean working tree and index.
+  Future<bool> pullFastForward() async {
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        status.branch.upstream == null ||
+        !status.isClean ||
+        state.phase == RepositorySessionPhase.loading) {
+      return false;
+    }
+    final cancellation = GitCancellationToken();
+    _pullCancellation = cancellation;
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isPullRunning: true,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.pullFastForward(
+        repository,
+        cancellationToken: cancellation,
+      );
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      // Pull can fetch successfully before rejecting a non-fast-forward update.
+      // Refresh before showing the error so refs and ahead/behind stay accurate.
+      await refresh();
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isPullRunning: false,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      return false;
+    } finally {
+      if (identical(_pullCancellation, cancellation)) {
+        _pullCancellation = null;
+      }
+    }
+  }
+
+  void cancelPull() => _pullCancellation?.cancel();
 
   Future<void> refresh() async {
     final path = state.requestedPath ?? state.repository?.commandDirectory;
@@ -609,6 +663,11 @@ final class RepositorySessionController
           : '无法启动 Git：${error.message}';
     }
     if (error is GitCommandException) {
+      if (error.message.toLowerCase().contains(
+        'not possible to fast-forward',
+      )) {
+        return '无法快速前进拉取：本地与远端分支已分叉。请先处理合并。';
+      }
       return switch (error.kind) {
         GitErrorKind.notARepository => '所选目录不是 Git 仓库。',
         GitErrorKind.permissionDenied => '没有权限访问这个仓库。',

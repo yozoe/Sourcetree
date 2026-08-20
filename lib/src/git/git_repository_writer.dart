@@ -229,6 +229,34 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Fetching origin');
   }
 
+  /// Pulls the configured upstream only when it can fast-forward HEAD.
+  ///
+  /// `--ff-only` deliberately rejects implicit merge commits and leaves merge
+  /// handling to a dedicated workflow.
+  Future<void> pullFastForward(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final result = await runner.run(
+      GitInvocation(
+        arguments: const [
+          '--no-pager',
+          '-c',
+          'submodule.recurse=false',
+          'pull',
+          '--ff-only',
+        ],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 1024 * 1024,
+          stderrBytes: 1024 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Pulling current branch');
+  }
+
   String _requireUtf8Path(GitPath path) {
     if (!path.isValidUtf8) {
       throw const GitException(

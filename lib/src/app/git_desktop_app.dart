@@ -139,6 +139,10 @@ class _RepositoryWorkspaceScreenState
         ref.read(repositorySessionProvider.notifier).fetchOrigin();
       case RepositoryAction.cancelFetch:
         ref.read(repositorySessionProvider.notifier).cancelFetch();
+      case RepositoryAction.pull:
+        _confirmPull();
+      case RepositoryAction.cancelPull:
+        ref.read(repositorySessionProvider.notifier).cancelPull();
       case RepositoryAction.refresh:
       case RepositoryAction.retry:
         ref.read(repositorySessionProvider.notifier).refresh();
@@ -154,6 +158,38 @@ class _RepositoryWorkspaceScreenState
           ),
         );
     }
+  }
+
+  Future<void> _confirmPull() async {
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('快速前进拉取'),
+        content: const Text('将从当前分支的上游拉取更新。仅允许快速前进，不会自动创建合并提交。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(context).pop(true),
+            icon: const Icon(Icons.south),
+            label: const Text('拉取'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+    final pulled = await ref
+        .read(repositorySessionProvider.notifier)
+        .pullFastForward();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(pulled ? '已快速前进拉取。' : '未拉取，请查看仓库状态和错误信息。'),
+        duration: const Duration(seconds: 3),
+      ),
+    );
   }
 
   Future<void> _showCommitDialog() async {

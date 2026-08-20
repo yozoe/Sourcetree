@@ -10,6 +10,7 @@ enum RepositoryAction {
   cloneRepository,
   cancelClone,
   cancelFetch,
+  cancelPull,
   initializeRepository,
   fetch,
   pull,
@@ -101,6 +102,7 @@ final class RepositoryViewData {
     this.isDetachedHead = false,
     this.isRefreshing = false,
     this.isFetching = false,
+    this.isPulling = false,
     this.refs = const [],
     this.commits = const [],
     this.changes = const [],
@@ -121,6 +123,7 @@ final class RepositoryViewData {
   final bool isDetachedHead;
   final bool isRefreshing;
   final bool isFetching;
+  final bool isPulling;
   final List<RepositoryRefViewData> refs;
   final List<CommitViewData> commits;
   final List<RepositoryChangeViewData> changes;

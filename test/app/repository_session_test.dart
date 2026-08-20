@@ -214,4 +214,78 @@ void main() {
     expect(container.read(repositorySessionProvider).hasOriginRemote, isFalse);
     expect(await controller.fetchOrigin(), isFalse);
   });
+
+  test(
+    'fast-forward pulls a configured upstream into a clean work tree',
+    () async {
+      final source = await GitTestRepository.create();
+      addTearDown(source.dispose);
+      await source.writeFile('README.md', '# Git Desktop\n');
+      await source.commit('Initial commit');
+      final origin = await source.createBareOrigin();
+      await source.runGit(['push', 'origin', 'main']);
+      final directory = await Directory.systemTemp.createTemp(
+        'git-desktop-pull-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      expect(
+        await controller.cloneRepository(
+          remoteUrl: origin.path,
+          directoryPath: directory.path,
+        ),
+        isTrue,
+      );
+      await source.writeFile('CHANGELOG.md', '# Changes\n');
+      await source.commit('Add changelog');
+      await source.runGit(['push', 'origin', 'main']);
+
+      expect(await controller.pullFastForward(), isTrue);
+      expect(
+        container.read(repositorySessionProvider).commits.first.subject,
+        'Add changelog',
+      );
+      expect(
+        await File(
+          '${directory.path}${Platform.pathSeparator}CHANGELOG.md',
+        ).exists(),
+        isTrue,
+      );
+    },
+  );
+
+  test('refuses pull while the work tree has uncommitted changes', () async {
+    final source = await GitTestRepository.create();
+    addTearDown(source.dispose);
+    await source.writeFile('README.md', '# Git Desktop\n');
+    await source.commit('Initial commit');
+    final origin = await source.createBareOrigin();
+    await source.runGit(['push', 'origin', 'main']);
+    final directory = await Directory.systemTemp.createTemp(
+      'git-desktop-pull-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    expect(
+      await controller.cloneRepository(
+        remoteUrl: origin.path,
+        directoryPath: directory.path,
+      ),
+      isTrue,
+    );
+    await File(
+      '${directory.path}${Platform.pathSeparator}local.txt',
+    ).writeAsString('keep\n');
+    await controller.refresh();
+
+    expect(await controller.pullFastForward(), isFalse);
+    expect(
+      container.read(repositorySessionProvider).phase,
+      RepositorySessionPhase.ready,
+    );
+  });
 }

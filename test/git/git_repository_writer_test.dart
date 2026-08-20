@@ -282,4 +282,99 @@ void main() {
       throwsA(isA<GitCancelledException>()),
     );
   });
+
+  test('fast-forward pulls origin into a clean checked out branch', () async {
+    await fixture.writeFile('README.md', '# Git Desktop\n');
+    await fixture.commit('Initial commit');
+    final origin = await fixture.createBareOrigin();
+    await fixture.runGit(['push', 'origin', 'main']);
+    final directory = await Directory.systemTemp.createTemp(
+      'git-desktop-pull-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    await writer.cloneRepository(
+      remoteUrl: origin.path,
+      directoryPath: directory.path,
+    );
+    await fixture.writeFile('CHANGELOG.md', '# Changes\n');
+    final sourceHead = await fixture.commit('Add changelog');
+    await fixture.runGit(['push', 'origin', 'main']);
+    final repository = (await inspector.inspect(directory.path))!;
+
+    await writer.pullFastForward(repository);
+
+    final head = await writer.runner.run(
+      GitInvocation(
+        arguments: const ['rev-parse', 'HEAD'],
+        workingDirectory: directory.path,
+      ),
+    );
+    expect(head.stdoutText.trim(), sourceHead);
+    expect(
+      await File(
+        '${directory.path}${Platform.pathSeparator}CHANGELOG.md',
+      ).exists(),
+      isTrue,
+    );
+    expect((await reader.readStatus(repository)).isClean, isTrue);
+  });
+
+  test('rejects a diverged pull instead of creating a merge commit', () async {
+    await fixture.writeFile('README.md', '# Git Desktop\n');
+    await fixture.commit('Initial commit');
+    final origin = await fixture.createBareOrigin();
+    await fixture.runGit(['push', 'origin', 'main']);
+    final directory = await Directory.systemTemp.createTemp(
+      'git-desktop-pull-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    await writer.cloneRepository(
+      remoteUrl: origin.path,
+      directoryPath: directory.path,
+    );
+    final repository = (await inspector.inspect(directory.path))!;
+    for (final arguments in const [
+      ['config', 'user.name', 'Git Desktop Test'],
+      ['config', 'user.email', 'git-desktop-test@example.invalid'],
+    ]) {
+      final result = await writer.runner.run(
+        GitInvocation(arguments: arguments, workingDirectory: directory.path),
+      );
+      result.throwIfFailed(operation: 'Configuring cloned test repository');
+    }
+    await File(
+      '${directory.path}${Platform.pathSeparator}local.txt',
+    ).writeAsString('local\n');
+    await writer.stagePath(repository, GitPath.fromString('local.txt'));
+    await writer.createCommit(repository, message: 'Local commit');
+    await fixture.writeFile('remote.txt', 'remote\n');
+    await fixture.commit('Remote commit');
+    await fixture.runGit(['push', 'origin', 'main']);
+
+    await expectLater(
+      writer.pullFastForward(repository),
+      throwsA(isA<GitCommandException>()),
+    );
+    expect(
+      (await writer.runner.run(
+        GitInvocation(
+          arguments: const ['rev-list', '--count', 'HEAD'],
+          workingDirectory: directory.path,
+        ),
+      )).stdoutText.trim(),
+      '2',
+    );
+  });
+
+  test('honors a cancelled pull token before starting Git', () async {
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+    final cancellation = GitCancellationToken()..cancel();
+
+    await expectLater(
+      writer.pullFastForward(repository, cancellationToken: cancellation),
+      throwsA(isA<GitCancelledException>()),
+    );
+  });
 }

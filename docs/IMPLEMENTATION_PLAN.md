@@ -254,6 +254,20 @@ detached HEAD、SHA-1/SHA-256 等边界。
 
 ### P1：MVP 垂直闭环
 
+当前进度（2026-08-20）：进行中。
+
+已完成并由真实 Git fixture 覆盖：
+
+- 单仓库打开、空目录初始化和克隆到空目录。
+- 工作区状态、整文件 stage/unstage、Unified Diff、基础历史 DAG 和提交详情。
+- 安全 Commit（stdin 传递信息且不跳过 hooks）。
+- 创建本地分支、分支列表，以及仅在干净工作区的安全分支切换。
+- Fetch `origin`（不修改工作区，支持取消）。
+- Pull `--ff-only`（仅 clean worktree/index、配置 upstream 时启用，支持取消；拒绝隐式 merge commit）。
+
+待完成：普通 Push（明确目标与 ahead 范围，禁止默认 force）、操作日志/进度面板，
+以及更完整的认证交互。
+
 - 单仓库打开、克隆、初始化。
 - 工作区状态、整文件 stage/unstage。
 - Unified Diff。
@@ -376,11 +390,7 @@ CRLF、长路径、大小写、symlink、可执行位、窗口和系统菜单差
 
 ## 14. 下一步
 
-用户确认本规划后，进入 P0：
-
-1. 初始化 Flutter macOS 项目，不添加未经验证的业务依赖。
-2. 建立 `GitRunner`、领域模型和临时 Git 仓库测试工厂。
-3. 完成仓库识别与 `status --porcelain=v2 -z` parser。
-4. 做第一个只读 UI 垂直切片：打开仓库、查看状态、历史和 Diff。
-5. 通过真实 Git fixture、`flutter analyze`、单元测试和 macOS 手动检查后，
-   再开始 stage/commit 等写操作。
+1. 实现安全 Push：先显示远端、分支和 ahead 提交数，不提供默认 force push。
+2. 建立统一操作日志和进度面板，覆盖 Clone、Fetch、Pull、Push 的运行、取消、失败与恢复。
+3. 补充 Push 取消后的远端状态核验，并评估一次性 AskPass IPC。
+4. 完成“克隆 → 修改 → 暂存 → 提交 → 创建分支 → 推送”的 macOS E2E 冒烟验证。

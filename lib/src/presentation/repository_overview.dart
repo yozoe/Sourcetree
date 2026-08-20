@@ -428,12 +428,17 @@ class _RepositoryToolbar extends StatelessWidget {
                           isBusy: repository.isFetching,
                         ),
                         _ToolbarAction(
-                          action: RepositoryAction.pull,
-                          icon: Icons.south,
-                          label: '拉取',
+                          action: repository.isPulling
+                              ? RepositoryAction.cancelPull
+                              : RepositoryAction.pull,
+                          icon: repository.isPulling
+                              ? Icons.cancel_outlined
+                              : Icons.south,
+                          label: repository.isPulling ? '取消拉取' : '拉取',
                           showLabel: showLabels,
                           repository: repository,
                           onAction: callbacks.onAction,
+                          isBusy: repository.isPulling,
                         ),
                         _ToolbarAction(
                           action: RepositoryAction.push,
