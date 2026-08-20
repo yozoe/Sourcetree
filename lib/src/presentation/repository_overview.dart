@@ -796,6 +796,9 @@ class _RefsNavigation extends StatelessWidget {
     final canPush = !isBusy && !disabledActions.contains(RepositoryAction.push);
     final canSwitch = repository.isWorkingTreeClean && !isBusy;
     final canMerge = !disabledActions.contains(RepositoryAction.mergeBranch);
+    final canCreate =
+        !isBusy && !disabledActions.contains(RepositoryAction.createBranch);
+    final canManageLocalBranch = repository.isWorkingTreeClean && !isBusy;
     return switch (ref.kind) {
       RepositoryRefKind.workspace => [
         _RefContextMenuItem(
@@ -832,6 +835,19 @@ class _RefsNavigation extends StatelessWidget {
         ),
         const _RefContextMenuItem.divider(),
         _RefContextMenuItem(
+          action: RepositoryRefContextAction.createBranchFromReference,
+          label: '从此分支创建新分支',
+          icon: Icons.call_split,
+          enabled: canCreate,
+        ),
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.renameLocalBranch,
+          label: '重命名此分支',
+          icon: Icons.drive_file_rename_outline,
+          enabled: canManageLocalBranch,
+        ),
+        const _RefContextMenuItem.divider(),
+        _RefContextMenuItem(
           action: RepositoryRefContextAction.refresh,
           label: '刷新仓库',
           icon: Icons.refresh,
@@ -839,6 +855,25 @@ class _RefsNavigation extends StatelessWidget {
         ),
       ],
       RepositoryRefKind.localBranch => [
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.createBranchFromReference,
+          label: '从此分支创建新分支',
+          icon: Icons.call_split,
+          enabled: canCreate,
+        ),
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.renameLocalBranch,
+          label: '重命名分支',
+          icon: Icons.drive_file_rename_outline,
+          enabled: canManageLocalBranch,
+        ),
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.deleteLocalBranch,
+          label: '删除分支',
+          icon: Icons.delete_outline,
+          enabled: canManageLocalBranch,
+        ),
+        const _RefContextMenuItem.divider(),
         _RefContextMenuItem(
           action: RepositoryRefContextAction.checkout,
           label: '切换到此分支',

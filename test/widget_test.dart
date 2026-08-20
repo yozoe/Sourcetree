@@ -217,6 +217,9 @@ void main() {
 
     expect(find.text('切换到此分支'), findsOneWidget);
     expect(find.text('合并到当前分支'), findsOneWidget);
+    expect(find.text('从此分支创建新分支'), findsOneWidget);
+    expect(find.text('重命名分支'), findsOneWidget);
+    expect(find.text('删除分支'), findsOneWidget);
 
     await tester.tap(find.text('合并到当前分支'));
     await tester.pumpAndSettle();

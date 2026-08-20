@@ -1300,6 +1300,53 @@ final class RepositorySessionController
     }
   }
 
+  /// 中文：以已加载的本地分支为起点创建另一个本地分支，不切换当前工作区。
+  ///
+  /// English: Creates a local branch from an already loaded local branch
+  /// without switching the current work tree.
+  Future<bool> createLocalBranchFromLocalBranch(
+    String name,
+    String sourceName,
+  ) async {
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        status.branch.isUnborn ||
+        state.phase == RepositorySessionPhase.loading ||
+        !state.localBranches.any((branch) => branch.name == sourceName)) {
+      return false;
+    }
+    if (name.trim().isEmpty || sourceName.trim().isEmpty) {
+      throw ArgumentError('A branch name and source branch are required.');
+    }
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.createLocalBranchFromLocalBranch(
+        repository,
+        name: name,
+        sourceName: sourceName,
+      );
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
   /// Switches only when the working tree and index are clean.
   /// 中文：切换到目标状态。
   /// English: Switches to the target state.
@@ -1365,6 +1412,93 @@ final class RepositorySessionController
     );
     try {
       await _writer.switchToRemoteBranch(repository, remoteName: remoteName);
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
+  /// 中文：仅在工作区干净且分支仍被加载时重命名本地分支，不允许覆盖已有分支。
+  ///
+  /// English: Renames a loaded local branch only with a clean work tree and
+  /// never allows Git to overwrite an existing branch.
+  Future<bool> renameLocalBranch(String oldName, String newName) async {
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        !status.isClean ||
+        state.phase == RepositorySessionPhase.loading ||
+        !state.localBranches.any((branch) => branch.name == oldName)) {
+      return false;
+    }
+    if (oldName.trim().isEmpty || newName.trim().isEmpty) {
+      throw ArgumentError('Both the old and new branch names are required.');
+    }
+    if (oldName == newName) return true;
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.renameLocalBranch(
+        repository,
+        oldName: oldName,
+        newName: newName,
+      );
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
+  /// 中文：仅删除已加载且非当前的本地分支；Git 会拒绝删除尚未合并的提交。
+  ///
+  /// English: Deletes only a loaded, non-current local branch; Git refuses to
+  /// delete a branch whose commits are not safely merged.
+  Future<bool> deleteMergedLocalBranch(String name) async {
+    final repository = state.repository;
+    final status = state.status;
+    final currentBranch = status?.branch.head;
+    if (repository == null ||
+        status == null ||
+        !status.isClean ||
+        state.phase == RepositorySessionPhase.loading ||
+        name == currentBranch ||
+        !state.localBranches.any((branch) => branch.name == name)) {
+      return false;
+    }
+    if (name.trim().isEmpty) {
+      throw ArgumentError.value(name, 'name', 'Branch name is empty.');
+    }
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.deleteMergedLocalBranch(repository, name: name);
       await refresh();
       return state.phase == RepositorySessionPhase.ready;
     } on Object catch (error, stackTrace) {

@@ -410,6 +410,94 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
+  /// 中文：显示分支命名对话框，并以指定本地分支的提交创建新分支而不切换工作区。
+  ///
+  /// English: Shows the branch naming dialog and creates a branch at the
+  /// selected local branch without switching the work tree.
+  Future<void> _showCreateBranchFromReferenceDialog(String sourceName) async {
+    final name = await showDialog<String>(
+      context: context,
+      builder: (BuildContext context) =>
+          _CreateBranchDialog(sourceBranch: sourceName),
+    );
+    if (name == null || !mounted) return;
+
+    final created = await ref
+        .read(repositorySessionProvider.notifier)
+        .createLocalBranchFromLocalBranch(name, sourceName);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          created ? '已从 $sourceName 创建本地分支 $name。' : '分支未创建，请查看仓库错误信息。',
+        ),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  /// 中文：请求新名称并安全重命名指定本地分支。
+  ///
+  /// English: Requests a new name and safely renames the specified local
+  /// branch.
+  Future<void> _showRenameLocalBranchDialog(String oldName) async {
+    final newName = await showDialog<String>(
+      context: context,
+      builder: (BuildContext context) => _RenameBranchDialog(oldName: oldName),
+    );
+    if (newName == null || !mounted) return;
+
+    final renamed = await ref
+        .read(repositorySessionProvider.notifier)
+        .renameLocalBranch(oldName, newName);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          renamed ? '已将分支 $oldName 重命名为 $newName。' : '分支未重命名，请查看仓库错误信息。',
+        ),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  /// 中文：确认后仅以 Git 的安全删除模式删除一个非当前本地分支。
+  ///
+  /// English: Confirms deletion of a non-current local branch using only Git's
+  /// safe deletion mode.
+  Future<void> _confirmDeleteLocalBranch(String branchName) async {
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('删除本地分支'),
+        content: Text('删除 $branchName？仅删除已合并的分支；未合并提交会被 Git 拒绝，且不会强制删除。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(context).pop(true),
+            icon: const Icon(Icons.delete_outline),
+            label: const Text('安全删除'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+
+    final deleted = await ref
+        .read(repositorySessionProvider.notifier)
+        .deleteMergedLocalBranch(branchName);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(deleted ? '已删除本地分支 $branchName。' : '分支未删除；它可能包含尚未合并的提交。'),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
   /// 中文：列出除当前分支外的本地分支，供用户选择合并到当前分支的来源。
   ///
   /// English: Lists local branches other than the current one so the user can
@@ -546,6 +634,19 @@ class _RepositoryWorkspaceScreenState
             .head;
         if (currentBranch != null) {
           unawaited(_confirmMergeBranch(currentBranch, reference.label));
+        }
+      case RepositoryRefContextAction.createBranchFromReference:
+        if (reference.kind == RepositoryRefKind.localBranch) {
+          unawaited(_showCreateBranchFromReferenceDialog(reference.label));
+        }
+      case RepositoryRefContextAction.renameLocalBranch:
+        if (reference.kind == RepositoryRefKind.localBranch) {
+          unawaited(_showRenameLocalBranchDialog(reference.label));
+        }
+      case RepositoryRefContextAction.deleteLocalBranch:
+        if (reference.kind == RepositoryRefKind.localBranch &&
+            !reference.isCurrent) {
+          unawaited(_confirmDeleteLocalBranch(reference.label));
         }
     }
   }
@@ -819,7 +920,9 @@ class _CloneDialogState extends State<_CloneDialog> {
 }
 
 class _CreateBranchDialog extends StatefulWidget {
-  const _CreateBranchDialog();
+  const _CreateBranchDialog({this.sourceBranch});
+
+  final String? sourceBranch;
 
   /// 中文：创建关联的状态对象。
   /// English: Creates the associated state object.
@@ -852,8 +955,9 @@ class _CreateBranchDialogState extends State<_CreateBranchDialog> {
   /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
+    final sourceBranch = widget.sourceBranch;
     return AlertDialog(
-      title: const Text('创建本地分支'),
+      title: Text(sourceBranch == null ? '创建本地分支' : '从分支创建本地分支'),
       content: ConstrainedBox(
         constraints: const BoxConstraints(maxWidth: 420),
         child: Form(
@@ -861,11 +965,13 @@ class _CreateBranchDialogState extends State<_CreateBranchDialog> {
           child: TextFormField(
             controller: _nameController,
             autofocus: true,
-            decoration: const InputDecoration(
+            decoration: InputDecoration(
               border: OutlineInputBorder(),
               hintText: '例如 feature/new-workflow',
               labelText: '分支名称',
-              helperText: '分支将从当前 HEAD 创建，不会切换工作区。',
+              helperText: sourceBranch == null
+                  ? '分支将从当前 HEAD 创建，不会切换工作区。'
+                  : '分支将从 $sourceBranch 创建，不会切换工作区。',
             ),
             validator: (String? value) {
               if (value == null || value.trim().isEmpty) {
@@ -886,6 +992,81 @@ class _CreateBranchDialogState extends State<_CreateBranchDialog> {
           onPressed: _submit,
           icon: const Icon(Icons.call_split),
           label: const Text('创建'),
+        ),
+      ],
+    );
+  }
+}
+
+class _RenameBranchDialog extends StatefulWidget {
+  const _RenameBranchDialog({required this.oldName});
+
+  final String oldName;
+
+  /// 中文：创建关联的状态对象。
+  /// English: Creates the associated state object.
+  @override
+  State<_RenameBranchDialog> createState() => _RenameBranchDialogState();
+}
+
+class _RenameBranchDialogState extends State<_RenameBranchDialog> {
+  final _formKey = GlobalKey<FormState>();
+  late final TextEditingController _nameController = TextEditingController(
+    text: widget.oldName,
+  );
+
+  /// 中文：释放当前对象持有的资源。
+  /// English: Releases resources held by this object.
+  @override
+  void dispose() {
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  /// 中文：验证新分支名称后关闭对话框。
+  /// English: Validates the new branch name and closes the dialog.
+  void _submit() {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    Navigator.of(context).pop(_nameController.text);
+  }
+
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('重命名本地分支'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 420),
+        child: Form(
+          key: _formKey,
+          child: TextFormField(
+            controller: _nameController,
+            autofocus: true,
+            decoration: const InputDecoration(
+              border: OutlineInputBorder(),
+              labelText: '新分支名称',
+              helperText: '不会覆盖已有分支，Git 会校验名称。',
+            ),
+            validator: (String? value) {
+              if (value == null || value.trim().isEmpty) {
+                return '请输入分支名称。';
+              }
+              return null;
+            },
+            onFieldSubmitted: (_) => _submit(),
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton.icon(
+          onPressed: _submit,
+          icon: const Icon(Icons.drive_file_rename_outline),
+          label: const Text('重命名'),
         ),
       ],
     );

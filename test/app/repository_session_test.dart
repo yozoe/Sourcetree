@@ -268,6 +268,39 @@ void main() {
     ]);
   });
 
+  test('manages loaded local branches without forcing deletion', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', '# Git Desktop\n');
+    await repository.commit('Initial commit');
+    await repository.runGit(['branch', 'feature/source']);
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(
+      await controller.createLocalBranchFromLocalBranch(
+        'feature/copied',
+        'feature/source',
+      ),
+      isTrue,
+    );
+    expect(
+      await controller.renameLocalBranch('feature/copied', 'feature/renamed'),
+      isTrue,
+    );
+    expect(await controller.deleteMergedLocalBranch('feature/renamed'), isTrue);
+    expect(
+      container
+          .read(repositorySessionProvider)
+          .localBranches
+          .map((branch) => branch.name),
+      isNot(contains('feature/renamed')),
+    );
+  });
+
   test('switches branches only while the repository is clean', () async {
     final repository = await GitTestRepository.create();
     addTearDown(repository.dispose);

@@ -34,6 +34,9 @@ enum RepositoryRefContextAction {
   refresh,
   checkout,
   mergeIntoCurrent,
+  createBranchFromReference,
+  renameLocalBranch,
+  deleteLocalBranch,
 }
 
 enum RepositoryChangeKind {

@@ -191,6 +191,98 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Checking out remote branch');
   }
 
+  /// 中文：以指定本地分支的提交为起点创建新分支，不切换工作区也不覆盖已有引用。
+  ///
+  /// English: Creates a local branch at a named local branch without switching
+  /// the work tree or overwriting an existing ref.
+  Future<void> createLocalBranchFromLocalBranch(
+    GitRepository repository, {
+    required String name,
+    required String sourceName,
+  }) async {
+    final normalizedName = name.trim();
+    final normalizedSource = sourceName.trim();
+    if (normalizedName.isEmpty || normalizedSource.isEmpty) {
+      throw ArgumentError('A branch name and source branch are required.');
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          'branch',
+          '--',
+          normalizedName,
+          'refs/heads/$normalizedSource',
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Creating local branch from local branch');
+  }
+
+  /// 中文：重命名本地分支，不会覆盖已有引用或执行强制重命名。
+  ///
+  /// English: Renames a local branch without overwriting an existing ref or
+  /// using Git's force-rename mode.
+  Future<void> renameLocalBranch(
+    GitRepository repository, {
+    required String oldName,
+    required String newName,
+  }) async {
+    final normalizedOldName = oldName.trim();
+    final normalizedNewName = newName.trim();
+    if (normalizedOldName.isEmpty || normalizedNewName.isEmpty) {
+      throw ArgumentError('Both the old and new branch names are required.');
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          'branch',
+          '-m',
+          '--',
+          normalizedOldName,
+          normalizedNewName,
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Renaming local branch');
+  }
+
+  /// 中文：以 Git 的安全删除模式删除已合并的本地分支，绝不强制删除未合并提交。
+  ///
+  /// English: Deletes a merged local branch with Git's safe deletion mode and
+  /// never force-deletes unmerged commits.
+  Future<void> deleteMergedLocalBranch(
+    GitRepository repository, {
+    required String name,
+  }) async {
+    final normalizedName = name.trim();
+    if (normalizedName.isEmpty) {
+      throw ArgumentError.value(name, 'name', 'Branch name is empty.');
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: ['--no-pager', 'branch', '-d', '--', normalizedName],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Deleting merged local branch');
+  }
+
   /// 中文：将指定本地分支合并到当前分支；有新增提交时使用 `--no-ff` 保留显式合并记录，
   /// 并允许 Git hooks 运行。
   ///

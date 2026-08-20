@@ -162,6 +162,106 @@ void main() {
     );
   });
 
+  test('creates a local branch from the selected local branch ref', () async {
+    await fixture.writeFile('README.md', 'base\n');
+    await fixture.commit('Initial commit');
+    await fixture.runGit(['branch', 'feature/source']);
+    await fixture.runGit(['switch', 'feature/source']);
+    await fixture.writeFile('feature.txt', 'feature\n');
+    final sourceCommit = await fixture.commit('Feature commit');
+    await fixture.runGit(['switch', 'main']);
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await writer.createLocalBranchFromLocalBranch(
+      repository,
+      name: 'feature/copied',
+      sourceName: 'feature/source',
+    );
+
+    expect(
+      (await fixture.runGit([
+        'rev-parse',
+        'refs/heads/feature/copied',
+      ])).stdout.toString().trim(),
+      sourceCommit,
+    );
+  });
+
+  test('renames a local branch without overwriting another ref', () async {
+    await fixture.writeFile('README.md', 'base\n');
+    await fixture.commit('Initial commit');
+    await fixture.runGit(['branch', 'feature/old-name']);
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await writer.renameLocalBranch(
+      repository,
+      oldName: 'feature/old-name',
+      newName: 'feature/new-name',
+    );
+
+    await fixture.runGit([
+      'show-ref',
+      '--verify',
+      '--quiet',
+      'refs/heads/feature/new-name',
+    ]);
+    final oldRef = await fixture.runGit([
+      'show-ref',
+      '--verify',
+      '--quiet',
+      'refs/heads/feature/old-name',
+    ], throwOnError: false);
+    expect(oldRef.exitCode, isNot(0));
+  });
+
+  test('safely deletes only a merged local branch', () async {
+    await fixture.writeFile('README.md', 'base\n');
+    await fixture.commit('Initial commit');
+    await fixture.runGit(['branch', 'feature/merged']);
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await writer.deleteMergedLocalBranch(repository, name: 'feature/merged');
+
+    final deletedRef = await fixture.runGit([
+      'show-ref',
+      '--verify',
+      '--quiet',
+      'refs/heads/feature/merged',
+    ], throwOnError: false);
+    expect(deletedRef.exitCode, isNot(0));
+  });
+
+  test('refuses to delete a local branch with unmerged commits', () async {
+    await fixture.writeFile('README.md', 'base\n');
+    await fixture.commit('Initial commit');
+    await fixture.runGit(['branch', 'feature/unmerged']);
+    await fixture.runGit(['switch', 'feature/unmerged']);
+    await fixture.writeFile('feature.txt', 'unmerged\n');
+    await fixture.commit('Unmerged feature commit');
+    await fixture.runGit(['switch', 'main']);
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await expectLater(
+      writer.deleteMergedLocalBranch(repository, name: 'feature/unmerged'),
+      throwsA(isA<GitCommandException>()),
+    );
+
+    await fixture.runGit([
+      'show-ref',
+      '--verify',
+      '--quiet',
+      'refs/heads/feature/unmerged',
+    ]);
+  });
+
   test('switches to an existing local branch without creating a ref', () async {
     await fixture.writeFile('README.md', '# Git Desktop\n');
     await fixture.commit('Initial commit');
