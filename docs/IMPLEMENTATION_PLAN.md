@@ -279,7 +279,7 @@ detached HEAD、SHA-1/SHA-256 等边界。
   尚未接入 GitRunner、认证 UI 或真实 Git 操作，且发布前仍需 native UID owner 校验；
   同一份 C helper 已通过与 Flutter session 的进程级 socket 往返测试；helper 会验证
   socket owner/权限及 server peer UID；native IPC broker 已打包并可验证 helper peer UID，
-  Flutter session 切换尚待实现；
+  正式 macOS app bundle 的 Flutter session 已切换至该 broker；
   nonce 重放、第二连接、畸形 UTF-8 与错误 nonce helper 均已有负向测试；认证 UI 已独立
   实现为脱敏、无自动填充的受控弹窗，尚未接入任何 Git 操作。
 

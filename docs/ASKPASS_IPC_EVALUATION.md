@@ -50,8 +50,9 @@ helper 在连接前通过 `lstat` 要求 endpoint 为当前有效 UID 拥有的 
 连接后用 macOS `getpeereid` 再确认服务端 peer UID 与当前有效 UID 相同；非 socket 或
 宽松权限的路径会在发送 prompt 前失败。Flutter 标准库仍不能在 server 端验证 helper
 client UID。已新增并打包 `git-desktop-askpass-broker`，它会在 accept 后以
-`getpeereid` 验证 helper client UID；Flutter session 尚未切换到该 broker，故发布前的
-完整 peer UID 验证项尚未完成。
+`getpeereid` 验证 helper client UID；正式 macOS app bundle 的 Flutter session 现已使用
+该 broker，开发/测试中的非 bundle runtime 继续使用 Dart fallback。完整链路已有
+Flutter session、broker 与 helper 的进程级测试。
 
 session 只可根据 `Platform.resolvedExecutable` 的 `*.app/Contents/MacOS/` 固定 bundle
 布局推导 helper 路径，并生成 `GIT_ASKPASS`、`GIT_TERMINAL_PROMPT=0`、socket 与 nonce
@@ -91,7 +92,7 @@ fixture 路径验证 IPC，并以 `@visibleForTesting` 标识测试入口；该�
 - [x] macOS helper 的 Debug bundle 路径、C 编译和签名完整性验证。
 - [ ] Release/Developer ID 签名与 Gatekeeper 行为验证。
 - [x] nonce 重放、第二连接、畸形 UTF-8 与错误 nonce helper 的负向测试。
-- [ ] 错误 UID 与签名 helper 欺骗测试（需要 native server peer UID 验证与发布签名环境）。
+- [ ] 错误 UID 与签名 helper 欺骗测试（peer UID 已验证；仍需要发布签名环境）。
 - [x] 非秘密 IPC 请求的未知字段、非法 nonce 与超长 prompt 校验。
 - [x] 一次性 Flutter Unix socket 的 nonce、单连接、超时、拒绝和清理测试。
 - [x] macOS helper 与 Flutter session 的进程级 socket 往返测试（测试临时编译同一 C 源码）。

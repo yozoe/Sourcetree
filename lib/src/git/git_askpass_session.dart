@@ -34,11 +34,13 @@ final class GitAskPassSession {
     required this.nonce,
     required this.onPrompt,
     required Directory socketDirectory,
-    required ServerSocket server,
+    required ServerSocket? server,
+    Process? broker,
     required Duration timeout,
     required String appExecutablePath,
   }) : _socketDirectory = socketDirectory,
        _server = server,
+       _broker = broker,
        _timeout = timeout,
        _appExecutablePath = appExecutablePath;
 
@@ -57,6 +59,7 @@ final class GitAskPassSession {
     onPrompt: onPrompt,
     timeout: timeout,
     appExecutablePath: Platform.resolvedExecutable,
+    preferNativeBroker: true,
   );
 
   /// Creates a session with a fixture app executable path.
@@ -68,16 +71,19 @@ final class GitAskPassSession {
     required GitAskPassPromptHandler onPrompt,
     required String appExecutablePath,
     Duration timeout = defaultTimeout,
+    bool useNativeBroker = false,
   }) => _start(
     onPrompt: onPrompt,
     timeout: timeout,
     appExecutablePath: appExecutablePath,
+    preferNativeBroker: useNativeBroker,
   );
 
   static Future<GitAskPassSession> _start({
     required GitAskPassPromptHandler onPrompt,
     required Duration timeout,
     required String appExecutablePath,
+    required bool preferNativeBroker,
   }) async {
     if (Platform.isWindows) {
       throw UnsupportedError(
@@ -98,6 +104,17 @@ final class GitAskPassSession {
     }
 
     try {
+      if (preferNativeBroker && _isMacAppBundle(appExecutablePath)) {
+        final nonce = _newNonce();
+        return await _startWithNativeBroker(
+          onPrompt: onPrompt,
+          timeout: timeout,
+          appExecutablePath: appExecutablePath,
+          socketDirectory: socketDirectory,
+          socketPath: socketPath,
+          nonce: nonce,
+        );
+      }
       final server = await ServerSocket.bind(
         InternetAddress(socketPath, type: InternetAddressType.unix),
         0,
@@ -126,13 +143,15 @@ final class GitAskPassSession {
   final String nonce;
   final GitAskPassPromptHandler onPrompt;
   final Directory _socketDirectory;
-  final ServerSocket _server;
+  final ServerSocket? _server;
+  final Process? _broker;
   final Duration _timeout;
   final String _appExecutablePath;
   final Completer<void> _closedCompleter = Completer<void>();
   final Set<Socket> _clients = <Socket>{};
 
   StreamSubscription<Socket>? _serverSubscription;
+  StreamSubscription<String>? _brokerOutputSubscription;
   Timer? _timeoutTimer;
   Future<void>? _closeFuture;
   GitAskPassSessionStatus _status =
@@ -166,10 +185,11 @@ final class GitAskPassSession {
   Future<void> close() => _closeWithStatus(GitAskPassSessionStatus.closed);
 
   void _startListening() {
+    if (_broker != null) return;
     _timeoutTimer = Timer(_timeout, () {
       unawaited(_closeWithStatus(GitAskPassSessionStatus.timedOut));
     });
-    _serverSubscription = _server.listen(
+    _serverSubscription = _server!.listen(
       (client) => unawaited(_handleClient(client)),
       onError: (Object _) =>
           unawaited(_closeWithStatus(GitAskPassSessionStatus.rejected)),
@@ -185,7 +205,7 @@ final class GitAskPassSession {
     _requestAccepted = true;
     _clients.add(client);
     _status = GitAskPassSessionStatus.waitingForResponse;
-    await _server.close();
+    await _server?.close();
 
     try {
       final payload = await _readRequestLine(client);
@@ -217,13 +237,38 @@ final class GitAskPassSession {
     }
   }
 
+  Future<void> _handleBrokerRequest(String payload) async {
+    if (_closeFuture != null || _requestAccepted) return;
+    _requestAccepted = true;
+    _status = GitAskPassSessionStatus.waitingForResponse;
+    try {
+      final request = GitAskPassRequest.decode(payload);
+      if (request.nonce != nonce) {
+        await _closeWithStatus(GitAskPassSessionStatus.rejected);
+        return;
+      }
+      final secret = await onPrompt(request);
+      if (_closeFuture != null || secret == null) {
+        await _closeWithStatus(GitAskPassSessionStatus.rejected);
+        return;
+      }
+      final response = _encodeSecretResponse(secret);
+      _broker!.stdin.add(utf8.encode(response));
+      await _broker.stdin.flush();
+      await _broker.exitCode;
+      await _closeWithStatus(GitAskPassSessionStatus.completed);
+    } on Object {
+      await _closeWithStatus(GitAskPassSessionStatus.rejected);
+    }
+  }
+
   Future<void> _sendSecret(Socket client, String secret) async {
     final secretBytes = utf8.encode(secret);
     if (secretBytes.length > maxSecretBytes ||
         _containsControlCharacter(secret)) {
       throw const FormatException('AskPass secret is invalid.');
     }
-    final response = '${jsonEncode(<String, String>{'secret': secret})}\n';
+    final response = _encodeSecretResponse(secret);
     final responseBytes = utf8.encode(response);
     // The current helper reserves 16 KiB for the complete JSON line, not only
     // the secret. Reject instead of truncating a credential.
@@ -232,6 +277,19 @@ final class GitAskPassSession {
     }
     client.add(responseBytes);
     await client.flush();
+  }
+
+  String _encodeSecretResponse(String secret) {
+    final secretBytes = utf8.encode(secret);
+    if (secretBytes.length > maxSecretBytes ||
+        _containsControlCharacter(secret)) {
+      throw const FormatException('AskPass secret is invalid.');
+    }
+    final response = '${jsonEncode(<String, String>{'secret': secret})}\n';
+    if (utf8.encode(response).length > maxSecretBytes) {
+      throw const FormatException('AskPass response is too large.');
+    }
+    return response;
   }
 
   Future<void> _closeWithStatus(GitAskPassSessionStatus status) {
@@ -248,9 +306,19 @@ final class GitAskPassSession {
       // The session still owns the endpoint and must continue cleanup.
     }
     try {
-      await _server.close();
+      await _server?.close();
     } catch (_) {
       // Closing an already-closed listener is not security relevant.
+    }
+    await _brokerOutputSubscription?.cancel();
+    final broker = _broker;
+    if (broker != null) {
+      try {
+        await broker.stdin.close();
+      } on IOException {
+        // The broker may already have exited after forwarding a response.
+      }
+      broker.kill();
     }
     for (final client in _clients) {
       try {
@@ -309,6 +377,98 @@ final class GitAskPassSession {
       );
     }
     return '${macosDirectory.path}${Platform.pathSeparator}$helperFileName';
+  }
+
+  static Future<GitAskPassSession> _startWithNativeBroker({
+    required GitAskPassPromptHandler onPrompt,
+    required Duration timeout,
+    required String appExecutablePath,
+    required Directory socketDirectory,
+    required String socketPath,
+    required String nonce,
+  }) async {
+    final brokerPath = _bundledBrokerPathForExecutable(appExecutablePath);
+    if (!await File(brokerPath).exists()) {
+      throw StateError('The bundled AskPass broker is unavailable.');
+    }
+    final broker = await Process.start(
+      brokerPath,
+      <String>[socketPath, nonce],
+      includeParentEnvironment: false,
+      runInShell: false,
+    );
+    final ready = Completer<void>();
+    late final GitAskPassSession session;
+    final subscription = broker.stdout
+        .transform(utf8.decoder)
+        .transform(const LineSplitter())
+        .listen(
+          (line) {
+            if (!ready.isCompleted) {
+              if (line == 'READY') {
+                ready.complete();
+              } else {
+                ready.completeError(
+                  StateError('The AskPass broker did not become ready.'),
+                );
+              }
+              return;
+            }
+            unawaited(session._handleBrokerRequest(line));
+          },
+          onError: (Object error, StackTrace stackTrace) {
+            if (!ready.isCompleted) {
+              ready.completeError(error, stackTrace);
+            } else {
+              unawaited(
+                session._closeWithStatus(GitAskPassSessionStatus.rejected),
+              );
+            }
+          },
+          onDone: () {
+            if (!ready.isCompleted) {
+              ready.completeError(
+                StateError('The AskPass broker exited before becoming ready.'),
+              );
+            }
+          },
+        );
+    session = GitAskPassSession._(
+      socketPath: socketPath,
+      nonce: nonce,
+      onPrompt: onPrompt,
+      socketDirectory: socketDirectory,
+      server: null,
+      broker: broker,
+      timeout: timeout,
+      appExecutablePath: appExecutablePath,
+    );
+    session._brokerOutputSubscription = subscription;
+    session._timeoutTimer = Timer(timeout, () {
+      unawaited(session._closeWithStatus(GitAskPassSessionStatus.timedOut));
+    });
+    try {
+      await ready.future.timeout(timeout);
+      return session;
+    } catch (_) {
+      await session.close();
+      rethrow;
+    }
+  }
+
+  static String _bundledBrokerPathForExecutable(String appExecutablePath) {
+    return '${File(appExecutablePath).parent.path}${Platform.pathSeparator}'
+        'git-desktop-askpass-broker';
+  }
+
+  static bool _isMacAppBundle(String executablePath) {
+    final macosDirectory = File(executablePath).parent;
+    return Platform.isMacOS &&
+        macosDirectory.path.endsWith('${Platform.pathSeparator}MacOS') &&
+        macosDirectory.parent.path.endsWith(
+          '${Platform.pathSeparator}Contents',
+        ) &&
+        macosDirectory.parent.parent.path.endsWith('.app');
   }
 
   static Future<void> _verifyPrivateEndpoint(

@@ -178,6 +178,9 @@ void main() {
       final source = File(
         '${Directory.current.path}/macos/AskPassHelper/main.c',
       );
+      final brokerSource = File(
+        '${Directory.current.path}/macos/AskPassBroker/main.c',
+      );
       final compilation = await Process.run('/usr/bin/clang', <String>[
         '-std=c11',
         '-O2',
@@ -189,6 +192,18 @@ void main() {
         helper.path,
       ]);
       expect(compilation.exitCode, 0, reason: compilation.stderr);
+      final broker = File('${macosDirectory.path}/git-desktop-askpass-broker');
+      final brokerCompilation = await Process.run('/usr/bin/clang', <String>[
+        '-std=c11',
+        '-O2',
+        '-Wall',
+        '-Wextra',
+        '-Werror',
+        brokerSource.path,
+        '-o',
+        broker.path,
+      ]);
+      expect(brokerCompilation.exitCode, 0, reason: brokerCompilation.stderr);
 
       final session = await GitAskPassSession.startForTesting(
         onPrompt: (request) async {
@@ -196,6 +211,7 @@ void main() {
           return 'test-only-secret';
         },
         appExecutablePath: '${macosDirectory.path}/Git Desktop',
+        useNativeBroker: true,
       );
       addTearDown(session.close);
       final result = await Process.run(
