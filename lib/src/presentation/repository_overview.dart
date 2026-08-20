@@ -792,8 +792,8 @@ class _RefsNavigation extends StatelessWidget {
     final isBusy = repository.isRefreshing;
     final canFetch =
         !isBusy && !disabledActions.contains(RepositoryAction.fetch);
-    final canPull = !disabledActions.contains(RepositoryAction.pull);
-    final canPush = !disabledActions.contains(RepositoryAction.push);
+    final canPull = !isBusy && !disabledActions.contains(RepositoryAction.pull);
+    final canPush = !isBusy && !disabledActions.contains(RepositoryAction.push);
     final canSwitch = repository.isWorkingTreeClean && !isBusy;
     final canMerge = !disabledActions.contains(RepositoryAction.mergeBranch);
     return switch (ref.kind) {

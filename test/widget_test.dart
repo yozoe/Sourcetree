@@ -285,6 +285,56 @@ void main() {
     },
   );
 
+  testWidgets(
+    'context menu disables remote actions while the repository loads',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1280, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RepositoryOverview(
+            data: RepositoryOverviewViewData.ready(
+              RepositoryViewData(
+                name: 'example',
+                path: '/tmp/example',
+                currentBranch: 'main',
+                isRefreshing: true,
+                refs: const [
+                  RepositoryRefViewData(
+                    id: 'local:main',
+                    label: 'main',
+                    kind: RepositoryRefKind.localBranch,
+                    isCurrent: true,
+                  ),
+                ],
+              ),
+            ),
+            callbacks: RepositoryOverviewCallbacks(
+              onRefContextAction: (_, _) {},
+            ),
+          ),
+        ),
+      );
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.text('main').last),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await gesture.up();
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 300));
+
+      for (final label in ['获取 origin', '拉取当前分支', '推送当前分支']) {
+        final item = tester.widget<PopupMenuItem<RepositoryRefContextAction>>(
+          find.widgetWithText(PopupMenuItem<RepositoryRefContextAction>, label),
+        );
+        expect(item.enabled, isFalse);
+      }
+    },
+  );
+
   testWidgets('exposes the operation log from the status bar', (tester) async {
     RepositoryAction? action;
     await tester.pumpWidget(
