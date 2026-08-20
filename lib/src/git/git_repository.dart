@@ -298,12 +298,15 @@ final class GitRepositoryReader {
   /// Reads the file list and line statistics produced by one committed revision.
   ///
   /// The revision comes from [readRecentHistory], but is still constrained to
-  /// an object-id shaped value before it is passed to Git as a revision.
+  /// an object-id shaped value before it is passed to Git as a revision. Merge
+  /// commits are compared with [parentObjectId], normally their first parent.
   Future<GitCommitChangeSummary> readCommitChanges(
     GitRepository repository, {
     required String objectId,
+    String? parentObjectId,
   }) async {
     _validateObjectId(objectId);
+    if (parentObjectId != null) _validateObjectId(parentObjectId);
     final results = await Future.wait<GitResult>([
       runner.run(
         GitInvocation(
@@ -313,13 +316,14 @@ final class GitRepositoryReader {
             '-c',
             'color.ui=false',
             'diff-tree',
-            '--root',
+            if (parentObjectId == null) '--root',
             '--no-commit-id',
             '--find-renames',
             '--find-copies',
             '--name-status',
             '-r',
             '-z',
+            ?parentObjectId,
             objectId,
           ],
           workingDirectory: repository.commandDirectory,
@@ -337,13 +341,14 @@ final class GitRepositoryReader {
             '-c',
             'color.ui=false',
             'diff-tree',
-            '--root',
+            if (parentObjectId == null) '--root',
             '--no-commit-id',
             '--find-renames',
             '--find-copies',
             '--numstat',
             '-r',
             '-z',
+            ?parentObjectId,
             objectId,
           ],
           workingDirectory: repository.commandDirectory,
@@ -372,15 +377,18 @@ final class GitRepositoryReader {
     );
   }
 
-  /// Reads a unified diff for one file as it existed in [objectId].
+  /// Reads a unified diff for one file as it existed in [objectId]. For a
+  /// merge, [parentObjectId] selects the comparison parent.
   Future<GitUnifiedDiff> readCommitUnifiedDiff(
     GitRepository repository, {
     required String objectId,
     required String path,
+    String? parentObjectId,
     int contextLines = 3,
     int maxOutputBytes = 4 * 1024 * 1024,
   }) async {
     _validateObjectId(objectId);
+    if (parentObjectId != null) _validateObjectId(parentObjectId);
     if (path.contains('\u0000')) {
       throw ArgumentError.value(path, 'path', 'Git paths cannot contain NUL.');
     }
@@ -402,13 +410,14 @@ final class GitRepositoryReader {
           '--literal-pathspecs',
           '-c',
           'color.ui=false',
-          'show',
-          '--format=',
+          parentObjectId == null ? 'show' : 'diff',
+          if (parentObjectId == null) '--format=',
           '--no-color',
           '--no-ext-diff',
           '--no-textconv',
           '--find-renames',
           '--unified=$contextLines',
+          ?parentObjectId,
           objectId,
           '--',
           path,
@@ -512,34 +521,32 @@ List<GitCommitFileChange> _parseCommitNameStatus(
   List<int> bytes,
   _CommitNumStat statistics,
 ) {
-  final fields = _nullSeparatedStrings(bytes);
+  final fields = _nullSeparatedBytes(bytes);
   final files = <GitCommitFileChange>[];
   var index = 0;
   while (index < fields.length) {
-    final status = fields[index++];
+    final status = utf8.decode(fields[index++], allowMalformed: true);
     if (status.isEmpty) continue;
     final code = status[0];
     if (index >= fields.length) {
       throw const GitParseException('Commit change record has no path.');
     }
-    String? previousPath;
-    String nextPath;
+    GitPath? previousPath;
+    GitPath nextPath;
     if (code == 'R' || code == 'C') {
       if (index + 1 >= fields.length) {
         throw const GitParseException('Rename or copy record is incomplete.');
       }
-      previousPath = fields[index++];
-      nextPath = fields[index++];
+      previousPath = GitPath(fields[index++]);
+      nextPath = GitPath(fields[index++]);
     } else {
-      nextPath = fields[index++];
+      nextPath = GitPath(fields[index++]);
     }
     final stat = statistics.byPath[nextPath];
     files.add(
       GitCommitFileChange(
-        path: GitPath.fromString(nextPath),
-        previousPath: previousPath == null
-            ? null
-            : GitPath.fromString(previousPath),
+        path: nextPath,
+        previousPath: previousPath,
         kind: switch (code) {
           'A' => GitCommitChangeKind.added,
           'D' => GitCommitChangeKind.deleted,
@@ -558,23 +565,25 @@ List<GitCommitFileChange> _parseCommitNameStatus(
 }
 
 _CommitNumStat _parseCommitNumStat(List<int> bytes) {
-  final fields = _nullSeparatedStrings(bytes);
-  final byPath = <String, _FileStat>{};
+  final fields = _nullSeparatedBytes(bytes);
+  final byPath = <GitPath, _FileStat>{};
   var additions = 0;
   var deletions = 0;
   var index = 0;
   while (index < fields.length) {
     final record = fields[index++];
     if (record.isEmpty) continue;
-    final firstTab = record.indexOf('\t');
-    final secondTab = firstTab < 0 ? -1 : record.indexOf('\t', firstTab + 1);
+    final firstTab = record.indexOf(0x09);
+    final secondTab = firstTab < 0 ? -1 : record.indexOf(0x09, firstTab + 1);
     if (firstTab < 0 || secondTab < 0) {
       throw GitParseException('Unexpected commit numstat record: $record');
     }
-    final added = int.tryParse(record.substring(0, firstTab));
-    final deleted = int.tryParse(record.substring(firstTab + 1, secondTab));
-    final path = record.substring(secondTab + 1);
-    String targetPath = path;
+    final added = int.tryParse(utf8.decode(record.sublist(0, firstTab)));
+    final deleted = int.tryParse(
+      utf8.decode(record.sublist(firstTab + 1, secondTab)),
+    );
+    final path = record.sublist(secondTab + 1);
+    List<int> targetPath = path;
     if (path.isEmpty) {
       if (index + 1 >= fields.length) {
         throw const GitParseException('Rename numstat record is incomplete.');
@@ -583,28 +592,28 @@ _CommitNumStat _parseCommitNumStat(List<int> bytes) {
       targetPath = fields[index++];
     }
     final stat = _FileStat(additions: added, deletions: deleted);
-    byPath[targetPath] = stat;
+    byPath[GitPath(targetPath)] = stat;
     additions += added ?? 0;
     deletions += deleted ?? 0;
   }
   return _CommitNumStat(
-    byPath: Map<String, _FileStat>.unmodifiable(byPath),
+    byPath: Map<GitPath, _FileStat>.unmodifiable(byPath),
     additions: additions,
     deletions: deletions,
   );
 }
 
-List<String> _nullSeparatedStrings(List<int> bytes) {
+List<List<int>> _nullSeparatedBytes(List<int> bytes) {
   if (bytes.isEmpty) return const [];
-  final fields = <String>[];
+  final fields = <List<int>>[];
   var start = 0;
   for (var index = 0; index < bytes.length; index++) {
     if (bytes[index] != 0) continue;
-    fields.add(utf8.decode(bytes.sublist(start, index), allowMalformed: true));
+    fields.add(bytes.sublist(start, index));
     start = index + 1;
   }
   if (start < bytes.length) {
-    fields.add(utf8.decode(bytes.sublist(start), allowMalformed: true));
+    fields.add(bytes.sublist(start));
   }
   return fields;
 }
@@ -623,7 +632,7 @@ final class _CommitNumStat {
     required this.deletions,
   });
 
-  final Map<String, _FileStat> byPath;
+  final Map<GitPath, _FileStat> byPath;
   final int additions;
   final int deletions;
 }

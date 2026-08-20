@@ -183,6 +183,65 @@ void main() {
     },
   );
 
+  test('reads merge commit changes against its first parent', () async {
+    await File('${temporaryDirectory.path}/base.txt').writeAsString('base\n');
+    await _git(temporaryDirectory.path, ['add', '--', 'base.txt']);
+    await _git(temporaryDirectory.path, ['commit', '--quiet', '-m', 'base']);
+    await _git(temporaryDirectory.path, [
+      'checkout',
+      '--quiet',
+      '-b',
+      'feature/merge-diff',
+    ]);
+    await File(
+      '${temporaryDirectory.path}/feature.txt',
+    ).writeAsString('feature\n');
+    await _git(temporaryDirectory.path, ['add', '--', 'feature.txt']);
+    await _git(temporaryDirectory.path, [
+      'commit',
+      '--quiet',
+      '-m',
+      'feature change',
+    ]);
+    await _git(temporaryDirectory.path, ['checkout', '--quiet', '-']);
+    await File('${temporaryDirectory.path}/main.txt').writeAsString('main\n');
+    await _git(temporaryDirectory.path, ['add', '--', 'main.txt']);
+    await _git(temporaryDirectory.path, [
+      'commit',
+      '--quiet',
+      '-m',
+      'main change',
+    ]);
+    await _git(temporaryDirectory.path, [
+      'merge',
+      '--no-ff',
+      '--no-edit',
+      'feature/merge-diff',
+    ]);
+
+    final repository = (await inspector.inspect(temporaryDirectory.path))!;
+    final merge = (await reader.readRecentHistory(
+      repository,
+    )).firstWhere((commit) => commit.parentIds.length == 2);
+    final changes = await reader.readCommitChanges(
+      repository,
+      objectId: merge.objectId,
+      parentObjectId: merge.parentIds.first,
+    );
+    expect(
+      changes.files.map((file) => file.path.display),
+      contains('feature.txt'),
+    );
+
+    final diff = await reader.readCommitUnifiedDiff(
+      repository,
+      objectId: merge.objectId,
+      parentObjectId: merge.parentIds.first,
+      path: 'feature.txt',
+    );
+    expect(diff.text, contains('+feature'));
+  });
+
   test('reads local branches through for-each-ref', () async {
     const fileName = 'README.md';
     await File(

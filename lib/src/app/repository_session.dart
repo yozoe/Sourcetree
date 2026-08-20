@@ -896,6 +896,7 @@ final class RepositorySessionController
     }
     final repository = state.repository;
     if (repository == null) return;
+    final parentObjectId = _parentObjectId(objectId);
     final generation = ++_commitGeneration;
     _commitDiffGeneration++;
     state = state.copyWith(
@@ -913,6 +914,7 @@ final class RepositorySessionController
       final summary = await _reader.readCommitChanges(
         repository,
         objectId: objectId,
+        parentObjectId: parentObjectId,
       );
       if (!ref.mounted ||
           generation != _commitGeneration ||
@@ -959,6 +961,7 @@ final class RepositorySessionController
         .where((candidate) => candidate.path.display == path)
         .firstOrNull;
     if (file == null || !file.path.isValidUtf8) return;
+    final parentObjectId = _parentObjectId(objectId);
     final generation = ++_commitDiffGeneration;
     state = state.copyWith(
       selectedCommitFile: SelectedCommitFile(objectId: objectId, file: file),
@@ -971,6 +974,7 @@ final class RepositorySessionController
         repository,
         objectId: objectId,
         path: file.path.display,
+        parentObjectId: parentObjectId,
       );
       if (!ref.mounted ||
           generation != _commitDiffGeneration ||
@@ -991,6 +995,13 @@ final class RepositorySessionController
 
   void setSearchQuery(String query) {
     state = state.copyWith(searchQuery: query);
+  }
+
+  String? _parentObjectId(String objectId) {
+    for (final commit in state.commits) {
+      if (commit.objectId == objectId) return commit.parentIds.firstOrNull;
+    }
+    return null;
   }
 
   Future<void> selectChange(RepositoryChangeViewData? change) async {
