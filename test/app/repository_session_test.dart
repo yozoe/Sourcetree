@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:git_desktop/src/app/repository_session.dart';
+import 'package:git_desktop/src/app/repository_view_mapper.dart';
 
 import '../support/git_test_repository.dart';
 
@@ -351,5 +352,67 @@ void main() {
     await repository.commit('Initial commit');
     await controller.refresh();
     expect(await controller.pushUpstream(), isFalse);
+  });
+
+  test('completes the clone-to-push core workflow with real Git', () async {
+    final source = await GitTestRepository.create();
+    addTearDown(source.dispose);
+    await source.writeFile('README.md', '# Git Desktop\n');
+    await source.commit('Initial commit');
+    final origin = await source.createBareOrigin();
+    await source.runGit(['push', '--set-upstream', 'origin', 'main']);
+    final directory = await Directory.systemTemp.createTemp(
+      'git-desktop-core-workflow-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+
+    expect(
+      await controller.cloneRepository(
+        remoteUrl: origin.path,
+        directoryPath: directory.path,
+      ),
+      isTrue,
+    );
+    await File(
+      '${directory.path}${Platform.pathSeparator}CHANGELOG.md',
+    ).writeAsString('# Changes\n');
+    await controller.refresh();
+    final change = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.changes.single;
+    await controller.toggleStage(change);
+    expect(
+      container.read(repositorySessionProvider).status!.stagedEntries,
+      hasLength(1),
+    );
+    expect(await controller.createCommit('Add changelog'), isTrue);
+    expect(await controller.createLocalBranch('feature/changelog'), isTrue);
+    expect(await controller.pushUpstream(), isTrue);
+
+    final state = container.read(repositorySessionProvider);
+    expect(state.status!.branch.head, 'main');
+    expect(state.status!.branch.ahead, 0);
+    expect(
+      (await source.runGit([
+        'rev-parse',
+        'refs/heads/main',
+      ], workingDirectory: origin)).stdout.toString().trim(),
+      state.status!.branch.objectId,
+    );
+    expect(
+      state.operations
+          .where(
+            (operation) =>
+                operation.outcome == RepositoryOperationOutcome.succeeded,
+          )
+          .map((operation) => operation.kind),
+      containsAll(<RepositoryOperationKind>[
+        RepositoryOperationKind.clone,
+        RepositoryOperationKind.push,
+      ]),
+    );
   });
 }
