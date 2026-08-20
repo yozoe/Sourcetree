@@ -13,6 +13,7 @@ typedef RepositoryChangeCallback =
     void Function(RepositoryChangeViewData? change);
 typedef RepositoryChangeStageCallback =
     void Function(RepositoryChangeViewData change);
+typedef RepositoryCommitFileCallback = void Function(CommitFileViewData? file);
 
 /// Interaction surface for [RepositoryOverview].
 ///
@@ -26,6 +27,7 @@ final class RepositoryOverviewCallbacks {
     this.onCommitSelected,
     this.onChangeSelected,
     this.onChangeStageToggled,
+    this.onCommitFileSelected,
     this.onLayoutChanged,
   });
 
@@ -35,6 +37,7 @@ final class RepositoryOverviewCallbacks {
   final RepositoryCommitCallback? onCommitSelected;
   final RepositoryChangeCallback? onChangeSelected;
   final RepositoryChangeStageCallback? onChangeStageToggled;
+  final RepositoryCommitFileCallback? onCommitFileSelected;
   final ValueChanged<RepositoryOverviewLayout>? onLayoutChanged;
 }
 
@@ -210,10 +213,11 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
               ),
               SizedBox(
                 height: changesHeight,
-                child: _ChangesPane(
+                child: _SelectedChangesPane(
                   repository: repository,
                   onSelected: widget.callbacks.onChangeSelected,
                   onStageToggled: widget.callbacks.onChangeStageToggled,
+                  onCommitFileSelected: widget.callbacks.onCommitFileSelected,
                 ),
               ),
             ],
@@ -290,6 +294,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                   repository: repository,
                   onChangeSelected: widget.callbacks.onChangeSelected,
                   onChangeStageToggled: widget.callbacks.onChangeStageToggled,
+                  onCommitFileSelected: widget.callbacks.onCommitFileSelected,
                 ),
               ),
             ],
@@ -309,10 +314,11 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         repository: repository,
         onSelected: widget.callbacks.onCommitSelected,
       ),
-      _CompactPane.changes => _ChangesPane(
+      _CompactPane.changes => _SelectedChangesPane(
         repository: repository,
         onSelected: widget.callbacks.onChangeSelected,
         onStageToggled: widget.callbacks.onChangeStageToggled,
+        onCommitFileSelected: widget.callbacks.onCommitFileSelected,
       ),
       _CompactPane.details => _CommitDetailsPane(
         details: repository.selectedCommit,
@@ -1191,6 +1197,202 @@ class _RefLabel extends StatelessWidget {
   }
 }
 
+class _SelectedChangesPane extends StatelessWidget {
+  const _SelectedChangesPane({
+    required this.repository,
+    required this.onSelected,
+    required this.onStageToggled,
+    required this.onCommitFileSelected,
+  });
+
+  final RepositoryViewData repository;
+  final RepositoryChangeCallback? onSelected;
+  final RepositoryChangeStageCallback? onStageToggled;
+  final RepositoryCommitFileCallback? onCommitFileSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    if (repository.selectedCommit != null) {
+      return _CommitChangesPane(
+        repository: repository,
+        onSelected: onCommitFileSelected,
+      );
+    }
+    return _ChangesPane(
+      repository: repository,
+      onSelected: onSelected,
+      onStageToggled: onStageToggled,
+    );
+  }
+}
+
+class _CommitChangesPane extends StatelessWidget {
+  const _CommitChangesPane({
+    required this.repository,
+    required this.onSelected,
+  });
+
+  final RepositoryViewData repository;
+  final RepositoryCommitFileCallback? onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final files = repository.commitChanges;
+    return Material(
+      color: Theme.of(context).colorScheme.surface,
+      child: Column(
+        children: [
+          _PaneHeader(
+            title: '提交改动',
+            icon: Icons.difference_outlined,
+            trailing: repository.isCommitLoading
+                ? '正在读取…'
+                : '${files.length} 个文件',
+          ),
+          Expanded(
+            child: repository.isCommitLoading && files.isEmpty
+                ? const Center(child: CircularProgressIndicator.adaptive())
+                : LayoutBuilder(
+                    builder: (context, constraints) {
+                      final list = _CommitFileList(
+                        files: files,
+                        onSelected: onSelected,
+                      );
+                      if (constraints.maxWidth < 530) {
+                        return repository.selectedCommitFile == null
+                            ? list
+                            : _DiffPreview(
+                                diff: repository.commitDiff,
+                                onBack: onSelected == null
+                                    ? null
+                                    : () => onSelected!(null),
+                              );
+                      }
+                      return Row(
+                        children: [
+                          SizedBox(
+                            width: math.min(286, constraints.maxWidth * .38),
+                            child: list,
+                          ),
+                          VerticalDivider(
+                            width: 1,
+                            color: Theme.of(context).colorScheme.outlineVariant,
+                          ),
+                          Expanded(
+                            child: _DiffPreview(diff: repository.commitDiff),
+                          ),
+                        ],
+                      );
+                    },
+                  ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CommitFileList extends StatelessWidget {
+  const _CommitFileList({required this.files, required this.onSelected});
+
+  final List<CommitFileViewData> files;
+  final RepositoryCommitFileCallback? onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    if (files.isEmpty) {
+      return const _PaneEmptyState(
+        icon: Icons.check_circle_outline,
+        title: '没有文件改动',
+        message: '此提交没有可显示的文件差异。',
+      );
+    }
+    return ListView.builder(
+      itemExtent: 34,
+      itemCount: files.length,
+      itemBuilder: (context, index) => _CommitFileTile(
+        file: files[index],
+        onTap: onSelected == null ? null : () => onSelected!(files[index]),
+      ),
+    );
+  }
+}
+
+class _CommitFileTile extends StatelessWidget {
+  const _CommitFileTile({required this.file, required this.onTap});
+
+  final CommitFileViewData file;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final fileName = file.path.split('/').last;
+    final slash = file.path.lastIndexOf('/');
+    final parentPath = slash <= 0 ? '' : file.path.substring(0, slash);
+    final stats = [
+      if (file.additions case final int value) '+$value',
+      if (file.deletions case final int value) '−$value',
+    ].join(' ');
+    return Semantics(
+      button: true,
+      selected: file.isSelected,
+      label: '${_changeKindLabel(file.kind)}，${file.path}',
+      child: Tooltip(
+        message: file.path,
+        waitDuration: const Duration(milliseconds: 650),
+        child: InkWell(
+          onTap: onTap,
+          child: Container(
+            color: file.isSelected ? colors.secondaryContainer : null,
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            child: Row(
+              children: [
+                _ChangeStatusBadge(kind: file.kind),
+                const SizedBox(width: 7),
+                Expanded(
+                  child: Row(
+                    children: [
+                      Flexible(
+                        child: Text(
+                          fileName,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context).textTheme.bodySmall,
+                        ),
+                      ),
+                      if (parentPath.isNotEmpty) ...[
+                        const SizedBox(width: 5),
+                        Flexible(
+                          child: Text(
+                            parentPath,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: Theme.of(context).textTheme.labelSmall
+                                ?.copyWith(color: colors.onSurfaceVariant),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
+                if (stats.isNotEmpty)
+                  Text(
+                    stats,
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: colors.onSurfaceVariant,
+                      fontFeatures: const [FontFeature.tabularFigures()],
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 class _ChangesPane extends StatelessWidget {
   const _ChangesPane({
     required this.repository,
@@ -1810,6 +2012,7 @@ class _TabbedInspector extends StatelessWidget {
     required this.repository,
     required this.onChangeSelected,
     required this.onChangeStageToggled,
+    required this.onCommitFileSelected,
   });
 
   final _InspectorTab selectedTab;
@@ -1817,6 +2020,7 @@ class _TabbedInspector extends StatelessWidget {
   final RepositoryViewData repository;
   final RepositoryChangeCallback? onChangeSelected;
   final RepositoryChangeStageCallback? onChangeStageToggled;
+  final RepositoryCommitFileCallback? onCommitFileSelected;
 
   @override
   Widget build(BuildContext context) {
@@ -1832,10 +2036,11 @@ class _TabbedInspector extends StatelessWidget {
         ),
         Expanded(
           child: switch (selectedTab) {
-            _InspectorTab.changes => _ChangesPane(
+            _InspectorTab.changes => _SelectedChangesPane(
               repository: repository,
               onSelected: onChangeSelected,
               onStageToggled: onChangeStageToggled,
+              onCommitFileSelected: onCommitFileSelected,
             ),
             _InspectorTab.details => _CommitDetailsPane(
               details: repository.selectedCommit,

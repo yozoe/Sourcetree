@@ -48,6 +48,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
   final changes = _mapChanges(state);
   final commits = _mapCommits(state, branch);
   final selectedCommit = _findCommit(state.commits, state.selectedCommitId);
+  final commitChanges = _mapCommitChanges(state);
   final runningOperation = _runningOperation(state.operations);
 
   final disabledActions = <RepositoryAction>{
@@ -140,7 +141,17 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
                     branch.head != null
                 ? [branch.head!]
                 : const [],
+            changedFiles: state.commitChanges.length,
+            additions: state.commitAdditions,
+            deletions: state.commitDeletions,
           ),
+    commitChanges: commitChanges,
+    selectedCommitFile: _findSelectedCommitFile(
+      commitChanges,
+      state.selectedCommitFile,
+    ),
+    commitDiff: _mapCommitDiff(state),
+    isCommitLoading: state.isCommitLoading || state.isCommitDiffLoading,
     selectedChange: _findSelectedChange(changes, state.selectedChange),
     diff: _mapDiff(state),
     footer: RepositoryFooterViewData(
@@ -167,6 +178,39 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     disabledActions: disabledActions,
     searchQuery: state.searchQuery,
   );
+}
+
+List<CommitFileViewData> _mapCommitChanges(RepositorySessionState state) {
+  return [
+    for (final change in state.commitChanges)
+      CommitFileViewData(
+        path: change.path.display,
+        previousPath: change.previousPath?.display,
+        kind: switch (change.kind) {
+          GitCommitChangeKind.added => RepositoryChangeKind.added,
+          GitCommitChangeKind.deleted => RepositoryChangeKind.deleted,
+          GitCommitChangeKind.renamed => RepositoryChangeKind.renamed,
+          GitCommitChangeKind.copied => RepositoryChangeKind.copied,
+          GitCommitChangeKind.typeChanged ||
+          GitCommitChangeKind.modified => RepositoryChangeKind.modified,
+          GitCommitChangeKind.unknown => RepositoryChangeKind.modified,
+        },
+        isSelected: state.selectedCommitFile?.file.path == change.path,
+        additions: change.additions,
+        deletions: change.deletions,
+      ),
+  ];
+}
+
+CommitFileViewData? _findSelectedCommitFile(
+  List<CommitFileViewData> changes,
+  SelectedCommitFile? selected,
+) {
+  if (selected == null) return null;
+  for (final change in changes) {
+    if (selected.matches(change)) return change;
+  }
+  return null;
 }
 
 RepositoryOperationRecord? _runningOperation(
@@ -402,6 +446,38 @@ DiffViewData _mapDiff(RepositorySessionState state) {
   return DiffViewData(
     path: selected.entry.path.display,
     previousPath: selected.entry.originalPath?.display,
+    isBinary: binary,
+    isTooLarge: diff.isTruncated,
+    notice: diff.isTruncated ? 'Diff 超过安全显示上限，内容已截断。' : null,
+    lines: binary ? const [] : _diffLines(diff.text),
+  );
+}
+
+DiffViewData _mapCommitDiff(RepositorySessionState state) {
+  final selected = state.selectedCommitFile;
+  if (selected == null) return const DiffViewData.empty();
+  if (!selected.file.path.isValidUtf8) {
+    return DiffViewData(
+      path: selected.file.path.display,
+      notice: '文件名不是有效 UTF-8，当前版本无法安全读取 Diff。',
+    );
+  }
+  if (state.isCommitDiffLoading) {
+    return DiffViewData(path: selected.file.path.display, notice: '正在读取 Diff…');
+  }
+  final diff = state.commitDiff;
+  if (diff == null) {
+    return DiffViewData(
+      path: selected.file.path.display,
+      notice: state.message ?? '此文件没有可显示的文本差异。',
+    );
+  }
+  final binary =
+      diff.text.contains('Binary files ') ||
+      diff.text.contains('GIT binary patch');
+  return DiffViewData(
+    path: selected.file.path.display,
+    previousPath: selected.file.previousPath?.display,
     isBinary: binary,
     isTooLarge: diff.isTruncated,
     notice: diff.isTruncated ? 'Diff 超过安全显示上限，内容已截断。' : null,

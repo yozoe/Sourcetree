@@ -317,7 +317,46 @@ final class GitCommit {
   final String body;
 }
 
-enum GitDiffSource { workingTree, staged }
+enum GitDiffSource { workingTree, staged, commit }
+
+enum GitCommitChangeKind {
+  added,
+  modified,
+  deleted,
+  renamed,
+  copied,
+  typeChanged,
+  unknown,
+}
+
+/// A file changed by one committed revision.
+final class GitCommitFileChange {
+  const GitCommitFileChange({
+    required this.path,
+    required this.kind,
+    this.previousPath,
+    this.additions,
+    this.deletions,
+  });
+
+  final GitPath path;
+  final GitPath? previousPath;
+  final GitCommitChangeKind kind;
+  final int? additions;
+  final int? deletions;
+}
+
+final class GitCommitChangeSummary {
+  GitCommitChangeSummary({
+    required List<GitCommitFileChange> files,
+    required this.additions,
+    required this.deletions,
+  }) : files = List<GitCommitFileChange>.unmodifiable(files);
+
+  final List<GitCommitFileChange> files;
+  final int additions;
+  final int deletions;
+}
 
 final class GitUnifiedDiff {
   GitUnifiedDiff({

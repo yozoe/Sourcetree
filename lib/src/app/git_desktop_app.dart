@@ -454,7 +454,9 @@ class _RepositoryWorkspaceScreenState
                 onRefSelected: _handleReferenceSelected,
                 onSearchChanged: controller.setSearchQuery,
                 onCommitSelected: (commit) =>
-                    controller.selectCommit(commit.oid),
+                    unawaited(controller.selectCommit(commit.oid)),
+                onCommitFileSelected: (file) =>
+                    unawaited(controller.selectCommitFile(file)),
                 onChangeSelected: controller.selectChange,
                 onChangeStageToggled: controller.toggleStage,
               ),

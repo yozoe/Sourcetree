@@ -9,6 +9,34 @@ import 'package:git_desktop/src/app/repository_view_mapper.dart';
 import '../support/git_test_repository.dart';
 
 void main() {
+  test('loads selected commit files, statistics and file diff', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('lib/example.dart', 'void main() {}\n');
+    await repository.commit('add example');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final commit = container
+        .read(repositorySessionProvider)
+        .commits
+        .singleWhere((entry) => entry.subject == 'add example');
+
+    await controller.selectCommit(commit.objectId);
+
+    final overview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    );
+    final selected = overview.repository!;
+    expect(selected.selectedCommit!.changedFiles, 1);
+    expect(selected.selectedCommit!.additions, 1);
+    expect(selected.commitChanges.single.path, 'lib/example.dart');
+    expect(selected.selectedCommitFile!.path, 'lib/example.dart');
+    expect(selected.commitDiff.lines, isNotEmpty);
+  });
+
   test('restores opened repository tabs and the active repository', () async {
     final firstRepository = await GitTestRepository.create();
     addTearDown(firstRepository.dispose);

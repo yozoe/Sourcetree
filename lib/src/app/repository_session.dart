@@ -107,6 +107,16 @@ final class SelectedRepositoryChange {
   }
 }
 
+final class SelectedCommitFile {
+  const SelectedCommitFile({required this.objectId, required this.file});
+
+  final String objectId;
+  final GitCommitFileChange file;
+
+  bool matches(CommitFileViewData change) =>
+      file.path.display == change.path && objectId.isNotEmpty;
+}
+
 final class RepositorySessionState {
   const RepositorySessionState({
     required this.phase,
@@ -117,6 +127,13 @@ final class RepositorySessionState {
     this.localBranches = const [],
     this.commits = const [],
     this.selectedCommitId,
+    this.commitChanges = const [],
+    this.selectedCommitFile,
+    this.commitDiff,
+    this.commitAdditions = 0,
+    this.commitDeletions = 0,
+    this.isCommitLoading = false,
+    this.isCommitDiffLoading = false,
     this.selectedChange,
     this.diff,
     this.isDiffLoading = false,
@@ -144,6 +161,13 @@ final class RepositorySessionState {
   final List<GitLocalBranch> localBranches;
   final List<GitCommit> commits;
   final String? selectedCommitId;
+  final List<GitCommitFileChange> commitChanges;
+  final SelectedCommitFile? selectedCommitFile;
+  final GitUnifiedDiff? commitDiff;
+  final int commitAdditions;
+  final int commitDeletions;
+  final bool isCommitLoading;
+  final bool isCommitDiffLoading;
   final SelectedRepositoryChange? selectedChange;
   final GitUnifiedDiff? diff;
   final bool isDiffLoading;
@@ -168,6 +192,13 @@ final class RepositorySessionState {
     List<GitLocalBranch>? localBranches,
     List<GitCommit>? commits,
     String? selectedCommitId,
+    List<GitCommitFileChange>? commitChanges,
+    SelectedCommitFile? selectedCommitFile,
+    GitUnifiedDiff? commitDiff,
+    int? commitAdditions,
+    int? commitDeletions,
+    bool? isCommitLoading,
+    bool? isCommitDiffLoading,
     SelectedRepositoryChange? selectedChange,
     GitUnifiedDiff? diff,
     bool? isDiffLoading,
@@ -184,6 +215,8 @@ final class RepositorySessionState {
     String? technicalDetails,
     bool clearSelectedChange = false,
     bool clearDiff = false,
+    bool clearSelectedCommitFile = false,
+    bool clearCommitDiff = false,
     bool clearMessage = false,
   }) {
     return RepositorySessionState(
@@ -195,6 +228,15 @@ final class RepositorySessionState {
       localBranches: localBranches ?? this.localBranches,
       commits: commits ?? this.commits,
       selectedCommitId: selectedCommitId ?? this.selectedCommitId,
+      commitChanges: commitChanges ?? this.commitChanges,
+      selectedCommitFile: clearSelectedCommitFile
+          ? null
+          : selectedCommitFile ?? this.selectedCommitFile,
+      commitDiff: clearCommitDiff ? null : commitDiff ?? this.commitDiff,
+      commitAdditions: commitAdditions ?? this.commitAdditions,
+      commitDeletions: commitDeletions ?? this.commitDeletions,
+      isCommitLoading: isCommitLoading ?? this.isCommitLoading,
+      isCommitDiffLoading: isCommitDiffLoading ?? this.isCommitDiffLoading,
       selectedChange: clearSelectedChange
           ? null
           : selectedChange ?? this.selectedChange,
@@ -227,6 +269,8 @@ final class RepositorySessionController
   late RepositorySessionStore _sessionStore;
   int _repositoryGeneration = 0;
   int _diffGeneration = 0;
+  int _commitGeneration = 0;
+  int _commitDiffGeneration = 0;
   int _operationSequence = 0;
   GitCancellationToken? _cloneCancellation;
   GitCancellationToken? _fetchCancellation;
@@ -352,6 +396,8 @@ final class RepositorySessionController
 
     final generation = ++_repositoryGeneration;
     _diffGeneration++;
+    _commitGeneration++;
+    _commitDiffGeneration++;
     state = state.copyWith(
       phase: RepositorySessionPhase.loading,
       requestedPath: normalizedPath,
@@ -396,7 +442,10 @@ final class RepositorySessionController
         hasOriginRemote: hasOriginRemote,
         localBranches: localBranches,
         commits: commits,
-        selectedCommitId: commits.firstOrNull?.objectId,
+        // Keep the working-tree inspector visible until the user chooses a
+        // historical commit. Selecting a commit then replaces it with that
+        // commit's file list and Diff.
+        selectedCommitId: null,
         operations: state.operations,
         openRepositoryTabs: _disambiguateRepositoryTabLabels(
           _upsertRepositoryTab(state.openRepositoryTabs, tab),
@@ -841,9 +890,102 @@ final class RepositorySessionController
     }
   }
 
-  void selectCommit(String objectId) {
-    if (state.commits.any((GitCommit commit) => commit.objectId == objectId)) {
-      state = state.copyWith(selectedCommitId: objectId);
+  Future<void> selectCommit(String objectId) async {
+    if (!state.commits.any((GitCommit commit) => commit.objectId == objectId)) {
+      return;
+    }
+    final repository = state.repository;
+    if (repository == null) return;
+    final generation = ++_commitGeneration;
+    _commitDiffGeneration++;
+    state = state.copyWith(
+      selectedCommitId: objectId,
+      commitChanges: const [],
+      commitAdditions: 0,
+      commitDeletions: 0,
+      isCommitLoading: true,
+      isCommitDiffLoading: false,
+      clearSelectedCommitFile: true,
+      clearCommitDiff: true,
+      clearMessage: true,
+    );
+    try {
+      final summary = await _reader.readCommitChanges(
+        repository,
+        objectId: objectId,
+      );
+      if (!ref.mounted ||
+          generation != _commitGeneration ||
+          state.repository?.id != repository.id ||
+          state.selectedCommitId != objectId) {
+        return;
+      }
+      state = state.copyWith(
+        commitChanges: summary.files,
+        commitAdditions: summary.additions,
+        commitDeletions: summary.deletions,
+        isCommitLoading: false,
+      );
+      if (summary.files.isNotEmpty) {
+        await selectCommitFileByPath(summary.files.first.path.display);
+      }
+    } on Object catch (error, stackTrace) {
+      if (!ref.mounted || generation != _commitGeneration) return;
+      state = state.copyWith(
+        isCommitLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+    }
+  }
+
+  Future<void> selectCommitFile(CommitFileViewData? change) async {
+    await selectCommitFileByPath(change?.path);
+  }
+
+  Future<void> selectCommitFileByPath(String? path) async {
+    final objectId = state.selectedCommitId;
+    final repository = state.repository;
+    if (path == null || objectId == null || repository == null) {
+      _commitDiffGeneration++;
+      state = state.copyWith(
+        isCommitDiffLoading: false,
+        clearSelectedCommitFile: true,
+        clearCommitDiff: true,
+      );
+      return;
+    }
+    final file = state.commitChanges
+        .where((candidate) => candidate.path.display == path)
+        .firstOrNull;
+    if (file == null || !file.path.isValidUtf8) return;
+    final generation = ++_commitDiffGeneration;
+    state = state.copyWith(
+      selectedCommitFile: SelectedCommitFile(objectId: objectId, file: file),
+      isCommitDiffLoading: true,
+      clearCommitDiff: true,
+      clearMessage: true,
+    );
+    try {
+      final diff = await _reader.readCommitUnifiedDiff(
+        repository,
+        objectId: objectId,
+        path: file.path.display,
+      );
+      if (!ref.mounted ||
+          generation != _commitDiffGeneration ||
+          state.repository?.id != repository.id ||
+          state.selectedCommitId != objectId) {
+        return;
+      }
+      state = state.copyWith(commitDiff: diff, isCommitDiffLoading: false);
+    } on Object catch (error, stackTrace) {
+      if (!ref.mounted || generation != _commitDiffGeneration) return;
+      state = state.copyWith(
+        isCommitDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
     }
   }
 
@@ -1158,8 +1300,4 @@ final class RepositorySessionController
       _redactSensitiveText('$error\n$stackTrace');
 
   String _redactSensitiveText(String text) => redactGitSensitiveText(text);
-}
-
-extension<T> on List<T> {
-  T? get firstOrNull => isEmpty ? null : first;
 }

@@ -110,6 +110,10 @@ final class RepositoryViewData {
     this.commits = const [],
     this.changes = const [],
     this.selectedCommit,
+    this.commitChanges = const [],
+    this.selectedCommitFile,
+    this.commitDiff = const DiffViewData.empty(),
+    this.isCommitLoading = false,
     this.selectedChange,
     this.diff = const DiffViewData.empty(),
     this.footer = const RepositoryFooterViewData(),
@@ -132,6 +136,10 @@ final class RepositoryViewData {
   final List<CommitViewData> commits;
   final List<RepositoryChangeViewData> changes;
   final CommitDetailsViewData? selectedCommit;
+  final List<CommitFileViewData> commitChanges;
+  final CommitFileViewData? selectedCommitFile;
+  final DiffViewData commitDiff;
+  final bool isCommitLoading;
   final RepositoryChangeViewData? selectedChange;
   final DiffViewData diff;
   final RepositoryFooterViewData footer;
@@ -264,6 +272,27 @@ final class RepositoryChangeViewData {
   final bool isSelected;
   final bool isBinary;
   final bool canToggleStage;
+  final int? additions;
+  final int? deletions;
+}
+
+/// A file changed by the selected historical commit.
+final class CommitFileViewData {
+  const CommitFileViewData({
+    required this.path,
+    required this.kind,
+    this.previousPath,
+    this.isSelected = false,
+    this.isBinary = false,
+    this.additions,
+    this.deletions,
+  });
+
+  final String path;
+  final String? previousPath;
+  final RepositoryChangeKind kind;
+  final bool isSelected;
+  final bool isBinary;
   final int? additions;
   final int? deletions;
 }

@@ -103,6 +103,24 @@ void main() {
     expect(history.single.subject, 'first');
     expect(history.single.parentIds, isEmpty);
 
+    final commitChanges = await reader.readCommitChanges(
+      repository,
+      objectId: history.single.objectId,
+    );
+    expect(commitChanges.files, hasLength(1));
+    expect(commitChanges.files.single.path.display, fileName);
+    expect(commitChanges.files.single.kind, GitCommitChangeKind.added);
+    expect(commitChanges.additions, 1);
+    expect(commitChanges.deletions, 0);
+
+    final commitDiff = await reader.readCommitUnifiedDiff(
+      repository,
+      objectId: history.single.objectId,
+      path: fileName,
+    );
+    expect(commitDiff.source, GitDiffSource.commit);
+    expect(commitDiff.text, contains('+first'));
+
     final workingDiff = await reader.readUnifiedDiff(
       repository,
       path: fileName,
