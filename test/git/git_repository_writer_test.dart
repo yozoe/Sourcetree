@@ -219,6 +219,35 @@ void main() {
     },
   );
 
+  test(
+    'merges a divergent local branch with an explicit merge commit',
+    () async {
+      await fixture.writeFile('README.md', 'base\n');
+      await fixture.commit('Initial commit');
+      await fixture.runGit(['branch', 'feature/merge']);
+      await fixture.runGit(['switch', 'feature/merge']);
+      await fixture.writeFile('feature.txt', 'feature\n');
+      await fixture.commit('Feature commit');
+      await fixture.runGit(['switch', 'main']);
+      await fixture.writeFile('main.txt', 'main\n');
+      await fixture.commit('Main commit');
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+
+      await writer.mergeLocalBranch(repository, sourceName: 'feature/merge');
+
+      final status = await reader.readStatus(repository);
+      final head = (await reader.readRecentHistory(repository)).first;
+      expect(status.isClean, isTrue);
+      expect(head.parentIds, hasLength(2));
+      expect(
+        await File('${fixture.workingDirectory.path}/feature.txt').exists(),
+        isTrue,
+      );
+    },
+  );
+
   test('initializes an empty directory without relying on a shell', () async {
     final directory = await Directory.systemTemp.createTemp(
       'git-desktop-init-',

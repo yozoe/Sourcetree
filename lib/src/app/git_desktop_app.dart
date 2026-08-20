@@ -180,6 +180,8 @@ class _RepositoryWorkspaceScreenState
         _showCommitDialog();
       case RepositoryAction.createBranch:
         _showCreateBranchDialog();
+      case RepositoryAction.mergeBranch:
+        _showMergeBranchDialog();
     }
   }
 
@@ -404,6 +406,98 @@ class _RepositoryWorkspaceScreenState
       SnackBar(
         content: Text(created ? '已创建本地分支 $name。' : '分支未创建，请查看仓库错误信息。'),
         duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  /// 中文：列出除当前分支外的本地分支，供用户选择合并到当前分支的来源。
+  ///
+  /// English: Lists local branches other than the current one so the user can
+  /// choose a source to merge into the current branch.
+  Future<void> _showMergeBranchDialog() async {
+    final session = ref.read(repositorySessionProvider);
+    final currentBranch = session.status?.branch.head;
+    if (currentBranch == null) return;
+    final sourceBranches = session.localBranches
+        .map((branch) => branch.name)
+        .where((name) => name != currentBranch)
+        .toList(growable: false);
+    if (sourceBranches.isEmpty) return;
+
+    final sourceName = await showDialog<String>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: Text('合并到 $currentBranch'),
+        content: ConstrainedBox(
+          constraints: const BoxConstraints(maxWidth: 440, maxHeight: 360),
+          child: ListView.builder(
+            shrinkWrap: true,
+            itemCount: sourceBranches.length,
+            itemBuilder: (BuildContext context, int index) {
+              final source = sourceBranches[index];
+              return ListTile(
+                leading: const Icon(Icons.call_split),
+                title: Text(source),
+                subtitle: Text('合并 $source 到 $currentBranch'),
+                onTap: () => Navigator.of(context).pop(source),
+              );
+            },
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+        ],
+      ),
+    );
+    if (sourceName == null || !mounted) return;
+    await _confirmMergeBranch(currentBranch, sourceName);
+  }
+
+  /// 中文：确认后将来源分支合并到当前分支，并提示成功或需要人工处理的冲突。
+  ///
+  /// English: Confirms merging a source branch into the current branch and
+  /// reports success or a conflict that requires manual resolution.
+  Future<void> _confirmMergeBranch(
+    String currentBranch,
+    String sourceName,
+  ) async {
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('确认合并分支'),
+        content: Text(
+          '将 $sourceName 合并到 $currentBranch。Git 会创建显式合并提交；'
+          '若发生冲突，不会自动继续或中止，需先处理冲突再刷新仓库。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(context).pop(true),
+            icon: const Icon(Icons.merge_type),
+            label: const Text('合并'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+    final merged = await ref
+        .read(repositorySessionProvider.notifier)
+        .mergeLocalBranch(sourceName);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          merged
+              ? '已将 $sourceName 合并到 $currentBranch。'
+              : '合并未完成；如存在冲突，请处理后使用 Git 命令行继续或中止，再刷新仓库。',
+        ),
+        duration: const Duration(seconds: 4),
       ),
     );
   }

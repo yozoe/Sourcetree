@@ -55,7 +55,7 @@
 | 历史 | 分页列表、基础 DAG、提交详情 | 搜索、文件历史、Blame、Reflog | 高级查询 |
 | Branch / Tag | 创建/切换本地分支、从已获取远端分支创建本地跟踪分支 | 重命名、跟踪关系、Tag | Worktree |
 | 远端 | 已获取远端跟踪分支展示、Fetch、Pull、Push、进度和取消 | Remote 管理、Prune、安全 Force Push | 托管平台适配 |
-| 高级操作 | — | Merge、Rebase、Cherry-pick、Revert、Reset、Stash | 高级批量操作 |
+| 高级操作 | 本地分支安全合并、冲突状态展示 | Rebase、Cherry-pick、Revert、Reset、Stash；合并 Continue/Abort | 高级批量操作 |
 | 冲突 | 检测并展示进行中状态 | ours/theirs、Continue/Skip/Abort、外部工具 | 内置三方合并器评估 |
 | Git 扩展 | — | Submodule、LFS 基础能力 | 深度增强 |
 | 桌面集成 | Finder/终端入口、快捷键、深浅主题 | 中英文、外部 Diff/Merge、自动更新 | Windows/Linux 原生集成 |

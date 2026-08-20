@@ -8,8 +8,8 @@ import 'git_runner.dart';
 
 /// Performs the small, explicitly allowed Git mutations used by the P0 UI.
 ///
-/// This class deliberately excludes reset, clean and merge operations. Each
-/// method accepts literal inputs and never invokes a shell.
+/// This class deliberately excludes reset and clean operations. Each method
+/// accepts literal inputs and never invokes a shell.
 final class GitRepositoryWriter {
   GitRepositoryWriter(this.runner);
 
@@ -189,6 +189,42 @@ final class GitRepositoryWriter {
       ),
     );
     result.throwIfFailed(operation: 'Checking out remote branch');
+  }
+
+  /// 中文：将指定本地分支合并到当前分支；有新增提交时使用 `--no-ff` 保留显式合并记录，
+  /// 并允许 Git hooks 运行。
+  ///
+  /// English: Merges a local branch into the current branch, using `--no-ff`
+  /// for an explicit record when it contributes commits, while allowing hooks.
+  Future<void> mergeLocalBranch(
+    GitRepository repository, {
+    required String sourceName,
+  }) async {
+    final normalizedName = sourceName.trim();
+    if (normalizedName.isEmpty) {
+      throw ArgumentError.value(
+        sourceName,
+        'sourceName',
+        'A source branch name is required.',
+      );
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          'merge',
+          '--no-edit',
+          '--no-ff',
+          normalizedName,
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 512 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Merging local branch');
   }
 
   /// Initializes an existing empty directory without changing Git settings.

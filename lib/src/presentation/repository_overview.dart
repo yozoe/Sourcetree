@@ -495,6 +495,14 @@ class _RepositoryToolbar extends StatelessWidget {
                           onAction: callbacks.onAction,
                         ),
                         _ToolbarAction(
+                          action: RepositoryAction.mergeBranch,
+                          icon: Icons.merge_type,
+                          label: '合并',
+                          showLabel: showLabels,
+                          repository: repository,
+                          onAction: callbacks.onAction,
+                        ),
+                        _ToolbarAction(
                           action: RepositoryAction.commit,
                           icon: Icons.check_circle_outline,
                           label: '提交',

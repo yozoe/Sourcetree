@@ -445,6 +445,56 @@ void main() {
     },
   );
 
+  test('merges a loaded local branch into the current branch', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.runGit(['branch', 'feature/merge']);
+    await repository.runGit(['switch', 'feature/merge']);
+    await repository.writeFile('feature.txt', 'feature\n');
+    await repository.commit('Feature commit');
+    await repository.runGit(['switch', 'main']);
+    await repository.writeFile('main.txt', 'main\n');
+    await repository.commit('Main commit');
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(await controller.mergeLocalBranch('feature/merge'), isTrue);
+
+    final state = container.read(repositorySessionProvider);
+    expect(state.phase, RepositorySessionPhase.ready);
+    expect(state.status!.branch.head, 'main');
+    expect(state.commits.first.parentIds, hasLength(2));
+  });
+
+  test('refreshes conflict state when a branch merge conflicts', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.runGit(['branch', 'feature/conflict']);
+    await repository.runGit(['switch', 'feature/conflict']);
+    await repository.writeFile('README.md', 'feature\n');
+    await repository.commit('Feature change');
+    await repository.runGit(['switch', 'main']);
+    await repository.writeFile('README.md', 'main\n');
+    await repository.commit('Main change');
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(await controller.mergeLocalBranch('feature/conflict'), isFalse);
+
+    final state = container.read(repositorySessionProvider);
+    expect(state.phase, RepositorySessionPhase.error);
+    expect(state.status!.conflictedEntries, isNotEmpty);
+    expect(state.message, contains('合并遇到冲突'));
+  });
+
   test('fetches origin and refreshes ahead-behind state', () async {
     final source = await GitTestRepository.create();
     addTearDown(source.dispose);

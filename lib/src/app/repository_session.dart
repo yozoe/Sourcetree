@@ -1378,6 +1378,60 @@ final class RepositorySessionController
     }
   }
 
+  /// 中文：将指定本地分支合并到当前分支；仅在工作区干净、来源不是当前分支且来源已加载时执行。
+  /// 合并冲突会保留在仓库中并刷新为可见冲突状态，但不会自动继续或中止。
+  ///
+  /// English: Merges a loaded local source branch into the current branch only
+  /// with a clean work tree and a distinct source. Merge conflicts remain in
+  /// the repository and are refreshed for display; they are never continued or
+  /// aborted automatically.
+  Future<bool> mergeLocalBranch(String sourceName) async {
+    final repository = state.repository;
+    final status = state.status;
+    final currentBranch = status?.branch.head;
+    if (repository == null ||
+        status == null ||
+        currentBranch == null ||
+        !status.isClean ||
+        state.phase == RepositorySessionPhase.loading ||
+        sourceName == currentBranch ||
+        !state.localBranches.any((branch) => branch.name == sourceName)) {
+      return false;
+    }
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.mergeLocalBranch(repository, sourceName: sourceName);
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      // A failed merge can leave conflict entries and MERGE_HEAD behind. Read
+      // them before showing the error so the user sees the actual recovery
+      // state instead of the pre-merge snapshot.
+      await refresh();
+      final hasConflicts = state.status?.conflictedEntries.isNotEmpty ?? false;
+      final message =
+          hasConflicts ||
+              (error is GitCommandException &&
+                  error.kind == GitErrorKind.conflicts)
+          ? '合并遇到冲突。请处理冲突后使用 Git 命令行继续或中止合并，再刷新仓库。'
+          : _friendlyError(error);
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: message,
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      return false;
+    }
+  }
+
   /// 中文：读取所需的数据。
   /// English: Reads the required data.
   Future<String> _readGitVersion() async {

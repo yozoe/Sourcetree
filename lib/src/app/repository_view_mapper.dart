@@ -75,6 +75,13 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
   if (branch.isUnborn || state.phase == RepositorySessionPhase.loading) {
     disabledActions.add(RepositoryAction.createBranch);
   }
+  if (branch.isUnborn ||
+      branch.head == null ||
+      state.localBranches.length < 2 ||
+      !status.isClean ||
+      state.phase == RepositorySessionPhase.loading) {
+    disabledActions.add(RepositoryAction.mergeBranch);
+  }
   if (status.stagedEntries.isEmpty ||
       state.phase == RepositorySessionPhase.loading) {
     disabledActions.add(RepositoryAction.commit);

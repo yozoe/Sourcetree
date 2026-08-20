@@ -18,6 +18,7 @@ enum RepositoryAction {
   push,
   showOperationLog,
   createBranch,
+  mergeBranch,
   commit,
   refresh,
   retry,
