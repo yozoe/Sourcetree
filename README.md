@@ -27,6 +27,18 @@ flutter test integration_test/macos_core_workflow_test.dart -d macos
 flutter build macos --debug
 ```
 
+## 安装到 Applications
+
+在项目根目录运行：
+
+```sh
+./install_macos.sh
+```
+
+脚本会构建 Release app，使用系统授权安装到 `/Applications/Git Desktop.app`，并立即启动。
+如已存在同名 app，会先移动到带时间戳的 `/Applications/Git Desktop.backup-*.app` 备份；
+脚本不会关闭 Gatekeeper 或修改任何 macOS 安全设置。
+
 ## 首发目标
 
 - macOS 优先，Apple Silicon 为第一验证平台。
