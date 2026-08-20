@@ -88,7 +88,8 @@ fixture 路径验证 IPC，并以 `@visibleForTesting` 标识测试入口；该�
 
 - [x] macOS helper 的 Debug bundle 路径、C 编译和签名完整性验证。
 - [ ] Release/Developer ID 签名与 Gatekeeper 行为验证。
-- [ ] nonce 重放、错误 UID、第二连接、畸形 UTF-8 和 helper 欺骗测试。
+- [x] nonce 重放、第二连接、畸形 UTF-8 与错误 nonce helper 的负向测试。
+- [ ] 错误 UID 与签名 helper 欺骗测试（需要 native server peer UID 验证与发布签名环境）。
 - [x] 非秘密 IPC 请求的未知字段、非法 nonce 与超长 prompt 校验。
 - [x] 一次性 Flutter Unix socket 的 nonce、单连接、超时、拒绝和清理测试。
 - [x] macOS helper 与 Flutter session 的进程级 socket 往返测试（测试临时编译同一 C 源码）。

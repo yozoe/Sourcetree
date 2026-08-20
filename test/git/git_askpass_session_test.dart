@@ -63,6 +63,39 @@ void main() {
     },
   );
 
+  test('rejects malformed UTF-8 without calling the prompt handler', () async {
+    var promptCalls = 0;
+    final session = await GitAskPassSession.start(
+      onPrompt: (_) async {
+        promptCalls += 1;
+        return 'must not be used';
+      },
+    );
+    addTearDown(session.close);
+
+    final socket = await _connect(session.socketPath);
+    socket.add(<int>[0xff, 0x0a]);
+    await socket.flush();
+
+    expect(await utf8.decoder.bind(socket).join(), isEmpty);
+    await session.closed;
+    expect(promptCalls, 0);
+    expect(session.status, GitAskPassSessionStatus.rejected);
+  });
+
+  test('rejects a replay after a completed one-time session', () async {
+    final session = await GitAskPassSession.start(onPrompt: (_) async => 'one');
+    addTearDown(session.close);
+
+    expect(await _request(session, prompt: 'Password:'), '{"secret":"one"}\n');
+    await session.closed;
+
+    await expectLater(
+      _connect(session.socketPath),
+      throwsA(isA<SocketException>()),
+    );
+  });
+
   test('allows only one connection', () async {
     final promptStarted = Completer<void>();
     final allowResponse = Completer<void>();
@@ -191,6 +224,25 @@ void main() {
       );
       expect(rejected.exitCode, 1);
       expect(rejected.stdout, isEmpty);
+
+      final wrongNonceSession = await GitAskPassSession.startForTesting(
+        onPrompt: (_) async => 'must not be used',
+        appExecutablePath: '${macosDirectory.path}/Git Desktop',
+      );
+      addTearDown(wrongNonceSession.close);
+      final wrongNonce = await Process.run(
+        helper.path,
+        <String>['Password:'],
+        environment: <String, String>{
+          ...wrongNonceSession.environmentForBundledHelper(),
+          'GIT_DESKTOP_ASKPASS_NONCE': '0' * 64,
+        },
+        includeParentEnvironment: false,
+      );
+      expect(wrongNonce.exitCode, 1);
+      expect(wrongNonce.stdout, isEmpty);
+      await wrongNonceSession.closed;
+      expect(wrongNonceSession.status, GitAskPassSessionStatus.rejected);
     },
     skip: !Platform.isMacOS,
   );
