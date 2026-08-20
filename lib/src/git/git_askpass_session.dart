@@ -40,6 +40,7 @@ final class GitAskPassSession {
 
   static const Duration defaultTimeout = Duration(seconds: 60);
   static const int maxSecretBytes = 16 * 1024;
+  static const String helperFileName = 'git-desktop-askpass';
   static const int _maxRequestBytes =
       GitAskPassRequest.maxPromptLength * 2 + 256;
   static const int _unixSocketPathLimit = 103;
@@ -108,6 +109,25 @@ final class GitAskPassSession {
   bool _requestAccepted = false;
 
   GitAskPassSessionStatus get status => _status;
+
+  /// Creates the explicit Git environment for the helper bundled next to the
+  /// app executable. This does not enable AskPass by itself: callers must only
+  /// pass it to an interactive, user-initiated Git invocation.
+  ///
+  /// The path is derived from the app bundle layout rather than a repository
+  /// setting or remote input, so a repository cannot choose which executable
+  /// receives credentials.
+  Map<String, String> environmentForBundledHelper({
+    required String appExecutablePath,
+  }) {
+    final helperPath = _bundledHelperPathForExecutable(appExecutablePath);
+    return Map<String, String>.unmodifiable(<String, String>{
+      'GIT_ASKPASS': helperPath,
+      'GIT_TERMINAL_PROMPT': '0',
+      'GIT_DESKTOP_ASKPASS_SOCKET': socketPath,
+      'GIT_DESKTOP_ASKPASS_NONCE': nonce,
+    });
+  }
 
   /// Completes only after the listener, socket file, and private directory
   /// have been closed or removed.
@@ -236,6 +256,30 @@ final class GitAskPassSession {
       await _deleteDirectory(directory);
       rethrow;
     }
+  }
+
+  static String _bundledHelperPathForExecutable(String appExecutablePath) {
+    final executable = File(appExecutablePath);
+    if (!executable.isAbsolute) {
+      throw ArgumentError.value(
+        appExecutablePath,
+        'appExecutablePath',
+        'The app executable must be an absolute bundle path.',
+      );
+    }
+    final macosDirectory = executable.parent;
+    final contentsDirectory = macosDirectory.parent;
+    final appDirectory = contentsDirectory.parent;
+    if (!macosDirectory.path.endsWith('${Platform.pathSeparator}MacOS') ||
+        !contentsDirectory.path.endsWith('${Platform.pathSeparator}Contents') ||
+        !appDirectory.path.endsWith('.app')) {
+      throw ArgumentError.value(
+        appExecutablePath,
+        'appExecutablePath',
+        'The app executable must be inside a macOS app bundle.',
+      );
+    }
+    return '${macosDirectory.path}${Platform.pathSeparator}$helperFileName';
   }
 
   static Future<void> _verifyPrivateEndpoint(

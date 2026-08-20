@@ -104,6 +104,35 @@ void main() {
     expect(await directory.exists(), isFalse);
   });
 
+  test('builds AskPass environment only from the bundled app path', () async {
+    final session = await GitAskPassSession.start(onPrompt: (_) async => null);
+    addTearDown(session.close);
+
+    final environment = session.environmentForBundledHelper(
+      appExecutablePath:
+          '/Applications/Git Desktop.app/Contents/MacOS/Git Desktop',
+    );
+
+    expect(
+      environment['GIT_ASKPASS'],
+      '/Applications/Git Desktop.app/Contents/MacOS/git-desktop-askpass',
+    );
+    expect(environment['GIT_TERMINAL_PROMPT'], '0');
+    expect(environment['GIT_DESKTOP_ASKPASS_SOCKET'], session.socketPath);
+    expect(environment['GIT_DESKTOP_ASKPASS_NONCE'], session.nonce);
+    expect(
+      () => session.environmentForBundledHelper(
+        appExecutablePath: 'not-a-bundle',
+      ),
+      throwsArgumentError,
+    );
+    expect(
+      () =>
+          session.environmentForBundledHelper(appExecutablePath: '/tmp/helper'),
+      throwsArgumentError,
+    );
+  });
+
   test(
     'treats a cancelled prompt as rejection instead of an empty secret',
     () async {
