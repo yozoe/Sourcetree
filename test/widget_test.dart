@@ -61,4 +61,37 @@ void main() {
       'initial',
     );
   });
+
+  testWidgets('exposes the operation log from the status bar', (tester) async {
+    RepositoryAction? action;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              footer: RepositoryFooterViewData(
+                operations: [
+                  RepositoryOperationViewData(
+                    id: 'operation-1',
+                    label: '正在获取远端更新',
+                    state: RepositoryOperationState.running,
+                    startedAt: DateTime(2026, 8, 20, 9),
+                  ),
+                ],
+              ),
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onAction: (next) => action = next,
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byTooltip('查看操作日志'));
+    expect(action, RepositoryAction.showOperationLog);
+  });
 }

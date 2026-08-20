@@ -151,7 +151,10 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                 ],
               ),
             ),
-            _RepositoryStatusBar(data: repository.footer),
+            _RepositoryStatusBar(
+              data: repository.footer,
+              onAction: widget.callbacks.onAction,
+            ),
           ],
         ),
       ),
@@ -1988,9 +1991,10 @@ class _PaneEmptyState extends StatelessWidget {
 }
 
 class _RepositoryStatusBar extends StatelessWidget {
-  const _RepositoryStatusBar({required this.data});
+  const _RepositoryStatusBar({required this.data, this.onAction});
 
   final RepositoryFooterViewData data;
+  final RepositoryActionCallback? onAction;
 
   @override
   Widget build(BuildContext context) {
@@ -2038,6 +2042,15 @@ class _RepositoryStatusBar extends StatelessWidget {
                 style: theme.textTheme.labelSmall,
               ),
             ),
+            if (data.operations.isNotEmpty)
+              IconButton(
+                onPressed: onAction == null
+                    ? null
+                    : () => onAction!(RepositoryAction.showOperationLog),
+                icon: const Icon(Icons.receipt_long_outlined, size: 17),
+                tooltip: '查看操作日志',
+                visualDensity: VisualDensity.compact,
+              ),
             if (data.gitVersion != null)
               Text(
                 data.gitVersion!,

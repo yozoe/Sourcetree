@@ -16,6 +16,7 @@ enum RepositoryAction {
   fetch,
   pull,
   push,
+  showOperationLog,
   createBranch,
   commit,
   refresh,
@@ -309,6 +310,7 @@ final class RepositoryFooterViewData {
     this.message = '就绪',
     this.operationLabel,
     this.operationProgress,
+    this.operations = const [],
     this.hasWarnings = false,
     this.gitVersion,
   });
@@ -318,8 +320,33 @@ final class RepositoryFooterViewData {
 
   /// Progress in the inclusive range 0–1. Null represents indeterminate work.
   final double? operationProgress;
+  final List<RepositoryOperationViewData> operations;
   final bool hasWarnings;
   final String? gitVersion;
+}
+
+enum RepositoryOperationState { running, succeeded, cancelled, failed }
+
+/// A redacted, user-facing record of a repository operation.
+///
+/// Command arguments and raw Git output intentionally do not appear here so
+/// remote URLs and credentials cannot leak through the UI.
+final class RepositoryOperationViewData {
+  const RepositoryOperationViewData({
+    required this.id,
+    required this.label,
+    required this.state,
+    required this.startedAt,
+    this.completedAt,
+    this.message,
+  });
+
+  final String id;
+  final String label;
+  final RepositoryOperationState state;
+  final DateTime startedAt;
+  final DateTime? completedAt;
+  final String? message;
 }
 
 final class RepositoryOverviewLayout {

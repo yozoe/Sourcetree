@@ -170,6 +170,13 @@ void main() {
       container.read(repositorySessionProvider).commits.single.subject,
       'Initial commit',
     );
+    final operation = container
+        .read(repositorySessionProvider)
+        .operations
+        .single;
+    expect(operation.kind, RepositoryOperationKind.clone);
+    expect(operation.outcome, RepositoryOperationOutcome.succeeded);
+    expect(operation.completedAt, isNotNull);
   });
 
   test('fetches origin and refreshes ahead-behind state', () async {
@@ -201,6 +208,10 @@ void main() {
     final state = container.read(repositorySessionProvider);
     expect(state.phase, RepositorySessionPhase.ready);
     expect(state.status!.branch.behind, 1);
+    final operation = state.operations.firstWhere(
+      (operation) => operation.kind == RepositoryOperationKind.fetch,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.succeeded);
   });
 
   test('does not fetch when origin is not configured', () async {
@@ -312,6 +323,11 @@ void main() {
     expect(state.phase, RepositorySessionPhase.ready);
     expect(state.status!.branch.ahead, 0);
     expect(state.status!.branch.behind, 0);
+    expect(state.operations.single.kind, RepositoryOperationKind.push);
+    expect(
+      state.operations.single.outcome,
+      RepositoryOperationOutcome.succeeded,
+    );
     expect(
       (await source.runGit([
         'rev-parse',

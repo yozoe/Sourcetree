@@ -265,8 +265,9 @@ detached HEAD、SHA-1/SHA-256 等边界。
 - Fetch `origin`（不修改工作区，支持取消）。
 - Pull `--ff-only`（仅 clean worktree/index、配置 upstream 时启用，支持取消；拒绝隐式 merge commit）。
 - 安全 Push 当前分支 upstream（仅允许存在 ahead 提交时执行，显式锁定远端/refspec，不受用户 `push.default` 影响；显示目标与数量，支持取消，禁止 force push）。
+- 统一操作进度与日志：Clone、Fetch、Pull、Push 均记录运行/成功/取消/失败状态，状态栏显示不确定进度并可打开最近 12 条的脱敏操作记录。
 
-待完成：统一操作日志/进度面板、更完整的认证交互，以及 Push 取消后的远端状态核验。
+待完成：更完整的认证交互，以及 Push 取消后的远端状态核验。
 
 退出条件：用户无需终端完成
 “克隆 → 修改 → 暂存 → 提交 → 创建分支 → 推送”；状态与 Git CLI 一致，
@@ -381,6 +382,5 @@ CRLF、长路径、大小写、symlink、可执行位、窗口和系统菜单差
 
 ## 14. 下一步
 
-1. 建立统一操作日志和进度面板，覆盖 Clone、Fetch、Pull、Push 的运行、取消、失败与恢复。
-2. 补充 Push 取消后的远端状态核验，并评估一次性 AskPass IPC。
-3. 完成“克隆 → 修改 → 暂存 → 提交 → 创建分支 → 推送”的 macOS E2E 冒烟验证。
+1. 补充 Push 取消后的远端状态核验，并评估一次性 AskPass IPC。
+2. 完成“克隆 → 修改 → 暂存 → 提交 → 创建分支 → 推送”的 macOS E2E 冒烟验证。

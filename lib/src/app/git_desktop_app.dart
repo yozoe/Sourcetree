@@ -147,6 +147,8 @@ class _RepositoryWorkspaceScreenState
         _confirmPush();
       case RepositoryAction.cancelPush:
         ref.read(repositorySessionProvider.notifier).cancelPush();
+      case RepositoryAction.showOperationLog:
+        _showOperationLog();
       case RepositoryAction.refresh:
       case RepositoryAction.retry:
         ref.read(repositorySessionProvider.notifier).refresh();
@@ -156,6 +158,89 @@ class _RepositoryWorkspaceScreenState
         _showCreateBranchDialog();
     }
   }
+
+  Future<void> _showOperationLog() async {
+    await showDialog<void>(
+      context: context,
+      builder: (BuildContext context) => Consumer(
+        builder: (BuildContext context, WidgetRef ref, Widget? child) {
+          final operations = ref.watch(repositorySessionProvider).operations;
+          return AlertDialog(
+            title: const Text('操作日志'),
+            content: SizedBox(
+              width: 560,
+              height: 360,
+              child: operations.isEmpty
+                  ? const Center(child: Text('尚无可显示的远端操作。'))
+                  : ListView.separated(
+                      itemCount: operations.length,
+                      separatorBuilder: (BuildContext context, int index) =>
+                          const Divider(height: 1),
+                      itemBuilder: (BuildContext context, int index) {
+                        final operation = operations[index];
+                        return ListTile(
+                          dense: true,
+                          leading: Icon(_operationIcon(operation.outcome)),
+                          title: Text(_operationName(operation.kind)),
+                          subtitle: Text(
+                            [
+                              _operationSummary(operation.outcome),
+                              _operationTime(operation),
+                              if (operation.message != null) operation.message!,
+                            ].join('\n'),
+                          ),
+                        );
+                      },
+                    ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(),
+                child: const Text('关闭'),
+              ),
+            ],
+          );
+        },
+      ),
+    );
+  }
+
+  String _operationName(RepositoryOperationKind kind) => switch (kind) {
+    RepositoryOperationKind.clone => '克隆仓库',
+    RepositoryOperationKind.fetch => '获取远端更新',
+    RepositoryOperationKind.pull => '快速前进拉取',
+    RepositoryOperationKind.push => '推送当前分支',
+  };
+
+  String _operationSummary(RepositoryOperationOutcome outcome) =>
+      switch (outcome) {
+        RepositoryOperationOutcome.running => '正在运行',
+        RepositoryOperationOutcome.succeeded => '已完成',
+        RepositoryOperationOutcome.cancelled => '已取消；请检查仓库状态。',
+        RepositoryOperationOutcome.failed => '未完成',
+      };
+
+  IconData _operationIcon(RepositoryOperationOutcome outcome) =>
+      switch (outcome) {
+        RepositoryOperationOutcome.running => Icons.sync,
+        RepositoryOperationOutcome.succeeded => Icons.check_circle_outline,
+        RepositoryOperationOutcome.cancelled => Icons.cancel_outlined,
+        RepositoryOperationOutcome.failed => Icons.error_outline,
+      };
+
+  String _operationTime(RepositoryOperationRecord operation) {
+    final started = operation.startedAt.toLocal();
+    final startedAt =
+        '${_twoDigits(started.hour)}:${_twoDigits(started.minute)}';
+    final completed = operation.completedAt;
+    if (completed == null) {
+      return '$startedAt 开始 · 进行中';
+    }
+    final seconds = completed.difference(operation.startedAt).inSeconds;
+    return '$startedAt 开始 · 用时 ${seconds < 1 ? '< 1 秒' : '$seconds 秒'}';
+  }
+
+  String _twoDigits(int value) => value.toString().padLeft(2, '0');
 
   Future<void> _confirmPull() async {
     final approved = await showDialog<bool>(

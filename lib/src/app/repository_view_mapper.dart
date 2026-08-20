@@ -48,6 +48,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
   final changes = _mapChanges(state);
   final commits = _mapCommits(state, branch);
   final selectedCommit = _findCommit(state.commits, state.selectedCommitId);
+  final runningOperation = _runningOperation(state.operations);
 
   final disabledActions = <RepositoryAction>{
     RepositoryAction.cloneRepository,
@@ -144,7 +145,20 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     diff: _mapDiff(state),
     footer: RepositoryFooterViewData(
       message: _footerMessage(state, changes.length),
-      operationLabel: state.isDiffLoading ? '读取 Diff' : null,
+      operationLabel: runningOperation == null
+          ? (state.isDiffLoading ? '读取 Diff' : null)
+          : '正在${_operationLabel(runningOperation.kind)}',
+      operations: [
+        for (final operation in state.operations)
+          RepositoryOperationViewData(
+            id: operation.id,
+            label: _operationLabel(operation.kind),
+            state: _operationState(operation.outcome),
+            startedAt: operation.startedAt,
+            completedAt: operation.completedAt,
+            message: operation.message,
+          ),
+      ],
       hasWarnings:
           status.conflictedEntries.isNotEmpty ||
           state.phase == RepositorySessionPhase.error,
@@ -154,6 +168,33 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     searchQuery: state.searchQuery,
   );
 }
+
+RepositoryOperationRecord? _runningOperation(
+  List<RepositoryOperationRecord> operations,
+) {
+  for (final operation in operations) {
+    if (operation.outcome == RepositoryOperationOutcome.running) {
+      return operation;
+    }
+  }
+  return null;
+}
+
+String _operationLabel(RepositoryOperationKind kind) => switch (kind) {
+  RepositoryOperationKind.clone => '克隆仓库',
+  RepositoryOperationKind.fetch => '获取远端更新',
+  RepositoryOperationKind.pull => '快速前进拉取',
+  RepositoryOperationKind.push => '推送当前分支',
+};
+
+RepositoryOperationState _operationState(
+  RepositoryOperationOutcome outcome,
+) => switch (outcome) {
+  RepositoryOperationOutcome.running => RepositoryOperationState.running,
+  RepositoryOperationOutcome.succeeded => RepositoryOperationState.succeeded,
+  RepositoryOperationOutcome.cancelled => RepositoryOperationState.cancelled,
+  RepositoryOperationOutcome.failed => RepositoryOperationState.failed,
+};
 
 List<CommitViewData> _mapCommits(
   RepositorySessionState state,

@@ -26,6 +26,43 @@ final repositorySessionProvider =
 
 enum RepositorySessionPhase { empty, loading, ready, error }
 
+enum RepositoryOperationKind { clone, fetch, pull, push }
+
+enum RepositoryOperationOutcome { running, succeeded, cancelled, failed }
+
+final class RepositoryOperationRecord {
+  const RepositoryOperationRecord({
+    required this.id,
+    required this.kind,
+    required this.outcome,
+    required this.startedAt,
+    this.completedAt,
+    this.message,
+  });
+
+  final String id;
+  final RepositoryOperationKind kind;
+  final RepositoryOperationOutcome outcome;
+  final DateTime startedAt;
+  final DateTime? completedAt;
+  final String? message;
+
+  RepositoryOperationRecord complete({
+    required RepositoryOperationOutcome outcome,
+    required DateTime completedAt,
+    String? message,
+  }) {
+    return RepositoryOperationRecord(
+      id: id,
+      kind: kind,
+      outcome: outcome,
+      startedAt: startedAt,
+      completedAt: completedAt,
+      message: message,
+    );
+  }
+}
+
 final class SelectedRepositoryChange {
   const SelectedRepositoryChange({
     required this.entry,
@@ -61,6 +98,7 @@ final class RepositorySessionState {
     this.isFetchRunning = false,
     this.isPullRunning = false,
     this.isPushRunning = false,
+    this.operations = const [],
     this.searchQuery = '',
     this.gitVersion,
     this.message,
@@ -85,6 +123,7 @@ final class RepositorySessionState {
   final bool isFetchRunning;
   final bool isPullRunning;
   final bool isPushRunning;
+  final List<RepositoryOperationRecord> operations;
   final String searchQuery;
   final String? gitVersion;
   final String? message;
@@ -106,6 +145,7 @@ final class RepositorySessionState {
     bool? isFetchRunning,
     bool? isPullRunning,
     bool? isPushRunning,
+    List<RepositoryOperationRecord>? operations,
     String? searchQuery,
     String? gitVersion,
     String? message,
@@ -132,6 +172,7 @@ final class RepositorySessionState {
       isFetchRunning: isFetchRunning ?? this.isFetchRunning,
       isPullRunning: isPullRunning ?? this.isPullRunning,
       isPushRunning: isPushRunning ?? this.isPushRunning,
+      operations: operations ?? this.operations,
       searchQuery: searchQuery ?? this.searchQuery,
       gitVersion: gitVersion ?? this.gitVersion,
       message: clearMessage ? null : message ?? this.message,
@@ -150,6 +191,7 @@ final class RepositorySessionController
   late GitRepositoryWriter _writer;
   int _repositoryGeneration = 0;
   int _diffGeneration = 0;
+  int _operationSequence = 0;
   GitCancellationToken? _cloneCancellation;
   GitCancellationToken? _fetchCancellation;
   GitCancellationToken? _pullCancellation;
@@ -162,6 +204,49 @@ final class RepositorySessionController
     _reader = ref.watch(gitRepositoryReaderProvider);
     _writer = ref.watch(gitRepositoryWriterProvider);
     return const RepositorySessionState.empty();
+  }
+
+  RepositoryOperationRecord _startOperation(RepositoryOperationKind kind) {
+    final operation = RepositoryOperationRecord(
+      id: 'operation-${++_operationSequence}',
+      kind: kind,
+      outcome: RepositoryOperationOutcome.running,
+      startedAt: DateTime.now(),
+    );
+    state = state.copyWith(
+      operations: List<RepositoryOperationRecord>.unmodifiable(
+        [operation, ...state.operations].take(12),
+      ),
+    );
+    return operation;
+  }
+
+  void _completeOperation(
+    RepositoryOperationRecord operation, {
+    required RepositoryOperationOutcome outcome,
+    String? message,
+  }) {
+    state = state.copyWith(
+      operations: List<RepositoryOperationRecord>.unmodifiable([
+        for (final existing in state.operations)
+          if (existing.id == operation.id)
+            existing.complete(
+              outcome: outcome,
+              completedAt: DateTime.now(),
+              message: message == null ? null : _redactSensitiveText(message),
+            )
+          else
+            existing,
+      ]),
+    );
+  }
+
+  RepositoryOperationOutcome _operationOutcomeForError(Object error) {
+    return error is GitCancelledException ||
+            (error is GitCommandException &&
+                error.kind == GitErrorKind.cancelled)
+        ? RepositoryOperationOutcome.cancelled
+        : RepositoryOperationOutcome.failed;
   }
 
   Future<void> openRepository(String path) async {
@@ -211,6 +296,7 @@ final class RepositorySessionController
         localBranches: localBranches,
         commits: commits,
         selectedCommitId: commits.firstOrNull?.objectId,
+        operations: state.operations,
         gitVersion: results[4] as String,
         searchQuery: state.searchQuery,
       );
@@ -272,6 +358,7 @@ final class RepositorySessionController
     _diffGeneration++;
     final cancellation = GitCancellationToken();
     _cloneCancellation = cancellation;
+    final operation = _startOperation(RepositoryOperationKind.clone);
     state = state.copyWith(
       phase: RepositorySessionPhase.loading,
       requestedPath: directoryPath.trim(),
@@ -288,15 +375,29 @@ final class RepositorySessionController
         cancellationToken: cancellation,
       );
       await openRepository(directoryPath);
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.failed,
+        message: succeeded ? '仓库已克隆并打开。' : state.message,
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
       final recovery = await _cloneRecoveryMessage(directoryPath);
+      final message = recovery ?? _friendlyError(error);
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         isCloneRunning: false,
-        message: recovery ?? _friendlyError(error),
+        message: message,
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: message,
       );
       return false;
     } finally {
@@ -317,6 +418,7 @@ final class RepositorySessionController
     }
     final cancellation = GitCancellationToken();
     _fetchCancellation = cancellation;
+    final operation = _startOperation(RepositoryOperationKind.fetch);
     state = state.copyWith(
       phase: RepositorySessionPhase.loading,
       isFetchRunning: true,
@@ -328,14 +430,28 @@ final class RepositorySessionController
     try {
       await _writer.fetchOrigin(repository, cancellationToken: cancellation);
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.failed,
+        message: succeeded ? '已更新远端引用。' : state.message,
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
+      final message = _friendlyError(error);
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isFetchRunning: false,
         isDiffLoading: false,
-        message: _friendlyError(error),
+        message: message,
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: message,
       );
       return false;
     } finally {
@@ -360,6 +476,7 @@ final class RepositorySessionController
     }
     final cancellation = GitCancellationToken();
     _pullCancellation = cancellation;
+    final operation = _startOperation(RepositoryOperationKind.pull);
     state = state.copyWith(
       phase: RepositorySessionPhase.loading,
       isPullRunning: true,
@@ -374,17 +491,31 @@ final class RepositorySessionController
         cancellationToken: cancellation,
       );
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.failed,
+        message: succeeded ? '已快速前进拉取。' : state.message,
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
       // Pull can fetch successfully before rejecting a non-fast-forward update.
       // Refresh before showing the error so refs and ahead/behind stay accurate.
       await refresh();
+      final message = _friendlyError(error);
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isPullRunning: false,
         isDiffLoading: false,
-        message: _friendlyError(error),
+        message: message,
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: message,
       );
       return false;
     } finally {
@@ -409,6 +540,7 @@ final class RepositorySessionController
     }
     final cancellation = GitCancellationToken();
     _pushCancellation = cancellation;
+    final operation = _startOperation(RepositoryOperationKind.push);
     state = state.copyWith(
       phase: RepositorySessionPhase.loading,
       isPushRunning: true,
@@ -420,18 +552,32 @@ final class RepositorySessionController
     try {
       await _writer.pushUpstream(repository, cancellationToken: cancellation);
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.failed,
+        message: succeeded ? '已推送当前分支。' : state.message,
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
       // A push may reach the remote before the process exits or is cancelled.
       // Refresh local tracking state, but do not claim that the remote result
       // is known; the user can Fetch to verify it.
       await refresh();
+      final message = _friendlyError(error);
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isPushRunning: false,
         isDiffLoading: false,
-        message: _friendlyError(error),
+        message: message,
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: message,
       );
       return false;
     } finally {
