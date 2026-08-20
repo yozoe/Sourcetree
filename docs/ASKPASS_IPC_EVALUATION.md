@@ -93,6 +93,10 @@ fixture 路径验证 IPC，但该构建器尚未接入 `GitInvocation`，因此�
 
 ## 当前边界
 
-当前版本尚未提供认证输入 UI，也尚未把 helper/session 接入 GitRunner；私有远端
-仍依赖用户现有无交互 credential helper 或 SSH Agent。出现认证需求时应用显示
-可操作的认证错误，不会在隐藏的 Git 子进程中等待终端输入。
+当前版本尚未把认证 UI、helper 或 session 接入 GitRunner；私有远端仍依赖用户现有
+无交互 credential helper 或 SSH Agent。出现认证需求时应用显示可操作的认证错误，
+不会在隐藏的 Git 子进程中等待终端输入。
+
+受控认证弹窗已作为独立 UI 实现，但尚未由 Git 操作调用：它只显示认证类型，不渲染
+原始 Git prompt、完整 URL 或用户名；密码和私钥口令字段关闭自动填充、建议、自动更正
+与选择菜单，取消返回 `null`。接入前仍必须先完成 native UID owner 校验。
