@@ -29,9 +29,10 @@ macOS bundle 的用户主动远端操作可使用单次受控 AskPass；发布�
 
 ## UI 基础库
 
-桌面界面通过本地 package 依赖接入 `yeknom_ui_kit` 的 `lib/`，并使用
+桌面界面通过固定 Git 提交依赖接入 `yeknom_ui_kit` 的 `lib/`，并使用
 `YeknomWorkbenchTheme` 的 Cobalt 配色。该依赖只提供 Flutter Material 的主题、语义颜色
-和可复用控件；Git、状态管理、文件访问和业务文案仍保留在本项目中。
+和可复用控件；Git、状态管理、文件访问和业务文案仍保留在本项目中。固定提交使本项目在
+全新克隆和 CI 环境中无需特定本地目录结构即可复现构建。
 
 ## 运行
 

@@ -775,9 +775,11 @@ packages:
   yeknom_ui_kit:
     dependency: "direct main"
     description:
-      path: "../private/yeknom-ui-kit"
-      relative: true
-    source: path
+      path: "."
+      ref: dc1ee84289297c3e63867d94ea2a9d3122b2889f
+      resolved-ref: dc1ee84289297c3e63867d94ea2a9d3122b2889f
+      url: "git@github.com:yozoe/yeknom-ui-kit.git"
+    source: git
     version: "0.3.0"
 sdks:
   dart: ">=3.11.4 <4.0.0"

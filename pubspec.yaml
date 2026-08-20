@@ -37,7 +37,9 @@ dependencies:
   path: ^1.9.1
   path_provider: ^2.1.5
   yeknom_ui_kit:
-    path: ../private/yeknom-ui-kit
+    git:
+      url: git@github.com:yozoe/yeknom-ui-kit.git
+      ref: dc1ee84289297c3e63867d94ea2a9d3122b2889f
 
 dev_dependencies:
   flutter_test:
