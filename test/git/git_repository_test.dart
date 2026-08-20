@@ -120,6 +120,51 @@ void main() {
     expect(stagedDiff.text, contains('+second'));
   });
 
+  test(
+    'reads reachable commits from every local branch for the graph',
+    () async {
+      const fileName = 'graph.txt';
+      final file = File(
+        '${temporaryDirectory.path}${Platform.pathSeparator}$fileName',
+      );
+      await file.writeAsString('base\n');
+      await _git(temporaryDirectory.path, ['add', '--', fileName]);
+      await _git(temporaryDirectory.path, ['commit', '--quiet', '-m', 'base']);
+
+      await _git(temporaryDirectory.path, [
+        'checkout',
+        '--quiet',
+        '-b',
+        'feature/history-graph',
+      ]);
+      await file.writeAsString('feature\n');
+      await _git(temporaryDirectory.path, ['add', '--', fileName]);
+      await _git(temporaryDirectory.path, [
+        'commit',
+        '--quiet',
+        '-m',
+        'feature commit',
+      ]);
+      await _git(temporaryDirectory.path, ['checkout', '--quiet', '-']);
+      await file.writeAsString('main\n');
+      await _git(temporaryDirectory.path, ['add', '--', fileName]);
+      await _git(temporaryDirectory.path, [
+        'commit',
+        '--quiet',
+        '-m',
+        'main commit',
+      ]);
+
+      final repository = (await inspector.inspect(temporaryDirectory.path))!;
+      final history = await reader.readRecentHistory(repository);
+
+      expect(
+        history.map((commit) => commit.subject),
+        containsAll(['main commit', 'feature commit', 'base']),
+      );
+    },
+  );
+
   test('reads local branches through for-each-ref', () async {
     const fileName = 'README.md';
     await File(

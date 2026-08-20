@@ -237,7 +237,14 @@ bool _matches(GitCommit commit, String query) {
 }
 
 List<CommitGraphViewData> _buildGraph(List<GitCommit> commits) {
-  final lanes = <String>[];
+  final parentIds = <String>{for (final commit in commits) ...commit.parentIds};
+  // Start with every visible branch tip. This gives sibling branches a stable
+  // lane before either one is rendered, so their lines can remain continuous
+  // instead of collapsing into a single HEAD-only column.
+  final lanes = <String>[
+    for (final commit in commits)
+      if (!parentIds.contains(commit.objectId)) commit.objectId,
+  ];
   final result = <CommitGraphViewData>[];
   for (final commit in commits) {
     var lane = lanes.indexOf(commit.objectId);

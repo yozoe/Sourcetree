@@ -202,6 +202,7 @@ final class GitRepositoryReader {
           '--max-count=$limit',
           '--skip=$offset',
           '--format=$gitHistoryFormat',
+          '--branches',
           'HEAD',
           '--',
         ],

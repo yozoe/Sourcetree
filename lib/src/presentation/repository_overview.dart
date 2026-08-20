@@ -1036,8 +1036,8 @@ class _CommitGraphPainter extends CustomPainter {
 
     for (final int activeLane in graph.activeLanes) {
       final Paint linePaint = Paint()
-        ..color = _color(activeLane).withValues(alpha: selected ? 1 : .9)
-        ..strokeWidth = 2
+        ..color = _color(activeLane)
+        ..strokeWidth = 3
         ..strokeCap = StrokeCap.square
         ..style = PaintingStyle.stroke
         ..isAntiAlias = true;
@@ -1050,8 +1050,8 @@ class _CommitGraphPainter extends CustomPainter {
 
     final int colorIndex = graph.colorIndex;
     final Paint branchPaint = Paint()
-      ..color = _color(colorIndex).withValues(alpha: selected ? 1 : .9)
-      ..strokeWidth = 2
+      ..color = _color(colorIndex)
+      ..strokeWidth = 3
       ..strokeCap = StrokeCap.square
       ..strokeJoin = StrokeJoin.miter
       ..style = PaintingStyle.stroke
@@ -1080,7 +1080,7 @@ class _CommitGraphPainter extends CustomPainter {
           ..strokeWidth = 1.2,
       );
     }
-    canvas.drawCircle(Offset(_laneX(graph.lane), centerY), 4.25, dotPaint);
+    canvas.drawCircle(Offset(_laneX(graph.lane), centerY), 4.5, dotPaint);
   }
 
   @override
@@ -1092,10 +1092,7 @@ class _CommitGraphPainter extends CustomPainter {
   }
 }
 
-Color _graphBackground(ColorScheme colors) =>
-    colors.brightness == Brightness.dark
-    ? const Color(0xFF222A2E)
-    : colors.surfaceContainerHighest;
+Color _graphBackground(ColorScheme colors) => const Color(0xFF242D30);
 
 List<Color> _graphColors(ColorScheme colors) => const [
   Color(0xFF087FCD),
