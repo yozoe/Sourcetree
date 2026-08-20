@@ -1341,6 +1341,43 @@ final class RepositorySessionController
     }
   }
 
+  /// 中文：仅在工作区干净且分支仍存在于已读取远端引用中时，创建本地跟踪分支并切换过去。
+  ///
+  /// English: Creates and switches to a local tracking branch only when the
+  /// work tree is clean and the branch remains in the loaded remote refs.
+  Future<bool> switchToRemoteBranch(String remoteName) async {
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        !status.isClean ||
+        state.phase == RepositorySessionPhase.loading ||
+        !state.remoteBranches.any((branch) => branch.name == remoteName)) {
+      return false;
+    }
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.switchToRemoteBranch(repository, remoteName: remoteName);
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
   /// 中文：读取所需的数据。
   /// English: Reads the required data.
   Future<String> _readGitVersion() async {

@@ -181,6 +181,44 @@ void main() {
     );
   });
 
+  test(
+    'creates and switches to a local tracking branch from a remote ref',
+    () async {
+      await fixture.writeFile('README.md', '# Git Desktop\n');
+      await fixture.commit('Initial commit');
+      final origin = await fixture.createBareOrigin();
+      await fixture.runGit(['push', 'origin', 'main']);
+      await fixture.runGit(['branch', 'feature/remote']);
+      await fixture.runGit(['push', 'origin', 'feature/remote']);
+      final clone = await GitTestRepository.cloneFrom(origin);
+      addTearDown(clone.dispose);
+      final repository = (await inspector.inspect(
+        clone.workingDirectory.path,
+      ))!;
+
+      await writer.switchToRemoteBranch(
+        repository,
+        remoteName: 'origin/feature/remote',
+      );
+
+      expect(
+        (await clone.runGit([
+          'branch',
+          '--show-current',
+        ])).stdout.toString().trim(),
+        'feature/remote',
+      );
+      expect(
+        (await clone.runGit([
+          'config',
+          '--get',
+          'branch.feature/remote.remote',
+        ])).stdout.toString().trim(),
+        'origin',
+      );
+    },
+  );
+
   test('initializes an empty directory without relying on a shell', () async {
     final directory = await Directory.systemTemp.createTemp(
       'git-desktop-init-',

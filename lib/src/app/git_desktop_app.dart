@@ -411,11 +411,14 @@ class _RepositoryWorkspaceScreenState
   /// 中文：处理当前事件。
   /// English: Handles the current event.
   void _handleReferenceSelected(RepositoryRefViewData reference) {
-    if (reference.kind != RepositoryRefKind.localBranch ||
-        reference.isCurrent) {
-      return;
+    switch (reference.kind) {
+      case RepositoryRefKind.localBranch when !reference.isCurrent:
+        _confirmSwitchBranch(reference.label);
+      case RepositoryRefKind.remoteBranch:
+        _confirmSwitchRemoteBranch(reference.label);
+      default:
+        return;
     }
-    _confirmSwitchBranch(reference.label);
   }
 
   /// 中文：请求并处理用户确认。
@@ -453,6 +456,50 @@ class _RepositoryWorkspaceScreenState
       SnackBar(
         content: Text(
           switched ? '已切换到 $branchName。' : '未切换分支，请确认工作区干净并查看仓库错误信息。',
+        ),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  /// 中文：确认后基于已获取的远端跟踪引用创建本地分支并切换过去。
+  ///
+  /// English: Confirms creation of a local branch from an already fetched
+  /// remote-tracking ref, then switches to it.
+  Future<void> _confirmSwitchRemoteBranch(String remoteName) async {
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('检出远端分支'),
+        content: Text(
+          '将基于已获取的 $remoteName 创建本地跟踪分支并切换过去。'
+          '仅当工作区和暂存区均无改动时才会执行。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(context).pop(true),
+            icon: const Icon(Icons.download_outlined),
+            label: const Text('创建并切换'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+
+    final switched = await ref
+        .read(repositorySessionProvider.notifier)
+        .switchToRemoteBranch(remoteName);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          switched
+              ? '已创建本地跟踪分支并切换到 $remoteName。'
+              : '未检出远端分支；请确认工作区干净、引用仍存在并查看仓库错误信息。',
         ),
         duration: const Duration(seconds: 3),
       ),

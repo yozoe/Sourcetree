@@ -401,6 +401,50 @@ void main() {
     },
   );
 
+  test(
+    'checks out an existing remote-tracking branch into a local branch',
+    () async {
+      final source = await GitTestRepository.create();
+      addTearDown(source.dispose);
+      await source.writeFile('README.md', '# Git Desktop\n');
+      await source.commit('Initial commit');
+      final origin = await source.createBareOrigin();
+      await source.runGit(['push', 'origin', 'main']);
+      await source.runGit(['branch', 'feature/checkout']);
+      await source.runGit(['push', 'origin', 'feature/checkout']);
+      final directory = await Directory.systemTemp.createTemp(
+        'git-desktop-remote-checkout-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+
+      expect(
+        await controller.cloneRepository(
+          remoteUrl: origin.path,
+          directoryPath: directory.path,
+        ),
+        isTrue,
+      );
+      expect(
+        await controller.switchToRemoteBranch('origin/feature/checkout'),
+        isTrue,
+      );
+
+      final state = container.read(repositorySessionProvider);
+      expect(state.status!.branch.head, 'feature/checkout');
+      expect(
+        (await Process.run('git', [
+          'config',
+          '--get',
+          'branch.feature/checkout.remote',
+        ], workingDirectory: directory.path)).stdout.toString().trim(),
+        'origin',
+      );
+    },
+  );
+
   test('fetches origin and refreshes ahead-behind state', () async {
     final source = await GitTestRepository.create();
     addTearDown(source.dispose);

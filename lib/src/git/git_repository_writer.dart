@@ -8,8 +8,8 @@ import 'git_runner.dart';
 
 /// Performs the small, explicitly allowed Git mutations used by the P0 UI.
 ///
-/// This class deliberately excludes reset, clean, merge and remote sync
-/// operations. Each method accepts literal inputs and never invokes a shell.
+/// This class deliberately excludes reset, clean and merge operations. Each
+/// method accepts literal inputs and never invokes a shell.
 final class GitRepositoryWriter {
   GitRepositoryWriter(this.runner);
 
@@ -153,6 +153,42 @@ final class GitRepositoryWriter {
       ),
     );
     result.throwIfFailed(operation: 'Switching local branch');
+  }
+
+  /// 中文：从已获取的远端跟踪分支创建本地跟踪分支并切换过去，不猜测其他分支名。
+  ///
+  /// English: Creates and switches to a local tracking branch from an already
+  /// fetched remote-tracking branch without guessing another branch name.
+  Future<void> switchToRemoteBranch(
+    GitRepository repository, {
+    required String remoteName,
+  }) async {
+    final normalizedName = remoteName.trim();
+    if (normalizedName.isEmpty || !normalizedName.contains('/')) {
+      throw ArgumentError.value(
+        remoteName,
+        'remoteName',
+        'A remote-tracking branch name is required.',
+      );
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          'switch',
+          '--track',
+          '--no-guess',
+          '--',
+          normalizedName,
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Checking out remote branch');
   }
 
   /// Initializes an existing empty directory without changing Git settings.
