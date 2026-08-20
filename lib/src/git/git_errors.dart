@@ -33,6 +33,8 @@ class GitException implements Exception {
 
   final String message;
 
+  /// 中文：返回该对象的字符串表示。
+  /// English: Returns this object's string representation.
   @override
   String toString() => '$runtimeType: $message';
 }

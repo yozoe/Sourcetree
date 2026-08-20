@@ -12,6 +12,8 @@ final class GitRepositoryInspector {
 
   final GitRunner runner;
 
+  /// 中文：判断当前条件是否成立。
+  /// English: Determines whether the current condition holds.
   Future<bool> isRepository(String path) async {
     try {
       return await inspect(path) != null;
@@ -24,6 +26,8 @@ final class GitRepositoryInspector {
   }
 
   /// Returns `null` when [path] is not within a repository.
+  /// 中文：处理 inspect 相关逻辑。
+  /// English: Handles the inspect related logic.
   Future<GitRepository?> inspect(String path) async {
     final flags = await _revParse(path, const [
       '--is-bare-repository',
@@ -78,6 +82,8 @@ final class GitRepositoryInspector {
     );
   }
 
+  /// 中文：处理 revParse 相关逻辑。
+  /// English: Handles the revParse related logic.
   Future<GitResult> _revParse(String path, List<String> arguments) {
     return runner.run(
       GitInvocation(
@@ -91,12 +97,16 @@ final class GitRepositoryInspector {
     );
   }
 
+  /// 中文：读取所需的数据。
+  /// English: Reads the required data.
   Future<String> _readPath(String path, List<String> arguments) async {
     final result = await _revParse(path, arguments);
     result.throwIfFailed(operation: 'Repository path detection');
     return _decodeSingleLine(result.stdoutBytes);
   }
 
+  /// 中文：解析输入数据。
+  /// English: Parses the input data.
   bool _parseBoolean(String value) {
     return switch (value) {
       'true' => true,
@@ -105,6 +115,8 @@ final class GitRepositoryInspector {
     };
   }
 
+  /// 中文：处理 canonicalDirectory 相关逻辑。
+  /// English: Handles the canonicalDirectory related logic.
   String _canonicalDirectory(String path) {
     try {
       return Directory(path).resolveSymbolicLinksSync();
@@ -125,6 +137,8 @@ final class GitRepositoryReader {
   final GitStatusParser statusParser;
   final GitHistoryParser historyParser;
 
+  /// 中文：读取所需的数据。
+  /// English: Reads the required data.
   Future<GitStatusSnapshot> readStatus(GitRepository repository) async {
     final result = await runner.run(
       GitInvocation(
@@ -156,6 +170,8 @@ final class GitRepositoryReader {
     return statusParser.parse(result.stdoutBytes);
   }
 
+  /// 中文：读取所需的数据。
+  /// English: Reads the required data.
   Future<List<GitCommit>> readRecentHistory(
     GitRepository repository, {
     int limit = 100,
@@ -223,6 +239,8 @@ final class GitRepositoryReader {
   }
 
   /// Reads local branches without parsing human-oriented `git branch` output.
+  /// 中文：读取所需的数据。
+  /// English: Reads the required data.
   Future<List<GitLocalBranch>> readLocalBranches(
     GitRepository repository,
   ) async {
@@ -273,6 +291,8 @@ final class GitRepositoryReader {
   }
 
   /// Returns whether the conventional `origin` remote is configured.
+  /// 中文：检查目标是否存在或可用。
+  /// English: Checks whether the target exists or is available.
   Future<bool> hasOriginRemote(GitRepository repository) async {
     final result = await runner.run(
       GitInvocation(
@@ -300,6 +320,8 @@ final class GitRepositoryReader {
   /// The revision comes from [readRecentHistory], but is still constrained to
   /// an object-id shaped value before it is passed to Git as a revision. Merge
   /// commits are compared with [parentObjectId], normally their first parent.
+  /// 中文：读取所需的数据。
+  /// English: Reads the required data.
   Future<GitCommitChangeSummary> readCommitChanges(
     GitRepository repository, {
     required String objectId,
@@ -379,6 +401,8 @@ final class GitRepositoryReader {
 
   /// Reads a unified diff for one file as it existed in [objectId]. For a
   /// merge, [parentObjectId] selects the comparison parent.
+  /// 中文：读取所需的数据。
+  /// English: Reads the required data.
   Future<GitUnifiedDiff> readCommitUnifiedDiff(
     GitRepository repository, {
     required String objectId,
@@ -447,6 +471,8 @@ final class GitRepositoryReader {
   ///
   /// The path is always placed after `--`; wildcard/pathspec magic and
   /// external diff/textconv execution are disabled.
+  /// 中文：读取所需的数据。
+  /// English: Reads the required data.
   Future<GitUnifiedDiff> readUnifiedDiff(
     GitRepository repository, {
     required String path,
@@ -507,6 +533,8 @@ final class GitRepositoryReader {
   }
 }
 
+/// 中文：验证输入或状态。
+/// English: Validates the input or state.
 void _validateObjectId(String objectId) {
   if (!RegExp(r'^[0-9a-fA-F]{7,128}$').hasMatch(objectId)) {
     throw ArgumentError.value(
@@ -517,6 +545,8 @@ void _validateObjectId(String objectId) {
   }
 }
 
+/// 中文：解析输入数据。
+/// English: Parses the input data.
 List<GitCommitFileChange> _parseCommitNameStatus(
   List<int> bytes,
   _CommitNumStat statistics,
@@ -603,6 +633,8 @@ _CommitNumStat _parseCommitNumStat(List<int> bytes) {
   );
 }
 
+/// 中文：处理 nullSeparatedBytes 相关逻辑。
+/// English: Handles the nullSeparatedBytes related logic.
 List<List<int>> _nullSeparatedBytes(List<int> bytes) {
   if (bytes.isEmpty) return const [];
   final fields = <List<int>>[];
@@ -637,6 +669,8 @@ final class _CommitNumStat {
   final int deletions;
 }
 
+/// 中文：处理 outputLines 相关逻辑。
+/// English: Handles the outputLines related logic.
 List<String> _outputLines(List<int> bytes) {
   final text = utf8.decode(bytes, allowMalformed: true);
   final withoutFinalNewline = text.endsWith('\n')
@@ -645,6 +679,8 @@ List<String> _outputLines(List<int> bytes) {
   return withoutFinalNewline.split('\n');
 }
 
+/// 中文：解码输入内容。
+/// English: Decodes the input content.
 String _decodeSingleLine(List<int> bytes) {
   var end = bytes.length;
   if (end > 0 && bytes[end - 1] == 0x0a) {

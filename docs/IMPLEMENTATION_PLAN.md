@@ -144,6 +144,14 @@ RepositoryId = canonical common-dir + canonical worktree root
 SSH、credential helper 和仓库格式兼容更好。后续只允许在经过基准测试的
 纯读取热点通过同一端口替换实现。
 
+### 代码文档约定
+
+- `lib/` 中每个具名方法在声明处保留中英双语 DartDoc；中文与英文描述同一职责。
+- 文档描述意图、输入/输出或生命周期边界，不逐行复述实现。
+- 私有 Git 解析、并发 generation、凭据处理和 UI 生命周期方法同样需要说明，避免后续
+  修改破坏安全与状态契约。
+- 修改方法时，双语注释、测试和本实施规划中的功能说明必须一并更新。
+
 ## 6. Git 执行契约
 
 统一实现 `GitRunner`，Controller 和 Widget 不得拼接 Git 命令：

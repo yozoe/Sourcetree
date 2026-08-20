@@ -4,6 +4,8 @@
 /// This is a defensive last line of protection. AskPass answers are never
 /// passed to this function because application code must not log or retain
 /// them in the first place.
+/// 中文：脱敏敏感内容。
+/// English: Redacts sensitive content.
 String redactGitSensitiveText(String text) {
   final credentialUserInfo = RegExp(
     r'([a-z][a-z0-9+.-]*://)([^/\s@]+)@',

@@ -62,6 +62,8 @@ final class GitAskPassSession {
   }
 
   /// Creates a local, single-use endpoint for one AskPass request.
+  /// 中文：启动当前流程。
+  /// English: Starts the current flow.
   static Future<GitAskPassSession> start({
     required GitAskPassPromptHandler onPrompt,
     Duration timeout = defaultTimeout,
@@ -77,6 +79,8 @@ final class GitAskPassSession {
   /// This must only be used by tests. Production callers always derive the
   /// helper path from [Platform.resolvedExecutable] through [start].
   @visibleForTesting
+  /// 中文：启动当前流程。
+  /// English: Starts the current flow.
   static Future<GitAskPassSession> startForTesting({
     required GitAskPassPromptHandler onPrompt,
     required String appExecutablePath,
@@ -89,6 +93,8 @@ final class GitAskPassSession {
     preferNativeBroker: useNativeBroker,
   );
 
+  /// 中文：启动当前流程。
+  /// English: Starts the current flow.
   static Future<GitAskPassSession> _start({
     required GitAskPassPromptHandler onPrompt,
     required Duration timeout,
@@ -177,6 +183,8 @@ final class GitAskPassSession {
   /// The path is derived from the app bundle layout rather than a repository
   /// setting or remote input, so a repository cannot choose which executable
   /// receives credentials.
+  /// 中文：处理 environmentForBundledHelper 相关逻辑。
+  /// English: Handles the environmentForBundledHelper related logic.
   Map<String, String> environmentForBundledHelper() {
     final helperPath = _bundledHelperPathForExecutable(_appExecutablePath);
     return Map<String, String>.unmodifiable(<String, String>{
@@ -192,8 +200,12 @@ final class GitAskPassSession {
   Future<void> get closed => _closedCompleter.future;
 
   /// Cancels this session and rejects any current or future AskPass request.
+  /// 中文：关闭并清理当前资源。
+  /// English: Closes and cleans up the current resource.
   Future<void> close() => _closeWithStatus(GitAskPassSessionStatus.closed);
 
+  /// 中文：启动当前流程。
+  /// English: Starts the current flow.
   void _startListening() {
     if (_broker != null) return;
     _timeoutTimer = Timer(_timeout, () {
@@ -207,6 +219,8 @@ final class GitAskPassSession {
     );
   }
 
+  /// 中文：处理当前事件。
+  /// English: Handles the current event.
   Future<void> _handleClient(Socket client) async {
     if (_closeFuture != null || _requestAccepted) {
       await client.close();
@@ -247,6 +261,8 @@ final class GitAskPassSession {
     }
   }
 
+  /// 中文：处理当前事件。
+  /// English: Handles the current event.
   Future<void> _handleBrokerRequest(String payload) async {
     if (_closeFuture != null || _requestAccepted) return;
     _requestAccepted = true;
@@ -272,6 +288,8 @@ final class GitAskPassSession {
     }
   }
 
+  /// 中文：处理 sendSecret 相关逻辑。
+  /// English: Handles the sendSecret related logic.
   Future<void> _sendSecret(Socket client, String secret) async {
     final secretBytes = utf8.encode(secret);
     if (secretBytes.length > maxSecretBytes ||
@@ -289,6 +307,8 @@ final class GitAskPassSession {
     await client.flush();
   }
 
+  /// 中文：编码输出内容。
+  /// English: Encodes the output content.
   String _encodeSecretResponse(String secret) {
     final secretBytes = utf8.encode(secret);
     if (secretBytes.length > maxSecretBytes ||
@@ -302,10 +322,14 @@ final class GitAskPassSession {
     return response;
   }
 
+  /// 中文：关闭并清理当前资源。
+  /// English: Closes and cleans up the current resource.
   Future<void> _closeWithStatus(GitAskPassSessionStatus status) {
     return _closeFuture ??= _close(status);
   }
 
+  /// 中文：关闭并清理当前资源。
+  /// English: Closes and cleans up the current resource.
   Future<void> _close(GitAskPassSessionStatus status) async {
     _status = status;
     _timeoutTimer?.cancel();
@@ -347,6 +371,8 @@ final class GitAskPassSession {
     }
   }
 
+  /// 中文：创建所需的对象或资源。
+  /// English: Creates the required object or resource.
   static Future<Directory> _createPrivateDirectory() async {
     final temporaryDirectory = Directory.systemTemp;
     final directory = await temporaryDirectory.createTemp('gda_');
@@ -365,6 +391,8 @@ final class GitAskPassSession {
     }
   }
 
+  /// 中文：处理 bundledHelperPathForExecutable 相关逻辑。
+  /// English: Handles the bundledHelperPathForExecutable related logic.
   static String _bundledHelperPathForExecutable(String appExecutablePath) {
     final executable = File(appExecutablePath);
     if (!executable.isAbsolute) {
@@ -389,6 +417,8 @@ final class GitAskPassSession {
     return '${macosDirectory.path}${Platform.pathSeparator}$helperFileName';
   }
 
+  /// 中文：启动当前流程。
+  /// English: Starts the current flow.
   static Future<GitAskPassSession> _startWithNativeBroker({
     required GitAskPassPromptHandler onPrompt,
     required Duration timeout,
@@ -466,11 +496,15 @@ final class GitAskPassSession {
     }
   }
 
+  /// 中文：处理 bundledBrokerPathForExecutable 相关逻辑。
+  /// English: Handles the bundledBrokerPathForExecutable related logic.
   static String _bundledBrokerPathForExecutable(String appExecutablePath) {
     return '${File(appExecutablePath).parent.path}${Platform.pathSeparator}'
         'git-desktop-askpass-broker';
   }
 
+  /// 中文：判断当前条件是否成立。
+  /// English: Determines whether the current condition holds.
   static bool _isMacAppBundle(String executablePath) {
     final macosDirectory = File(executablePath).parent;
     return Platform.isMacOS &&
@@ -481,6 +515,8 @@ final class GitAskPassSession {
         macosDirectory.parent.parent.path.endsWith('.app');
   }
 
+  /// 中文：验证当前条件。
+  /// English: Verifies the current condition.
   static Future<void> _verifyPrivateEndpoint(
     Directory directory,
     String socketPath,
@@ -496,6 +532,8 @@ final class GitAskPassSession {
     }
   }
 
+  /// 中文：处理 setPermissions 相关逻辑。
+  /// English: Handles the setPermissions related logic.
   static Future<void> _setPermissions(String path, String mode) async {
     final result = await Process.run('/bin/chmod', <String>[mode, path]);
     if (result.exitCode != 0) {
@@ -503,6 +541,8 @@ final class GitAskPassSession {
     }
   }
 
+  /// 中文：处理 deleteDirectory 相关逻辑。
+  /// English: Handles the deleteDirectory related logic.
   static Future<void> _deleteDirectory(Directory directory) async {
     try {
       await directory.delete(recursive: true);
@@ -512,6 +552,8 @@ final class GitAskPassSession {
     }
   }
 
+  /// 中文：处理 newNonce 相关逻辑。
+  /// English: Handles the newNonce related logic.
   static String _newNonce() {
     final random = Random.secure();
     final buffer = StringBuffer();
@@ -521,15 +563,21 @@ final class GitAskPassSession {
     return buffer.toString();
   }
 
+  /// 中文：处理 containsControlCharacter 相关逻辑。
+  /// English: Handles the containsControlCharacter related logic.
   static bool _containsControlCharacter(String value) {
     return value.codeUnits.any((unit) => unit < 0x20);
   }
 
+  /// 中文：读取所需的数据。
+  /// English: Reads the required data.
   static Future<String> _readRequestLine(Socket client) {
     final completer = Completer<String>();
     final bytes = BytesBuilder(copy: false);
     late final StreamSubscription<List<int>> subscription;
 
+    /// 中文：处理 fail 相关逻辑。
+    /// English: Handles the fail related logic.
     void fail(Object error) {
       if (!completer.isCompleted) {
         completer.completeError(error);

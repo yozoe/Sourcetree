@@ -87,6 +87,8 @@ final class GitResult {
 
   String get stderrText => utf8.decode(stderrBytes, allowMalformed: true);
 
+  /// 中文：处理 throwIfFailed 相关逻辑。
+  /// English: Handles the throwIfFailed related logic.
   void throwIfFailed({String? operation}) {
     if (!isSuccess) {
       throw GitCommandException(this, operation: operation);
@@ -113,6 +115,8 @@ final class GitRunner {
   final GitProcessTerminator processTerminator;
   final Map<String, String> baseEnvironment;
 
+  /// 中文：处理 run 相关逻辑。
+  /// English: Handles the run related logic.
   Future<GitResult> run(GitInvocation invocation) async {
     final cancellationToken = invocation.cancellationToken;
     if (cancellationToken?.isCancelled ?? false) {
@@ -211,6 +215,8 @@ final class GitRunner {
   }
 }
 
+/// 中文：对输入结果进行分类。
+/// English: Classifies the input result.
 GitErrorKind _classifyStartFailure(
   ProcessException error, {
   required String? workingDirectory,
@@ -288,6 +294,8 @@ final class _LimitedByteCollector {
   final BytesBuilder _builder = BytesBuilder(copy: false);
   bool wasTruncated = false;
 
+  /// 中文：处理 add 相关逻辑。
+  /// English: Handles the add related logic.
   void add(List<int> chunk) {
     final remaining = limit - _builder.length;
     if (remaining <= 0) {
@@ -304,5 +312,7 @@ final class _LimitedByteCollector {
     wasTruncated = true;
   }
 
+  /// 中文：处理 takeBytes 相关逻辑。
+  /// English: Handles the takeBytes related logic.
   Uint8List takeBytes() => _builder.takeBytes();
 }

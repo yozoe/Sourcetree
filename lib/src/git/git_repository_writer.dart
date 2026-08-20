@@ -15,6 +15,8 @@ final class GitRepositoryWriter {
 
   final GitRunner runner;
 
+  /// 中文：暂存指定路径。
+  /// English: Stages the specified path.
   Future<void> stagePath(GitRepository repository, GitPath path) async {
     final displayPath = _requireUtf8Path(path);
     final result = await runner.run(
@@ -36,6 +38,8 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Staging file');
   }
 
+  /// 中文：取消暂存指定路径。
+  /// English: Unstages the specified path.
   Future<void> unstagePath(
     GitRepository repository,
     GitPath path, {
@@ -77,6 +81,8 @@ final class GitRepositoryWriter {
   ///
   /// The message is sent through stdin rather than the command line, so it is
   /// not interpreted as an option and is not exposed in process arguments.
+  /// 中文：创建所需的对象或资源。
+  /// English: Creates the required object or resource.
   Future<void> createCommit(
     GitRepository repository, {
     required String message,
@@ -104,6 +110,8 @@ final class GitRepositoryWriter {
   /// Creates a new local branch at the current HEAD without checking it out.
   ///
   /// Git validates the ref name and refuses to overwrite an existing branch.
+  /// 中文：创建所需的对象或资源。
+  /// English: Creates the required object or resource.
   Future<void> createLocalBranch(
     GitRepository repository, {
     required String name,
@@ -125,6 +133,8 @@ final class GitRepositoryWriter {
   }
 
   /// Switches to an existing local branch without creating or overwriting refs.
+  /// 中文：切换到目标状态。
+  /// English: Switches to the target state.
   Future<void> switchToLocalBranch(
     GitRepository repository, {
     required String name,
@@ -146,6 +156,8 @@ final class GitRepositoryWriter {
   }
 
   /// Initializes an existing empty directory without changing Git settings.
+  /// 中文：初始化当前功能。
+  /// English: Initializes the current feature.
   Future<void> initializeRepository(String directoryPath) async {
     final normalizedPath = directoryPath.trim();
     if (normalizedPath.isEmpty) {
@@ -176,6 +188,8 @@ final class GitRepositoryWriter {
   }
 
   /// Clones into an existing empty directory without interpreting the URL.
+  /// 中文：处理 cloneRepository 相关逻辑。
+  /// English: Handles the cloneRepository related logic.
   Future<void> cloneRepository({
     required String remoteUrl,
     required String directoryPath,
@@ -208,6 +222,8 @@ final class GitRepositoryWriter {
   }
 
   /// Fetches the conventional `origin` remote without altering the work tree.
+  /// 中文：处理 fetchOrigin 相关逻辑。
+  /// English: Handles the fetchOrigin related logic.
   Future<void> fetchOrigin(
     GitRepository repository, {
     GitCancellationToken? cancellationToken,
@@ -237,6 +253,8 @@ final class GitRepositoryWriter {
   ///
   /// `--ff-only` deliberately rejects implicit merge commits and leaves merge
   /// handling to a dedicated workflow.
+  /// 中文：处理 pullFastForward 相关逻辑。
+  /// English: Handles the pullFastForward related logic.
   Future<void> pullFastForward(
     GitRepository repository, {
     GitCancellationToken? cancellationToken,
@@ -267,6 +285,8 @@ final class GitRepositoryWriter {
   ///
   /// No force option is exposed; a rejected non-fast-forward push is reported
   /// to the caller without rewriting remote history.
+  /// 中文：处理 pushUpstream 相关逻辑。
+  /// English: Handles the pushUpstream related logic.
   Future<void> pushUpstream(
     GitRepository repository, {
     GitCancellationToken? cancellationToken,
@@ -303,6 +323,8 @@ final class GitRepositoryWriter {
   /// This is read-only and deliberately does not update remote-tracking refs;
   /// callers can use Fetch when they need the local ahead/behind snapshot to
   /// catch up as well.
+  /// 中文：验证当前条件。
+  /// English: Verifies the current condition.
   Future<bool> verifyUpstream(
     GitRepository repository, {
     GitCancellationToken? cancellationToken,
@@ -353,6 +375,8 @@ final class GitRepositoryWriter {
     return remoteHead == expectedHead;
   }
 
+  /// 中文：读取所需的数据。
+  /// English: Reads the required data.
   Future<_GitPushTarget> _readPushTarget(
     GitRepository repository, {
     GitCancellationToken? cancellationToken,
@@ -400,6 +424,8 @@ final class GitRepositoryWriter {
     );
   }
 
+  /// 中文：读取所需的数据。
+  /// English: Reads the required data.
   Future<String> _readBranchConfig(
     GitRepository repository, {
     required String branchName,
@@ -425,6 +451,8 @@ final class GitRepositoryWriter {
     return value;
   }
 
+  /// 中文：检查并返回所需值。
+  /// English: Checks for and returns the required value.
   String _requireUtf8Path(GitPath path) {
     if (!path.isValidUtf8) {
       throw const GitException(

@@ -20,6 +20,8 @@ final class GitRepositoryId {
   @override
   int get hashCode => Object.hash(commonDirectory, workTreeRoot);
 
+  /// 中文：返回该对象的字符串表示。
+  /// English: Returns this object's string representation.
   @override
   String toString() => '$commonDirectory::${workTreeRoot ?? '<bare>'}';
 }
@@ -89,6 +91,8 @@ final class GitPath {
   @override
   int get hashCode => Object.hashAll(rawBytes);
 
+  /// 中文：返回该对象的字符串表示。
+  /// English: Returns this object's string representation.
   @override
   String toString() => display;
 }
@@ -117,6 +121,8 @@ enum GitChangeType {
 }
 
 extension GitChangeTypeParsing on GitChangeType {
+  /// 中文：处理 fromCode 相关逻辑。
+  /// English: Handles the fromCode related logic.
   static GitChangeType fromCode(String code) {
     return switch (code) {
       '.' || ' ' => GitChangeType.unmodified,

@@ -8,6 +8,8 @@ import 'git_models.dart';
 final class GitStatusParser {
   const GitStatusParser();
 
+  /// 中文：解析输入数据。
+  /// English: Parses the input data.
   GitStatusSnapshot parse(List<int> bytes) {
     final cursor = _NulRecordCursor(bytes);
     final branch = _BranchStatusBuilder();
@@ -52,6 +54,8 @@ final class GitStatusParser {
     );
   }
 
+  /// 中文：解析输入数据。
+  /// English: Parses the input data.
   void _parseHeader(
     List<int> record,
     _BranchStatusBuilder branch,
@@ -109,6 +113,8 @@ final class GitStatusParser {
     }
   }
 
+  /// 中文：解析输入数据。
+  /// English: Parses the input data.
   GitStatusEntry _parseOrdinary(List<int> record, int recordIndex) {
     final fields = _splitPrefix(
       record,
@@ -130,6 +136,8 @@ final class GitStatusParser {
     );
   }
 
+  /// 中文：解析输入数据。
+  /// English: Parses the input data.
   GitStatusEntry _parseRenameOrCopy(
     List<int> record,
     List<int> originalPath,
@@ -179,6 +187,8 @@ final class GitStatusParser {
     );
   }
 
+  /// 中文：解析输入数据。
+  /// English: Parses the input data.
   GitStatusEntry _parseUnmerged(List<int> record, int recordIndex) {
     final fields = _splitPrefix(
       record,
@@ -202,6 +212,8 @@ final class GitStatusParser {
     );
   }
 
+  /// 中文：解析输入数据。
+  /// English: Parses the input data.
   GitStatusEntry _parseUntracked(List<int> record, int recordIndex) {
     final path = _simplePath(record, recordIndex);
     return GitStatusEntry(
@@ -212,6 +224,8 @@ final class GitStatusParser {
     );
   }
 
+  /// 中文：解析输入数据。
+  /// English: Parses the input data.
   GitStatusEntry _parseIgnored(List<int> record, int recordIndex) {
     final path = _simplePath(record, recordIndex);
     return GitStatusEntry(
@@ -222,6 +236,8 @@ final class GitStatusParser {
     );
   }
 
+  /// 中文：处理 simplePath 相关逻辑。
+  /// English: Handles the simplePath related logic.
   List<int> _simplePath(List<int> record, int recordIndex) {
     if (record.length < 3 || record[1] != 0x20) {
       throw GitParseException(
@@ -245,6 +261,8 @@ final class GitStatusParser {
     );
   }
 
+  /// 中文：处理 splitPrefix 相关逻辑。
+  /// English: Handles the splitPrefix related logic.
   List<List<int>> _splitPrefix(
     List<int> record, {
     required int spaceCount,
@@ -267,8 +285,12 @@ final class GitStatusParser {
     return fields;
   }
 
+  /// 中文：处理 text 相关逻辑。
+  /// English: Handles the text related logic.
   String _text(List<int> bytes) => utf8.decode(bytes, allowMalformed: true);
 
+  /// 中文：处理 zeroObjectIdToNull 相关逻辑。
+  /// English: Handles the zeroObjectIdToNull related logic.
   String? _zeroObjectIdToNull(String objectId) {
     if (objectId.isNotEmpty &&
         objectId.codeUnits.every((character) => character == 0x30)) {
@@ -289,6 +311,8 @@ final class _BranchStatusBuilder {
   bool isUnborn = false;
   final Map<String, String> additionalHeaders = {};
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   GitBranchStatus build() {
     return GitBranchStatus(
       objectId: objectId,
@@ -311,6 +335,8 @@ final class _NulRecordCursor {
 
   bool get isDone => _offset >= bytes.length;
 
+  /// 中文：读取所需的数据。
+  /// English: Reads the required data.
   List<int> readRecord({required int recordIndex}) {
     if (isDone) {
       throw GitParseException(

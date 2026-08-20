@@ -392,6 +392,8 @@ final class RepositoryOverviewLayout {
   final double detailsWidth;
   final double changesHeight;
 
+  /// 中文：处理 copyWith 相关逻辑。
+  /// English: Handles the copyWith related logic.
   RepositoryOverviewLayout copyWith({
     double? navigationWidth,
     double? detailsWidth,

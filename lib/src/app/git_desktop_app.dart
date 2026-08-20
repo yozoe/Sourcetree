@@ -13,6 +13,8 @@ import 'repository_view_mapper.dart';
 class GitDesktopApp extends StatelessWidget {
   const GitDesktopApp({super.key});
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
@@ -26,6 +28,8 @@ class GitDesktopApp extends StatelessWidget {
   }
 }
 
+/// 中文：处理 theme 相关逻辑。
+/// English: Handles the theme related logic.
 ThemeData _theme(Brightness brightness) {
   final colors = ColorScheme.fromSeed(
     seedColor: const Color(0xFF2767D8),
@@ -46,6 +50,8 @@ ThemeData _theme(Brightness brightness) {
 class RepositoryWorkspaceScreen extends ConsumerStatefulWidget {
   const RepositoryWorkspaceScreen({super.key});
 
+  /// 中文：创建关联的状态对象。
+  /// English: Creates the associated state object.
   @override
   ConsumerState<RepositoryWorkspaceScreen> createState() =>
       _RepositoryWorkspaceScreenState();
@@ -55,6 +61,8 @@ class _RepositoryWorkspaceScreenState
     extends ConsumerState<RepositoryWorkspaceScreen> {
   bool _isAskPassDialogVisible = false;
 
+  /// 中文：显示相应界面或信息。
+  /// English: Shows the corresponding UI or information.
   Future<void> _showAskPassPrompt(GitAskPassRequest request) async {
     final secret = await showGitAskPassPromptDialog(context, request);
     if (!mounted) {
@@ -66,6 +74,8 @@ class _RepositoryWorkspaceScreenState
     ref.read(gitAskPassPromptCoordinatorProvider.notifier).submit(secret);
   }
 
+  /// 中文：打开目标资源。
+  /// English: Opens the target resource.
   Future<void> _openRepository() async {
     final directory = await getDirectoryPath(confirmButtonText: '打开仓库');
     if (directory == null || !mounted) return;
@@ -74,6 +84,8 @@ class _RepositoryWorkspaceScreenState
         .openRepository(directory);
   }
 
+  /// 中文：初始化当前功能。
+  /// English: Initializes the current feature.
   Future<void> _initializeRepository() async {
     final directory = await getDirectoryPath(confirmButtonText: '选择空目录');
     if (directory == null || !mounted) return;
@@ -107,6 +119,8 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
+  /// 中文：处理 cloneRepository 相关逻辑。
+  /// English: Handles the cloneRepository related logic.
   Future<void> _cloneRepository() async {
     final remoteUrl = await showDialog<String>(
       context: context,
@@ -142,6 +156,8 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
+  /// 中文：处理当前事件。
+  /// English: Handles the current event.
   void _handleAction(RepositoryAction action) {
     switch (action) {
       case RepositoryAction.openRepository:
@@ -176,6 +192,8 @@ class _RepositoryWorkspaceScreenState
     }
   }
 
+  /// 中文：显示相应界面或信息。
+  /// English: Shows the corresponding UI or information.
   Future<void> _showOperationLog() async {
     await showDialog<void>(
       context: context,
@@ -222,6 +240,8 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
+  /// 中文：处理 operationName 相关逻辑。
+  /// English: Handles the operationName related logic.
   String _operationName(RepositoryOperationKind kind) => switch (kind) {
     RepositoryOperationKind.clone => '克隆仓库',
     RepositoryOperationKind.fetch => '获取远端更新',
@@ -229,6 +249,8 @@ class _RepositoryWorkspaceScreenState
     RepositoryOperationKind.push => '推送当前分支',
   };
 
+  /// 中文：处理 operationSummary 相关逻辑。
+  /// English: Handles the operationSummary related logic.
   String _operationSummary(RepositoryOperationOutcome outcome) =>
       switch (outcome) {
         RepositoryOperationOutcome.running => '正在运行',
@@ -237,6 +259,8 @@ class _RepositoryWorkspaceScreenState
         RepositoryOperationOutcome.failed => '未完成',
       };
 
+  /// 中文：处理 operationIcon 相关逻辑。
+  /// English: Handles the operationIcon related logic.
   IconData _operationIcon(RepositoryOperationOutcome outcome) =>
       switch (outcome) {
         RepositoryOperationOutcome.running => Icons.sync,
@@ -245,6 +269,8 @@ class _RepositoryWorkspaceScreenState
         RepositoryOperationOutcome.failed => Icons.error_outline,
       };
 
+  /// 中文：处理 operationTime 相关逻辑。
+  /// English: Handles the operationTime related logic.
   String _operationTime(RepositoryOperationRecord operation) {
     final started = operation.startedAt.toLocal();
     final startedAt =
@@ -257,8 +283,12 @@ class _RepositoryWorkspaceScreenState
     return '$startedAt 开始 · 用时 ${seconds < 1 ? '< 1 秒' : '$seconds 秒'}';
   }
 
+  /// 中文：处理 twoDigits 相关逻辑。
+  /// English: Handles the twoDigits related logic.
   String _twoDigits(int value) => value.toString().padLeft(2, '0');
 
+  /// 中文：请求并处理用户确认。
+  /// English: Requests and handles user confirmation.
   Future<void> _confirmPull() async {
     final approved = await showDialog<bool>(
       context: context,
@@ -291,6 +321,8 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
+  /// 中文：请求并处理用户确认。
+  /// English: Requests and handles user confirmation.
   Future<void> _confirmPush() async {
     final session = ref.read(repositorySessionProvider);
     final branch = session.status?.branch;
@@ -328,6 +360,8 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
+  /// 中文：显示相应界面或信息。
+  /// English: Shows the corresponding UI or information.
   Future<void> _showCommitDialog() async {
     final message = await showDialog<String>(
       context: context,
@@ -351,6 +385,8 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
+  /// 中文：显示相应界面或信息。
+  /// English: Shows the corresponding UI or information.
   Future<void> _showCreateBranchDialog() async {
     final name = await showDialog<String>(
       context: context,
@@ -374,6 +410,8 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
+  /// 中文：处理当前事件。
+  /// English: Handles the current event.
   void _handleReferenceSelected(RepositoryRefViewData reference) {
     if (reference.kind != RepositoryRefKind.localBranch ||
         reference.isCurrent) {
@@ -382,6 +420,8 @@ class _RepositoryWorkspaceScreenState
     _confirmSwitchBranch(reference.label);
   }
 
+  /// 中文：请求并处理用户确认。
+  /// English: Requests and handles user confirmation.
   Future<void> _confirmSwitchBranch(String branchName) async {
     final approved = await showDialog<bool>(
       context: context,
@@ -421,6 +461,8 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     ref.listen<GitAskPassRequest?>(gitAskPassPromptCoordinatorProvider, (
@@ -480,6 +522,8 @@ final class RepositoryTabStrip extends StatelessWidget {
   final String? activePath;
   final Future<void> Function(String path) onSelected;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -531,6 +575,8 @@ final class RepositoryTabStrip extends StatelessWidget {
 class _CommitDialog extends StatefulWidget {
   const _CommitDialog();
 
+  /// 中文：创建关联的状态对象。
+  /// English: Creates the associated state object.
   @override
   State<_CommitDialog> createState() => _CommitDialogState();
 }
@@ -538,6 +584,8 @@ class _CommitDialog extends StatefulWidget {
 class _CloneDialog extends StatefulWidget {
   const _CloneDialog();
 
+  /// 中文：创建关联的状态对象。
+  /// English: Creates the associated state object.
   @override
   State<_CloneDialog> createState() => _CloneDialogState();
 }
@@ -546,18 +594,24 @@ class _CloneDialogState extends State<_CloneDialog> {
   final _formKey = GlobalKey<FormState>();
   final _urlController = TextEditingController();
 
+  /// 中文：释放当前对象持有的资源。
+  /// English: Releases resources held by this object.
   @override
   void dispose() {
     _urlController.dispose();
     super.dispose();
   }
 
+  /// 中文：提交当前表单或请求。
+  /// English: Submits the current form or request.
   void _submit() {
     if (_formKey.currentState?.validate() ?? false) {
       Navigator.of(context).pop(_urlController.text);
     }
   }
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) => AlertDialog(
     title: const Text('克隆仓库'),
@@ -592,6 +646,8 @@ class _CloneDialogState extends State<_CloneDialog> {
 class _CreateBranchDialog extends StatefulWidget {
   const _CreateBranchDialog();
 
+  /// 中文：创建关联的状态对象。
+  /// English: Creates the associated state object.
   @override
   State<_CreateBranchDialog> createState() => _CreateBranchDialogState();
 }
@@ -600,12 +656,16 @@ class _CreateBranchDialogState extends State<_CreateBranchDialog> {
   final _formKey = GlobalKey<FormState>();
   final _nameController = TextEditingController();
 
+  /// 中文：释放当前对象持有的资源。
+  /// English: Releases resources held by this object.
   @override
   void dispose() {
     _nameController.dispose();
     super.dispose();
   }
 
+  /// 中文：提交当前表单或请求。
+  /// English: Submits the current form or request.
   void _submit() {
     if (!(_formKey.currentState?.validate() ?? false)) {
       return;
@@ -613,6 +673,8 @@ class _CreateBranchDialogState extends State<_CreateBranchDialog> {
     Navigator.of(context).pop(_nameController.text);
   }
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
@@ -659,12 +721,16 @@ class _CommitDialogState extends State<_CommitDialog> {
   final _formKey = GlobalKey<FormState>();
   final _messageController = TextEditingController();
 
+  /// 中文：释放当前对象持有的资源。
+  /// English: Releases resources held by this object.
   @override
   void dispose() {
     _messageController.dispose();
     super.dispose();
   }
 
+  /// 中文：提交当前表单或请求。
+  /// English: Submits the current form or request.
   void _submit() {
     if (!(_formKey.currentState?.validate() ?? false)) {
       return;
@@ -672,6 +738,8 @@ class _CommitDialogState extends State<_CommitDialog> {
     Navigator.of(context).pop(_messageController.text);
   }
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     return AlertDialog(

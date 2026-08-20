@@ -73,6 +73,8 @@ final class RepositoryOperationRecord {
   final DateTime? completedAt;
   final String? message;
 
+  /// 中文：处理 complete 相关逻辑。
+  /// English: Handles the complete related logic.
   RepositoryOperationRecord complete({
     required RepositoryOperationOutcome outcome,
     required DateTime completedAt,
@@ -102,6 +104,8 @@ final class SelectedRepositoryChange {
 
   bool get isStaged => source == GitDiffSource.staged;
 
+  /// 中文：判断是否与目标匹配。
+  /// English: Determines whether this matches the target.
   bool matches(RepositoryChangeViewData change) {
     return entry.path.display == change.path && isStaged == change.isStaged;
   }
@@ -113,6 +117,8 @@ final class SelectedCommitFile {
   final String objectId;
   final GitCommitFileChange file;
 
+  /// 中文：判断是否与目标匹配。
+  /// English: Determines whether this matches the target.
   bool matches(CommitFileViewData change) =>
       file.path.display == change.path && objectId.isNotEmpty;
 }
@@ -183,6 +189,8 @@ final class RepositorySessionState {
   final String? message;
   final String? technicalDetails;
 
+  /// 中文：处理 copyWith 相关逻辑。
+  /// English: Handles the copyWith related logic.
   RepositorySessionState copyWith({
     RepositorySessionPhase? phase,
     String? requestedPath,
@@ -281,6 +289,8 @@ final class RepositorySessionController
   bool _isRestoringSession = false;
   bool _sessionPersistenceEnabled = false;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   RepositorySessionState build() {
     _runner = ref.watch(gitRunnerProvider);
@@ -293,6 +303,8 @@ final class RepositorySessionController
 
   /// Restores the last successfully opened repositories without retaining any
   /// Git credentials or operation state. Missing or invalid paths are dropped.
+  /// 中文：处理 restoreSession 相关逻辑。
+  /// English: Handles the restoreSession related logic.
   Future<void> restoreSession() async {
     if (_isRestoringSession || _sessionPersistenceEnabled) {
       return;
@@ -325,6 +337,8 @@ final class RepositorySessionController
     }
   }
 
+  /// 中文：处理 persistRepositorySession 相关逻辑。
+  /// English: Handles the persistRepositorySession related logic.
   void _persistRepositorySession() {
     if (!_sessionPersistenceEnabled || _isRestoringSession) {
       return;
@@ -345,6 +359,8 @@ final class RepositorySessionController
     });
   }
 
+  /// 中文：启动当前流程。
+  /// English: Starts the current flow.
   RepositoryOperationRecord _startOperation(RepositoryOperationKind kind) {
     final operation = RepositoryOperationRecord(
       id: 'operation-${++_operationSequence}',
@@ -360,6 +376,8 @@ final class RepositorySessionController
     return operation;
   }
 
+  /// 中文：处理 completeOperation 相关逻辑。
+  /// English: Handles the completeOperation related logic.
   void _completeOperation(
     RepositoryOperationRecord operation, {
     required RepositoryOperationOutcome outcome,
@@ -380,6 +398,8 @@ final class RepositorySessionController
     );
   }
 
+  /// 中文：处理 operationOutcomeForError 相关逻辑。
+  /// English: Handles the operationOutcomeForError related logic.
   RepositoryOperationOutcome _operationOutcomeForError(Object error) {
     return error is GitCancelledException ||
             (error is GitCommandException &&
@@ -388,6 +408,8 @@ final class RepositorySessionController
         : RepositoryOperationOutcome.failed;
   }
 
+  /// 中文：打开目标资源。
+  /// English: Opens the target resource.
   Future<void> openRepository(String path) async {
     final normalizedPath = path.trim();
     if (normalizedPath.isEmpty) {
@@ -471,6 +493,8 @@ final class RepositorySessionController
   /// Selects an already opened repository tab. Switching is intentionally
   /// unavailable while Git is mutating a repository so an in-flight operation
   /// cannot be mistaken for work in another tab.
+  /// 中文：更新当前选择。
+  /// English: Updates the current selection.
   Future<void> selectRepositoryTab(String repositoryPath) async {
     if (repositoryPath == state.activeRepositoryTabPath ||
         state.phase == RepositorySessionPhase.loading ||
@@ -484,6 +508,8 @@ final class RepositorySessionController
     await openRepository(repositoryPath);
   }
 
+  /// 中文：处理 upsertRepositoryTab 相关逻辑。
+  /// English: Handles the upsertRepositoryTab related logic.
   List<RepositoryTab> _upsertRepositoryTab(
     List<RepositoryTab> existingTabs,
     RepositoryTab nextTab,
@@ -504,6 +530,8 @@ final class RepositorySessionController
     return List<RepositoryTab>.unmodifiable(result);
   }
 
+  /// 中文：处理 disambiguateRepositoryTabLabels 相关逻辑。
+  /// English: Handles the disambiguateRepositoryTabLabels related logic.
   List<RepositoryTab> _disambiguateRepositoryTabLabels(
     List<RepositoryTab> tabs,
   ) {
@@ -528,6 +556,8 @@ final class RepositorySessionController
   }
 
   /// Initializes only an empty directory, then opens the new repository.
+  /// 中文：初始化当前功能。
+  /// English: Initializes the current feature.
   Future<bool> initializeRepository(String path) async {
     final normalizedPath = path.trim();
     if (normalizedPath.isEmpty ||
@@ -559,6 +589,8 @@ final class RepositorySessionController
     }
   }
 
+  /// 中文：处理 cloneRepository 相关逻辑。
+  /// English: Handles the cloneRepository related logic.
   Future<bool> cloneRepository({
     required String remoteUrl,
     required String directoryPath,
@@ -625,8 +657,12 @@ final class RepositorySessionController
     }
   }
 
+  /// 中文：取消当前操作。
+  /// English: Cancels the current operation.
   void cancelClone() => _cloneCancellation?.cancel();
 
+  /// 中文：处理 fetchOrigin 相关逻辑。
+  /// English: Handles the fetchOrigin related logic.
   Future<bool> fetchOrigin() async {
     final repository = state.repository;
     if (repository == null ||
@@ -686,9 +722,13 @@ final class RepositorySessionController
     }
   }
 
+  /// 中文：取消当前操作。
+  /// English: Cancels the current operation.
   void cancelFetch() => _fetchCancellation?.cancel();
 
   /// Pulls the configured upstream only into a clean working tree and index.
+  /// 中文：处理 pullFastForward 相关逻辑。
+  /// English: Handles the pullFastForward related logic.
   Future<bool> pullFastForward() async {
     final repository = state.repository;
     final status = state.status;
@@ -754,9 +794,13 @@ final class RepositorySessionController
     }
   }
 
+  /// 中文：取消当前操作。
+  /// English: Cancels the current operation.
   void cancelPull() => _pullCancellation?.cancel();
 
   /// Pushes only an ahead portion of the current branch to its upstream.
+  /// 中文：处理 pushUpstream 相关逻辑。
+  /// English: Handles the pushUpstream related logic.
   Future<bool> pushUpstream() async {
     final repository = state.repository;
     final status = state.status;
@@ -828,6 +872,8 @@ final class RepositorySessionController
     }
   }
 
+  /// 中文：取消当前操作。
+  /// English: Cancels the current operation.
   void cancelPush() {
     _pushCancellation?.cancel();
     _pushVerificationCancellation?.cancel();
@@ -836,6 +882,8 @@ final class RepositorySessionController
   /// Enables AskPass only for an explicit remote operation. All repository
   /// inspection, refresh and post-push verification invocations keep the
   /// default non-interactive environment.
+  /// 中文：处理 runWithAskPassSession 相关逻辑。
+  /// English: Handles the runWithAskPassSession related logic.
   Future<void> _runWithAskPassSession({
     required GitCancellationToken cancellation,
     required Future<void> Function(Map<String, String> environment) run,
@@ -866,6 +914,8 @@ final class RepositorySessionController
     }
   }
 
+  /// 中文：验证当前条件。
+  /// English: Verifies the current condition.
   Future<bool> _verifyUncertainPush(GitRepository repository) async {
     final cancellation = GitCancellationToken();
     _pushVerificationCancellation = cancellation;
@@ -883,6 +933,8 @@ final class RepositorySessionController
     }
   }
 
+  /// 中文：刷新当前数据。
+  /// English: Refreshes the current data.
   Future<void> refresh() async {
     final path = state.requestedPath ?? state.repository?.commandDirectory;
     if (path != null) {
@@ -890,6 +942,8 @@ final class RepositorySessionController
     }
   }
 
+  /// 中文：更新当前选择。
+  /// English: Updates the current selection.
   Future<void> selectCommit(String objectId) async {
     if (!state.commits.any((GitCommit commit) => commit.objectId == objectId)) {
       return;
@@ -941,10 +995,14 @@ final class RepositorySessionController
     }
   }
 
+  /// 中文：更新当前选择。
+  /// English: Updates the current selection.
   Future<void> selectCommitFile(CommitFileViewData? change) async {
     await selectCommitFileByPath(change?.path);
   }
 
+  /// 中文：更新当前选择。
+  /// English: Updates the current selection.
   Future<void> selectCommitFileByPath(String? path) async {
     final objectId = state.selectedCommitId;
     final repository = state.repository;
@@ -993,10 +1051,14 @@ final class RepositorySessionController
     }
   }
 
+  /// 中文：处理 setSearchQuery 相关逻辑。
+  /// English: Handles the setSearchQuery related logic.
   void setSearchQuery(String query) {
     state = state.copyWith(searchQuery: query);
   }
 
+  /// 中文：处理 parentObjectId 相关逻辑。
+  /// English: Handles the parentObjectId related logic.
   String? _parentObjectId(String objectId) {
     for (final commit in state.commits) {
       if (commit.objectId == objectId) return commit.parentIds.firstOrNull;
@@ -1004,6 +1066,8 @@ final class RepositorySessionController
     return null;
   }
 
+  /// 中文：更新当前选择。
+  /// English: Updates the current selection.
   Future<void> selectChange(RepositoryChangeViewData? change) async {
     if (change == null) {
       _diffGeneration++;
@@ -1075,6 +1139,8 @@ final class RepositorySessionController
     }
   }
 
+  /// 中文：切换当前状态。
+  /// English: Toggles the current state.
   Future<void> toggleStage(RepositoryChangeViewData change) async {
     final repository = state.repository;
     final status = state.status;
@@ -1126,6 +1192,8 @@ final class RepositorySessionController
   ///
   /// Returns whether Git created the commit and the following refresh finished
   /// successfully. Git hooks are intentionally allowed to run.
+  /// 中文：创建所需的对象或资源。
+  /// English: Creates the required object or resource.
   Future<bool> createCommit(String message) async {
     final repository = state.repository;
     final status = state.status;
@@ -1163,6 +1231,8 @@ final class RepositorySessionController
   }
 
   /// Creates a local branch at HEAD without switching the current work tree.
+  /// 中文：创建所需的对象或资源。
+  /// English: Creates the required object or resource.
   Future<bool> createLocalBranch(String name) async {
     final repository = state.repository;
     final status = state.status;
@@ -1200,6 +1270,8 @@ final class RepositorySessionController
   }
 
   /// Switches only when the working tree and index are clean.
+  /// 中文：切换到目标状态。
+  /// English: Switches to the target state.
   Future<bool> switchToLocalBranch(String name) async {
     final repository = state.repository;
     final status = state.status;
@@ -1238,6 +1310,8 @@ final class RepositorySessionController
     }
   }
 
+  /// 中文：读取所需的数据。
+  /// English: Reads the required data.
   Future<String> _readGitVersion() async {
     final result = await _runner.run(
       GitInvocation(
@@ -1252,6 +1326,8 @@ final class RepositorySessionController
     return result.stdoutText.trim();
   }
 
+  /// 中文：处理 friendlyError 相关逻辑。
+  /// English: Handles the friendlyError related logic.
   String _friendlyError(Object error) {
     if (error is GitProcessStartException) {
       return error.kind == GitErrorKind.executableNotFound
@@ -1288,6 +1364,8 @@ final class RepositorySessionController
     return '读取仓库时发生未知错误。';
   }
 
+  /// 中文：处理 cloneRecoveryMessage 相关逻辑。
+  /// English: Handles the cloneRecoveryMessage related logic.
   Future<String?> _cloneRecoveryMessage(String directoryPath) async {
     final directory = Directory(directoryPath.trim());
     if (!await directory.exists()) {
@@ -1307,8 +1385,12 @@ final class RepositorySessionController
         : '克隆未完成，目标目录已有部分文件。请检查后删除该目录再重试。';
   }
 
+  /// 中文：处理 technicalDetails 相关逻辑。
+  /// English: Handles the technicalDetails related logic.
   String _technicalDetails(Object error, StackTrace stackTrace) =>
       _redactSensitiveText('$error\n$stackTrace');
 
+  /// 中文：脱敏敏感内容。
+  /// English: Redacts sensitive content.
   String _redactSensitiveText(String text) => redactGitSensitiveText(text);
 }

@@ -59,6 +59,8 @@ class RepositoryOverview extends StatefulWidget {
   final RepositoryOverviewCallbacks callbacks;
   final RepositoryOverviewLayout initialLayout;
 
+  /// 中文：创建关联的状态对象。
+  /// English: Creates the associated state object.
   @override
   State<RepositoryOverview> createState() => _RepositoryOverviewState();
 }
@@ -72,6 +74,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
   _InspectorTab _inspectorTab = _InspectorTab.changes;
   _CompactPane _compactPane = _CompactPane.history;
 
+  /// 中文：响应上层组件配置更新。
+  /// English: Responds to updated widget configuration.
   @override
   void didUpdateWidget(RepositoryOverview oldWidget) {
     super.didUpdateWidget(oldWidget);
@@ -80,11 +84,15 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
     }
   }
 
+  /// 中文：处理 updateLayout 相关逻辑。
+  /// English: Handles the updateLayout related logic.
   void _updateLayout(RepositoryOverviewLayout next) {
     setState(() => _layout = next);
     widget.callbacks.onLayoutChanged?.call(next);
   }
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final RepositoryViewData? repository = widget.data.repository;
@@ -164,6 +172,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
     );
   }
 
+  /// 中文：处理 buildWide 相关逻辑。
+  /// English: Handles the buildWide related logic.
   Widget _buildWide(RepositoryViewData repository, BoxConstraints constraints) {
     final double navigationWidth = _layout.navigationWidth.clamp(
       176,
@@ -238,6 +248,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
     );
   }
 
+  /// 中文：处理 buildMedium 相关逻辑。
+  /// English: Handles the buildMedium related logic.
   Widget _buildMedium(
     RepositoryViewData repository,
     BoxConstraints constraints,
@@ -304,6 +316,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
     );
   }
 
+  /// 中文：处理 buildCompact 相关逻辑。
+  /// English: Handles the buildCompact related logic.
   Widget _buildCompact(RepositoryViewData repository) {
     final Widget pane = switch (_compactPane) {
       _CompactPane.refs => _RefsNavigation(
@@ -346,6 +360,8 @@ class _RepositoryToolbar extends StatelessWidget {
   final RepositoryViewData repository;
   final RepositoryOverviewCallbacks callbacks;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
@@ -515,6 +531,8 @@ class _BranchChip extends StatelessWidget {
 
   final RepositoryViewData repository;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;
@@ -600,6 +618,8 @@ class _ToolbarAction extends StatelessWidget {
   final int badge;
   final bool isBusy;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final bool enabled =
@@ -648,6 +668,8 @@ class _HistorySearchField extends StatelessWidget {
   final String query;
   final ValueChanged<String>? onChanged;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     return Semantics(
@@ -676,6 +698,8 @@ class _RefsNavigation extends StatelessWidget {
   final RepositoryViewData repository;
   final RepositoryRefCallback? onSelected;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final Map<RepositoryRefKind, List<RepositoryRefViewData>> sections = {
@@ -726,6 +750,8 @@ class _RefsNavigation extends StatelessWidget {
   }
 }
 
+/// 中文：处理 refKindLabel 相关逻辑。
+/// English: Handles the refKindLabel related logic.
 String _refKindLabel(RepositoryRefKind kind) {
   return switch (kind) {
     RepositoryRefKind.workspace => '工作区',
@@ -736,6 +762,8 @@ String _refKindLabel(RepositoryRefKind kind) {
   };
 }
 
+/// 中文：处理 refKindIcon 相关逻辑。
+/// English: Handles the refKindIcon related logic.
 IconData _refKindIcon(RepositoryRefKind kind) {
   return switch (kind) {
     RepositoryRefKind.workspace => Icons.edit_note,
@@ -752,6 +780,8 @@ class _RefTile extends StatelessWidget {
   final RepositoryRefViewData ref;
   final VoidCallback? onTap;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
@@ -832,6 +862,8 @@ class _HistoryPane extends StatelessWidget {
   final RepositoryViewData repository;
   final RepositoryCommitCallback? onSelected;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -875,6 +907,8 @@ class _HistoryPane extends StatelessWidget {
 class _HistoryColumnHeader extends StatelessWidget {
   const _HistoryColumnHeader();
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
@@ -918,6 +952,8 @@ class _CommitRow extends StatelessWidget {
   final CommitViewData commit;
   final VoidCallback? onTap;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
@@ -1036,10 +1072,16 @@ class _CommitGraphPainter extends CustomPainter {
   static const double laneSpacing = 12;
   static const double laneStart = 22;
 
+  /// 中文：处理 color 相关逻辑。
+  /// English: Handles the color related logic.
   Color _color(int index) => colors[index.abs() % colors.length];
 
+  /// 中文：处理 laneX 相关逻辑。
+  /// English: Handles the laneX related logic.
   double _laneX(int lane) => laneStart + lane.clamp(0, 4) * laneSpacing;
 
+  /// 中文：在给定画布上绘制当前内容。
+  /// English: Paints the current content onto the canvas.
   @override
   void paint(Canvas canvas, Size size) {
     final double centerY = size.height / 2;
@@ -1090,6 +1132,8 @@ class _CommitGraphPainter extends CustomPainter {
     canvas.drawCircle(Offset(_laneX(graph.lane), centerY), 4.5, dotPaint);
   }
 
+  /// 中文：处理 drawVerticalRail 相关逻辑。
+  /// English: Handles the drawVerticalRail related logic.
   void _drawVerticalRail(
     Canvas canvas, {
     required double x,
@@ -1103,6 +1147,8 @@ class _CommitGraphPainter extends CustomPainter {
     );
   }
 
+  /// 中文：处理 drawLaneConnection 相关逻辑。
+  /// English: Handles the drawLaneConnection related logic.
   void _drawLaneConnection(
     Canvas canvas, {
     required int fromLane,
@@ -1148,6 +1194,8 @@ class _CommitGraphPainter extends CustomPainter {
     );
   }
 
+  /// 中文：判断绘制结果是否需要刷新。
+  /// English: Determines whether the painting needs refreshing.
   @override
   bool shouldRepaint(_CommitGraphPainter oldDelegate) {
     return oldDelegate.graph != graph ||
@@ -1157,10 +1205,16 @@ class _CommitGraphPainter extends CustomPainter {
   }
 }
 
+/// 中文：处理 historyBackground 相关逻辑。
+/// English: Handles the historyBackground related logic.
 Color _historyBackground(ColorScheme colors) => const Color(0xFF242D30);
 
+/// 中文：处理 graphBackground 相关逻辑。
+/// English: Handles the graphBackground related logic.
 Color _graphBackground(ColorScheme colors) => _historyBackground(colors);
 
+/// 中文：处理 graphColors 相关逻辑。
+/// English: Handles the graphColors related logic.
 List<Color> _graphColors(ColorScheme colors) => const [
   Color(0xFF087FCD),
   Color(0xFFFF6500),
@@ -1174,6 +1228,8 @@ class _RefLabel extends StatelessWidget {
 
   final String label;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;
@@ -1210,6 +1266,8 @@ class _SelectedChangesPane extends StatelessWidget {
   final RepositoryChangeStageCallback? onStageToggled;
   final RepositoryCommitFileCallback? onCommitFileSelected;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     if (repository.selectedCommit != null) {
@@ -1235,6 +1293,8 @@ class _CommitChangesPane extends StatelessWidget {
   final RepositoryViewData repository;
   final RepositoryCommitFileCallback? onSelected;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final files = repository.commitChanges;
@@ -1298,6 +1358,8 @@ class _CommitFileList extends StatelessWidget {
   final List<CommitFileViewData> files;
   final RepositoryCommitFileCallback? onSelected;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     if (files.isEmpty) {
@@ -1324,6 +1386,8 @@ class _CommitFileTile extends StatelessWidget {
   final CommitFileViewData file;
   final VoidCallback? onTap;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
@@ -1404,6 +1468,8 @@ class _ChangesPane extends StatelessWidget {
   final RepositoryChangeCallback? onSelected;
   final RepositoryChangeStageCallback? onStageToggled;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     return Material(
@@ -1470,6 +1536,8 @@ class _ChangeList extends StatelessWidget {
   final RepositoryChangeCallback? onSelected;
   final RepositoryChangeStageCallback? onStageToggled;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     if (changes.isEmpty) {
@@ -1508,6 +1576,8 @@ class _ChangeTile extends StatelessWidget {
   final VoidCallback? onTap;
   final VoidCallback? onStageToggled;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
@@ -1610,6 +1680,8 @@ class _ChangeTile extends StatelessWidget {
   }
 }
 
+/// 中文：处理 changeKindLabel 相关逻辑。
+/// English: Handles the changeKindLabel related logic.
 String _changeKindLabel(RepositoryChangeKind kind) {
   return switch (kind) {
     RepositoryChangeKind.modified => '已修改',
@@ -1627,6 +1699,8 @@ class _ChangeStatusBadge extends StatelessWidget {
 
   final RepositoryChangeKind kind;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;
@@ -1665,6 +1739,8 @@ class _DiffPreview extends StatelessWidget {
   final DiffViewData diff;
   final VoidCallback? onBack;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;
@@ -1750,6 +1826,8 @@ class _DiffLine extends StatelessWidget {
 
   final DiffLineViewData line;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;
@@ -1798,6 +1876,8 @@ class _LineNumber extends StatelessWidget {
 
   final int? value;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;
@@ -1826,6 +1906,8 @@ class _CommitDetailsPane extends StatelessWidget {
 
   final CommitDetailsViewData? details;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final CommitDetailsViewData? details = this.details;
@@ -1854,6 +1936,8 @@ class _CommitDetailsContent extends StatelessWidget {
 
   final CommitDetailsViewData details;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
@@ -1945,6 +2029,8 @@ class _MetadataRow extends StatelessWidget {
   final String value;
   final bool monospace;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
@@ -1989,6 +2075,8 @@ class _StatLabel extends StatelessWidget {
   final String value;
   final Color color;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     return Row(
@@ -2022,6 +2110,8 @@ class _TabbedInspector extends StatelessWidget {
   final RepositoryChangeStageCallback? onChangeStageToggled;
   final RepositoryCommitFileCallback? onCommitFileSelected;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     return Column(
@@ -2063,6 +2153,8 @@ class _CompactPaneSwitcher extends StatelessWidget {
   final ValueChanged<_CompactPane> onSelected;
   final int changeCount;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     return _DenseTabBar<_CompactPane>(
@@ -2092,6 +2184,8 @@ class _DenseTabBar<T> extends StatelessWidget {
   final Map<T, (String, IconData)> tabs;
   final ValueChanged<T> onSelected;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;
@@ -2156,6 +2250,8 @@ class _PaneHeader extends StatelessWidget {
   final IconData icon;
   final String? trailing;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
@@ -2198,6 +2294,8 @@ class _SectionHeader extends StatelessWidget {
   final String title;
   final int count;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
@@ -2240,6 +2338,8 @@ class _PaneEmptyState extends StatelessWidget {
   final String title;
   final String message;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
@@ -2280,6 +2380,8 @@ class _RepositoryStatusBar extends StatelessWidget {
   final RepositoryFooterViewData data;
   final RepositoryActionCallback? onAction;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
@@ -2360,6 +2462,8 @@ class _ResizeDivider extends StatelessWidget {
   final String semanticsLabel;
   final ValueChanged<double> onDelta;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final Color dividerColor = Theme.of(context).colorScheme.outlineVariant;
@@ -2402,6 +2506,8 @@ class _NoRepositoryView extends StatelessWidget {
   final RepositoryOverviewViewData data;
   final RepositoryActionCallback? onAction;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     return _StandaloneStateView(
@@ -2437,6 +2543,8 @@ class _LoadingView extends StatelessWidget {
   final RepositoryOverviewViewData data;
   final RepositoryActionCallback? onAction;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     return _StandaloneStateView(
@@ -2463,6 +2571,8 @@ class _ErrorView extends StatelessWidget {
   final RepositoryOverviewViewData data;
   final RepositoryActionCallback? onAction;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final String technicalDetails = data.technicalDetails?.trim() ?? '';
@@ -2522,6 +2632,8 @@ class _StandaloneStateView extends StatelessWidget {
   final List<_StateAction> actions;
   final RepositoryActionCallback? onAction;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
@@ -2649,6 +2761,8 @@ class _StandaloneStateView extends StatelessWidget {
 class _StaleDataLoadingOverlay extends StatelessWidget {
   const _StaleDataLoadingOverlay();
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     return const Positioned(
@@ -2666,6 +2780,8 @@ class _StaleDataErrorBanner extends StatelessWidget {
   final String message;
   final VoidCallback? onRetry;
 
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;

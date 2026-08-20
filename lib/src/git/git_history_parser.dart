@@ -15,6 +15,8 @@ const gitHistoryFormat =
 final class GitHistoryParser {
   const GitHistoryParser();
 
+  /// 中文：解析输入数据。
+  /// English: Parses the input data.
   GitHistoryParseResult parse(List<int> bytes) {
     if (bytes.isEmpty) {
       return const GitHistoryParseResult([]);
@@ -74,6 +76,8 @@ final class GitHistoryParser {
     return GitHistoryParseResult(commits);
   }
 
+  /// 中文：解析输入数据。
+  /// English: Parses the input data.
   DateTime _parseDate(String value, int recordIndex) {
     final parsed = DateTime.tryParse(value);
     if (parsed == null) {
@@ -100,6 +104,8 @@ final class _NulFieldCursor {
 
   bool get isDone => _offset >= bytes.length;
 
+  /// 中文：读取所需的数据。
+  /// English: Reads the required data.
   List<int> readBytes(int recordIndex) {
     if (isDone) {
       throw GitParseException(
@@ -119,6 +125,8 @@ final class _NulFieldCursor {
     return value;
   }
 
+  /// 中文：读取所需的数据。
+  /// English: Reads the required data.
   String readText(int recordIndex) =>
       utf8.decode(readBytes(recordIndex), allowMalformed: true);
 }

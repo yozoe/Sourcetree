@@ -24,6 +24,8 @@ final class GitAskPassPromptCoordinator extends Notifier<GitAskPassRequest?> {
   ///
   /// A session is single-use, so a second request is rejected instead of
   /// replacing the visible prompt or retaining multiple secret responses.
+  /// 中文：处理 request 相关逻辑。
+  /// English: Handles the request related logic.
   Future<String?> request(GitAskPassRequest request) {
     if (_response != null) {
       return Future<String?>.value();
@@ -36,12 +38,18 @@ final class GitAskPassPromptCoordinator extends Notifier<GitAskPassRequest?> {
 
   /// Returns the current prompt answer exactly once. The value is passed to
   /// the AskPass session but is never stored in Riverpod state.
+  /// 中文：提交当前表单或请求。
+  /// English: Submits the current form or request.
   void submit(String? secret) => _complete(secret);
 
   /// Rejects the active prompt, for example when the Git operation is
   /// cancelled or its one-time session is closed.
+  /// 中文：取消当前操作。
+  /// English: Cancels the current operation.
   void cancel() => _complete(null);
 
+  /// 中文：处理 complete 相关逻辑。
+  /// English: Handles the complete related logic.
   void _complete(String? secret) {
     final response = _response;
     if (response == null) {
@@ -54,6 +62,8 @@ final class GitAskPassPromptCoordinator extends Notifier<GitAskPassRequest?> {
     }
   }
 
+  /// 中文：释放当前对象持有的资源。
+  /// English: Releases resources held by this object.
   void _dispose() {
     final response = _response;
     _response = null;

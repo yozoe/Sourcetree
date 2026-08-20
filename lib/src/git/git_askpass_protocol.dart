@@ -18,6 +18,8 @@ final class GitAskPassRequest {
   final GitAskPassPromptKind kind;
 
   /// Decodes and validates a helper request before it can reach the UI.
+  /// 中文：解码输入内容。
+  /// English: Decodes the input content.
   static GitAskPassRequest decode(String payload) {
     if (payload.length > maxPromptLength * 2) {
       throw const FormatException('AskPass request is too large.');
@@ -49,6 +51,8 @@ final class GitAskPassRequest {
     );
   }
 
+  /// 中文：对输入结果进行分类。
+  /// English: Classifies the input result.
   static GitAskPassPromptKind _classifyPrompt(String prompt) {
     final normalized = prompt.toLowerCase();
     if (normalized.contains('username')) return GitAskPassPromptKind.username;

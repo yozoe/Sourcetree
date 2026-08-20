@@ -6,6 +6,8 @@ import '../git/git.dart';
 import '../presentation/presentation.dart';
 import 'repository_session.dart';
 
+/// 中文：将数据映射为目标表示。
+/// English: Maps data to the target representation.
 RepositoryOverviewViewData mapRepositoryOverview(RepositorySessionState state) {
   final repository = _mapRepository(state);
   return switch (state.phase) {
@@ -180,6 +182,8 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
   );
 }
 
+/// 中文：将数据映射为目标表示。
+/// English: Maps data to the target representation.
 List<CommitFileViewData> _mapCommitChanges(RepositorySessionState state) {
   return [
     for (final change in state.commitChanges)
@@ -224,6 +228,8 @@ RepositoryOperationRecord? _runningOperation(
   return null;
 }
 
+/// 中文：处理 operationLabel 相关逻辑。
+/// English: Handles the operationLabel related logic.
 String _operationLabel(RepositoryOperationKind kind) => switch (kind) {
   RepositoryOperationKind.clone => '克隆仓库',
   RepositoryOperationKind.fetch => '获取远端更新',
@@ -231,6 +237,8 @@ String _operationLabel(RepositoryOperationKind kind) => switch (kind) {
   RepositoryOperationKind.push => '推送当前分支',
 };
 
+/// 中文：处理 operationState 相关逻辑。
+/// English: Handles the operationState related logic.
 RepositoryOperationState _operationState(
   RepositoryOperationOutcome outcome,
 ) => switch (outcome) {
@@ -240,6 +248,8 @@ RepositoryOperationState _operationState(
   RepositoryOperationOutcome.failed => RepositoryOperationState.failed,
 };
 
+/// 中文：将数据映射为目标表示。
+/// English: Maps data to the target representation.
 List<CommitViewData> _mapCommits(
   RepositorySessionState state,
   GitBranchStatus branch,
@@ -273,6 +283,8 @@ List<CommitViewData> _mapCommits(
   ];
 }
 
+/// 中文：判断是否与目标匹配。
+/// English: Determines whether this matches the target.
 bool _matches(GitCommit commit, String query) {
   return query.isEmpty ||
       commit.subject.toLowerCase().contains(query) ||
@@ -280,6 +292,8 @@ bool _matches(GitCommit commit, String query) {
       commit.objectId.toLowerCase().startsWith(query);
 }
 
+/// 中文：处理 buildGraph 相关逻辑。
+/// English: Handles the buildGraph related logic.
 List<CommitGraphViewData> _buildGraph(
   List<GitCommit> commits, {
   required String? headId,
@@ -339,6 +353,8 @@ List<CommitGraphViewData> _buildGraph(
   return result;
 }
 
+/// 中文：将数据映射为目标表示。
+/// English: Maps data to the target representation.
 List<RepositoryChangeViewData> _mapChanges(RepositorySessionState state) {
   final status = state.status;
   if (status == null) return const [];
@@ -358,6 +374,8 @@ List<RepositoryChangeViewData> _mapChanges(RepositorySessionState state) {
   return changes;
 }
 
+/// 中文：处理 changeData 相关逻辑。
+/// English: Handles the changeData related logic.
 RepositoryChangeViewData _changeData(
   RepositorySessionState state,
   GitStatusEntry entry,
@@ -412,6 +430,8 @@ GitCommit? _findCommit(List<GitCommit> commits, String? objectId) {
   return null;
 }
 
+/// 中文：将数据映射为目标表示。
+/// English: Maps data to the target representation.
 DiffViewData _mapDiff(RepositorySessionState state) {
   final selected = state.selectedChange;
   if (selected == null) return const DiffViewData.empty();
@@ -453,6 +473,8 @@ DiffViewData _mapDiff(RepositorySessionState state) {
   );
 }
 
+/// 中文：将数据映射为目标表示。
+/// English: Maps data to the target representation.
 DiffViewData _mapCommitDiff(RepositorySessionState state) {
   final selected = state.selectedCommitFile;
   if (selected == null) return const DiffViewData.empty();
@@ -485,6 +507,8 @@ DiffViewData _mapCommitDiff(RepositorySessionState state) {
   );
 }
 
+/// 中文：处理 diffLines 相关逻辑。
+/// English: Handles the diffLines related logic.
 List<DiffLineViewData> _diffLines(String text) {
   final result = <DiffLineViewData>[];
   var oldLine = 0;
@@ -533,6 +557,8 @@ List<DiffLineViewData> _diffLines(String text) {
   return result;
 }
 
+/// 中文：处理 relativeDate 相关逻辑。
+/// English: Handles the relativeDate related logic.
 String _relativeDate(DateTime when) {
   final elapsed = DateTime.now().toUtc().difference(when.toUtc());
   if (elapsed.inMinutes < 1) return '刚刚';
@@ -543,6 +569,8 @@ String _relativeDate(DateTime when) {
   return '${local.year}-${local.month.toString().padLeft(2, '0')}-${local.day.toString().padLeft(2, '0')}';
 }
 
+/// 中文：处理 footerMessage 相关逻辑。
+/// English: Handles the footerMessage related logic.
 String _footerMessage(RepositorySessionState state, int count) {
   if (state.phase == RepositorySessionPhase.loading) return '正在刷新仓库';
   if (state.phase == RepositorySessionPhase.error) {

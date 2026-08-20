@@ -18,6 +18,8 @@ final class RepositorySessionSnapshot {
 abstract interface class RepositorySessionStore {
   Future<RepositorySessionSnapshot> load();
 
+  /// 中文：保存当前数据。
+  /// English: Saves the current data.
   Future<void> save(RepositorySessionSnapshot snapshot);
 }
 
@@ -25,6 +27,8 @@ abstract interface class RepositorySessionStore {
 final class FileRepositorySessionStore implements RepositorySessionStore {
   static const _fileName = 'repository-session.json';
 
+  /// 中文：加载所需的数据。
+  /// English: Loads the required data.
   @override
   Future<RepositorySessionSnapshot> load() async {
     try {
@@ -63,6 +67,8 @@ final class FileRepositorySessionStore implements RepositorySessionStore {
     }
   }
 
+  /// 中文：保存当前数据。
+  /// English: Saves the current data.
   @override
   Future<void> save(RepositorySessionSnapshot snapshot) async {
     final file = await _file();
@@ -76,6 +82,8 @@ final class FileRepositorySessionStore implements RepositorySessionStore {
     );
   }
 
+  /// 中文：处理 file 相关逻辑。
+  /// English: Handles the file related logic.
   Future<File> _file() async {
     final directory = await getApplicationSupportDirectory();
     return File(path_utils.join(directory.path, _fileName));
