@@ -4,11 +4,12 @@
 Sourcetree 的核心工作流和信息密度，但不会复制其闭源代码、商标、
 品牌素材或私有服务。
 
-当前状态：**P0 首个只读切片已可运行。**
+当前状态：**P1 MVP 垂直闭环进行中。**
 
-当前版本可以打开本地 Git 仓库，展示工作区状态、最近提交、基础提交图和
-单文件 Unified Diff。暂存、提交、分支和远端写操作均尚未开放，以避免在
-安全恢复机制完成前修改用户仓库。
+当前版本可以打开、初始化和克隆仓库，展示工作区状态、最近提交、基础提交图和
+单文件 Unified Diff；支持整文件暂存、提交、创建本地分支以及安全 Fetch / Pull /
+Push。macOS bundle 的用户主动远端操作可使用单次受控 AskPass；发布签名、真实私有
+远端和系统凭据兼容性仍在验证中。
 
 ## 运行
 
@@ -22,6 +23,7 @@ flutter run -d macos
 ```sh
 flutter analyze
 flutter test
+flutter test integration_test/macos_core_workflow_test.dart -d macos
 flutter build macos --debug
 ```
 
@@ -29,8 +31,8 @@ flutter build macos --debug
 
 - macOS 优先，Apple Silicon 为第一验证平台。
 - 使用系统或用户指定的 Git CLI，Git 仓库是唯一事实来源。
-- 先完成“打开仓库 → 查看改动 → Diff → 暂存 → Commit → 查看历史”
-  的安全闭环。
+- 完成“打开/克隆 → 查看改动 → Diff → 暂存 → Commit → 分支 → Push”
+  的安全闭环，并继续验证认证和恢复路径。
 - 架构隔离平台能力，为后续 Windows 和 Linux 留出适配边界。
 
 详细范围、架构、路线图和验收标准见：

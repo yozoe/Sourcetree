@@ -270,6 +270,8 @@ detached HEAD、SHA-1/SHA-256 等边界。
 - Push 取消或异常退出后，使用可取消的只读 `ls-remote` 核验远端是否已包含本地 HEAD；核验不会修改本地 tracking refs，并提示用户 Fetch 刷新 ahead/behind。
 - 统一操作进度与日志：Clone、Fetch、Pull、Push 均记录运行/成功/取消/失败状态，状态栏显示不确定进度并可打开最近 12 条的脱敏操作记录。
 - 核心旅程真实 Git 冒烟：覆盖“克隆 → 修改 → 暂存 → 提交 → 创建分支 → 推送”及远端 ref、ahead/behind、操作记录断言。
+- macOS 核心工作区 UI E2E：`integration_test` 在真实 Flutter desktop app 与本地 bare remote
+  fixture 中覆盖打开工作区、暂存、提交、创建分支、推送、ahead/behind 与远端 ref 核验。
 - AskPass IPC 安全设计评估：保持无交互认证默认值，冻结单次 helper、nonce、权限、取消和脱敏契约，并以 macOS helper/broker 实施。
 - AskPass 应用侧协议校验：拒绝非法 nonce、未知字段和超限 prompt，且协议对象不保存秘密。
 - AskPass macOS helper：固定路径的 socket 转发 helper 已编译并打包进 Debug app；正式 bundle
@@ -289,7 +291,7 @@ detached HEAD、SHA-1/SHA-256 等边界。
   顺序与 SSH Agent socket 环境契约测试已完成；真实私有远端、Release 签名和 Keychain/企业
   SSO 兼容性验证待完成。
 
-待完成：真实认证远端、Release 签名与凭据兼容性验证，以及应用驱动的 macOS UI E2E。
+待完成：真实认证远端、Release 签名与凭据兼容性验证，以及 macOS 认证等待/取消/恢复 UI E2E。
 
 退出条件：用户无需终端完成
 “克隆 → 修改 → 暂存 → 提交 → 创建分支 → 推送”；状态与 Git CLI 一致，
@@ -406,4 +408,4 @@ CRLF、长路径、大小写、symlink、可执行位、窗口和系统菜单差
 
 1. 验证 Release/Developer ID 签名、Gatekeeper、真实认证远端和 credential helper / SSH Agent /
    Keychain 兼容性，完成凭据泄漏扫描。
-2. 完成应用驱动的 macOS UI E2E，覆盖“克隆 → 修改 → 暂存 → 提交 → 创建分支 → 推送”及认证取消恢复。
+2. 扩展 macOS UI E2E，覆盖原生目录选择/Clone 与认证等待、取消、恢复和远端结果核验。
