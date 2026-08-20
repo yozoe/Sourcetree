@@ -1,8 +1,12 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:git_desktop/src/app/git_askpass_prompt_coordinator.dart';
 import 'package:git_desktop/src/app/git_desktop_app.dart';
 import 'package:git_desktop/src/app/repository_session.dart';
+import 'package:git_desktop/src/git/git.dart';
 import 'package:integration_test/integration_test.dart';
 
 import '../test/support/git_test_repository.dart';
@@ -106,6 +110,49 @@ void main() {
       ], workingDirectory: origin)).stdout.toString().trim();
       expect(remoteHead, localHead);
       expect(container.read(repositorySessionProvider).status!.branch.ahead, 0);
+    },
+  );
+
+  testWidgets(
+    'macOS app cancels a native AskPass request without revealing it',
+    (tester) async {
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      await tester.pumpWidget(
+        UncontrolledProviderScope(
+          container: container,
+          child: const GitDesktopApp(),
+        ),
+      );
+      final coordinator = container.read(
+        gitAskPassPromptCoordinatorProvider.notifier,
+      );
+      final session = await GitAskPassSession.start(
+        onPrompt: coordinator.request,
+      );
+      addTearDown(session.close);
+      final environment = session.environmentForBundledHelper();
+      final helper = environment['GIT_ASKPASS']!;
+      expect(File(helper).existsSync(), isTrue);
+
+      final helperProcess = await Process.start(
+        helper,
+        const ['Password for https://user:token@example.test/private:'],
+        environment: <String, String>{...Platform.environment, ...environment},
+        runInShell: false,
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      await tester.pump();
+      await tester.pumpAndSettle();
+
+      expect(find.text('需要密码'), findsOneWidget);
+      expect(find.textContaining('example.test'), findsNothing);
+      expect(find.textContaining('user:token'), findsNothing);
+      await tester.tap(find.text('取消'));
+      await tester.pumpAndSettle();
+
+      expect(await helperProcess.exitCode, isNonZero);
+      expect(session.status, GitAskPassSessionStatus.rejected);
     },
   );
 }

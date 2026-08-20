@@ -16,7 +16,7 @@ final class GitAskPassPromptCoordinator extends Notifier<GitAskPassRequest?> {
 
   @override
   GitAskPassRequest? build() {
-    ref.onDispose(cancel);
+    ref.onDispose(_dispose);
     return null;
   }
 
@@ -51,6 +51,16 @@ final class GitAskPassPromptCoordinator extends Notifier<GitAskPassRequest?> {
     state = null;
     if (!response.isCompleted) {
       response.complete(secret);
+    }
+  }
+
+  void _dispose() {
+    final response = _response;
+    _response = null;
+    // Riverpod is disposing the provider, so writing [state] here is invalid.
+    // Completing the pending callback still lets the session reject safely.
+    if (response != null && !response.isCompleted) {
+      response.complete(null);
     }
   }
 }

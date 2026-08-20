@@ -105,6 +105,8 @@ helper 路径、不设置 `GIT_ASKPASS`，仍可使用既有 credential helper �
 - [ ] 真实 macOS Keychain、SSH Agent、企业 SSO 与受认证远端的兼容性测试。
 - [x] macOS 核心工作区 UI E2E：真实 Flutter desktop app 配合本地 bare remote fixture，覆盖
   打开工作区、暂存、提交、创建分支、推送及远端 ref 核验。
+- [x] macOS bundle AskPass UI E2E：native helper、broker、session 与 Flutter 脱敏认证弹窗
+  的完整取消链路，不显示原始 URL 或 userinfo。
 - [ ] macOS UI E2E：认证等待、取消、恢复和远端结果核验。
 
 ## 当前边界
