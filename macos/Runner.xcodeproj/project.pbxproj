@@ -240,6 +240,7 @@
 				33CC10EB2044A3C60003C045 /* Resources */,
 				33CC110E2044A8840003C045 /* Bundle Framework */,
 				3399D490228B24CF009A79C7 /* ShellScript */,
+				A11A5A550000000000000001 /* Build AskPass Helper */,
 				3C4F097C5D7185CDF7C25FA3 /* [CP] Embed Pods Frameworks */,
 			);
 			buildRules = (
@@ -323,6 +324,24 @@
 /* End PBXResourcesBuildPhase section */
 
 /* Begin PBXShellScriptBuildPhase section */
+		A11A5A550000000000000001 /* Build AskPass Helper */ = {
+			isa = PBXShellScriptBuildPhase;
+			alwaysOutOfDate = 1;
+			buildActionMask = 2147483647;
+			files = (
+			);
+			inputPaths = (
+				"$(PROJECT_DIR)/AskPassHelper/main.c",
+			);
+			name = "Build AskPass Helper";
+			outputPaths = (
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/MacOS/git-desktop-askpass",
+			);
+			runOnlyForDeploymentPostprocessing = 0;
+			shellPath = /bin/sh;
+			shellScript = "set -eu\nhelper=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Contents/MacOS/git-desktop-askpass\"\n/usr/bin/clang -std=c11 -O2 -Wall -Wextra -Werror \"$PROJECT_DIR/AskPassHelper/main.c\" -o \"$helper\"\n";
+			showEnvVarsInLog = 0;
+		};
 		3399D490228B24CF009A79C7 /* ShellScript */ = {
 			isa = PBXShellScriptBuildPhase;
 			alwaysOutOfDate = 1;

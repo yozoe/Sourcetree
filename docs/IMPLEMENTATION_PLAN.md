@@ -271,6 +271,7 @@ detached HEAD、SHA-1/SHA-256 等边界。
 - 核心旅程真实 Git 冒烟：覆盖“克隆 → 修改 → 暂存 → 提交 → 创建分支 → 推送”及远端 ref、ahead/behind、操作记录断言。
 - AskPass IPC 安全设计评估：保持无交互认证默认值，冻结单次 helper、nonce、权限、取消和脱敏契约，待 macOS helper 验证后实施。
 - AskPass 应用侧协议校验：拒绝非法 nonce、未知字段和超限 prompt，且协议对象不保存秘密。
+- AskPass macOS helper：固定路径的 socket 转发 helper 已编译并打包进 Debug app，尚未启用 server 或 `GIT_ASKPASS`。
 
 待完成：一次性 AskPass helper 与交互认证，以及应用驱动的 macOS UI E2E。
 

@@ -34,6 +34,12 @@ AskPass helper 不应解析或保存 Git 命令；它只将单次 prompt 转发�
 只允许 `nonce` 和 `prompt` 两个字段，prompt 限制为 8 KiB。该代码不接收、保存或
 序列化秘密；秘密响应仍须等 native helper 与受限 socket 会话实施后才能启用。
 
+macOS 已有固定路径的 `git-desktop-askpass` C helper，Xcode 会将其编译到
+`Git Desktop.app/Contents/MacOS/`，并已通过 Debug bundle 的签名完整性验证。
+helper 只接受绝对 Unix socket 路径、64 位十六进制 nonce 和一个 prompt；它转发
+长度受限的 JSON 请求，并仅将 socket 返回的秘密写到 stdout。当前应用尚未启动
+socket server 或设置 `GIT_ASKPASS`，故 helper 不能被真实 Git 操作调用。
+
 ## 不可妥协的安全契约
 
 1. socket 目录权限为 `0700`，socket 权限为 `0600`；创建后验证 owner 为当前 UID。
@@ -63,7 +69,8 @@ AskPass helper 不应解析或保存 Git 命令；它只将单次 prompt 转发�
 
 ## 实施前验证清单
 
-- [ ] macOS helper 的签名、bundle 路径和 Gatekeeper 行为验证。
+- [x] macOS helper 的 Debug bundle 路径、C 编译和签名完整性验证。
+- [ ] Release/Developer ID 签名与 Gatekeeper 行为验证。
 - [ ] nonce 重放、错误 UID、第二连接、畸形 UTF-8 和 helper 欺骗测试。
 - [x] 非秘密 IPC 请求的未知字段、非法 nonce 与超长 prompt 校验。
 - [ ] Token、用户名密码、SSH passphrase、拒绝认证、网络中断和用户取消测试。
