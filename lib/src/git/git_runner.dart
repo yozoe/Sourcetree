@@ -87,8 +87,10 @@ final class GitResult {
 
   String get stderrText => utf8.decode(stderrBytes, allowMalformed: true);
 
-  /// 中文：处理 throwIfFailed 相关逻辑。
-  /// English: Handles the throwIfFailed related logic.
+  /// 中文：当命令失败或被取消时，抛出包含执行上下文的异常。
+  ///
+  /// English: Throws an exception with the command context when execution
+  /// fails or is cancelled.
   void throwIfFailed({String? operation}) {
     if (!isSuccess) {
       throw GitCommandException(this, operation: operation);
@@ -115,8 +117,10 @@ final class GitRunner {
   final GitProcessTerminator processTerminator;
   final Map<String, String> baseEnvironment;
 
-  /// 中文：处理 run 相关逻辑。
-  /// English: Handles the run related logic.
+  /// 中文：在不经 Shell 的情况下执行 Git，并在输出上限内收集原始标准输出和错误输出。
+  ///
+  /// English: Runs Git without a shell and captures raw standard output and
+  /// error output within the configured limits.
   Future<GitResult> run(GitInvocation invocation) async {
     final cancellationToken = invocation.cancellationToken;
     if (cancellationToken?.isCancelled ?? false) {
@@ -294,8 +298,10 @@ final class _LimitedByteCollector {
   final BytesBuilder _builder = BytesBuilder(copy: false);
   bool wasTruncated = false;
 
-  /// 中文：处理 add 相关逻辑。
-  /// English: Handles the add related logic.
+  /// 中文：追加字节块；超过上限时保留已收集内容并标记为截断。
+  ///
+  /// English: Appends a byte chunk, retaining collected data and marking it
+  /// truncated when the configured limit is exceeded.
   void add(List<int> chunk) {
     final remaining = limit - _builder.length;
     if (remaining <= 0) {
@@ -312,7 +318,8 @@ final class _LimitedByteCollector {
     wasTruncated = true;
   }
 
-  /// 中文：处理 takeBytes 相关逻辑。
-  /// English: Handles the takeBytes related logic.
+  /// 中文：取出当前已收集的字节，并重置内部缓冲区。
+  ///
+  /// English: Returns the collected bytes and clears the internal buffer.
   Uint8List takeBytes() => _builder.takeBytes();
 }

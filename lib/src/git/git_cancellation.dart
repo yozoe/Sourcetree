@@ -23,8 +23,10 @@ final class GitCancellationToken {
     _callbacks.clear();
   }
 
-  /// 中文：处理 register 相关逻辑。
-  /// English: Handles the register related logic.
+  /// 中文：注册取消回调；若已取消则立即调用，并返回可安全释放的注册项。
+  ///
+  /// English: Registers a cancellation callback, invoking it immediately if
+  /// already cancelled, and returns a safely disposable registration.
   GitCancellationRegistration register(GitCancellationCallback callback) {
     if (_isCancelled) {
       callback();
@@ -48,16 +50,19 @@ final class GitCancellationRegistration {
 /// Platform implementations can replace this to terminate a complete process
 /// tree. The default implementation terminates the direct Git process.
 abstract interface class GitProcessTerminator {
-  /// 中文：处理 terminate 相关逻辑。
-  /// English: Handles the terminate related logic.
+  /// 中文：终止指定 Git 进程，平台实现可同时清理其子进程树。
+  ///
+  /// English: Terminates the supplied Git process; platform implementations
+  /// may also clean up its child process tree.
   FutureOr<void> terminate(Process process);
 }
 
 final class DefaultGitProcessTerminator implements GitProcessTerminator {
   const DefaultGitProcessTerminator();
 
-  /// 中文：处理 terminate 相关逻辑。
-  /// English: Handles the terminate related logic.
+  /// 中文：终止直接启动的 Git 进程。
+  ///
+  /// English: Terminates the directly started Git process.
   @override
   void terminate(Process process) {
     process.kill();

@@ -28,8 +28,10 @@ class GitDesktopApp extends StatelessWidget {
   }
 }
 
-/// 中文：处理 theme 相关逻辑。
-/// English: Handles the theme related logic.
+/// 中文：根据亮度创建应用主题，并统一紧凑密度、背景、分隔线和提示样式。
+///
+/// English: Creates the application theme for a brightness and standardizes
+/// compact density, backgrounds, dividers, and tooltip styling.
 ThemeData _theme(Brightness brightness) {
   final colors = ColorScheme.fromSeed(
     seedColor: const Color(0xFF2767D8),
@@ -119,8 +121,10 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
-  /// 中文：处理 cloneRepository 相关逻辑。
-  /// English: Handles the cloneRepository related logic.
+  /// 中文：收集远端地址和空目标目录，经用户确认后克隆并在界面提示结果。
+  ///
+  /// English: Collects a remote URL and empty destination, confirms with the
+  /// user, then clones and reports the result in the UI.
   Future<void> _cloneRepository() async {
     final remoteUrl = await showDialog<String>(
       context: context,
@@ -240,8 +244,9 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
-  /// 中文：处理 operationName 相关逻辑。
-  /// English: Handles the operationName related logic.
+  /// 中文：返回操作日志中展示的本地化操作名称。
+  ///
+  /// English: Returns the localized operation name shown in the activity log.
   String _operationName(RepositoryOperationKind kind) => switch (kind) {
     RepositoryOperationKind.clone => '克隆仓库',
     RepositoryOperationKind.fetch => '获取远端更新',
@@ -249,8 +254,10 @@ class _RepositoryWorkspaceScreenState
     RepositoryOperationKind.push => '推送当前分支',
   };
 
-  /// 中文：处理 operationSummary 相关逻辑。
-  /// English: Handles the operationSummary related logic.
+  /// 中文：返回操作结果对应的简短本地化状态说明。
+  ///
+  /// English: Returns a concise localized status description for an operation
+  /// outcome.
   String _operationSummary(RepositoryOperationOutcome outcome) =>
       switch (outcome) {
         RepositoryOperationOutcome.running => '正在运行',
@@ -259,8 +266,9 @@ class _RepositoryWorkspaceScreenState
         RepositoryOperationOutcome.failed => '未完成',
       };
 
-  /// 中文：处理 operationIcon 相关逻辑。
-  /// English: Handles the operationIcon related logic.
+  /// 中文：为操作结果选择日志列表中使用的状态图标。
+  ///
+  /// English: Selects the status icon used for an operation in the log list.
   IconData _operationIcon(RepositoryOperationOutcome outcome) =>
       switch (outcome) {
         RepositoryOperationOutcome.running => Icons.sync,
@@ -269,8 +277,10 @@ class _RepositoryWorkspaceScreenState
         RepositoryOperationOutcome.failed => Icons.error_outline,
       };
 
-  /// 中文：处理 operationTime 相关逻辑。
-  /// English: Handles the operationTime related logic.
+  /// 中文：将操作开始时间与已用时格式化为日志副标题；未完成的操作显示进行中。
+  ///
+  /// English: Formats an operation's start time and elapsed duration for its
+  /// log subtitle, marking unfinished operations as running.
   String _operationTime(RepositoryOperationRecord operation) {
     final started = operation.startedAt.toLocal();
     final startedAt =
@@ -283,8 +293,9 @@ class _RepositoryWorkspaceScreenState
     return '$startedAt 开始 · 用时 ${seconds < 1 ? '< 1 秒' : '$seconds 秒'}';
   }
 
-  /// 中文：处理 twoDigits 相关逻辑。
-  /// English: Handles the twoDigits related logic.
+  /// 中文：将数字补齐为两位，供时间的小时和分钟显示使用。
+  ///
+  /// English: Pads a number to two digits for hour and minute display.
   String _twoDigits(int value) => value.toString().padLeft(2, '0');
 
   /// 中文：请求并处理用户确认。

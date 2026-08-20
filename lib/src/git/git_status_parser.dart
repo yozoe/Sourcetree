@@ -236,8 +236,10 @@ final class GitStatusParser {
     );
   }
 
-  /// 中文：处理 simplePath 相关逻辑。
-  /// English: Handles the simplePath related logic.
+  /// 中文：从未跟踪或忽略记录中提取路径字节，并验证其固定前缀。
+  ///
+  /// English: Extracts path bytes from an untracked or ignored record after
+  /// validating its fixed prefix.
   List<int> _simplePath(List<int> record, int recordIndex) {
     if (record.length < 3 || record[1] != 0x20) {
       throw GitParseException(
@@ -261,8 +263,10 @@ final class GitStatusParser {
     );
   }
 
-  /// 中文：处理 splitPrefix 相关逻辑。
-  /// English: Handles the splitPrefix related logic.
+  /// 中文：按指定数量的空格拆分 porcelain v2 的固定字段，并保留最后一个字段的原始字节。
+  ///
+  /// English: Splits the fixed porcelain-v2 fields at the requested number of
+  /// spaces while preserving the raw bytes of the final field.
   List<List<int>> _splitPrefix(
     List<int> record, {
     required int spaceCount,
@@ -285,12 +289,16 @@ final class GitStatusParser {
     return fields;
   }
 
-  /// 中文：处理 text 相关逻辑。
-  /// English: Handles the text related logic.
+  /// 中文：将 Git 的字节字段解码为可显示文本；无效 UTF-8 会被替换而不会中断解析。
+  ///
+  /// English: Decodes a Git byte field for display, replacing malformed UTF-8
+  /// rather than aborting parsing.
   String _text(List<int> bytes) => utf8.decode(bytes, allowMalformed: true);
 
-  /// 中文：处理 zeroObjectIdToNull 相关逻辑。
-  /// English: Handles the zeroObjectIdToNull related logic.
+  /// 中文：将全为零的对象 ID 规范化为 `null`，其余值保持不变。
+  ///
+  /// English: Normalizes an all-zero object ID to `null` and leaves other
+  /// values unchanged.
   String? _zeroObjectIdToNull(String objectId) {
     if (objectId.isNotEmpty &&
         objectId.codeUnits.every((character) => character == 0x30)) {

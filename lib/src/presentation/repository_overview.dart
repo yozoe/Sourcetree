@@ -84,8 +84,10 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
     }
   }
 
-  /// 中文：处理 updateLayout 相关逻辑。
-  /// English: Handles the updateLayout related logic.
+  /// 中文：更新可调整面板的布局并通知上层回调保存新尺寸。
+  ///
+  /// English: Updates the resizable-pane layout and notifies the parent
+  /// callback so the new dimensions can be retained.
   void _updateLayout(RepositoryOverviewLayout next) {
     setState(() => _layout = next);
     widget.callbacks.onLayoutChanged?.call(next);
@@ -172,8 +174,10 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
     );
   }
 
-  /// 中文：处理 buildWide 相关逻辑。
-  /// English: Handles the buildWide related logic.
+  /// 中文：构建宽屏三栏布局：引用导航、历史/改动区域和提交详情，并约束可拖拽尺寸。
+  ///
+  /// English: Builds the wide three-column layout—refs, history/changes, and
+  /// commit details—while clamping resizable dimensions.
   Widget _buildWide(RepositoryViewData repository, BoxConstraints constraints) {
     final double navigationWidth = _layout.navigationWidth.clamp(
       176,
@@ -248,8 +252,10 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
     );
   }
 
-  /// 中文：处理 buildMedium 相关逻辑。
-  /// English: Handles the buildMedium related logic.
+  /// 中文：构建中等宽度布局，在历史下方以选项卡承载改动和详情检查器。
+  ///
+  /// English: Builds the medium-width layout with a tabbed changes/details
+  /// inspector below history.
   Widget _buildMedium(
     RepositoryViewData repository,
     BoxConstraints constraints,
@@ -316,8 +322,10 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
     );
   }
 
-  /// 中文：处理 buildCompact 相关逻辑。
-  /// English: Handles the buildCompact related logic.
+  /// 中文：为窄屏选择当前紧凑面板，并配合底部导航在引用、历史、改动和详情之间切换。
+  ///
+  /// English: Selects the active compact pane for narrow screens, switching
+  /// among refs, history, changes, and details through bottom navigation.
   Widget _buildCompact(RepositoryViewData repository) {
     final Widget pane = switch (_compactPane) {
       _CompactPane.refs => _RefsNavigation(
@@ -750,8 +758,9 @@ class _RefsNavigation extends StatelessWidget {
   }
 }
 
-/// 中文：处理 refKindLabel 相关逻辑。
-/// English: Handles the refKindLabel related logic.
+/// 中文：返回引用类型在导航栏中展示的本地化名称。
+///
+/// English: Returns the localized name shown in navigation for a ref type.
 String _refKindLabel(RepositoryRefKind kind) {
   return switch (kind) {
     RepositoryRefKind.workspace => '工作区',
@@ -762,8 +771,9 @@ String _refKindLabel(RepositoryRefKind kind) {
   };
 }
 
-/// 中文：处理 refKindIcon 相关逻辑。
-/// English: Handles the refKindIcon related logic.
+/// 中文：返回与引用类型对应的导航图标。
+///
+/// English: Returns the navigation icon associated with a ref type.
 IconData _refKindIcon(RepositoryRefKind kind) {
   return switch (kind) {
     RepositoryRefKind.workspace => Icons.edit_note,
@@ -1072,12 +1082,16 @@ class _CommitGraphPainter extends CustomPainter {
   static const double laneSpacing = 12;
   static const double laneStart = 22;
 
-  /// 中文：处理 color 相关逻辑。
-  /// English: Handles the color related logic.
+  /// 中文：按车道索引循环选择提交图颜色，支持负索引。
+  ///
+  /// English: Selects a commit-graph color cyclically by lane index, including
+  /// negative indices.
   Color _color(int index) => colors[index.abs() % colors.length];
 
-  /// 中文：处理 laneX 相关逻辑。
-  /// English: Handles the laneX related logic.
+  /// 中文：将车道索引转换为图画布中的 X 坐标，并限制最大可见车道。
+  ///
+  /// English: Converts a lane index to a graph-canvas X coordinate while
+  /// capping the number of visible lanes.
   double _laneX(int lane) => laneStart + lane.clamp(0, 4) * laneSpacing;
 
   /// 中文：在给定画布上绘制当前内容。
@@ -1132,8 +1146,10 @@ class _CommitGraphPainter extends CustomPainter {
     canvas.drawCircle(Offset(_laneX(graph.lane), centerY), 4.5, dotPaint);
   }
 
-  /// 中文：处理 drawVerticalRail 相关逻辑。
-  /// English: Handles the drawVerticalRail related logic.
+  /// 中文：以固定 3 像素宽度绘制车道的竖直连接线。
+  ///
+  /// English: Draws a lane's vertical connection rail at a fixed 3-pixel
+  /// width.
   void _drawVerticalRail(
     Canvas canvas, {
     required double x,
@@ -1147,8 +1163,10 @@ class _CommitGraphPainter extends CustomPainter {
     );
   }
 
-  /// 中文：处理 drawLaneConnection 相关逻辑。
-  /// English: Handles the drawLaneConnection related logic.
+  /// 中文：绘制车道在当前行前后延续或转向目标父提交车道的连接路径。
+  ///
+  /// English: Draws a lane connection that continues through the row or turns
+  /// toward a target parent lane.
   void _drawLaneConnection(
     Canvas canvas, {
     required int fromLane,
@@ -1205,16 +1223,21 @@ class _CommitGraphPainter extends CustomPainter {
   }
 }
 
-/// 中文：处理 historyBackground 相关逻辑。
-/// English: Handles the historyBackground related logic.
+/// 中文：返回历史列表使用的深色背景色。
+///
+/// English: Returns the dark background color used by the history list.
 Color _historyBackground(ColorScheme colors) => const Color(0xFF242D30);
 
-/// 中文：处理 graphBackground 相关逻辑。
-/// English: Handles the graphBackground related logic.
+/// 中文：返回提交图背景色，使其与历史列表保持一致。
+///
+/// English: Returns the commit-graph background color, matching the history
+/// list.
 Color _graphBackground(ColorScheme colors) => _historyBackground(colors);
 
-/// 中文：处理 graphColors 相关逻辑。
-/// English: Handles the graphColors related logic.
+/// 中文：返回用于区分提交图车道的固定高对比度颜色序列。
+///
+/// English: Returns the fixed, high-contrast color sequence used to
+/// distinguish commit-graph lanes.
 List<Color> _graphColors(ColorScheme colors) => const [
   Color(0xFF087FCD),
   Color(0xFFFF6500),
@@ -1680,8 +1703,9 @@ class _ChangeTile extends StatelessWidget {
   }
 }
 
-/// 中文：处理 changeKindLabel 相关逻辑。
-/// English: Handles the changeKindLabel related logic.
+/// 中文：返回文件改动类型在改动列表中展示的本地化标签。
+///
+/// English: Returns the localized label displayed for a file-change kind.
 String _changeKindLabel(RepositoryChangeKind kind) {
   return switch (kind) {
     RepositoryChangeKind.modified => '已修改',

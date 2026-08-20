@@ -228,8 +228,10 @@ RepositoryOperationRecord? _runningOperation(
   return null;
 }
 
-/// 中文：处理 operationLabel 相关逻辑。
-/// English: Handles the operationLabel related logic.
+/// 中文：将远端操作类型映射为状态栏和日志中使用的本地化标签。
+///
+/// English: Maps a remote-operation kind to the localized label used in the
+/// status bar and activity log.
 String _operationLabel(RepositoryOperationKind kind) => switch (kind) {
   RepositoryOperationKind.clone => '克隆仓库',
   RepositoryOperationKind.fetch => '获取远端更新',
@@ -237,8 +239,10 @@ String _operationLabel(RepositoryOperationKind kind) => switch (kind) {
   RepositoryOperationKind.push => '推送当前分支',
 };
 
-/// 中文：处理 operationState 相关逻辑。
-/// English: Handles the operationState related logic.
+/// 中文：将会话操作结果映射为呈现层的状态枚举。
+///
+/// English: Maps a session operation outcome to the presentation-layer state
+/// enum.
 RepositoryOperationState _operationState(
   RepositoryOperationOutcome outcome,
 ) => switch (outcome) {
@@ -292,8 +296,10 @@ bool _matches(GitCommit commit, String query) {
       commit.objectId.toLowerCase().startsWith(query);
 }
 
-/// 中文：处理 buildGraph 相关逻辑。
-/// English: Handles the buildGraph related logic.
+/// 中文：为按时间排序的提交生成稳定的车道、延续线和父提交连接信息。
+///
+/// English: Builds stable lanes, continuation rails, and parent connections
+/// for chronologically ordered commits.
 List<CommitGraphViewData> _buildGraph(
   List<GitCommit> commits, {
   required String? headId,
@@ -374,8 +380,10 @@ List<RepositoryChangeViewData> _mapChanges(RepositorySessionState state) {
   return changes;
 }
 
-/// 中文：处理 changeData 相关逻辑。
-/// English: Handles the changeData related logic.
+/// 中文：按暂存或工作区来源把 Git 状态条目映射为可展示的文件改动，并保留可暂存性与选中状态。
+///
+/// English: Maps a Git status entry from the index or work tree to displayable
+/// change data, preserving staging capability and selection state.
 RepositoryChangeViewData _changeData(
   RepositorySessionState state,
   GitStatusEntry entry,
@@ -507,8 +515,10 @@ DiffViewData _mapCommitDiff(RepositorySessionState state) {
   );
 }
 
-/// 中文：处理 diffLines 相关逻辑。
-/// English: Handles the diffLines related logic.
+/// 中文：解析统一 Diff，标记文件头、hunk、增删和上下文行，并维护旧/新行号。
+///
+/// English: Parses a unified diff into file headers, hunks, additions,
+/// deletions, and context while tracking old and new line numbers.
 List<DiffLineViewData> _diffLines(String text) {
   final result = <DiffLineViewData>[];
   var oldLine = 0;
@@ -557,8 +567,10 @@ List<DiffLineViewData> _diffLines(String text) {
   return result;
 }
 
-/// 中文：处理 relativeDate 相关逻辑。
-/// English: Handles the relativeDate related logic.
+/// 中文：将提交时间格式化为“刚刚”、相对时长或本地日期。
+///
+/// English: Formats a commit time as “just now”, a relative duration, or a
+/// local calendar date.
 String _relativeDate(DateTime when) {
   final elapsed = DateTime.now().toUtc().difference(when.toUtc());
   if (elapsed.inMinutes < 1) return '刚刚';
@@ -569,8 +581,10 @@ String _relativeDate(DateTime when) {
   return '${local.year}-${local.month.toString().padLeft(2, '0')}-${local.day.toString().padLeft(2, '0')}';
 }
 
-/// 中文：处理 footerMessage 相关逻辑。
-/// English: Handles the footerMessage related logic.
+/// 中文：根据会话阶段和文件改动数量生成底部状态栏消息。
+///
+/// English: Produces the status-bar message from the session phase and change
+/// count.
 String _footerMessage(RepositorySessionState state, int count) {
   if (state.phase == RepositorySessionPhase.loading) return '正在刷新仓库';
   if (state.phase == RepositorySessionPhase.error) {

@@ -20,12 +20,10 @@ final class GitAskPassPromptCoordinator extends Notifier<GitAskPassRequest?> {
     return null;
   }
 
-  /// Waits for a controlled UI response to a validated AskPass request.
+  /// 中文：显示已验证的 AskPass 请求并等待受控 UI 的一次响应；第二个请求会被拒绝。
   ///
-  /// A session is single-use, so a second request is rejected instead of
-  /// replacing the visible prompt or retaining multiple secret responses.
-  /// 中文：处理 request 相关逻辑。
-  /// English: Handles the request related logic.
+  /// English: Exposes a validated AskPass request and waits for one controlled
+  /// UI response; a second request is rejected.
   Future<String?> request(GitAskPassRequest request) {
     if (_response != null) {
       return Future<String?>.value();
@@ -48,8 +46,10 @@ final class GitAskPassPromptCoordinator extends Notifier<GitAskPassRequest?> {
   /// English: Cancels the current operation.
   void cancel() => _complete(null);
 
-  /// 中文：处理 complete 相关逻辑。
-  /// English: Handles the complete related logic.
+  /// 中文：仅完成当前未决请求一次，并在完成前清除可见的提示状态。
+  ///
+  /// English: Completes the current pending request at most once and clears
+  /// the visible prompt state first.
   void _complete(String? secret) {
     final response = _response;
     if (response == null) {

@@ -25,9 +25,10 @@ final class GitRepositoryInspector {
     }
   }
 
-  /// Returns `null` when [path] is not within a repository.
-  /// 中文：处理 inspect 相关逻辑。
-  /// English: Handles the inspect related logic.
+  /// 中文：探测 [path] 所在仓库并返回规范化的目录信息；路径不在仓库中时返回 `null`。
+  ///
+  /// English: Inspects the repository containing [path] and returns normalized
+  /// directory information, or `null` when the path is outside a repository.
   Future<GitRepository?> inspect(String path) async {
     final flags = await _revParse(path, const [
       '--is-bare-repository',
@@ -82,8 +83,10 @@ final class GitRepositoryInspector {
     );
   }
 
-  /// 中文：处理 revParse 相关逻辑。
-  /// English: Handles the revParse related logic.
+  /// 中文：以受限输出大小运行 `git rev-parse`，供仓库结构探测复用。
+  ///
+  /// English: Runs `git rev-parse` with bounded output for reusable repository
+  /// structure probes.
   Future<GitResult> _revParse(String path, List<String> arguments) {
     return runner.run(
       GitInvocation(
@@ -115,8 +118,10 @@ final class GitRepositoryInspector {
     };
   }
 
-  /// 中文：处理 canonicalDirectory 相关逻辑。
-  /// English: Handles the canonicalDirectory related logic.
+  /// 中文：优先解析目录中的符号链接；无法解析时回退到绝对路径。
+  ///
+  /// English: Resolves directory symlinks when possible and falls back to an
+  /// absolute path when resolution fails.
   String _canonicalDirectory(String path) {
     try {
       return Directory(path).resolveSymbolicLinksSync();
@@ -633,8 +638,10 @@ _CommitNumStat _parseCommitNumStat(List<int> bytes) {
   );
 }
 
-/// 中文：处理 nullSeparatedBytes 相关逻辑。
-/// English: Handles the nullSeparatedBytes related logic.
+/// 中文：按 NUL 字节拆分 Git 输出，并保留每个字段的原始路径字节。
+///
+/// English: Splits Git output on NUL bytes while preserving raw path bytes in
+/// every field.
 List<List<int>> _nullSeparatedBytes(List<int> bytes) {
   if (bytes.isEmpty) return const [];
   final fields = <List<int>>[];
@@ -669,8 +676,10 @@ final class _CommitNumStat {
   final int deletions;
 }
 
-/// 中文：处理 outputLines 相关逻辑。
-/// English: Handles the outputLines related logic.
+/// 中文：将 UTF-8 输出按换行拆分，并忽略唯一的末尾换行符。
+///
+/// English: Splits UTF-8 output into lines while discarding one trailing
+/// newline.
 List<String> _outputLines(List<int> bytes) {
   final text = utf8.decode(bytes, allowMalformed: true);
   final withoutFinalNewline = text.endsWith('\n')

@@ -187,9 +187,10 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Initializing repository');
   }
 
-  /// Clones into an existing empty directory without interpreting the URL.
-  /// 中文：处理 cloneRepository 相关逻辑。
-  /// English: Handles the cloneRepository related logic.
+  /// 中文：仅向已有的空目录克隆远端 URL，并将取消令牌和 AskPass 环境传给 Git。
+  ///
+  /// English: Clones a remote URL only into an existing empty directory and
+  /// forwards cancellation and AskPass environment to Git.
   Future<void> cloneRepository({
     required String remoteUrl,
     required String directoryPath,
@@ -221,9 +222,10 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Cloning repository');
   }
 
-  /// Fetches the conventional `origin` remote without altering the work tree.
-  /// 中文：处理 fetchOrigin 相关逻辑。
-  /// English: Handles the fetchOrigin related logic.
+  /// 中文：获取约定的 `origin` 远端引用，不修改工作区。
+  ///
+  /// English: Fetches references from the conventional `origin` remote
+  /// without changing the work tree.
   Future<void> fetchOrigin(
     GitRepository repository, {
     GitCancellationToken? cancellationToken,
@@ -249,12 +251,10 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Fetching origin');
   }
 
-  /// Pulls the configured upstream only when it can fast-forward HEAD.
+  /// 中文：仅在当前 HEAD 可快速前进时从已配置上游拉取；`--ff-only` 会拒绝隐式合并提交。
   ///
-  /// `--ff-only` deliberately rejects implicit merge commits and leaves merge
-  /// handling to a dedicated workflow.
-  /// 中文：处理 pullFastForward 相关逻辑。
-  /// English: Handles the pullFastForward related logic.
+  /// English: Pulls from the configured upstream only when HEAD can fast
+  /// forward; `--ff-only` rejects implicit merge commits.
   Future<void> pullFastForward(
     GitRepository repository, {
     GitCancellationToken? cancellationToken,
@@ -281,12 +281,10 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Pulling current branch');
   }
 
-  /// Pushes the current branch to its configured upstream.
+  /// 中文：将当前分支推送到已配置上游，且不提供 force 选项，因此不会重写远端历史。
   ///
-  /// No force option is exposed; a rejected non-fast-forward push is reported
-  /// to the caller without rewriting remote history.
-  /// 中文：处理 pushUpstream 相关逻辑。
-  /// English: Handles the pushUpstream related logic.
+  /// English: Pushes the current branch to its configured upstream without a
+  /// force option, so it never rewrites remote history.
   Future<void> pushUpstream(
     GitRepository repository, {
     GitCancellationToken? cancellationToken,

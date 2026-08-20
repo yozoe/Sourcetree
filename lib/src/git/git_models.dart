@@ -121,8 +121,10 @@ enum GitChangeType {
 }
 
 extension GitChangeTypeParsing on GitChangeType {
-  /// 中文：处理 fromCode 相关逻辑。
-  /// English: Handles the fromCode related logic.
+  /// 中文：将 porcelain 状态字符转换为对应的文件改动类型；未知字符保留为 `unknown`。
+  ///
+  /// English: Converts a porcelain status character to its file-change type,
+  /// preserving unfamiliar characters as `unknown`.
   static GitChangeType fromCode(String code) {
     return switch (code) {
       '.' || ' ' => GitChangeType.unmodified,

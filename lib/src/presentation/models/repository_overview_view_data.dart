@@ -392,8 +392,10 @@ final class RepositoryOverviewLayout {
   final double detailsWidth;
   final double changesHeight;
 
-  /// 中文：处理 copyWith 相关逻辑。
-  /// English: Handles the copyWith related logic.
+  /// 中文：以传入尺寸创建新的布局配置，未传入的尺寸沿用当前值。
+  ///
+  /// English: Creates a new layout configuration from supplied dimensions
+  /// while retaining dimensions that are omitted.
   RepositoryOverviewLayout copyWith({
     double? navigationWidth,
     double? detailsWidth,

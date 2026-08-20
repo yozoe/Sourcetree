@@ -61,9 +61,10 @@ final class GitAskPassSession {
         File(_bundledHelperPathForExecutable(appExecutablePath)).existsSync();
   }
 
-  /// Creates a local, single-use endpoint for one AskPass request.
-  /// 中文：启动当前流程。
-  /// English: Starts the current flow.
+  /// 中文：为一次 AskPass 请求创建本地、一次性的 IPC 端点。
+  ///
+  /// English: Creates a local, single-use IPC endpoint for one AskPass
+  /// request.
   static Future<GitAskPassSession> start({
     required GitAskPassPromptHandler onPrompt,
     Duration timeout = defaultTimeout,
@@ -74,13 +75,12 @@ final class GitAskPassSession {
     preferNativeBroker: true,
   );
 
-  /// Creates a session with a fixture app executable path.
+  /// 中文：仅供测试使用；生产调用方必须通过 [start] 从
+  /// [Platform.resolvedExecutable] 推导 helper 路径。
   ///
-  /// This must only be used by tests. Production callers always derive the
-  /// helper path from [Platform.resolvedExecutable] through [start].
+  /// English: Creates a session only for tests. Production callers must derive
+  /// the helper path from [Platform.resolvedExecutable] through [start].
   @visibleForTesting
-  /// 中文：启动当前流程。
-  /// English: Starts the current flow.
   static Future<GitAskPassSession> startForTesting({
     required GitAskPassPromptHandler onPrompt,
     required String appExecutablePath,
@@ -93,8 +93,10 @@ final class GitAskPassSession {
     preferNativeBroker: useNativeBroker,
   );
 
-  /// 中文：启动当前流程。
-  /// English: Starts the current flow.
+  /// 中文：校验运行环境后创建 Socket 或 macOS broker 驱动的一次性会话，并在失败时删除临时目录。
+  ///
+  /// English: Validates the runtime, creates a Socket- or macOS-broker-backed
+  /// one-time session, and removes its temporary directory on failure.
   static Future<GitAskPassSession> _start({
     required GitAskPassPromptHandler onPrompt,
     required Duration timeout,
@@ -183,8 +185,10 @@ final class GitAskPassSession {
   /// The path is derived from the app bundle layout rather than a repository
   /// setting or remote input, so a repository cannot choose which executable
   /// receives credentials.
-  /// 中文：处理 environmentForBundledHelper 相关逻辑。
-  /// English: Handles the environmentForBundledHelper related logic.
+  /// 中文：返回仅供捆绑 AskPass helper 使用的环境变量，其中包含受保护的 Socket 与一次性 nonce。
+  ///
+  /// English: Returns the environment for the bundled AskPass helper,
+  /// including its protected socket and single-use nonce.
   Map<String, String> environmentForBundledHelper() {
     final helperPath = _bundledHelperPathForExecutable(_appExecutablePath);
     return Map<String, String>.unmodifiable(<String, String>{
@@ -288,8 +292,10 @@ final class GitAskPassSession {
     }
   }
 
-  /// 中文：处理 sendSecret 相关逻辑。
-  /// English: Handles the sendSecret related logic.
+  /// 中文：验证密钥长度和控制字符后，以受限长度的 JSON 行写回 Socket 客户端。
+  ///
+  /// English: Validates secret length and control characters, then writes a
+  /// size-limited JSON line back to the Socket client.
   Future<void> _sendSecret(Socket client, String secret) async {
     final secretBytes = utf8.encode(secret);
     if (secretBytes.length > maxSecretBytes ||
@@ -391,8 +397,10 @@ final class GitAskPassSession {
     }
   }
 
-  /// 中文：处理 bundledHelperPathForExecutable 相关逻辑。
-  /// English: Handles the bundledHelperPathForExecutable related logic.
+  /// 中文：根据 macOS `.app` 的固定目录结构定位随应用发布的 AskPass helper。
+  ///
+  /// English: Locates the shipped AskPass helper from the fixed macOS `.app`
+  /// directory layout.
   static String _bundledHelperPathForExecutable(String appExecutablePath) {
     final executable = File(appExecutablePath);
     if (!executable.isAbsolute) {
@@ -417,8 +425,10 @@ final class GitAskPassSession {
     return '${macosDirectory.path}${Platform.pathSeparator}$helperFileName';
   }
 
-  /// 中文：启动当前流程。
-  /// English: Starts the current flow.
+  /// 中文：启动捆绑 broker，等待其就绪，并将后续请求转交给当前会话。
+  ///
+  /// English: Starts the bundled broker, waits for readiness, and forwards
+  /// subsequent requests to this session.
   static Future<GitAskPassSession> _startWithNativeBroker({
     required GitAskPassPromptHandler onPrompt,
     required Duration timeout,
@@ -496,8 +506,10 @@ final class GitAskPassSession {
     }
   }
 
-  /// 中文：处理 bundledBrokerPathForExecutable 相关逻辑。
-  /// English: Handles the bundledBrokerPathForExecutable related logic.
+  /// 中文：返回与应用可执行文件同目录的捆绑 broker 路径。
+  ///
+  /// English: Returns the path of the bundled broker beside the app
+  /// executable.
   static String _bundledBrokerPathForExecutable(String appExecutablePath) {
     return '${File(appExecutablePath).parent.path}${Platform.pathSeparator}'
         'git-desktop-askpass-broker';
@@ -532,8 +544,10 @@ final class GitAskPassSession {
     }
   }
 
-  /// 中文：处理 setPermissions 相关逻辑。
-  /// English: Handles the setPermissions related logic.
+  /// 中文：使用 `chmod` 设置 IPC 文件或目录权限，失败时拒绝继续使用该端点。
+  ///
+  /// English: Applies permissions to an IPC file or directory with `chmod` and
+  /// rejects use of the endpoint if that fails.
   static Future<void> _setPermissions(String path, String mode) async {
     final result = await Process.run('/bin/chmod', <String>[mode, path]);
     if (result.exitCode != 0) {
@@ -541,8 +555,10 @@ final class GitAskPassSession {
     }
   }
 
-  /// 中文：处理 deleteDirectory 相关逻辑。
-  /// English: Handles the deleteDirectory related logic.
+  /// 中文：尽力递归删除会话私有目录；清理失败不会覆盖原始操作结果。
+  ///
+  /// English: Best-effort recursively removes a session-private directory
+  /// without replacing the original operation result on cleanup failure.
   static Future<void> _deleteDirectory(Directory directory) async {
     try {
       await directory.delete(recursive: true);
@@ -552,8 +568,10 @@ final class GitAskPassSession {
     }
   }
 
-  /// 中文：处理 newNonce 相关逻辑。
-  /// English: Handles the newNonce related logic.
+  /// 中文：生成 32 字节随机值的十六进制 nonce，用于绑定单次 AskPass 请求。
+  ///
+  /// English: Generates a 32-byte random hexadecimal nonce that binds a
+  /// single AskPass request.
   static String _newNonce() {
     final random = Random.secure();
     final buffer = StringBuffer();
@@ -563,8 +581,10 @@ final class GitAskPassSession {
     return buffer.toString();
   }
 
-  /// 中文：处理 containsControlCharacter 相关逻辑。
-  /// English: Handles the containsControlCharacter related logic.
+  /// 中文：检查值是否包含不允许写入 AskPass JSON 行的 ASCII 控制字符。
+  ///
+  /// English: Checks whether a value contains ASCII control characters that
+  /// are unsafe for an AskPass JSON line.
   static bool _containsControlCharacter(String value) {
     return value.codeUnits.any((unit) => unit < 0x20);
   }
@@ -576,8 +596,10 @@ final class GitAskPassSession {
     final bytes = BytesBuilder(copy: false);
     late final StreamSubscription<List<int>> subscription;
 
-    /// 中文：处理 fail 相关逻辑。
-    /// English: Handles the fail related logic.
+    /// 中文：以错误完成读取并停止继续接收该客户端的数据。
+    ///
+    /// English: Completes the read with an error and stops receiving data from
+    /// this client.
     void fail(Object error) {
       if (!completer.isCompleted) {
         completer.completeError(error);

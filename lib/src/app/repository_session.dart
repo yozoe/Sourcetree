@@ -73,8 +73,10 @@ final class RepositoryOperationRecord {
   final DateTime? completedAt;
   final String? message;
 
-  /// 中文：处理 complete 相关逻辑。
-  /// English: Handles the complete related logic.
+  /// 中文：以指定结果、完成时间和可选消息返回该操作记录的已完成副本。
+  ///
+  /// English: Returns a completed copy of this operation record with the
+  /// supplied outcome, completion time, and optional message.
   RepositoryOperationRecord complete({
     required RepositoryOperationOutcome outcome,
     required DateTime completedAt,
@@ -189,8 +191,11 @@ final class RepositorySessionState {
   final String? message;
   final String? technicalDetails;
 
-  /// 中文：处理 copyWith 相关逻辑。
-  /// English: Handles the copyWith related logic.
+  /// 中文：以传入字段创建新的不可变会话状态；未传入字段保留原值，`clear*` 标志会显式清除对应选择、Diff 或错误信息。
+  ///
+  /// English: Creates a new immutable session state with supplied fields while
+  /// retaining omitted values; each `clear*` flag explicitly clears its
+  /// related selection, diff, or error information.
   RepositorySessionState copyWith({
     RepositorySessionPhase? phase,
     String? requestedPath,
@@ -301,10 +306,10 @@ final class RepositorySessionController
     return const RepositorySessionState.empty();
   }
 
-  /// Restores the last successfully opened repositories without retaining any
-  /// Git credentials or operation state. Missing or invalid paths are dropped.
-  /// 中文：处理 restoreSession 相关逻辑。
-  /// English: Handles the restoreSession related logic.
+  /// 中文：恢复上次成功打开的仓库和活动标签，不保存凭据或运行中的操作；失效路径会被丢弃。
+  ///
+  /// English: Restores previously opened repositories and the active tab
+  /// without credentials or running operations, dropping invalid paths.
   Future<void> restoreSession() async {
     if (_isRestoringSession || _sessionPersistenceEnabled) {
       return;
@@ -337,8 +342,10 @@ final class RepositorySessionController
     }
   }
 
-  /// 中文：处理 persistRepositorySession 相关逻辑。
-  /// English: Handles the persistRepositorySession related logic.
+  /// 中文：将当前已打开标签和活动路径串行写入本地会话存储，且写入失败不影响 Git 操作。
+  ///
+  /// English: Serializes the current tabs and active path to local session
+  /// storage without letting write failures affect Git operations.
   void _persistRepositorySession() {
     if (!_sessionPersistenceEnabled || _isRestoringSession) {
       return;
@@ -376,8 +383,10 @@ final class RepositorySessionController
     return operation;
   }
 
-  /// 中文：处理 completeOperation 相关逻辑。
-  /// English: Handles the completeOperation related logic.
+  /// 中文：以完成时间更新指定操作记录，并在写入状态前脱敏其消息。
+  ///
+  /// English: Updates the specified operation with its completion time and
+  /// redacts its message before storing it in state.
   void _completeOperation(
     RepositoryOperationRecord operation, {
     required RepositoryOperationOutcome outcome,
@@ -398,8 +407,10 @@ final class RepositorySessionController
     );
   }
 
-  /// 中文：处理 operationOutcomeForError 相关逻辑。
-  /// English: Handles the operationOutcomeForError related logic.
+  /// 中文：将取消类 Git 错误标记为 `cancelled`，其他错误标记为 `failed`。
+  ///
+  /// English: Classifies cancellation-shaped Git errors as `cancelled` and all
+  /// other errors as `failed`.
   RepositoryOperationOutcome _operationOutcomeForError(Object error) {
     return error is GitCancelledException ||
             (error is GitCommandException &&
@@ -508,8 +519,10 @@ final class RepositorySessionController
     await openRepository(repositoryPath);
   }
 
-  /// 中文：处理 upsertRepositoryTab 相关逻辑。
-  /// English: Handles the upsertRepositoryTab related logic.
+  /// 中文：按路径替换已有标签，或在路径首次出现时追加标签，并保持列表不可变。
+  ///
+  /// English: Replaces an existing tab by path or appends a first-seen tab,
+  /// returning an immutable list.
   List<RepositoryTab> _upsertRepositoryTab(
     List<RepositoryTab> existingTabs,
     RepositoryTab nextTab,
@@ -530,8 +543,10 @@ final class RepositorySessionController
     return List<RepositoryTab>.unmodifiable(result);
   }
 
-  /// 中文：处理 disambiguateRepositoryTabLabels 相关逻辑。
-  /// English: Handles the disambiguateRepositoryTabLabels related logic.
+  /// 中文：为重名仓库标签添加父目录前缀，避免标签栏中出现无法区分的名称。
+  ///
+  /// English: Prefixes duplicate repository labels with their parent directory
+  /// so the tab strip remains unambiguous.
   List<RepositoryTab> _disambiguateRepositoryTabLabels(
     List<RepositoryTab> tabs,
   ) {
@@ -589,8 +604,10 @@ final class RepositorySessionController
     }
   }
 
-  /// 中文：处理 cloneRepository 相关逻辑。
-  /// English: Handles the cloneRepository related logic.
+  /// 中文：在空目录克隆仓库，记录可取消的操作并在结束后刷新和打开新仓库。
+  ///
+  /// English: Clones a repository into an empty directory, records a
+  /// cancellable operation, then refreshes and opens the new repository.
   Future<bool> cloneRepository({
     required String remoteUrl,
     required String directoryPath,
@@ -661,8 +678,10 @@ final class RepositorySessionController
   /// English: Cancels the current operation.
   void cancelClone() => _cloneCancellation?.cancel();
 
-  /// 中文：处理 fetchOrigin 相关逻辑。
-  /// English: Handles the fetchOrigin related logic.
+  /// 中文：获取当前仓库的 `origin`，记录操作结果，并在成功后刷新本地引用状态。
+  ///
+  /// English: Fetches `origin` for the current repository, records the
+  /// outcome, and refreshes local reference state on success.
   Future<bool> fetchOrigin() async {
     final repository = state.repository;
     if (repository == null ||
@@ -726,9 +745,10 @@ final class RepositorySessionController
   /// English: Cancels the current operation.
   void cancelFetch() => _fetchCancellation?.cancel();
 
-  /// Pulls the configured upstream only into a clean working tree and index.
-  /// 中文：处理 pullFastForward 相关逻辑。
-  /// English: Handles the pullFastForward related logic.
+  /// 中文：仅在工作区和索引干净且有上游时快速前进拉取，并在失败后刷新引用状态。
+  ///
+  /// English: Fast-forward pulls only with a clean work tree/index and an
+  /// upstream, refreshing reference state after failure as well.
   Future<bool> pullFastForward() async {
     final repository = state.repository;
     final status = state.status;
@@ -798,9 +818,10 @@ final class RepositorySessionController
   /// English: Cancels the current operation.
   void cancelPull() => _pullCancellation?.cancel();
 
-  /// Pushes only an ahead portion of the current branch to its upstream.
-  /// 中文：处理 pushUpstream 相关逻辑。
-  /// English: Handles the pushUpstream related logic.
+  /// 中文：仅在当前分支领先上游时推送；异常结束后会验证远端是否已包含 HEAD。
+  ///
+  /// English: Pushes only when the current branch is ahead of its upstream and
+  /// verifies whether the remote already contains HEAD after an uncertain exit.
   Future<bool> pushUpstream() async {
     final repository = state.repository;
     final status = state.status;
@@ -879,11 +900,10 @@ final class RepositorySessionController
     _pushVerificationCancellation?.cancel();
   }
 
-  /// Enables AskPass only for an explicit remote operation. All repository
-  /// inspection, refresh and post-push verification invocations keep the
-  /// default non-interactive environment.
-  /// 中文：处理 runWithAskPassSession 相关逻辑。
-  /// English: Handles the runWithAskPassSession related logic.
+  /// 中文：仅为明确的远端操作临时启用 AskPass；检查、刷新和推送验证始终保持非交互环境。
+  ///
+  /// English: Temporarily enables AskPass only for explicit remote operations;
+  /// inspection, refresh, and push verification remain non-interactive.
   Future<void> _runWithAskPassSession({
     required GitCancellationToken cancellation,
     required Future<void> Function(Map<String, String> environment) run,
@@ -1051,14 +1071,18 @@ final class RepositorySessionController
     }
   }
 
-  /// 中文：处理 setSearchQuery 相关逻辑。
-  /// English: Handles the setSearchQuery related logic.
+  /// 中文：更新提交历史的筛选查询，不触发新的 Git 读取。
+  ///
+  /// English: Updates the commit-history filter query without starting another
+  /// Git read.
   void setSearchQuery(String query) {
     state = state.copyWith(searchQuery: query);
   }
 
-  /// 中文：处理 parentObjectId 相关逻辑。
-  /// English: Handles the parentObjectId related logic.
+  /// 中文：返回已加载提交的第一父提交 ID；根提交或未加载提交返回 `null`。
+  ///
+  /// English: Returns the first parent ID of a loaded commit, or `null` for a
+  /// root or absent commit.
   String? _parentObjectId(String objectId) {
     for (final commit in state.commits) {
       if (commit.objectId == objectId) return commit.parentIds.firstOrNull;
@@ -1326,8 +1350,10 @@ final class RepositorySessionController
     return result.stdoutText.trim();
   }
 
-  /// 中文：处理 friendlyError 相关逻辑。
-  /// English: Handles the friendlyError related logic.
+  /// 中文：将 Git 和系统异常转换为可展示的本地化错误信息，同时避免泄露敏感文本。
+  ///
+  /// English: Converts Git and system exceptions into localized display
+  /// messages while avoiding sensitive-text disclosure.
   String _friendlyError(Object error) {
     if (error is GitProcessStartException) {
       return error.kind == GitErrorKind.executableNotFound
@@ -1364,8 +1390,10 @@ final class RepositorySessionController
     return '读取仓库时发生未知错误。';
   }
 
-  /// 中文：处理 cloneRecoveryMessage 相关逻辑。
-  /// English: Handles the cloneRecoveryMessage related logic.
+  /// 中文：检查克隆目标的残留内容，并返回可恢复或需要人工处理的说明。
+  ///
+  /// English: Inspects residual clone-target contents and returns guidance for
+  /// recovery or manual cleanup.
   Future<String?> _cloneRecoveryMessage(String directoryPath) async {
     final directory = Directory(directoryPath.trim());
     if (!await directory.exists()) {
@@ -1385,8 +1413,10 @@ final class RepositorySessionController
         : '克隆未完成，目标目录已有部分文件。请检查后删除该目录再重试。';
   }
 
-  /// 中文：处理 technicalDetails 相关逻辑。
-  /// English: Handles the technicalDetails related logic.
+  /// 中文：组合异常与堆栈信息并执行脱敏，供技术诊断区域显示。
+  ///
+  /// English: Combines and redacts an exception and stack trace for the
+  /// technical-details area.
   String _technicalDetails(Object error, StackTrace stackTrace) =>
       _redactSensitiveText('$error\n$stackTrace');
 

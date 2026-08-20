@@ -82,8 +82,10 @@ final class FileRepositorySessionStore implements RepositorySessionStore {
     );
   }
 
-  /// 中文：处理 file 相关逻辑。
-  /// English: Handles the file related logic.
+  /// 中文：返回应用支持目录中保存仓库会话快照的 JSON 文件。
+  ///
+  /// English: Returns the JSON file in application support that stores the
+  /// repository-session snapshot.
   Future<File> _file() async {
     final directory = await getApplicationSupportDirectory();
     return File(path_utils.join(directory.path, _fileName));
