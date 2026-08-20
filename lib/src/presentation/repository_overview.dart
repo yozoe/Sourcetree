@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
@@ -8,6 +9,8 @@ export 'models/repository_overview_view_data.dart';
 
 typedef RepositoryActionCallback = void Function(RepositoryAction action);
 typedef RepositoryRefCallback = void Function(RepositoryRefViewData ref);
+typedef RepositoryRefContextActionCallback =
+    void Function(RepositoryRefViewData ref, RepositoryRefContextAction action);
 typedef RepositoryCommitCallback = void Function(CommitViewData commit);
 typedef RepositoryChangeCallback =
     void Function(RepositoryChangeViewData? change);
@@ -24,6 +27,7 @@ final class RepositoryOverviewCallbacks {
     this.onAction,
     this.onSearchChanged,
     this.onRefSelected,
+    this.onRefContextAction,
     this.onCommitSelected,
     this.onChangeSelected,
     this.onChangeStageToggled,
@@ -34,6 +38,7 @@ final class RepositoryOverviewCallbacks {
   final RepositoryActionCallback? onAction;
   final ValueChanged<String>? onSearchChanged;
   final RepositoryRefCallback? onRefSelected;
+  final RepositoryRefContextActionCallback? onRefContextAction;
   final RepositoryCommitCallback? onCommitSelected;
   final RepositoryChangeCallback? onChangeSelected;
   final RepositoryChangeStageCallback? onChangeStageToggled;
@@ -200,6 +205,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
           child: _RefsNavigation(
             repository: repository,
             onSelected: widget.callbacks.onRefSelected,
+            onContextAction: widget.callbacks.onRefContextAction,
           ),
         ),
         _ResizeDivider(
@@ -277,6 +283,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
           child: _RefsNavigation(
             repository: repository,
             onSelected: widget.callbacks.onRefSelected,
+            onContextAction: widget.callbacks.onRefContextAction,
           ),
         ),
         _ResizeDivider(
@@ -331,6 +338,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
       _CompactPane.refs => _RefsNavigation(
         repository: repository,
         onSelected: widget.callbacks.onRefSelected,
+        onContextAction: widget.callbacks.onRefContextAction,
       ),
       _CompactPane.history => _HistoryPane(
         repository: repository,
@@ -709,10 +717,15 @@ class _HistorySearchField extends StatelessWidget {
 }
 
 class _RefsNavigation extends StatelessWidget {
-  const _RefsNavigation({required this.repository, required this.onSelected});
+  const _RefsNavigation({
+    required this.repository,
+    required this.onSelected,
+    required this.onContextAction,
+  });
 
   final RepositoryViewData repository;
   final RepositoryRefCallback? onSelected;
+  final RepositoryRefContextActionCallback? onContextAction;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -747,6 +760,11 @@ class _RefsNavigation extends StatelessWidget {
                   return _RefTile(
                     ref: ref,
                     onTap: onSelected == null ? null : () => onSelected!(ref),
+                    contextItems: _contextItemsFor(ref),
+                    onContextAction: onContextAction == null
+                        ? null
+                        : (RepositoryRefContextAction action) =>
+                              onContextAction!(ref, action),
                   );
                 },
               ),
@@ -764,6 +782,136 @@ class _RefsNavigation extends StatelessWidget {
       ),
     );
   }
+
+  /// 中文：根据引用类型及当前仓库状态构建右键菜单，并禁用不能安全执行的操作。
+  ///
+  /// English: Builds context-menu items from the reference kind and repository
+  /// state, disabling operations that are not currently safe to run.
+  List<_RefContextMenuItem> _contextItemsFor(RepositoryRefViewData ref) {
+    final disabledActions = repository.disabledActions;
+    final isBusy = repository.isRefreshing;
+    final canFetch =
+        !isBusy && !disabledActions.contains(RepositoryAction.fetch);
+    final canPull = !disabledActions.contains(RepositoryAction.pull);
+    final canPush = !disabledActions.contains(RepositoryAction.push);
+    final canSwitch = repository.isWorkingTreeClean && !isBusy;
+    final canMerge = !disabledActions.contains(RepositoryAction.mergeBranch);
+    return switch (ref.kind) {
+      RepositoryRefKind.workspace => [
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.fetchOrigin,
+          label: '获取 origin',
+          icon: Icons.sync,
+          enabled: canFetch,
+        ),
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.refresh,
+          label: '刷新仓库',
+          icon: Icons.refresh,
+          enabled: !isBusy,
+        ),
+      ],
+      RepositoryRefKind.localBranch when ref.isCurrent => [
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.fetchOrigin,
+          label: '获取 origin',
+          icon: Icons.sync,
+          enabled: canFetch,
+        ),
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.pullCurrentBranch,
+          label: '拉取当前分支',
+          icon: Icons.south,
+          enabled: canPull,
+        ),
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.pushCurrentBranch,
+          label: '推送当前分支',
+          icon: Icons.north,
+          enabled: canPush,
+        ),
+        const _RefContextMenuItem.divider(),
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.refresh,
+          label: '刷新仓库',
+          icon: Icons.refresh,
+          enabled: !isBusy,
+        ),
+      ],
+      RepositoryRefKind.localBranch => [
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.checkout,
+          label: '切换到此分支',
+          icon: Icons.swap_horiz,
+          enabled: canSwitch,
+        ),
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.mergeIntoCurrent,
+          label: '合并到当前分支',
+          icon: Icons.merge_type,
+          enabled: canMerge,
+        ),
+        const _RefContextMenuItem.divider(),
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.refresh,
+          label: '刷新仓库',
+          icon: Icons.refresh,
+          enabled: !isBusy,
+        ),
+      ],
+      RepositoryRefKind.remoteBranch => [
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.checkout,
+          label: '创建本地跟踪分支并切换',
+          icon: Icons.download_outlined,
+          enabled: canSwitch,
+        ),
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.fetchOrigin,
+          label: '获取 origin',
+          icon: Icons.sync,
+          enabled: canFetch,
+        ),
+        const _RefContextMenuItem.divider(),
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.refresh,
+          label: '刷新仓库',
+          icon: Icons.refresh,
+          enabled: !isBusy,
+        ),
+      ],
+      _ => [
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.refresh,
+          label: '刷新仓库',
+          icon: Icons.refresh,
+          enabled: !isBusy,
+        ),
+      ],
+    };
+  }
+}
+
+final class _RefContextMenuItem {
+  const _RefContextMenuItem({
+    required this.action,
+    required this.label,
+    required this.icon,
+    required this.enabled,
+  }) : isDivider = false;
+
+  const _RefContextMenuItem.divider()
+    : action = null,
+      label = '',
+      icon = null,
+      enabled = false,
+      isDivider = true;
+
+  final RepositoryRefContextAction? action;
+  final String label;
+  final IconData? icon;
+  final bool enabled;
+  final bool isDivider;
 }
 
 /// 中文：返回引用类型在导航栏中展示的本地化名称。
@@ -793,10 +941,56 @@ IconData _refKindIcon(RepositoryRefKind kind) {
 }
 
 class _RefTile extends StatelessWidget {
-  const _RefTile({required this.ref, required this.onTap});
+  const _RefTile({
+    required this.ref,
+    required this.onTap,
+    required this.contextItems,
+    required this.onContextAction,
+  });
 
   final RepositoryRefViewData ref;
   final VoidCallback? onTap;
+  final List<_RefContextMenuItem> contextItems;
+  final ValueChanged<RepositoryRefContextAction>? onContextAction;
+
+  /// 中文：在指针位置显示引用的上下文菜单，并将选中动作交给上层应用执行。
+  ///
+  /// English: Shows this reference's context menu at the pointer position and
+  /// forwards its selected action to the application layer.
+  Future<void> _showContextMenu(
+    BuildContext context,
+    Offset globalPosition,
+  ) async {
+    final handler = onContextAction;
+    if (handler == null || contextItems.isEmpty) return;
+    final overlay =
+        Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final selection = await showMenu<RepositoryRefContextAction>(
+      context: context,
+      position: RelativeRect.fromRect(
+        globalPosition & const Size(1, 1),
+        Offset.zero & overlay.size,
+      ),
+      items: [
+        for (final item in contextItems)
+          if (item.isDivider)
+            const PopupMenuDivider()
+          else
+            PopupMenuItem<RepositoryRefContextAction>(
+              value: item.action,
+              enabled: item.enabled,
+              child: Row(
+                children: [
+                  Icon(item.icon, size: 18),
+                  const SizedBox(width: 10),
+                  Text(item.label),
+                ],
+              ),
+            ),
+      ],
+    );
+    if (selection != null) handler(selection);
+  }
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -816,54 +1010,60 @@ class _RefTile extends StatelessWidget {
       child: Tooltip(
         message: ref.secondaryLabel ?? ref.label,
         waitDuration: const Duration(milliseconds: 650),
-        child: InkWell(
-          onTap: onTap,
-          child: Container(
-            height: 31,
-            padding: const EdgeInsets.only(left: 14, right: 8),
-            color: ref.isSelected ? colors.secondaryContainer : null,
-            child: Row(
-              children: [
-                Icon(
-                  ref.isCurrent
-                      ? Icons.radio_button_checked
-                      : _refKindIcon(ref.kind),
-                  size: 15,
-                  color: ref.isCurrent
-                      ? colors.primary
-                      : colors.onSurfaceVariant,
-                ),
-                const SizedBox(width: 7),
-                Expanded(
-                  child: Text(
-                    ref.label,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      fontWeight: ref.isCurrent ? FontWeight.w600 : null,
-                      color: ref.isSelected
-                          ? colors.onSecondaryContainer
-                          : null,
+        child: GestureDetector(
+          onLongPressStart: (details) =>
+              unawaited(_showContextMenu(context, details.globalPosition)),
+          child: InkWell(
+            onTap: onTap,
+            onSecondaryTapDown: (details) =>
+                unawaited(_showContextMenu(context, details.globalPosition)),
+            child: Container(
+              height: 31,
+              padding: const EdgeInsets.only(left: 14, right: 8),
+              color: ref.isSelected ? colors.secondaryContainer : null,
+              child: Row(
+                children: [
+                  Icon(
+                    ref.isCurrent
+                        ? Icons.radio_button_checked
+                        : _refKindIcon(ref.kind),
+                    size: 15,
+                    color: ref.isCurrent
+                        ? colors.primary
+                        : colors.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(
+                      ref.label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        fontWeight: ref.isCurrent ? FontWeight.w600 : null,
+                        color: ref.isSelected
+                            ? colors.onSecondaryContainer
+                            : null,
+                      ),
                     ),
                   ),
-                ),
-                if (tracking.isNotEmpty)
-                  Text(
-                    tracking,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: colors.onSurfaceVariant,
-                      fontFeatures: const [FontFeature.tabularFigures()],
+                  if (tracking.isNotEmpty)
+                    Text(
+                      tracking,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: colors.onSurfaceVariant,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
+                    )
+                  else if (ref.childCount case final int count)
+                    Text(
+                      '$count',
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: colors.onSurfaceVariant,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
                     ),
-                  )
-                else if (ref.childCount case final int count)
-                  Text(
-                    '$count',
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: colors.onSurfaceVariant,
-                      fontFeatures: const [FontFeature.tabularFigures()],
-                    ),
-                  ),
-              ],
+                ],
+              ),
             ),
           ),
         ),

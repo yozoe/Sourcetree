@@ -1,4 +1,7 @@
+import 'dart:ui' show PointerDeviceKind;
+
 import 'package:flutter/material.dart';
+import 'package:flutter/gestures.dart' show kSecondaryMouseButton;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:git_desktop/src/app/git_askpass_prompt_coordinator.dart';
@@ -161,6 +164,126 @@ void main() {
       'initial',
     );
   });
+
+  testWidgets('branch context menu exposes checkout and merge actions', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    RepositoryRefViewData? selectedReference;
+    RepositoryRefContextAction? selectedAction;
+    const featureBranch = RepositoryRefViewData(
+      id: 'local:feature/menu',
+      label: 'feature/menu',
+      kind: RepositoryRefKind.localBranch,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              refs: const [
+                RepositoryRefViewData(
+                  id: 'local:main',
+                  label: 'main',
+                  kind: RepositoryRefKind.localBranch,
+                  isCurrent: true,
+                ),
+                featureBranch,
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onRefContextAction: (reference, action) {
+              selectedReference = reference;
+              selectedAction = action;
+            },
+          ),
+        ),
+      ),
+    );
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('feature/menu')),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(find.text('切换到此分支'), findsOneWidget);
+    expect(find.text('合并到当前分支'), findsOneWidget);
+
+    await tester.tap(find.text('合并到当前分支'));
+    await tester.pumpAndSettle();
+
+    expect(selectedReference, featureBranch);
+    expect(selectedAction, RepositoryRefContextAction.mergeIntoCurrent);
+  });
+
+  testWidgets(
+    'current branch context menu disables unavailable pull and push',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1280, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RepositoryOverview(
+            data: RepositoryOverviewViewData.ready(
+              RepositoryViewData(
+                name: 'example',
+                path: '/tmp/example',
+                currentBranch: 'main',
+                refs: const [
+                  RepositoryRefViewData(
+                    id: 'local:main',
+                    label: 'main',
+                    kind: RepositoryRefKind.localBranch,
+                    isCurrent: true,
+                  ),
+                ],
+                disabledActions: const {
+                  RepositoryAction.pull,
+                  RepositoryAction.push,
+                },
+              ),
+            ),
+            callbacks: RepositoryOverviewCallbacks(
+              onRefContextAction: (_, _) {},
+            ),
+          ),
+        ),
+      );
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.text('main').last),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      final pullItem = tester.widget<PopupMenuItem<RepositoryRefContextAction>>(
+        find.widgetWithText(
+          PopupMenuItem<RepositoryRefContextAction>,
+          '拉取当前分支',
+        ),
+      );
+      final pushItem = tester.widget<PopupMenuItem<RepositoryRefContextAction>>(
+        find.widgetWithText(
+          PopupMenuItem<RepositoryRefContextAction>,
+          '推送当前分支',
+        ),
+      );
+      expect(pullItem.enabled, isFalse);
+      expect(pushItem.enabled, isFalse);
+    },
+  );
 
   testWidgets('exposes the operation log from the status bar', (tester) async {
     RepositoryAction? action;

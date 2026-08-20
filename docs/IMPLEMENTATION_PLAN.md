@@ -53,7 +53,7 @@
 | Diff | Unified Diff、文本/二进制识别、大文件降级 | 左右对比、语法高亮、空白选项 | 可扩展渲染器 |
 | 提交 | Commit、作者校验、hook 错误展示 | Amend、模板、签名状态 | 提交草稿 |
 | 历史 | 分页列表、基础 DAG、提交详情 | 搜索、文件历史、Blame、Reflog | 高级查询 |
-| Branch / Tag | 创建/切换本地分支、从已获取远端分支创建本地跟踪分支 | 重命名、跟踪关系、Tag | Worktree |
+| Branch / Tag | 创建/切换本地分支、从已获取远端分支创建本地跟踪分支、引用右键菜单 | 重命名、跟踪关系、Tag | Worktree |
 | 远端 | 已获取远端跟踪分支展示、Fetch、Pull、Push、进度和取消 | Remote 管理、Prune、安全 Force Push | 托管平台适配 |
 | 高级操作 | 本地分支安全合并、冲突状态展示 | Rebase、Cherry-pick、Revert、Reset、Stash；合并 Continue/Abort | 高级批量操作 |
 | 冲突 | 检测并展示进行中状态 | ours/theirs、Continue/Skip/Abort、外部工具 | 内置三方合并器评估 |
@@ -281,7 +281,8 @@ detached HEAD、SHA-1/SHA-256 等边界。
   96px 宽的连续深灰图栏、实心节点与直角分叉连线，主线和分支以蓝/橙等高对比色区分；历史
   读取覆盖所有本地分支，以呈现真实分叉与合并拓扑。
 - 安全 Commit（stdin 传递信息且不跳过 hooks）。
-- 创建本地分支、分支列表，以及仅在干净工作区的安全分支切换。
+- 创建本地分支、分支列表，以及仅在干净工作区的安全分支切换；左侧引用右键菜单可执行
+  Fetch、当前分支 Pull/Push、分支切换和合并，并根据安全前置条件禁用对应项目。
 - Fetch `origin`（不修改工作区，支持取消）。
 - Pull `--ff-only`（仅 clean worktree/index、配置 upstream 时启用，支持取消；拒绝隐式 merge commit）。
 - 安全 Push 当前分支 upstream（仅允许存在 ahead 提交时执行，显式锁定远端/refspec，不受用户 `push.default` 影响；显示目标与数量，支持取消，禁止 force push）。

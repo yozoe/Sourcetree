@@ -515,6 +515,41 @@ class _RepositoryWorkspaceScreenState
     }
   }
 
+  /// 中文：将引用右键菜单的安全操作路由到既有确认流程或仓库控制器。
+  ///
+  /// English: Routes safe reference context-menu actions through existing
+  /// confirmation flows or the repository controller.
+  void _handleReferenceContextAction(
+    RepositoryRefViewData reference,
+    RepositoryRefContextAction action,
+  ) {
+    switch (action) {
+      case RepositoryRefContextAction.fetchOrigin:
+        _handleAction(RepositoryAction.fetch);
+      case RepositoryRefContextAction.pullCurrentBranch:
+        unawaited(_confirmPull());
+      case RepositoryRefContextAction.pushCurrentBranch:
+        unawaited(_confirmPush());
+      case RepositoryRefContextAction.refresh:
+        _handleAction(RepositoryAction.refresh);
+      case RepositoryRefContextAction.checkout:
+        _handleReferenceSelected(reference);
+      case RepositoryRefContextAction.mergeIntoCurrent:
+        if (reference.kind != RepositoryRefKind.localBranch ||
+            reference.isCurrent) {
+          return;
+        }
+        final currentBranch = ref
+            .read(repositorySessionProvider)
+            .status
+            ?.branch
+            .head;
+        if (currentBranch != null) {
+          unawaited(_confirmMergeBranch(currentBranch, reference.label));
+        }
+    }
+  }
+
   /// 中文：请求并处理用户确认。
   /// English: Requests and handles user confirmation.
   Future<void> _confirmSwitchBranch(String branchName) async {
@@ -633,6 +668,7 @@ class _RepositoryWorkspaceScreenState
               callbacks: RepositoryOverviewCallbacks(
                 onAction: _handleAction,
                 onRefSelected: _handleReferenceSelected,
+                onRefContextAction: _handleReferenceContextAction,
                 onSearchChanged: controller.setSearchQuery,
                 onCommitSelected: (commit) =>
                     unawaited(controller.selectCommit(commit.oid)),

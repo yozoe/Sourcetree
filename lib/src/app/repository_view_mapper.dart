@@ -99,6 +99,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     isFetching: state.isFetchRunning,
     isPulling: state.isPullRunning,
     isPushing: state.isPushRunning,
+    isWorkingTreeClean: status.isClean,
     refs: [
       RepositoryRefViewData(
         id: 'workspace',

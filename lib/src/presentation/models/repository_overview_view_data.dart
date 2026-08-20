@@ -26,6 +26,16 @@ enum RepositoryAction {
 
 enum RepositoryRefKind { workspace, localBranch, remoteBranch, tag, stash }
 
+/// Actions available from the context menu of one repository reference.
+enum RepositoryRefContextAction {
+  fetchOrigin,
+  pullCurrentBranch,
+  pushCurrentBranch,
+  refresh,
+  checkout,
+  mergeIntoCurrent,
+}
+
 enum RepositoryChangeKind {
   modified,
   added,
@@ -107,6 +117,7 @@ final class RepositoryViewData {
     this.isFetching = false,
     this.isPulling = false,
     this.isPushing = false,
+    this.isWorkingTreeClean = true,
     this.refs = const [],
     this.commits = const [],
     this.changes = const [],
@@ -133,6 +144,7 @@ final class RepositoryViewData {
   final bool isFetching;
   final bool isPulling;
   final bool isPushing;
+  final bool isWorkingTreeClean;
   final List<RepositoryRefViewData> refs;
   final List<CommitViewData> commits;
   final List<RepositoryChangeViewData> changes;
