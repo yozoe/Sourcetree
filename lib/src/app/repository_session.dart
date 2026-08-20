@@ -2,6 +2,7 @@ import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as path_utils;
 
 import '../git/git.dart';
 import '../presentation/presentation.dart';
@@ -32,6 +33,14 @@ enum RepositorySessionPhase { empty, loading, ready, error }
 enum RepositoryOperationKind { clone, fetch, pull, push }
 
 enum RepositoryOperationOutcome { running, succeeded, cancelled, failed }
+
+/// A workspace tab for a successfully opened repository or linked worktree.
+final class RepositoryTab {
+  const RepositoryTab({required this.path, required this.label});
+
+  final String path;
+  final String label;
+}
 
 final class RepositoryOperationRecord {
   const RepositoryOperationRecord({
@@ -102,6 +111,8 @@ final class RepositorySessionState {
     this.isPullRunning = false,
     this.isPushRunning = false,
     this.operations = const [],
+    this.openRepositoryTabs = const [],
+    this.activeRepositoryTabPath,
     this.searchQuery = '',
     this.gitVersion,
     this.message,
@@ -127,6 +138,8 @@ final class RepositorySessionState {
   final bool isPullRunning;
   final bool isPushRunning;
   final List<RepositoryOperationRecord> operations;
+  final List<RepositoryTab> openRepositoryTabs;
+  final String? activeRepositoryTabPath;
   final String searchQuery;
   final String? gitVersion;
   final String? message;
@@ -149,6 +162,8 @@ final class RepositorySessionState {
     bool? isPullRunning,
     bool? isPushRunning,
     List<RepositoryOperationRecord>? operations,
+    List<RepositoryTab>? openRepositoryTabs,
+    String? activeRepositoryTabPath,
     String? searchQuery,
     String? gitVersion,
     String? message,
@@ -176,6 +191,9 @@ final class RepositorySessionState {
       isPullRunning: isPullRunning ?? this.isPullRunning,
       isPushRunning: isPushRunning ?? this.isPushRunning,
       operations: operations ?? this.operations,
+      openRepositoryTabs: openRepositoryTabs ?? this.openRepositoryTabs,
+      activeRepositoryTabPath:
+          activeRepositoryTabPath ?? this.activeRepositoryTabPath,
       searchQuery: searchQuery ?? this.searchQuery,
       gitVersion: gitVersion ?? this.gitVersion,
       message: clearMessage ? null : message ?? this.message,
@@ -291,6 +309,12 @@ final class RepositorySessionController
       final hasOriginRemote = results[1] as bool;
       final localBranches = results[2] as List<GitLocalBranch>;
       final commits = results[3] as List<GitCommit>;
+      final tab = RepositoryTab(
+        path: repository.commandDirectory,
+        label: path_utils.basename(
+          repository.workTreeRoot ?? repository.commonDirectory,
+        ),
+      );
       state = RepositorySessionState(
         phase: RepositorySessionPhase.ready,
         requestedPath: normalizedPath,
@@ -301,6 +325,10 @@ final class RepositorySessionController
         commits: commits,
         selectedCommitId: commits.firstOrNull?.objectId,
         operations: state.operations,
+        openRepositoryTabs: _disambiguateRepositoryTabLabels(
+          _upsertRepositoryTab(state.openRepositoryTabs, tab),
+        ),
+        activeRepositoryTabPath: tab.path,
         gitVersion: results[4] as String,
         searchQuery: state.searchQuery,
       );
@@ -315,6 +343,63 @@ final class RepositorySessionController
         technicalDetails: '$error\n$stackTrace',
       );
     }
+  }
+
+  /// Selects an already opened repository tab. Switching is intentionally
+  /// unavailable while Git is mutating a repository so an in-flight operation
+  /// cannot be mistaken for work in another tab.
+  Future<void> selectRepositoryTab(String repositoryPath) async {
+    if (repositoryPath == state.activeRepositoryTabPath ||
+        state.phase == RepositorySessionPhase.loading ||
+        state.isCloneRunning ||
+        state.isFetchRunning ||
+        state.isPullRunning ||
+        state.isPushRunning ||
+        !state.openRepositoryTabs.any((tab) => tab.path == repositoryPath)) {
+      return;
+    }
+    state = state.copyWith(activeRepositoryTabPath: repositoryPath);
+    await openRepository(repositoryPath);
+  }
+
+  List<RepositoryTab> _upsertRepositoryTab(
+    List<RepositoryTab> existingTabs,
+    RepositoryTab nextTab,
+  ) {
+    final result = <RepositoryTab>[];
+    var replaced = false;
+    for (final tab in existingTabs) {
+      if (tab.path == nextTab.path) {
+        result.add(nextTab);
+        replaced = true;
+      } else {
+        result.add(tab);
+      }
+    }
+    if (!replaced) {
+      result.add(nextTab);
+    }
+    return List<RepositoryTab>.unmodifiable(result);
+  }
+
+  List<RepositoryTab> _disambiguateRepositoryTabLabels(
+    List<RepositoryTab> tabs,
+  ) {
+    final labelCounts = <String, int>{};
+    for (final tab in tabs) {
+      labelCounts.update(tab.label, (count) => count + 1, ifAbsent: () => 1);
+    }
+    return List<RepositoryTab>.unmodifiable([
+      for (final tab in tabs)
+        if (labelCounts[tab.label] == 1)
+          tab
+        else
+          RepositoryTab(
+            path: tab.path,
+            label:
+                '${path_utils.basename(path_utils.dirname(tab.path))}/${tab.label}',
+          ),
+    ]);
   }
 
   /// Initializes only an empty directory, then opens the new repository.

@@ -438,15 +438,88 @@ class _RepositoryWorkspaceScreenState
     final session = ref.watch(repositorySessionProvider);
     final controller = ref.read(repositorySessionProvider.notifier);
     return Scaffold(
-      body: RepositoryOverview(
-        data: mapRepositoryOverview(session),
-        callbacks: RepositoryOverviewCallbacks(
-          onAction: _handleAction,
-          onRefSelected: _handleReferenceSelected,
-          onSearchChanged: controller.setSearchQuery,
-          onCommitSelected: (commit) => controller.selectCommit(commit.oid),
-          onChangeSelected: controller.selectChange,
-          onChangeStageToggled: controller.toggleStage,
+      body: Column(
+        children: [
+          if (session.openRepositoryTabs.isNotEmpty)
+            RepositoryTabStrip(
+              tabs: session.openRepositoryTabs,
+              activePath: session.activeRepositoryTabPath,
+              onSelected: controller.selectRepositoryTab,
+            ),
+          Expanded(
+            child: RepositoryOverview(
+              data: mapRepositoryOverview(session),
+              callbacks: RepositoryOverviewCallbacks(
+                onAction: _handleAction,
+                onRefSelected: _handleReferenceSelected,
+                onSearchChanged: controller.setSearchQuery,
+                onCommitSelected: (commit) =>
+                    controller.selectCommit(commit.oid),
+                onChangeSelected: controller.selectChange,
+                onChangeStageToggled: controller.toggleStage,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+final class RepositoryTabStrip extends StatelessWidget {
+  const RepositoryTabStrip({
+    super.key,
+    required this.tabs,
+    required this.activePath,
+    required this.onSelected,
+  });
+
+  final List<RepositoryTab> tabs;
+  final String? activePath;
+  final Future<void> Function(String path) onSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Material(
+      color: colors.surfaceContainerHighest,
+      child: SizedBox(
+        height: 42,
+        child: ListView.separated(
+          key: const ValueKey<String>('repository-tab-strip'),
+          scrollDirection: Axis.horizontal,
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+          itemCount: tabs.length,
+          separatorBuilder: (context, index) => const SizedBox(width: 4),
+          itemBuilder: (context, index) {
+            final tab = tabs[index];
+            final selected = tab.path == activePath;
+            return Semantics(
+              button: true,
+              selected: selected,
+              label: '仓库标签 ${tab.label}',
+              child: Tooltip(
+                message: tab.path,
+                child: TextButton.icon(
+                  onPressed: () => unawaited(onSelected(tab.path)),
+                  style: TextButton.styleFrom(
+                    backgroundColor: selected
+                        ? colors.secondaryContainer
+                        : Colors.transparent,
+                    foregroundColor: selected
+                        ? colors.onSecondaryContainer
+                        : colors.onSurfaceVariant,
+                    padding: const EdgeInsets.symmetric(horizontal: 12),
+                    shape: const RoundedRectangleBorder(
+                      borderRadius: BorderRadius.all(Radius.circular(8)),
+                    ),
+                  ),
+                  icon: const Icon(Icons.folder_outlined, size: 16),
+                  label: Text(tab.label, overflow: TextOverflow.ellipsis),
+                ),
+              ),
+            );
+          },
         ),
       ),
     );

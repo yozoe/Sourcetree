@@ -42,6 +42,34 @@ void main() {
   );
 
   test(
+    'reopens an existing repository when its workspace tab is selected',
+    () async {
+      final firstRepository = await GitTestRepository.create();
+      addTearDown(firstRepository.dispose);
+      final secondRepository = await GitTestRepository.create();
+      addTearDown(secondRepository.dispose);
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+
+      await controller.openRepository(firstRepository.workingDirectory.path);
+      await controller.openRepository(secondRepository.workingDirectory.path);
+      final firstTab = container
+          .read(repositorySessionProvider)
+          .openRepositoryTabs
+          .first;
+
+      await controller.selectRepositoryTab(firstTab.path);
+
+      final state = container.read(repositorySessionProvider);
+      expect(state.phase, RepositorySessionPhase.ready);
+      expect(state.activeRepositoryTabPath, firstTab.path);
+      expect(state.repository!.commandDirectory, firstTab.path);
+      expect(state.openRepositoryTabs, hasLength(2));
+    },
+  );
+
+  test(
     'creates a commit from staged changes and refreshes the session',
     () async {
       final repository = await GitTestRepository.create();

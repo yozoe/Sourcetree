@@ -3,6 +3,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:git_desktop/src/app/git_askpass_prompt_coordinator.dart';
 import 'package:git_desktop/src/app/git_desktop_app.dart';
+import 'package:git_desktop/src/app/repository_session.dart';
 import 'package:git_desktop/src/git/git.dart';
 import 'package:git_desktop/src/presentation/presentation.dart';
 
@@ -75,6 +76,36 @@ void main() {
     expect(find.text('需要密码'), findsNothing);
     expect(await answer, isNull);
   });
+
+  testWidgets(
+    'switches between opened repositories by clicking workspace tabs',
+    (tester) async {
+      String? selectedPath;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: RepositoryTabStrip(
+              tabs: const [
+                RepositoryTab(path: '/tmp/alpha', label: 'alpha'),
+                RepositoryTab(path: '/tmp/beta', label: 'beta'),
+              ],
+              activePath: '/tmp/beta',
+              onSelected: (path) async => selectedPath = path,
+            ),
+          ),
+        ),
+      );
+      expect(
+        find.byKey(const ValueKey<String>('repository-tab-strip')),
+        findsOneWidget,
+      );
+
+      await tester.tap(find.text('alpha'));
+      await tester.pump();
+
+      expect(selectedPath, '/tmp/alpha');
+    },
+  );
 
   testWidgets('history search keeps focus while its query updates', (
     tester,
