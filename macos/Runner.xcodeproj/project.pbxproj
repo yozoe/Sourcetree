@@ -332,14 +332,16 @@
 			);
 			inputPaths = (
 				"$(PROJECT_DIR)/AskPassHelper/main.c",
+				"$(PROJECT_DIR)/AskPassBroker/main.c",
 			);
 			name = "Build AskPass Helper";
 			outputPaths = (
 				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/MacOS/git-desktop-askpass",
+				"$(TARGET_BUILD_DIR)/$(WRAPPER_NAME)/Contents/MacOS/git-desktop-askpass-broker",
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 			shellPath = /bin/sh;
-			shellScript = "set -eu\nhelper=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Contents/MacOS/git-desktop-askpass\"\n/usr/bin/clang -std=c11 -O2 -Wall -Wextra -Werror \"$PROJECT_DIR/AskPassHelper/main.c\" -o \"$helper\"\n";
+			shellScript = "set -eu\ncontents=\"$TARGET_BUILD_DIR/$WRAPPER_NAME/Contents/MacOS\"\n/usr/bin/clang -std=c11 -O2 -Wall -Wextra -Werror \"$PROJECT_DIR/AskPassHelper/main.c\" -o \"$contents/git-desktop-askpass\"\n/usr/bin/clang -std=c11 -O2 -Wall -Wextra -Werror \"$PROJECT_DIR/AskPassBroker/main.c\" -o \"$contents/git-desktop-askpass-broker\"\n";
 			showEnvVarsInLog = 0;
 		};
 		3399D490228B24CF009A79C7 /* ShellScript */ = {
