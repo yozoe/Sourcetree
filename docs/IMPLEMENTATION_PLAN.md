@@ -264,7 +264,7 @@ detached HEAD、SHA-1/SHA-256 等边界。
 - 创建本地分支、分支列表，以及仅在干净工作区的安全分支切换。
 - Fetch `origin`（不修改工作区，支持取消）。
 - Pull `--ff-only`（仅 clean worktree/index、配置 upstream 时启用，支持取消；拒绝隐式 merge commit）。
-- 安全 Push 当前分支 upstream（仅允许存在 ahead 提交时执行，显示目标与数量，支持取消，禁止 force push）。
+- 安全 Push 当前分支 upstream（仅允许存在 ahead 提交时执行，显式锁定远端/refspec，不受用户 `push.default` 影响；显示目标与数量，支持取消，禁止 force push）。
 
 待完成：统一操作日志/进度面板、更完整的认证交互，以及 Push 取消后的远端状态核验。
 

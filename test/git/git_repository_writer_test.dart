@@ -401,6 +401,75 @@ void main() {
     },
   );
 
+  test(
+    'pushes only the current upstream when push.default is matching',
+    () async {
+      await fixture.writeFile('README.md', '# Git Desktop\n');
+      final initialHead = await fixture.commit('Initial commit');
+      final origin = await fixture.createBareOrigin();
+      await fixture.runGit(['push', '--set-upstream', 'origin', 'main']);
+      await fixture.runGit(['branch', 'release']);
+      await fixture.runGit(['push', '--set-upstream', 'origin', 'release']);
+      await fixture.runGit(['switch', 'release']);
+      await fixture.writeFile('release.txt', 'release\n');
+      await fixture.commit('Release commit');
+      await fixture.runGit(['switch', 'main']);
+      await fixture.writeFile('main.txt', 'main\n');
+      final mainHead = await fixture.commit('Main commit');
+      await fixture.runGit(['config', 'push.default', 'matching']);
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+
+      await writer.pushUpstream(repository);
+
+      expect(
+        (await fixture.runGit([
+          'rev-parse',
+          'refs/heads/main',
+        ], workingDirectory: origin)).stdout.toString().trim(),
+        mainHead,
+      );
+      expect(
+        (await fixture.runGit([
+          'rev-parse',
+          'refs/heads/release',
+        ], workingDirectory: origin)).stdout.toString().trim(),
+        initialHead,
+      );
+    },
+  );
+
+  test('pushes to an upstream branch with a different name', () async {
+    await fixture.writeFile('README.md', '# Git Desktop\n');
+    await fixture.commit('Initial commit');
+    final origin = await fixture.createBareOrigin();
+    await fixture.runGit(['push', 'origin', 'main:release']);
+    await fixture.runGit(['switch', '-c', 'feature']);
+    await fixture.runGit(['config', 'branch.feature.remote', 'origin']);
+    await fixture.runGit([
+      'config',
+      'branch.feature.merge',
+      'refs/heads/release',
+    ]);
+    await fixture.writeFile('feature.txt', 'feature\n');
+    final featureHead = await fixture.commit('Feature commit');
+    await fixture.runGit(['config', 'push.default', 'simple']);
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await writer.pushUpstream(repository);
+
+    expect(
+      (await fixture.runGit([
+        'rev-parse',
+        'refs/heads/release',
+      ], workingDirectory: origin)).stdout.toString().trim(),
+      featureHead,
+    );
+  });
+
   test('honors a cancelled push token before starting Git', () async {
     final repository = (await inspector.inspect(
       fixture.workingDirectory.path,

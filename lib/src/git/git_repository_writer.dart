@@ -265,9 +265,20 @@ final class GitRepositoryWriter {
     GitRepository repository, {
     GitCancellationToken? cancellationToken,
   }) async {
+    final target = await _readPushTarget(
+      repository,
+      cancellationToken: cancellationToken,
+    );
     final result = await runner.run(
       GitInvocation(
-        arguments: const ['--no-pager', 'push', '--porcelain'],
+        arguments: [
+          '--no-pager',
+          'push',
+          '--porcelain',
+          '--',
+          target.remoteName,
+          target.refspec,
+        ],
         workingDirectory: repository.commandDirectory,
         cancellationToken: cancellationToken,
         outputLimit: const GitOutputLimit(
@@ -279,6 +290,74 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Pushing current branch');
   }
 
+  Future<_GitPushTarget> _readPushTarget(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final branchResult = await runner.run(
+      GitInvocation(
+        arguments: const ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 64 * 1024,
+          stderrBytes: 64 * 1024,
+        ),
+      ),
+    );
+    branchResult.throwIfFailed(operation: 'Reading current branch');
+    final branchName = branchResult.stdoutText.trim();
+    if (branchName.isEmpty) {
+      throw const GitException('The current branch has no push target.');
+    }
+
+    final remoteName = await _readBranchConfig(
+      repository,
+      branchName: branchName,
+      key: 'remote',
+      cancellationToken: cancellationToken,
+    );
+    final remoteRef = await _readBranchConfig(
+      repository,
+      branchName: branchName,
+      key: 'merge',
+      cancellationToken: cancellationToken,
+    );
+    if (remoteName == '.' ||
+        !remoteRef.startsWith('refs/heads/') ||
+        remoteRef.length == 'refs/heads/'.length) {
+      throw const GitException(
+        'The current branch does not have a supported remote tracking target.',
+      );
+    }
+    return _GitPushTarget(remoteName: remoteName, refspec: 'HEAD:$remoteRef');
+  }
+
+  Future<String> _readBranchConfig(
+    GitRepository repository, {
+    required String branchName,
+    required String key,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final result = await runner.run(
+      GitInvocation(
+        arguments: ['config', '--get', 'branch.$branchName.$key'],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 64 * 1024,
+          stderrBytes: 64 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Reading branch push target');
+    final value = result.stdoutText.trim();
+    if (value.isEmpty) {
+      throw const GitException('The current branch has no push target.');
+    }
+    return value;
+  }
+
   String _requireUtf8Path(GitPath path) {
     if (!path.isValidUtf8) {
       throw const GitException(
@@ -287,4 +366,11 @@ final class GitRepositoryWriter {
     }
     return path.display;
   }
+}
+
+final class _GitPushTarget {
+  const _GitPushTarget({required this.remoteName, required this.refspec});
+
+  final String remoteName;
+  final String refspec;
 }
