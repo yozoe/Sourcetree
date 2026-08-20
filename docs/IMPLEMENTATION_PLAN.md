@@ -221,7 +221,8 @@ Git Graph 从 OID、parents 和 topo order 独立计算 lane，不解析
 - 默认复用 Git credential helper、SSH Agent 和 macOS Keychain。
 - token、密码和私钥不得进入命令参数、remote URL、普通日志或崩溃报告。
 - 后台刷新使用 `GIT_TERMINAL_PROMPT=0`，避免隐藏进程等待输入。
-- 交互操作后续实现一次性 AskPass IPC；秘密只通过受限管道传递。
+- 一次性 AskPass IPC 的安全评估已记录在 [ASKPASS_IPC_EVALUATION.md](ASKPASS_IPC_EVALUATION.md)；
+  helper、受限管道与真实凭据输入尚未启用。
 - 不导入或复制 SSH 私钥，不静默接受 host key 变化。
 - 日志集中脱敏带认证信息的 URL、Header、路径和 prompt 回答。
 - 仓库内容、提交信息、分支名和文件名全部视为不可信输入。
@@ -268,8 +269,9 @@ detached HEAD、SHA-1/SHA-256 等边界。
 - Push 取消或异常退出后，使用可取消的只读 `ls-remote` 核验远端是否已包含本地 HEAD；核验不会修改本地 tracking refs，并提示用户 Fetch 刷新 ahead/behind。
 - 统一操作进度与日志：Clone、Fetch、Pull、Push 均记录运行/成功/取消/失败状态，状态栏显示不确定进度并可打开最近 12 条的脱敏操作记录。
 - 核心旅程真实 Git 冒烟：覆盖“克隆 → 修改 → 暂存 → 提交 → 创建分支 → 推送”及远端 ref、ahead/behind、操作记录断言。
+- AskPass IPC 安全设计评估：保持无交互认证默认值，冻结单次 helper、nonce、权限、取消和脱敏契约，待 macOS helper 验证后实施。
 
-待完成：更完整的认证交互，以及应用驱动的 macOS UI E2E。
+待完成：一次性 AskPass helper 与交互认证，以及应用驱动的 macOS UI E2E。
 
 退出条件：用户无需终端完成
 “克隆 → 修改 → 暂存 → 提交 → 创建分支 → 推送”；状态与 Git CLI 一致，
@@ -384,5 +386,5 @@ CRLF、长路径、大小写、symlink、可执行位、窗口和系统菜单差
 
 ## 14. 下一步
 
-1. 评估一次性 AskPass IPC，补齐交互认证与凭据隔离。
+1. 实现并验证 macOS 一次性 AskPass helper，补齐交互认证与凭据隔离。
 2. 完成应用驱动的 macOS UI E2E，覆盖“克隆 → 修改 → 暂存 → 提交 → 创建分支 → 推送”。
