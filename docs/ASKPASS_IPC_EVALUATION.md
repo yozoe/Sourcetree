@@ -46,6 +46,11 @@ helper 只接受绝对 Unix socket 路径、64 位十六进制 nonce 和一个 p
 可启动 socket server，但 GitRunner 尚未设置 `GIT_ASKPASS` 或传入会话环境，因此
 helper 仍不能被真实 Git 操作调用。
 
+helper 在连接前通过 `lstat` 要求 endpoint 为当前有效 UID 拥有的 `0600` Unix socket，
+连接后用 macOS `getpeereid` 再确认服务端 peer UID 与当前有效 UID 相同；非 socket 或
+宽松权限的路径会在发送 prompt 前失败。Flutter 标准库仍不能在 server 端验证 helper
+client UID，故发布前的完整 peer UID 验证项尚未完成。
+
 session 只可根据 `Platform.resolvedExecutable` 的 `*.app/Contents/MacOS/` 固定 bundle
 布局推导 helper 路径，并生成 `GIT_ASKPASS`、`GIT_TERMINAL_PROMPT=0`、socket 与 nonce
 四项环境变量；生产调用不接受仓库配置、remote 或 UI 文本指定 helper。测试可使用独立

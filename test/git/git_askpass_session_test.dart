@@ -177,6 +177,20 @@ void main() {
       expect(result.stderr, isEmpty);
       await session.closed;
       expect(session.status, GitAskPassSessionStatus.completed);
+
+      final nonSocket = File('${temporaryDirectory.path}/not-a-socket');
+      await nonSocket.writeAsString('not an IPC endpoint');
+      final rejected = await Process.run(
+        helper.path,
+        <String>['Password:'],
+        environment: <String, String>{
+          'GIT_DESKTOP_ASKPASS_SOCKET': nonSocket.path,
+          'GIT_DESKTOP_ASKPASS_NONCE': '0' * 64,
+        },
+        includeParentEnvironment: false,
+      );
+      expect(rejected.exitCode, 1);
+      expect(rejected.stdout, isEmpty);
     },
     skip: !Platform.isMacOS,
   );

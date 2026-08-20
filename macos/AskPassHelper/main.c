@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <sys/stat.h>
 #include <sys/time.h>
 #include <sys/un.h>
 #include <unistd.h>
@@ -28,6 +29,15 @@ static int is_valid_nonce(const char *nonce) {
   if (nonce == NULL || strlen(nonce) != kNonceLength) return 0;
   for (size_t index = 0; index < kNonceLength; ++index) {
     if (!isxdigit((unsigned char)nonce[index])) return 0;
+  }
+  return 1;
+}
+
+static int is_private_current_user_socket(const char *socket_path) {
+  struct stat socket_stat;
+  if (lstat(socket_path, &socket_stat) != 0 || !S_ISSOCK(socket_stat.st_mode) ||
+      socket_stat.st_uid != geteuid() || (socket_stat.st_mode & 0777) != 0600) {
+    return 0;
   }
   return 1;
 }
@@ -135,7 +145,8 @@ int main(int argc, char *argv[]) {
   if (socket_path == NULL || socket_path[0] != '/' ||
       strlen(socket_path) >= sizeof(((struct sockaddr_un *)0)->sun_path) ||
       !is_valid_nonce(nonce) || prompt == NULL || prompt[0] == '\0' ||
-      strlen(prompt) > kMaxPromptLength) {
+      strlen(prompt) > kMaxPromptLength ||
+      !is_private_current_user_socket(socket_path)) {
     fputs("AskPass is unavailable.\n", stderr);
     return 1;
   }
@@ -150,7 +161,11 @@ int main(int argc, char *argv[]) {
   memset(&address, 0, sizeof(address));
   address.sun_family = AF_UNIX;
   memcpy(address.sun_path, socket_path, strlen(socket_path) + 1);
+  uid_t peer_uid = 0;
+  gid_t peer_gid = 0;
   if (connect(socket_fd, (const struct sockaddr *)&address, sizeof(address)) != 0 ||
+      getpeereid(socket_fd, &peer_uid, &peer_gid) != 0 ||
+      peer_uid != geteuid() ||
       send_request(socket_fd, nonce, prompt) != 0) {
     close(socket_fd);
     return 1;

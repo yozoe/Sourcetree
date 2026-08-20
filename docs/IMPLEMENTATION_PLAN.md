@@ -276,8 +276,9 @@ detached HEAD、SHA-1/SHA-256 等边界。
   每次 256-bit nonce、单连接、16 KiB 响应限制、取消/拒绝/超时清理均已由单元测试覆盖；
   会话环境只能从 `Platform.resolvedExecutable` 的固定 app bundle 路径推导 helper；
   尚未接入 GitRunner、认证 UI 或真实 Git 操作，且发布前仍需 native UID owner 校验；
-  同一份 C helper 已通过与 Flutter session 的进程级 socket 往返测试；认证 UI 已独立
-  实现为脱敏、无自动填充的受控弹窗，尚未接入任何 Git 操作。
+  同一份 C helper 已通过与 Flutter session 的进程级 socket 往返测试；helper 会验证
+  socket owner/权限及 server peer UID，Flutter server 端的 helper peer UID 校验仍待实现；
+  认证 UI 已独立实现为脱敏、无自动填充的受控弹窗，尚未接入任何 Git 操作。
 
 待完成：一次性 AskPass helper 与交互认证，以及应用驱动的 macOS UI E2E。
 
