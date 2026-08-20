@@ -215,7 +215,7 @@ final class GitRepositoryWriter {
           'merge',
           '--no-edit',
           '--no-ff',
-          normalizedName,
+          'refs/heads/$normalizedName',
         ],
         workingDirectory: repository.commandDirectory,
         outputLimit: const GitOutputLimit(

@@ -248,6 +248,39 @@ void main() {
     },
   );
 
+  test(
+    'merges the selected local branch when a tag has the same name',
+    () async {
+      await fixture.writeFile('README.md', 'base\n');
+      await fixture.commit('Initial commit');
+      await fixture.runGit(['branch', 'release']);
+      await fixture.runGit(['switch', 'release']);
+      await fixture.writeFile('branch.txt', 'branch\n');
+      final branchCommit = await fixture.commit('Branch release commit');
+      await fixture.runGit(['switch', 'main']);
+      await fixture.writeFile('tag.txt', 'tag\n');
+      final tagCommit = await fixture.commit('Tag release commit');
+      await fixture.runGit(['tag', 'release', tagCommit]);
+      await fixture.writeFile('main.txt', 'main\n');
+      await fixture.commit('Main commit');
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+
+      await writer.mergeLocalBranch(repository, sourceName: 'release');
+
+      final parents = (await reader.readRecentHistory(
+        repository,
+      )).first.parentIds;
+      expect(parents, contains(branchCommit));
+      expect(parents, isNot(contains(tagCommit)));
+      expect(
+        await File('${fixture.workingDirectory.path}/branch.txt').exists(),
+        isTrue,
+      );
+    },
+  );
+
   test('initializes an empty directory without relying on a shell', () async {
     final directory = await Directory.systemTemp.createTemp(
       'git-desktop-init-',
