@@ -257,6 +257,28 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Pulling current branch');
   }
 
+  /// Pushes the current branch to its configured upstream.
+  ///
+  /// No force option is exposed; a rejected non-fast-forward push is reported
+  /// to the caller without rewriting remote history.
+  Future<void> pushUpstream(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final result = await runner.run(
+      GitInvocation(
+        arguments: const ['--no-pager', 'push', '--porcelain'],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 1024 * 1024,
+          stderrBytes: 1024 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Pushing current branch');
+  }
+
   String _requireUtf8Path(GitPath path) {
     if (!path.isValidUtf8) {
       throw const GitException(

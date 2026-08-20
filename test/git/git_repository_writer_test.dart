@@ -377,4 +377,39 @@ void main() {
       throwsA(isA<GitCancelledException>()),
     );
   });
+
+  test(
+    'pushes ahead commits to the configured upstream without force',
+    () async {
+      await fixture.writeFile('README.md', '# Git Desktop\n');
+      await fixture.commit('Initial commit');
+      final origin = await fixture.createBareOrigin();
+      await fixture.runGit(['push', '--set-upstream', 'origin', 'main']);
+      await fixture.writeFile('CHANGELOG.md', '# Changes\n');
+      final localHead = await fixture.commit('Add changelog');
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+
+      await writer.pushUpstream(repository);
+
+      final remoteHead = await fixture.runGit([
+        'rev-parse',
+        'refs/heads/main',
+      ], workingDirectory: origin);
+      expect(remoteHead.stdout.toString().trim(), localHead);
+    },
+  );
+
+  test('honors a cancelled push token before starting Git', () async {
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+    final cancellation = GitCancellationToken()..cancel();
+
+    await expectLater(
+      writer.pushUpstream(repository, cancellationToken: cancellation),
+      throwsA(isA<GitCancelledException>()),
+    );
+  });
 }

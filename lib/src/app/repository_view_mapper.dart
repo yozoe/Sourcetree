@@ -19,7 +19,10 @@ RepositoryOverviewViewData mapRepositoryOverview(RepositorySessionState state) {
       message: state.requestedPath,
       staleRepository: repository,
       canCancelOperation:
-          state.isCloneRunning || state.isFetchRunning || state.isPullRunning,
+          state.isCloneRunning ||
+          state.isFetchRunning ||
+          state.isPullRunning ||
+          state.isPushRunning,
     ),
     RepositorySessionPhase.ready when repository != null =>
       RepositoryOverviewViewData.ready(repository),
@@ -49,8 +52,6 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
   final disabledActions = <RepositoryAction>{
     RepositoryAction.cloneRepository,
     RepositoryAction.initializeRepository,
-    RepositoryAction.pull,
-    RepositoryAction.push,
   };
   if (!state.hasOriginRemote ||
       (state.phase == RepositorySessionPhase.loading &&
@@ -61,6 +62,11 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
       !status.isClean ||
       (state.phase == RepositorySessionPhase.loading && !state.isPullRunning)) {
     disabledActions.add(RepositoryAction.pull);
+  }
+  if (branch.upstream == null ||
+      branch.ahead <= 0 ||
+      (state.phase == RepositorySessionPhase.loading && !state.isPushRunning)) {
+    disabledActions.add(RepositoryAction.push);
   }
   if (branch.isUnborn || state.phase == RepositorySessionPhase.loading) {
     disabledActions.add(RepositoryAction.createBranch);
@@ -81,6 +87,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     isRefreshing: state.phase == RepositorySessionPhase.loading,
     isFetching: state.isFetchRunning,
     isPulling: state.isPullRunning,
+    isPushing: state.isPushRunning,
     refs: [
       RepositoryRefViewData(
         id: 'workspace',

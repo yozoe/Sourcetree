@@ -441,12 +441,17 @@ class _RepositoryToolbar extends StatelessWidget {
                           isBusy: repository.isPulling,
                         ),
                         _ToolbarAction(
-                          action: RepositoryAction.push,
-                          icon: Icons.north,
-                          label: '推送',
+                          action: repository.isPushing
+                              ? RepositoryAction.cancelPush
+                              : RepositoryAction.push,
+                          icon: repository.isPushing
+                              ? Icons.cancel_outlined
+                              : Icons.north,
+                          label: repository.isPushing ? '取消推送' : '推送',
                           showLabel: showLabels,
                           repository: repository,
                           onAction: callbacks.onAction,
+                          isBusy: repository.isPushing,
                         ),
                         _ToolbarAction(
                           action: RepositoryAction.createBranch,

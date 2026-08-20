@@ -143,6 +143,10 @@ class _RepositoryWorkspaceScreenState
         _confirmPull();
       case RepositoryAction.cancelPull:
         ref.read(repositorySessionProvider.notifier).cancelPull();
+      case RepositoryAction.push:
+        _confirmPush();
+      case RepositoryAction.cancelPush:
+        ref.read(repositorySessionProvider.notifier).cancelPush();
       case RepositoryAction.refresh:
       case RepositoryAction.retry:
         ref.read(repositorySessionProvider.notifier).refresh();
@@ -150,13 +154,6 @@ class _RepositoryWorkspaceScreenState
         _showCommitDialog();
       case RepositoryAction.createBranch:
         _showCreateBranchDialog();
-      default:
-        ScaffoldMessenger.of(context).showSnackBar(
-          const SnackBar(
-            content: Text('此写操作将在下一个安全里程碑中开放。'),
-            duration: Duration(seconds: 2),
-          ),
-        );
     }
   }
 
@@ -187,6 +184,43 @@ class _RepositoryWorkspaceScreenState
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(pulled ? '已快速前进拉取。' : '未拉取，请查看仓库状态和错误信息。'),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  Future<void> _confirmPush() async {
+    final session = ref.read(repositorySessionProvider);
+    final branch = session.status?.branch;
+    final branchName = branch?.head ?? '当前分支';
+    final upstream = branch?.upstream ?? '上游';
+    final ahead = branch?.ahead ?? 0;
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('推送提交'),
+        content: Text('将 $branchName 的 $ahead 个本地提交推送到 $upstream。不会执行强制推送。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(context).pop(true),
+            icon: const Icon(Icons.north),
+            label: const Text('推送'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+    final pushed = await ref
+        .read(repositorySessionProvider.notifier)
+        .pushUpstream();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(pushed ? '已推送提交。' : '推送未完成，请查看仓库状态和错误信息。'),
         duration: const Duration(seconds: 3),
       ),
     );

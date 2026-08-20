@@ -288,4 +288,52 @@ void main() {
       RepositorySessionPhase.ready,
     );
   });
+
+  test('pushes ahead commits and refreshes ahead-behind state', () async {
+    final source = await GitTestRepository.create();
+    addTearDown(source.dispose);
+    await source.writeFile('README.md', '# Git Desktop\n');
+    await source.commit('Initial commit');
+    final origin = await source.createBareOrigin();
+    await source.runGit(['push', '--set-upstream', 'origin', 'main']);
+    final target = await GitTestRepository.cloneFrom(origin);
+    addTearDown(target.dispose);
+    await target.writeFile('CHANGELOG.md', '# Changes\n');
+    await target.commit('Add changelog');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(target.workingDirectory.path);
+
+    expect(container.read(repositorySessionProvider).status!.branch.ahead, 1);
+    expect(await controller.pushUpstream(), isTrue);
+    final state = container.read(repositorySessionProvider);
+    expect(state.phase, RepositorySessionPhase.ready);
+    expect(state.status!.branch.ahead, 0);
+    expect(state.status!.branch.behind, 0);
+    expect(
+      (await source.runGit([
+        'rev-parse',
+        'refs/heads/main',
+      ], workingDirectory: origin)).stdout.toString().trim(),
+      (await target.runGit(['rev-parse', 'HEAD'])).stdout.toString().trim(),
+    );
+  });
+
+  test('refuses push without an upstream or ahead commits', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(await controller.pushUpstream(), isFalse);
+
+    await repository.writeFile('README.md', '# Git Desktop\n');
+    await repository.commit('Initial commit');
+    await controller.refresh();
+    expect(await controller.pushUpstream(), isFalse);
+  });
 }

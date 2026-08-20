@@ -1,8 +1,8 @@
 # Flutter Git 桌面客户端实施规划
 
 - 版本：0.1
-- 日期：2026-08-18
-- 状态：待确认后进入技术原型
+- 日期：2026-08-20
+- 状态：P1 MVP 垂直闭环进行中
 - 首发平台：macOS
 - 后续平台：Windows、Linux
 
@@ -264,18 +264,9 @@ detached HEAD、SHA-1/SHA-256 等边界。
 - 创建本地分支、分支列表，以及仅在干净工作区的安全分支切换。
 - Fetch `origin`（不修改工作区，支持取消）。
 - Pull `--ff-only`（仅 clean worktree/index、配置 upstream 时启用，支持取消；拒绝隐式 merge commit）。
+- 安全 Push 当前分支 upstream（仅允许存在 ahead 提交时执行，显示目标与数量，支持取消，禁止 force push）。
 
-待完成：普通 Push（明确目标与 ahead 范围，禁止默认 force）、操作日志/进度面板，
-以及更完整的认证交互。
-
-- 单仓库打开、克隆、初始化。
-- 工作区状态、整文件 stage/unstage。
-- Unified Diff。
-- Commit。
-- 基础历史 DAG 和提交详情。
-- 创建/切换本地分支。
-- Fetch/Pull/Push。
-- 任务进度、取消、错误说明和可展开命令日志。
+待完成：统一操作日志/进度面板、更完整的认证交互，以及 Push 取消后的远端状态核验。
 
 退出条件：用户无需终端完成
 “克隆 → 修改 → 暂存 → 提交 → 创建分支 → 推送”；状态与 Git CLI 一致，
@@ -390,7 +381,6 @@ CRLF、长路径、大小写、symlink、可执行位、窗口和系统菜单差
 
 ## 14. 下一步
 
-1. 实现安全 Push：先显示远端、分支和 ahead 提交数，不提供默认 force push。
-2. 建立统一操作日志和进度面板，覆盖 Clone、Fetch、Pull、Push 的运行、取消、失败与恢复。
-3. 补充 Push 取消后的远端状态核验，并评估一次性 AskPass IPC。
-4. 完成“克隆 → 修改 → 暂存 → 提交 → 创建分支 → 推送”的 macOS E2E 冒烟验证。
+1. 建立统一操作日志和进度面板，覆盖 Clone、Fetch、Pull、Push 的运行、取消、失败与恢复。
+2. 补充 Push 取消后的远端状态核验，并评估一次性 AskPass IPC。
+3. 完成“克隆 → 修改 → 暂存 → 提交 → 创建分支 → 推送”的 macOS E2E 冒烟验证。
