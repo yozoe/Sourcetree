@@ -172,17 +172,20 @@ final class RepositoryRefViewData {
 /// A graph cell can be rendered without the presentation knowing Git topology.
 ///
 /// [activeLanes] contains the lanes crossing this commit row, [lane] is the
-/// commit dot lane, and [parentLanes] are the destinations leaving the row.
+/// commit dot lane, and [activeLaneDestinations] maps every active lane to its
+/// position below the row. [parentLanes] includes all parents of the commit.
 final class CommitGraphViewData {
   const CommitGraphViewData({
     this.lane = 0,
     this.activeLanes = const [0],
+    this.activeLaneDestinations = const [0],
     this.parentLanes = const [0],
     this.colorIndex = 0,
   });
 
   final int lane;
   final List<int> activeLanes;
+  final List<int?> activeLaneDestinations;
   final List<int> parentLanes;
   final int colorIndex;
 }

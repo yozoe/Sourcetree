@@ -119,6 +119,44 @@ void main() {
     },
   );
 
+  test('maps sibling branches to persistent graph lanes', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('graph.txt', 'base\n');
+    await repository.commit('base');
+    await repository.runGit(['branch', 'feature/graph']);
+    await repository.runGit(['switch', 'feature/graph']);
+    await repository.writeFile('graph.txt', 'feature\n');
+    await repository.commit('feature commit');
+    await repository.runGit(['switch', 'main']);
+    await repository.writeFile('graph.txt', 'main\n');
+    await repository.commit('main commit');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    await container
+        .read(repositorySessionProvider.notifier)
+        .openRepository(repository.workingDirectory.path);
+    final commits = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.commits;
+    final main = commits.firstWhere(
+      (commit) => commit.subject == 'main commit',
+    );
+    final feature = commits.firstWhere(
+      (commit) => commit.subject == 'feature commit',
+    );
+
+    expect(main.graph.activeLanes, containsAll([0, 1]));
+    expect(
+      main.graph.activeLaneDestinations,
+      hasLength(main.graph.activeLanes.length),
+    );
+    expect(main.graph.activeLaneDestinations, everyElement(isNotNull));
+    expect(feature.graph.lane, 1);
+    expect(feature.graph.parentLanes, contains(1));
+  });
+
   test(
     'keeps the previously active tab when a selected repository is unavailable',
     () async {

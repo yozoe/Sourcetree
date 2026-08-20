@@ -201,7 +201,7 @@ List<CommitViewData> _mapCommits(
   GitBranchStatus branch,
 ) {
   final query = state.searchQuery.trim().toLowerCase();
-  final graph = _buildGraph(state.commits);
+  final graph = _buildGraph(state.commits, headId: branch.objectId);
   return [
     for (var index = 0; index < state.commits.length; index++)
       if (_matches(state.commits[index], query))
@@ -236,14 +236,21 @@ bool _matches(GitCommit commit, String query) {
       commit.objectId.toLowerCase().startsWith(query);
 }
 
-List<CommitGraphViewData> _buildGraph(List<GitCommit> commits) {
+List<CommitGraphViewData> _buildGraph(
+  List<GitCommit> commits, {
+  required String? headId,
+}) {
   final parentIds = <String>{for (final commit in commits) ...commit.parentIds};
   // Start with every visible branch tip. This gives sibling branches a stable
   // lane before either one is rendered, so their lines can remain continuous
   // instead of collapsing into a single HEAD-only column.
-  final lanes = <String>[
+  final tips = <String>[
     for (final commit in commits)
       if (!parentIds.contains(commit.objectId)) commit.objectId,
+  ];
+  final lanes = <String>[
+    if (headId != null && tips.remove(headId)) headId,
+    ...tips,
   ];
   final result = <CommitGraphViewData>[];
   for (final commit in commits) {
@@ -252,7 +259,8 @@ List<CommitGraphViewData> _buildGraph(List<GitCommit> commits) {
       lane = 0;
       lanes.insert(0, commit.objectId);
     }
-    final active = List<int>.generate(lanes.length, (index) => index);
+    final activeIds = List<String>.of(lanes);
+    final active = List<int>.generate(activeIds.length, (index) => index);
     lanes.removeAt(lane);
     final parents = <int>[];
     for (var index = 0; index < commit.parentIds.length; index++) {
@@ -264,10 +272,21 @@ List<CommitGraphViewData> _buildGraph(List<GitCommit> commits) {
       }
       parents.add(parentLane);
     }
+    final destinations = <int?>[
+      for (var index = 0; index < activeIds.length; index++)
+        if (index == lane)
+          parents.firstOrNull
+        else
+          switch (lanes.indexOf(activeIds[index])) {
+            final destination when destination >= 0 => destination,
+            _ => null,
+          },
+    ];
     result.add(
       CommitGraphViewData(
         lane: lane,
         activeLanes: active,
+        activeLaneDestinations: destinations,
         parentLanes: parents,
         colorIndex: lane,
       ),

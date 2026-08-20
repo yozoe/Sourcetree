@@ -826,8 +826,9 @@ class _HistoryPane extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
     return Material(
-      color: Theme.of(context).colorScheme.surface,
+      color: _historyBackground(colors),
       child: Column(
         children: [
           _PaneHeader(
@@ -844,7 +845,7 @@ class _HistoryPane extends StatelessWidget {
                     message: '空仓库的首次提交会显示在这里。',
                   )
                 : ListView.builder(
-                    itemExtent: 32,
+                    itemExtent: 26,
                     itemCount: repository.commits.length,
                     itemBuilder: (BuildContext context, int index) {
                       final CommitViewData commit = repository.commits[index];
@@ -883,7 +884,7 @@ class _HistoryColumnHeader extends StatelessWidget {
       ),
       child: Row(
         children: [
-          const SizedBox(width: 58),
+          const SizedBox(width: 96),
           Expanded(child: Text('描述', style: theme.textTheme.labelSmall)),
           SizedBox(
             width: 108,
@@ -937,7 +938,7 @@ class _CommitRow extends StatelessWidget {
             child: Row(
               children: [
                 SizedBox(
-                  width: 58,
+                  width: 96,
                   child: CustomPaint(
                     painter: _CommitGraphPainter(
                       graph: commit.graph,
@@ -1022,8 +1023,8 @@ class _CommitGraphPainter extends CustomPainter {
   final Color backgroundColor;
   final bool selected;
 
-  static const double laneSpacing = 11;
-  static const double laneStart = 12;
+  static const double laneSpacing = 12;
+  static const double laneStart = 22;
 
   Color _color(int index) => colors[index.abs() % colors.length];
 
@@ -1034,37 +1035,33 @@ class _CommitGraphPainter extends CustomPainter {
     final double centerY = size.height / 2;
     canvas.drawRect(Offset.zero & size, Paint()..color = backgroundColor);
 
-    for (final int activeLane in graph.activeLanes) {
-      final Paint linePaint = Paint()
-        ..color = _color(activeLane)
-        ..strokeWidth = 3
-        ..strokeCap = StrokeCap.square
-        ..style = PaintingStyle.stroke
-        ..isAntiAlias = true;
-      canvas.drawLine(
-        Offset(_laneX(activeLane), 0),
-        Offset(_laneX(activeLane), size.height),
-        linePaint,
+    for (var index = 0; index < graph.activeLanes.length; index++) {
+      final activeLane = graph.activeLanes[index];
+      final destination = index < graph.activeLaneDestinations.length
+          ? graph.activeLaneDestinations[index]
+          : activeLane;
+      _drawLaneConnection(
+        canvas,
+        fromLane: activeLane,
+        toLane: destination,
+        top: 0,
+        centerY: centerY,
+        bottom: size.height,
+        color: _color(activeLane),
       );
     }
 
     final int colorIndex = graph.colorIndex;
-    final Paint branchPaint = Paint()
-      ..color = _color(colorIndex)
-      ..strokeWidth = 3
-      ..strokeCap = StrokeCap.square
-      ..strokeJoin = StrokeJoin.miter
-      ..style = PaintingStyle.stroke
-      ..isAntiAlias = true;
-    for (final int parentLane in graph.parentLanes) {
-      if (parentLane == graph.lane) continue;
-      final double turnY = size.height * .72;
-      final Path path = Path()
-        ..moveTo(_laneX(graph.lane), centerY)
-        ..lineTo(_laneX(graph.lane), turnY)
-        ..lineTo(_laneX(parentLane), turnY)
-        ..lineTo(_laneX(parentLane), size.height);
-      canvas.drawPath(path, branchPaint);
+    for (final parentLane in graph.parentLanes.skip(1)) {
+      _drawLaneConnection(
+        canvas,
+        fromLane: graph.lane,
+        toLane: parentLane,
+        top: centerY,
+        centerY: centerY,
+        bottom: size.height,
+        color: _color(colorIndex),
+      );
     }
 
     final Paint dotPaint = Paint()
@@ -1083,6 +1080,64 @@ class _CommitGraphPainter extends CustomPainter {
     canvas.drawCircle(Offset(_laneX(graph.lane), centerY), 4.5, dotPaint);
   }
 
+  void _drawVerticalRail(
+    Canvas canvas, {
+    required double x,
+    required double top,
+    required double bottom,
+    required Color color,
+  }) {
+    canvas.drawRect(
+      Rect.fromLTRB(x - 1.5, top, x + 1.5, bottom),
+      Paint()..color = color,
+    );
+  }
+
+  void _drawLaneConnection(
+    Canvas canvas, {
+    required int fromLane,
+    required int? toLane,
+    required double top,
+    required double centerY,
+    required double bottom,
+    required Color color,
+  }) {
+    final sourceX = _laneX(fromLane);
+    _drawVerticalRail(
+      canvas,
+      x: sourceX,
+      top: top,
+      bottom: centerY,
+      color: color,
+    );
+    if (toLane == null) return;
+    final targetX = _laneX(toLane);
+    final turnY = centerY + (bottom - centerY) * .44;
+    _drawVerticalRail(
+      canvas,
+      x: sourceX,
+      top: centerY,
+      bottom: turnY,
+      color: color,
+    );
+    canvas.drawRect(
+      Rect.fromLTRB(
+        math.min(sourceX, targetX),
+        turnY - 1.5,
+        math.max(sourceX, targetX),
+        turnY + 1.5,
+      ),
+      Paint()..color = color,
+    );
+    _drawVerticalRail(
+      canvas,
+      x: targetX,
+      top: turnY,
+      bottom: bottom,
+      color: color,
+    );
+  }
+
   @override
   bool shouldRepaint(_CommitGraphPainter oldDelegate) {
     return oldDelegate.graph != graph ||
@@ -1092,7 +1147,9 @@ class _CommitGraphPainter extends CustomPainter {
   }
 }
 
-Color _graphBackground(ColorScheme colors) => const Color(0xFF242D30);
+Color _historyBackground(ColorScheme colors) => const Color(0xFF242D30);
+
+Color _graphBackground(ColorScheme colors) => _historyBackground(colors);
 
 List<Color> _graphColors(ColorScheme colors) => const [
   Color(0xFF087FCD),
