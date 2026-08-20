@@ -470,6 +470,40 @@ void main() {
     );
   });
 
+  test(
+    'verifies whether the configured upstream contains local HEAD',
+    () async {
+      await fixture.writeFile('README.md', '# Git Desktop\n');
+      await fixture.commit('Initial commit');
+      await fixture.createBareOrigin();
+      await fixture.runGit(['push', '--set-upstream', 'origin', 'main']);
+      await fixture.writeFile('CHANGELOG.md', '# Changes\n');
+      await fixture.commit('Add changelog');
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+
+      expect(await writer.verifyUpstream(repository), isFalse);
+      await writer.pushUpstream(repository);
+      expect(await writer.verifyUpstream(repository), isTrue);
+    },
+  );
+
+  test(
+    'honors a cancelled upstream verification token before starting Git',
+    () async {
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+      final cancellation = GitCancellationToken()..cancel();
+
+      await expectLater(
+        writer.verifyUpstream(repository, cancellationToken: cancellation),
+        throwsA(isA<GitCancelledException>()),
+      );
+    },
+  );
+
   test('honors a cancelled push token before starting Git', () async {
     final repository = (await inspector.inspect(
       fixture.workingDirectory.path,

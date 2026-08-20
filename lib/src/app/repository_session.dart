@@ -196,6 +196,7 @@ final class RepositorySessionController
   GitCancellationToken? _fetchCancellation;
   GitCancellationToken? _pullCancellation;
   GitCancellationToken? _pushCancellation;
+  GitCancellationToken? _pushVerificationCancellation;
 
   @override
   RepositorySessionState build() {
@@ -563,10 +564,13 @@ final class RepositorySessionController
       return succeeded;
     } on Object catch (error, stackTrace) {
       // A push may reach the remote before the process exits or is cancelled.
-      // Refresh local tracking state, but do not claim that the remote result
-      // is known; the user can Fetch to verify it.
+      // Verify the target first, then refresh local tracking state. The
+      // verification is read-only and can be cancelled through cancelPush.
+      final remoteContainsHead = await _verifyUncertainPush(repository);
       await refresh();
-      final message = _friendlyError(error);
+      final message = remoteContainsHead
+          ? '推送进程未正常完成，但远端已包含当前 HEAD。请 Fetch 刷新 ahead/behind。'
+          : _friendlyError(error);
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isPushRunning: false,
@@ -576,7 +580,9 @@ final class RepositorySessionController
       );
       _completeOperation(
         operation,
-        outcome: _operationOutcomeForError(error),
+        outcome: remoteContainsHead
+            ? RepositoryOperationOutcome.succeeded
+            : _operationOutcomeForError(error),
         message: message,
       );
       return false;
@@ -587,7 +593,27 @@ final class RepositorySessionController
     }
   }
 
-  void cancelPush() => _pushCancellation?.cancel();
+  void cancelPush() {
+    _pushCancellation?.cancel();
+    _pushVerificationCancellation?.cancel();
+  }
+
+  Future<bool> _verifyUncertainPush(GitRepository repository) async {
+    final cancellation = GitCancellationToken();
+    _pushVerificationCancellation = cancellation;
+    try {
+      return await _writer.verifyUpstream(
+        repository,
+        cancellationToken: cancellation,
+      );
+    } on Object {
+      return false;
+    } finally {
+      if (identical(_pushVerificationCancellation, cancellation)) {
+        _pushVerificationCancellation = null;
+      }
+    }
+  }
 
   Future<void> refresh() async {
     final path = state.requestedPath ?? state.repository?.commandDirectory;

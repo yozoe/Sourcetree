@@ -290,6 +290,61 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Pushing current branch');
   }
 
+  /// Verifies whether the configured upstream currently contains local HEAD.
+  ///
+  /// This is read-only and deliberately does not update remote-tracking refs;
+  /// callers can use Fetch when they need the local ahead/behind snapshot to
+  /// catch up as well.
+  Future<bool> verifyUpstream(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final target = await _readPushTarget(
+      repository,
+      cancellationToken: cancellationToken,
+    );
+    final headResult = await runner.run(
+      GitInvocation(
+        arguments: const ['rev-parse', 'HEAD'],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 64 * 1024,
+          stderrBytes: 64 * 1024,
+        ),
+      ),
+    );
+    headResult.throwIfFailed(operation: 'Reading local HEAD');
+    final remoteResult = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          'ls-remote',
+          '--refs',
+          '--heads',
+          '--',
+          target.remoteName,
+          target.remoteRef,
+        ],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 256 * 1024,
+        ),
+      ),
+    );
+    remoteResult.throwIfFailed(operation: 'Verifying remote push state');
+    final expectedHead = headResult.stdoutText.trim();
+    final remoteLine = remoteResult.stdoutText
+        .split('\n')
+        .map((line) => line.trim())
+        .firstWhere((line) => line.isNotEmpty, orElse: () => '');
+    if (remoteLine.isEmpty) return false;
+    final remoteHead = remoteLine.split(RegExp(r'\s+')).first;
+    return remoteHead == expectedHead;
+  }
+
   Future<_GitPushTarget> _readPushTarget(
     GitRepository repository, {
     GitCancellationToken? cancellationToken,
@@ -330,7 +385,11 @@ final class GitRepositoryWriter {
         'The current branch does not have a supported remote tracking target.',
       );
     }
-    return _GitPushTarget(remoteName: remoteName, refspec: 'HEAD:$remoteRef');
+    return _GitPushTarget(
+      remoteName: remoteName,
+      remoteRef: remoteRef,
+      refspec: 'HEAD:$remoteRef',
+    );
   }
 
   Future<String> _readBranchConfig(
@@ -369,8 +428,13 @@ final class GitRepositoryWriter {
 }
 
 final class _GitPushTarget {
-  const _GitPushTarget({required this.remoteName, required this.refspec});
+  const _GitPushTarget({
+    required this.remoteName,
+    required this.remoteRef,
+    required this.refspec,
+  });
 
   final String remoteName;
+  final String remoteRef;
   final String refspec;
 }
