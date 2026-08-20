@@ -818,6 +818,8 @@ class _RefTile extends StatelessWidget {
   }
 }
 
+const double _historyRowHeight = 26;
+
 class _HistoryPane extends StatelessWidget {
   const _HistoryPane({required this.repository, required this.onSelected});
 
@@ -845,7 +847,7 @@ class _HistoryPane extends StatelessWidget {
                     message: '空仓库的首次提交会显示在这里。',
                   )
                 : ListView.builder(
-                    itemExtent: 26,
+                    itemExtent: _historyRowHeight,
                     itemCount: repository.commits.length,
                     itemBuilder: (BuildContext context, int index) {
                       final CommitViewData commit = repository.commits[index];
@@ -939,7 +941,9 @@ class _CommitRow extends StatelessWidget {
               children: [
                 SizedBox(
                   width: 96,
+                  height: _historyRowHeight,
                   child: CustomPaint(
+                    key: const ValueKey<String>('commit-graph-canvas'),
                     painter: _CommitGraphPainter(
                       graph: commit.graph,
                       colors: _graphColors(colors),

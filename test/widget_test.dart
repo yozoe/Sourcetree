@@ -143,6 +143,13 @@ void main() {
       ),
     );
 
+    final graphCanvas = find.byKey(
+      const ValueKey<String>('commit-graph-canvas'),
+    );
+    expect(graphCanvas, findsOneWidget);
+    expect(tester.getSize(graphCanvas).width, 96);
+    expect(tester.getSize(graphCanvas).height, greaterThan(0));
+
     final field = find.byType(TextFormField);
     await tester.tap(field);
     await tester.enterText(field, 'initial');
