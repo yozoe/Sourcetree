@@ -99,8 +99,10 @@ helper 路径、不设置 `GIT_ASKPASS`，仍可使用既有 credential helper �
 - [x] 一次性 Flutter Unix socket 的 nonce、单连接、超时、拒绝和清理测试。
 - [x] macOS helper 与 Flutter session 的进程级 socket 往返测试（测试临时编译同一 C 源码）。
 - [ ] Token、用户名密码、SSH passphrase、拒绝认证、网络中断和用户取消的真实远端测试。
-- [ ] 日志、异常、操作面板和 macOS 诊断包的秘密泄漏扫描。
-- [ ] 真实 Git credential helper、SSH Agent、Keychain 与企业 SSO 的兼容性测试。
+- [x] 源码、日志入口、异常和操作面板的秘密泄漏扫描；URL userinfo、常见认证 Header 和
+  query 秘密键由脱敏单元测试覆盖。
+- [x] Git credential helper 调用顺序与 SSH Agent socket 环境继承的契约测试。
+- [ ] 真实 macOS Keychain、SSH Agent、企业 SSO 与受认证远端的兼容性测试。
 - [ ] macOS UI E2E：认证等待、取消、恢复和远端结果核验。
 
 ## 当前边界
@@ -113,3 +115,7 @@ credential helper 或 SSH Agent；出现认证需求时不会在隐藏的 Git �
 受控认证弹窗已通过提示协调器接入上述用户主动操作：它只显示认证类型，不渲染原始 Git
 prompt、完整 URL 或用户名；密码和私钥口令字段关闭自动填充、建议、自动更正与选择菜单，
 取消返回 `null`。
+
+当前自动化覆盖验证 GitRunner 继续使用配置的 credential helper，并保留 `SSH_AUTH_SOCK`；
+macOS Keychain 通过 credential helper 协议复用这一执行路径，但尚未以真实钥匙串和企业
+SSO 账号做端到端验证。应用不会读取、导入或持久化这些系统凭据。

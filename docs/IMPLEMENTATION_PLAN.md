@@ -285,7 +285,9 @@ detached HEAD、SHA-1/SHA-256 等边界。
   单次提示协调器接入 macOS 正式 app bundle 的用户主动 Clone、Fetch、Pull、Push，取消会
   同时关闭弹窗与 session/broker；后台刷新、状态、Diff 和 Push 后核验不注入 AskPass。
   开发/测试 runtime 不猜测 helper 路径或设置 `GIT_ASKPASS`，保留既有 credential helper /
-  SSH Agent 的无交互兼容；真实私有远端、Release 签名和 Keychain/SSH Agent 兼容性验证待完成。
+  SSH Agent 的无交互兼容；源码泄漏扫描和 URL/Header/query 脱敏测试、credential helper 调用
+  顺序与 SSH Agent socket 环境契约测试已完成；真实私有远端、Release 签名和 Keychain/企业
+  SSO 兼容性验证待完成。
 
 待完成：真实认证远端、Release 签名与凭据兼容性验证，以及应用驱动的 macOS UI E2E。
 

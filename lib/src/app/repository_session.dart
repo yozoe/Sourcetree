@@ -6,6 +6,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import '../git/git.dart';
 import '../presentation/presentation.dart';
 import 'git_askpass_prompt_coordinator.dart';
+import 'git_sensitive_text_redactor.dart';
 
 final gitRunnerProvider = Provider<GitRunner>((Ref ref) => GitRunner());
 
@@ -995,19 +996,7 @@ final class RepositorySessionController
   String _technicalDetails(Object error, StackTrace stackTrace) =>
       _redactSensitiveText('$error\n$stackTrace');
 
-  String _redactSensitiveText(String text) {
-    final credentials = RegExp(
-      r'([a-z][a-z0-9+.-]*://)([^/\s:@]+):([^@\s/]+)@',
-      caseSensitive: false,
-    );
-    final token = RegExp(
-      r'([?&](?:access_token|token|password)=)[^&\s]+',
-      caseSensitive: false,
-    );
-    return text
-        .replaceAllMapped(credentials, (match) => '${match[1]}***:***@')
-        .replaceAllMapped(token, (match) => '${match[1]}***');
-  }
+  String _redactSensitiveText(String text) => redactGitSensitiveText(text);
 }
 
 extension<T> on List<T> {
