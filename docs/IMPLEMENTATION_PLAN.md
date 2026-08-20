@@ -275,6 +275,7 @@ detached HEAD、SHA-1/SHA-256 等边界。
 - AskPass Flutter 一次性 socket session：随机 `0700` 临时目录中的 `0600` Unix socket、
   每次 256-bit nonce、单连接、16 KiB 响应限制、取消/拒绝/超时清理均已由单元测试覆盖；
   会话环境只能从 `Platform.resolvedExecutable` 的固定 app bundle 路径推导 helper；
+  测试 fixture 路径入口受 `@visibleForTesting` 标识；
   尚未接入 GitRunner、认证 UI 或真实 Git 操作，且发布前仍需 native UID owner 校验；
   同一份 C helper 已通过与 Flutter session 的进程级 socket 往返测试；helper 会验证
   socket owner/权限及 server peer UID，Flutter server 端的 helper peer UID 校验仍待实现；

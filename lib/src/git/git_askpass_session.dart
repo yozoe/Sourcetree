@@ -4,6 +4,8 @@ import 'dart:io';
 import 'dart:math';
 import 'dart:typed_data';
 
+import 'package:meta/meta.dart';
+
 import 'git_askpass_protocol.dart';
 
 typedef GitAskPassPromptHandler =
@@ -61,6 +63,7 @@ final class GitAskPassSession {
   ///
   /// This must only be used by tests. Production callers always derive the
   /// helper path from [Platform.resolvedExecutable] through [start].
+  @visibleForTesting
   static Future<GitAskPassSession> startForTesting({
     required GitAskPassPromptHandler onPrompt,
     required String appExecutablePath,

@@ -54,7 +54,8 @@ client UID，故发布前的完整 peer UID 验证项尚未完成。
 session 只可根据 `Platform.resolvedExecutable` 的 `*.app/Contents/MacOS/` 固定 bundle
 布局推导 helper 路径，并生成 `GIT_ASKPASS`、`GIT_TERMINAL_PROMPT=0`、socket 与 nonce
 四项环境变量；生产调用不接受仓库配置、remote 或 UI 文本指定 helper。测试可使用独立
-fixture 路径验证 IPC，但该构建器尚未接入 `GitInvocation`，因此不会改变当前无交互认证行为。
+fixture 路径验证 IPC，并以 `@visibleForTesting` 标识测试入口；该构建器尚未接入
+`GitInvocation`，因此不会改变当前无交互认证行为。
 
 ## 不可妥协的安全契约
 
