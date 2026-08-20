@@ -844,7 +844,7 @@ class _HistoryPane extends StatelessWidget {
                     message: '空仓库的首次提交会显示在这里。',
                   )
                 : ListView.builder(
-                    itemExtent: 38,
+                    itemExtent: 32,
                     itemCount: repository.commits.length,
                     itemBuilder: (BuildContext context, int index) {
                       final CommitViewData commit = repository.commits[index];
@@ -883,7 +883,7 @@ class _HistoryColumnHeader extends StatelessWidget {
       ),
       child: Row(
         children: [
-          const SizedBox(width: 68),
+          const SizedBox(width: 58),
           Expanded(child: Text('描述', style: theme.textTheme.labelSmall)),
           SizedBox(
             width: 108,
@@ -937,11 +937,12 @@ class _CommitRow extends StatelessWidget {
             child: Row(
               children: [
                 SizedBox(
-                  width: 68,
+                  width: 58,
                   child: CustomPaint(
                     painter: _CommitGraphPainter(
                       graph: commit.graph,
                       colors: _graphColors(colors),
+                      backgroundColor: _graphBackground(colors),
                       selected: commit.isSelected,
                     ),
                   ),
@@ -1012,15 +1013,17 @@ class _CommitGraphPainter extends CustomPainter {
   const _CommitGraphPainter({
     required this.graph,
     required this.colors,
+    required this.backgroundColor,
     required this.selected,
   });
 
   final CommitGraphViewData graph;
   final List<Color> colors;
+  final Color backgroundColor;
   final bool selected;
 
-  static const double laneSpacing = 12;
-  static const double laneStart = 8;
+  static const double laneSpacing = 11;
+  static const double laneStart = 12;
 
   Color _color(int index) => colors[index.abs() % colors.length];
 
@@ -1029,12 +1032,15 @@ class _CommitGraphPainter extends CustomPainter {
   @override
   void paint(Canvas canvas, Size size) {
     final double centerY = size.height / 2;
+    canvas.drawRect(Offset.zero & size, Paint()..color = backgroundColor);
 
     for (final int activeLane in graph.activeLanes) {
       final Paint linePaint = Paint()
-        ..color = _color(activeLane).withValues(alpha: selected ? .95 : .78)
-        ..strokeWidth = 1.6
-        ..style = PaintingStyle.stroke;
+        ..color = _color(activeLane).withValues(alpha: selected ? 1 : .9)
+        ..strokeWidth = 2
+        ..strokeCap = StrokeCap.square
+        ..style = PaintingStyle.stroke
+        ..isAntiAlias = true;
       canvas.drawLine(
         Offset(_laneX(activeLane), 0),
         Offset(_laneX(activeLane), size.height),
@@ -1045,43 +1051,58 @@ class _CommitGraphPainter extends CustomPainter {
     final int colorIndex = graph.colorIndex;
     final Paint branchPaint = Paint()
       ..color = _color(colorIndex).withValues(alpha: selected ? 1 : .9)
-      ..strokeWidth = 1.8
-      ..style = PaintingStyle.stroke;
+      ..strokeWidth = 2
+      ..strokeCap = StrokeCap.square
+      ..strokeJoin = StrokeJoin.miter
+      ..style = PaintingStyle.stroke
+      ..isAntiAlias = true;
     for (final int parentLane in graph.parentLanes) {
-      canvas.drawLine(
-        Offset(_laneX(graph.lane), centerY),
-        Offset(_laneX(parentLane), size.height),
-        branchPaint,
-      );
+      if (parentLane == graph.lane) continue;
+      final double turnY = size.height * .72;
+      final Path path = Path()
+        ..moveTo(_laneX(graph.lane), centerY)
+        ..lineTo(_laneX(graph.lane), turnY)
+        ..lineTo(_laneX(parentLane), turnY)
+        ..lineTo(_laneX(parentLane), size.height);
+      canvas.drawPath(path, branchPaint);
     }
 
     final Paint dotPaint = Paint()
       ..color = _color(colorIndex)
       ..style = PaintingStyle.fill;
-    canvas.drawCircle(Offset(_laneX(graph.lane), centerY), 4.1, dotPaint);
-    canvas.drawCircle(
-      Offset(_laneX(graph.lane), centerY),
-      2,
-      Paint()
-        ..color = selected ? colors.first : const Color(0xFFFFFFFF)
-        ..style = PaintingStyle.fill,
-    );
+    if (selected) {
+      canvas.drawCircle(
+        Offset(_laneX(graph.lane), centerY),
+        5.5,
+        Paint()
+          ..color = const Color(0xFFFFFFFF).withValues(alpha: .9)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1.2,
+      );
+    }
+    canvas.drawCircle(Offset(_laneX(graph.lane), centerY), 4.25, dotPaint);
   }
 
   @override
   bool shouldRepaint(_CommitGraphPainter oldDelegate) {
     return oldDelegate.graph != graph ||
         oldDelegate.selected != selected ||
-        oldDelegate.colors != colors;
+        oldDelegate.colors != colors ||
+        oldDelegate.backgroundColor != backgroundColor;
   }
 }
 
-List<Color> _graphColors(ColorScheme colors) => [
-  colors.primary,
-  colors.tertiary,
-  colors.secondary,
-  colors.error,
-  colors.primaryContainer,
+Color _graphBackground(ColorScheme colors) =>
+    colors.brightness == Brightness.dark
+    ? const Color(0xFF222A2E)
+    : colors.surfaceContainerHighest;
+
+List<Color> _graphColors(ColorScheme colors) => const [
+  Color(0xFF087FCD),
+  Color(0xFFFF6500),
+  Color(0xFFAE76E8),
+  Color(0xFF2FA86F),
+  Color(0xFFDBA70A),
 ];
 
 class _RefLabel extends StatelessWidget {
