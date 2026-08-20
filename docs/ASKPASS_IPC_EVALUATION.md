@@ -1,7 +1,7 @@
 # 一次性 AskPass IPC 评估
 
 日期：2026-08-20  
-状态：设计结论已确认；尚未启用真实凭据输入
+状态：macOS bundle 的用户主动远端操作已接入；发布与兼容性验证待完成
 
 ## 结论
 
@@ -36,15 +36,13 @@ AskPass helper 不应解析或保存 Git 命令；它只将单次 prompt 转发�
 随机临时目录创建 `0600` socket，每次生成新 nonce，只接受一条连接/请求，并在成功、
 拒绝、取消或 60 秒超时后关闭并删除 endpoint。它只把 UI 回调的单次回答编码为响应
 帧，限制整个响应为 16 KiB，且不保留秘密；取消时不发送空秘密。Dart 标准库暂未暴露
-UID，当前版本以随机私有目录和权限复核收紧访问面；发布前仍须补充 native UID owner
-校验，不能将这项约束标记完成。
+UID；开发/测试 runtime 的 Dart fallback 以随机私有目录和权限复核收紧访问面。正式
+macOS bundle 则通过 native broker 在 server 端完成 helper peer UID 校验。
 
 macOS 已有固定路径的 `git-desktop-askpass` C helper，Xcode 会将其编译到
 `Git Desktop.app/Contents/MacOS/`，并已通过 Debug bundle 的签名完整性验证。
 helper 只接受绝对 Unix socket 路径、64 位十六进制 nonce 和一个 prompt；它转发
-长度受限的 JSON 请求，并仅将 socket 返回的秘密写到 stdout。应用现有 session
-可启动 socket server，但 GitRunner 尚未设置 `GIT_ASKPASS` 或传入会话环境，因此
-helper 仍不能被真实 Git 操作调用。
+长度受限的 JSON 请求，并仅将 socket 返回的秘密写到 stdout。
 
 helper 在连接前通过 `lstat` 要求 endpoint 为当前有效 UID 拥有的 `0600` Unix socket，
 连接后用 macOS `getpeereid` 再确认服务端 peer UID 与当前有效 UID 相同；非 socket 或
@@ -57,8 +55,12 @@ Flutter session、broker 与 helper 的进程级测试。
 session 只可根据 `Platform.resolvedExecutable` 的 `*.app/Contents/MacOS/` 固定 bundle
 布局推导 helper 路径，并生成 `GIT_ASKPASS`、`GIT_TERMINAL_PROMPT=0`、socket 与 nonce
 四项环境变量；生产调用不接受仓库配置、remote 或 UI 文本指定 helper。测试可使用独立
-fixture 路径验证 IPC，并以 `@visibleForTesting` 标识测试入口；该构建器尚未接入
-`GitInvocation`，因此不会改变当前无交互认证行为。
+fixture 路径验证 IPC，并以 `@visibleForTesting` 标识测试入口。当前只有 macOS 正式 app
+bundle 的用户主动 Clone、Fetch、Pull、Push 会为实际远端 Git 子进程传入这些环境变量。
+Flutter 的提示协调器只在状态中保存已校验的非秘密请求，用户输入直接回传 session 后即被
+清除；取消操作会同时取消提示、关闭 socket/broker 和失效 nonce。开发与测试运行时不猜测
+helper 路径、不设置 `GIT_ASKPASS`，仍可使用既有 credential helper 或 SSH Agent，但
+`GIT_TERMINAL_PROMPT=0` 保持生效。
 
 ## 不可妥协的安全契约
 
@@ -96,17 +98,18 @@ fixture 路径验证 IPC，并以 `@visibleForTesting` 标识测试入口；该�
 - [x] 非秘密 IPC 请求的未知字段、非法 nonce 与超长 prompt 校验。
 - [x] 一次性 Flutter Unix socket 的 nonce、单连接、超时、拒绝和清理测试。
 - [x] macOS helper 与 Flutter session 的进程级 socket 往返测试（测试临时编译同一 C 源码）。
-- [ ] Token、用户名密码、SSH passphrase、拒绝认证、网络中断和用户取消测试。
+- [ ] Token、用户名密码、SSH passphrase、拒绝认证、网络中断和用户取消的真实远端测试。
 - [ ] 日志、异常、操作面板和 macOS 诊断包的秘密泄漏扫描。
 - [ ] 真实 Git credential helper、SSH Agent、Keychain 与企业 SSO 的兼容性测试。
 - [ ] macOS UI E2E：认证等待、取消、恢复和远端结果核验。
 
 ## 当前边界
 
-当前版本尚未把认证 UI、helper 或 session 接入 GitRunner；私有远端仍依赖用户现有
-无交互 credential helper 或 SSH Agent。出现认证需求时应用显示可操作的认证错误，
-不会在隐藏的 Git 子进程中等待终端输入。
+当前版本只在 macOS 正式 app bundle 的用户主动 Clone、Fetch、Pull、Push 中启用认证
+UI、helper 和 session；后台 refresh、status、diff、仓库探测以及 Push 后 `ls-remote`
+核验均不会注入 AskPass 环境。非 bundle 的开发和测试运行时仍依赖已有无交互
+credential helper 或 SSH Agent；出现认证需求时不会在隐藏的 Git 子进程中等待终端输入。
 
-受控认证弹窗已作为独立 UI 实现，但尚未由 Git 操作调用：它只显示认证类型，不渲染
-原始 Git prompt、完整 URL 或用户名；密码和私钥口令字段关闭自动填充、建议、自动更正
-与选择菜单，取消返回 `null`。接入前仍必须先完成 native UID owner 校验。
+受控认证弹窗已通过提示协调器接入上述用户主动操作：它只显示认证类型，不渲染原始 Git
+prompt、完整 URL 或用户名；密码和私钥口令字段关闭自动填充、建议、自动更正与选择菜单，
+取消返回 `null`。

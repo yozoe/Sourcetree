@@ -1,9 +1,11 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../git/git.dart';
 import '../presentation/presentation.dart';
+import 'git_askpass_prompt_coordinator.dart';
 
 final gitRunnerProvider = Provider<GitRunner>((Ref ref) => GitRunner());
 
@@ -370,10 +372,14 @@ final class RepositorySessionController
       isCloneRunning: true,
     );
     try {
-      await _writer.cloneRepository(
-        remoteUrl: remoteUrl,
-        directoryPath: directoryPath,
-        cancellationToken: cancellation,
+      await _runWithAskPassSession(
+        cancellation: cancellation,
+        run: (environment) => _writer.cloneRepository(
+          remoteUrl: remoteUrl,
+          directoryPath: directoryPath,
+          cancellationToken: cancellation,
+          environment: environment,
+        ),
       );
       await openRepository(directoryPath);
       final succeeded = state.phase == RepositorySessionPhase.ready;
@@ -429,7 +435,14 @@ final class RepositorySessionController
       clearMessage: true,
     );
     try {
-      await _writer.fetchOrigin(repository, cancellationToken: cancellation);
+      await _runWithAskPassSession(
+        cancellation: cancellation,
+        run: (environment) => _writer.fetchOrigin(
+          repository,
+          cancellationToken: cancellation,
+          environment: environment,
+        ),
+      );
       await refresh();
       final succeeded = state.phase == RepositorySessionPhase.ready;
       _completeOperation(
@@ -487,9 +500,13 @@ final class RepositorySessionController
       clearMessage: true,
     );
     try {
-      await _writer.pullFastForward(
-        repository,
-        cancellationToken: cancellation,
+      await _runWithAskPassSession(
+        cancellation: cancellation,
+        run: (environment) => _writer.pullFastForward(
+          repository,
+          cancellationToken: cancellation,
+          environment: environment,
+        ),
       );
       await refresh();
       final succeeded = state.phase == RepositorySessionPhase.ready;
@@ -551,7 +568,14 @@ final class RepositorySessionController
       clearMessage: true,
     );
     try {
-      await _writer.pushUpstream(repository, cancellationToken: cancellation);
+      await _runWithAskPassSession(
+        cancellation: cancellation,
+        run: (environment) => _writer.pushUpstream(
+          repository,
+          cancellationToken: cancellation,
+          environment: environment,
+        ),
+      );
       await refresh();
       final succeeded = state.phase == RepositorySessionPhase.ready;
       _completeOperation(
@@ -596,6 +620,39 @@ final class RepositorySessionController
   void cancelPush() {
     _pushCancellation?.cancel();
     _pushVerificationCancellation?.cancel();
+  }
+
+  /// Enables AskPass only for an explicit remote operation. All repository
+  /// inspection, refresh and post-push verification invocations keep the
+  /// default non-interactive environment.
+  Future<void> _runWithAskPassSession({
+    required GitCancellationToken cancellation,
+    required Future<void> Function(Map<String, String> environment) run,
+  }) async {
+    if (!GitAskPassSession.isBundledHelperAvailableForCurrentRuntime) {
+      // Never point GIT_ASKPASS at a guessed development/test binary. Git's
+      // existing credential helper and SSH Agent remain available while
+      // terminal prompting stays disabled by GitRunner.
+      await run(const <String, String>{});
+      return;
+    }
+    final promptCoordinator = ref.read(
+      gitAskPassPromptCoordinatorProvider.notifier,
+    );
+    final session = await GitAskPassSession.start(
+      onPrompt: promptCoordinator.request,
+    );
+    final registration = cancellation.register(() {
+      promptCoordinator.cancel();
+      unawaited(session.close());
+    });
+    try {
+      await run(session.environmentForBundledHelper());
+    } finally {
+      registration.dispose();
+      promptCoordinator.cancel();
+      await session.close();
+    }
   }
 
   Future<bool> _verifyUncertainPush(GitRepository repository) async {

@@ -180,6 +180,7 @@ final class GitRepositoryWriter {
     required String remoteUrl,
     required String directoryPath,
     GitCancellationToken? cancellationToken,
+    Map<String, String> environment = const {},
   }) async {
     final normalizedUrl = remoteUrl.trim();
     if (normalizedUrl.isEmpty) {
@@ -196,6 +197,7 @@ final class GitRepositoryWriter {
       GitInvocation(
         arguments: ['--no-pager', 'clone', '--', normalizedUrl, directory.path],
         cancellationToken: cancellationToken,
+        environment: environment,
         outputLimit: const GitOutputLimit(
           stdoutBytes: 1024 * 1024,
           stderrBytes: 1024 * 1024,
@@ -209,6 +211,7 @@ final class GitRepositoryWriter {
   Future<void> fetchOrigin(
     GitRepository repository, {
     GitCancellationToken? cancellationToken,
+    Map<String, String> environment = const {},
   }) async {
     final result = await runner.run(
       GitInvocation(
@@ -220,6 +223,7 @@ final class GitRepositoryWriter {
         ],
         workingDirectory: repository.commandDirectory,
         cancellationToken: cancellationToken,
+        environment: environment,
         outputLimit: const GitOutputLimit(
           stdoutBytes: 1024 * 1024,
           stderrBytes: 1024 * 1024,
@@ -236,6 +240,7 @@ final class GitRepositoryWriter {
   Future<void> pullFastForward(
     GitRepository repository, {
     GitCancellationToken? cancellationToken,
+    Map<String, String> environment = const {},
   }) async {
     final result = await runner.run(
       GitInvocation(
@@ -248,6 +253,7 @@ final class GitRepositoryWriter {
         ],
         workingDirectory: repository.commandDirectory,
         cancellationToken: cancellationToken,
+        environment: environment,
         outputLimit: const GitOutputLimit(
           stdoutBytes: 1024 * 1024,
           stderrBytes: 1024 * 1024,
@@ -264,6 +270,7 @@ final class GitRepositoryWriter {
   Future<void> pushUpstream(
     GitRepository repository, {
     GitCancellationToken? cancellationToken,
+    Map<String, String> environment = const {},
   }) async {
     final target = await _readPushTarget(
       repository,
@@ -281,6 +288,7 @@ final class GitRepositoryWriter {
         ],
         workingDirectory: repository.commandDirectory,
         cancellationToken: cancellationToken,
+        environment: environment,
         outputLimit: const GitOutputLimit(
           stdoutBytes: 1024 * 1024,
           stderrBytes: 1024 * 1024,

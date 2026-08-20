@@ -1,8 +1,12 @@
+import 'dart:async';
+
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
+import '../git/git.dart';
 import '../presentation/presentation.dart';
+import 'git_askpass_prompt_coordinator.dart';
 import 'repository_session.dart';
 import 'repository_view_mapper.dart';
 
@@ -49,6 +53,19 @@ class RepositoryWorkspaceScreen extends ConsumerStatefulWidget {
 
 class _RepositoryWorkspaceScreenState
     extends ConsumerState<RepositoryWorkspaceScreen> {
+  bool _isAskPassDialogVisible = false;
+
+  Future<void> _showAskPassPrompt(GitAskPassRequest request) async {
+    final secret = await showGitAskPassPromptDialog(context, request);
+    if (!mounted) {
+      return;
+    }
+    // The dialog may have been dismissed by cancellation. In either case, the
+    // coordinator accepts at most one answer and never retains it in state.
+    _isAskPassDialogVisible = false;
+    ref.read(gitAskPassPromptCoordinatorProvider.notifier).submit(secret);
+  }
+
   Future<void> _openRepository() async {
     final directory = await getDirectoryPath(confirmButtonText: '打开仓库');
     if (directory == null || !mounted) return;
@@ -406,6 +423,18 @@ class _RepositoryWorkspaceScreenState
 
   @override
   Widget build(BuildContext context) {
+    ref.listen<GitAskPassRequest?>(gitAskPassPromptCoordinatorProvider, (
+      previous,
+      next,
+    ) {
+      if (next != null && !_isAskPassDialogVisible) {
+        _isAskPassDialogVisible = true;
+        unawaited(_showAskPassPrompt(next));
+      } else if (next == null && previous != null && _isAskPassDialogVisible) {
+        _isAskPassDialogVisible = false;
+        unawaited(Navigator.of(context, rootNavigator: true).maybePop());
+      }
+    });
     final session = ref.watch(repositorySessionProvider);
     final controller = ref.read(repositorySessionProvider.notifier);
     return Scaffold(

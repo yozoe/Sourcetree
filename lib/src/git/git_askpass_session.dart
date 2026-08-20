@@ -51,6 +51,16 @@ final class GitAskPassSession {
       GitAskPassRequest.maxPromptLength * 2 + 256;
   static const int _unixSocketPathLimit = 103;
 
+  /// Whether this process is the signed macOS application layout that ships
+  /// the fixed AskPass helper. Development and test runtimes deliberately do
+  /// not set `GIT_ASKPASS` to a guessed sibling executable.
+  static bool get isBundledHelperAvailableForCurrentRuntime {
+    final appExecutablePath = Platform.resolvedExecutable;
+    return Platform.isMacOS &&
+        _isMacAppBundle(appExecutablePath) &&
+        File(_bundledHelperPathForExecutable(appExecutablePath)).existsSync();
+  }
+
   /// Creates a local, single-use endpoint for one AskPass request.
   static Future<GitAskPassSession> start({
     required GitAskPassPromptHandler onPrompt,
