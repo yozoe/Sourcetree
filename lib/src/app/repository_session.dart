@@ -7,6 +7,7 @@ import 'package:path/path.dart' as path_utils;
 import '../git/git.dart';
 import '../presentation/presentation.dart';
 import 'git_askpass_prompt_coordinator.dart';
+import 'repository_session_store.dart';
 import 'git_sensitive_text_redactor.dart';
 
 final gitRunnerProvider = Provider<GitRunner>((Ref ref) => GitRunner());
@@ -21,6 +22,10 @@ final gitRepositoryReaderProvider = Provider<GitRepositoryReader>(
 
 final gitRepositoryWriterProvider = Provider<GitRepositoryWriter>(
   (Ref ref) => GitRepositoryWriter(ref.watch(gitRunnerProvider)),
+);
+
+final repositorySessionStoreProvider = Provider<RepositorySessionStore>(
+  (Ref ref) => FileRepositorySessionStore(),
 );
 
 final repositorySessionProvider =
@@ -219,6 +224,7 @@ final class RepositorySessionController
   late GitRepositoryInspector _inspector;
   late GitRepositoryReader _reader;
   late GitRepositoryWriter _writer;
+  late RepositorySessionStore _sessionStore;
   int _repositoryGeneration = 0;
   int _diffGeneration = 0;
   int _operationSequence = 0;
@@ -227,6 +233,9 @@ final class RepositorySessionController
   GitCancellationToken? _pullCancellation;
   GitCancellationToken? _pushCancellation;
   GitCancellationToken? _pushVerificationCancellation;
+  Future<void> _sessionWriteChain = Future<void>.value();
+  bool _isRestoringSession = false;
+  bool _sessionPersistenceEnabled = false;
 
   @override
   RepositorySessionState build() {
@@ -234,7 +243,62 @@ final class RepositorySessionController
     _inspector = ref.watch(gitRepositoryInspectorProvider);
     _reader = ref.watch(gitRepositoryReaderProvider);
     _writer = ref.watch(gitRepositoryWriterProvider);
+    _sessionStore = ref.watch(repositorySessionStoreProvider);
     return const RepositorySessionState.empty();
+  }
+
+  /// Restores the last successfully opened repositories without retaining any
+  /// Git credentials or operation state. Missing or invalid paths are dropped.
+  Future<void> restoreSession() async {
+    if (_isRestoringSession || _sessionPersistenceEnabled) {
+      return;
+    }
+    _isRestoringSession = true;
+    _sessionPersistenceEnabled = true;
+    try {
+      final saved = await _sessionStore.load();
+      for (final path in saved.openRepositoryPaths) {
+        final stateBeforeAttempt = state;
+        await openRepository(path);
+        if (state.phase != RepositorySessionPhase.ready) {
+          state = stateBeforeAttempt;
+        }
+      }
+
+      final activePath = saved.activeRepositoryPath;
+      if (activePath != null &&
+          activePath != state.activeRepositoryTabPath &&
+          state.openRepositoryTabs.any((tab) => tab.path == activePath)) {
+        final stateBeforeSelection = state;
+        await selectRepositoryTab(activePath);
+        if (state.phase != RepositorySessionPhase.ready) {
+          state = stateBeforeSelection;
+        }
+      }
+    } finally {
+      _isRestoringSession = false;
+      _persistRepositorySession();
+    }
+  }
+
+  void _persistRepositorySession() {
+    if (!_sessionPersistenceEnabled || _isRestoringSession) {
+      return;
+    }
+    final snapshot = RepositorySessionSnapshot(
+      openRepositoryPaths: List<String>.unmodifiable(
+        state.openRepositoryTabs.map((tab) => tab.path),
+      ),
+      activeRepositoryPath: state.activeRepositoryTabPath,
+    );
+    _sessionWriteChain = _sessionWriteChain.then((_) async {
+      try {
+        await _sessionStore.save(snapshot);
+      } on Object {
+        // A local preference write must not turn a successful Git operation
+        // into an application error.
+      }
+    });
   }
 
   RepositoryOperationRecord _startOperation(RepositoryOperationKind kind) {
@@ -341,6 +405,7 @@ final class RepositorySessionController
         gitVersion: results[4] as String,
         searchQuery: state.searchQuery,
       );
+      _persistRepositorySession();
     } on Object catch (error, stackTrace) {
       if (generation != _repositoryGeneration) {
         return;

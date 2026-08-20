@@ -3,11 +3,56 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:git_desktop/src/app/repository_session.dart';
+import 'package:git_desktop/src/app/repository_session_store.dart';
 import 'package:git_desktop/src/app/repository_view_mapper.dart';
 
 import '../support/git_test_repository.dart';
 
 void main() {
+  test('restores opened repository tabs and the active repository', () async {
+    final firstRepository = await GitTestRepository.create();
+    addTearDown(firstRepository.dispose);
+    final secondRepository = await GitTestRepository.create();
+    addTearDown(secondRepository.dispose);
+    final store = _MemoryRepositorySessionStore();
+    final firstContainer = ProviderContainer(
+      overrides: [repositorySessionStoreProvider.overrideWithValue(store)],
+    );
+    addTearDown(firstContainer.dispose);
+    final firstController = firstContainer.read(
+      repositorySessionProvider.notifier,
+    );
+
+    await firstController.restoreSession();
+    await firstController.openRepository(firstRepository.workingDirectory.path);
+    await firstController.openRepository(
+      secondRepository.workingDirectory.path,
+    );
+    final firstPath = firstContainer
+        .read(repositorySessionProvider)
+        .openRepositoryTabs
+        .first
+        .path;
+    await firstController.selectRepositoryTab(firstPath);
+    await firstContainer
+        .read(repositorySessionProvider.notifier)
+        .restoreSession();
+
+    final restoredContainer = ProviderContainer(
+      overrides: [repositorySessionStoreProvider.overrideWithValue(store)],
+    );
+    addTearDown(restoredContainer.dispose);
+    await restoredContainer
+        .read(repositorySessionProvider.notifier)
+        .restoreSession();
+
+    final restoredState = restoredContainer.read(repositorySessionProvider);
+    expect(restoredState.phase, RepositorySessionPhase.ready);
+    expect(restoredState.openRepositoryTabs, hasLength(2));
+    expect(restoredState.activeRepositoryTabPath, firstPath);
+    expect(restoredState.repository!.commandDirectory, firstPath);
+  });
+
   test(
     'refresh retries the last requested path after a failed repository switch',
     () async {
@@ -477,4 +522,16 @@ void main() {
       ]),
     );
   });
+}
+
+final class _MemoryRepositorySessionStore implements RepositorySessionStore {
+  RepositorySessionSnapshot snapshot = const RepositorySessionSnapshot();
+
+  @override
+  Future<RepositorySessionSnapshot> load() async => snapshot;
+
+  @override
+  Future<void> save(RepositorySessionSnapshot next) async {
+    snapshot = next;
+  }
 }
