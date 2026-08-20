@@ -30,6 +30,10 @@ AskPass helper 不应解析或保存 Git 命令；它只将单次 prompt 转发�
 应用只显示经过脱敏的远端主机和 prompt 类型，不显示含用户信息、Token 或查询
 参数的完整 URL。
 
+应用侧已实现并测试非秘密请求的协议校验：nonce 必须为 256-bit 十六进制值，消息
+只允许 `nonce` 和 `prompt` 两个字段，prompt 限制为 8 KiB。该代码不接收、保存或
+序列化秘密；秘密响应仍须等 native helper 与受限 socket 会话实施后才能启用。
+
 ## 不可妥协的安全契约
 
 1. socket 目录权限为 `0700`，socket 权限为 `0600`；创建后验证 owner 为当前 UID。
@@ -60,7 +64,8 @@ AskPass helper 不应解析或保存 Git 命令；它只将单次 prompt 转发�
 ## 实施前验证清单
 
 - [ ] macOS helper 的签名、bundle 路径和 Gatekeeper 行为验证。
-- [ ] nonce 重放、错误 UID、第二连接、超长 prompt、畸形 UTF-8 和 helper 欺骗测试。
+- [ ] nonce 重放、错误 UID、第二连接、畸形 UTF-8 和 helper 欺骗测试。
+- [x] 非秘密 IPC 请求的未知字段、非法 nonce 与超长 prompt 校验。
 - [ ] Token、用户名密码、SSH passphrase、拒绝认证、网络中断和用户取消测试。
 - [ ] 日志、异常、操作面板和 macOS 诊断包的秘密泄漏扫描。
 - [ ] 真实 Git credential helper、SSH Agent、Keychain 与企业 SSO 的兼容性测试。
