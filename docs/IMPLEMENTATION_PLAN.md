@@ -272,6 +272,9 @@ detached HEAD、SHA-1/SHA-256 等边界。
 - AskPass IPC 安全设计评估：保持无交互认证默认值，冻结单次 helper、nonce、权限、取消和脱敏契约，待 macOS helper 验证后实施。
 - AskPass 应用侧协议校验：拒绝非法 nonce、未知字段和超限 prompt，且协议对象不保存秘密。
 - AskPass macOS helper：固定路径的 socket 转发 helper 已编译并打包进 Debug app，尚未启用 server 或 `GIT_ASKPASS`。
+- AskPass Flutter 一次性 socket session：随机 `0700` 临时目录中的 `0600` Unix socket、
+  每次 256-bit nonce、单连接、16 KiB 响应限制、取消/拒绝/超时清理均已由单元测试覆盖；
+  尚未接入 GitRunner、认证 UI 或真实 Git 操作，且发布前仍需 native UID owner 校验。
 
 待完成：一次性 AskPass helper 与交互认证，以及应用驱动的 macOS UI E2E。
 

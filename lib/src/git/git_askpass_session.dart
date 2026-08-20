@@ -1,0 +1,335 @@
+import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
+import 'dart:math';
+import 'dart:typed_data';
+
+import 'git_askpass_protocol.dart';
+
+typedef GitAskPassPromptHandler =
+    Future<String?> Function(GitAskPassRequest request);
+
+/// The non-secret state of a one-time AskPass IPC session.
+enum GitAskPassSessionStatus {
+  waitingForConnection,
+  waitingForResponse,
+  completed,
+  rejected,
+  timedOut,
+  closed,
+}
+
+/// A single-use, local Unix-domain-socket channel for the bundled AskPass
+/// helper.
+///
+/// The session deliberately stores neither prompt answers nor IPC payloads.
+/// Its [onPrompt] callback is responsible for presenting a controlled UI and
+/// returning an answer once. Calling [close], timing out, or answering a
+/// request removes the socket and invalidates [nonce].
+final class GitAskPassSession {
+  GitAskPassSession._({
+    required this.socketPath,
+    required this.nonce,
+    required this.onPrompt,
+    required Directory socketDirectory,
+    required ServerSocket server,
+    required Duration timeout,
+  }) : _socketDirectory = socketDirectory,
+       _server = server,
+       _timeout = timeout;
+
+  static const Duration defaultTimeout = Duration(seconds: 60);
+  static const int maxSecretBytes = 16 * 1024;
+  static const int _maxRequestBytes =
+      GitAskPassRequest.maxPromptLength * 2 + 256;
+  static const int _unixSocketPathLimit = 103;
+
+  /// Creates a local, single-use endpoint for one AskPass request.
+  static Future<GitAskPassSession> start({
+    required GitAskPassPromptHandler onPrompt,
+    Duration timeout = defaultTimeout,
+  }) async {
+    if (Platform.isWindows) {
+      throw UnsupportedError(
+        'Unix-domain AskPass sockets are not supported on Windows.',
+      );
+    }
+    if (timeout <= Duration.zero) {
+      throw ArgumentError.value(timeout, 'timeout', 'Must be positive.');
+    }
+
+    final socketDirectory = await _createPrivateDirectory();
+    final socketPath = '${socketDirectory.path}${Platform.pathSeparator}s';
+    if (utf8.encode(socketPath).length > _unixSocketPathLimit) {
+      await _deleteDirectory(socketDirectory);
+      throw StateError(
+        'The temporary directory path is too long for a Unix socket.',
+      );
+    }
+
+    try {
+      final server = await ServerSocket.bind(
+        InternetAddress(socketPath, type: InternetAddressType.unix),
+        0,
+        backlog: 1,
+      );
+      await _setPermissions(socketPath, '0600');
+      await _verifyPrivateEndpoint(socketDirectory, socketPath);
+      final session = GitAskPassSession._(
+        socketPath: socketPath,
+        nonce: _newNonce(),
+        onPrompt: onPrompt,
+        socketDirectory: socketDirectory,
+        server: server,
+        timeout: timeout,
+      );
+      session._startListening();
+      return session;
+    } catch (_) {
+      await _deleteDirectory(socketDirectory);
+      rethrow;
+    }
+  }
+
+  final String socketPath;
+  final String nonce;
+  final GitAskPassPromptHandler onPrompt;
+  final Directory _socketDirectory;
+  final ServerSocket _server;
+  final Duration _timeout;
+  final Completer<void> _closedCompleter = Completer<void>();
+  final Set<Socket> _clients = <Socket>{};
+
+  StreamSubscription<Socket>? _serverSubscription;
+  Timer? _timeoutTimer;
+  Future<void>? _closeFuture;
+  GitAskPassSessionStatus _status =
+      GitAskPassSessionStatus.waitingForConnection;
+  bool _requestAccepted = false;
+
+  GitAskPassSessionStatus get status => _status;
+
+  /// Completes only after the listener, socket file, and private directory
+  /// have been closed or removed.
+  Future<void> get closed => _closedCompleter.future;
+
+  /// Cancels this session and rejects any current or future AskPass request.
+  Future<void> close() => _closeWithStatus(GitAskPassSessionStatus.closed);
+
+  void _startListening() {
+    _timeoutTimer = Timer(_timeout, () {
+      unawaited(_closeWithStatus(GitAskPassSessionStatus.timedOut));
+    });
+    _serverSubscription = _server.listen(
+      (client) => unawaited(_handleClient(client)),
+      onError: (Object _) =>
+          unawaited(_closeWithStatus(GitAskPassSessionStatus.rejected)),
+      cancelOnError: true,
+    );
+  }
+
+  Future<void> _handleClient(Socket client) async {
+    if (_closeFuture != null || _requestAccepted) {
+      await client.close();
+      return;
+    }
+    _requestAccepted = true;
+    _clients.add(client);
+    _status = GitAskPassSessionStatus.waitingForResponse;
+    await _server.close();
+
+    try {
+      final payload = await _readRequestLine(client);
+      if (_closeFuture != null) return;
+      final request = GitAskPassRequest.decode(payload);
+      if (request.nonce != nonce) {
+        await _closeWithStatus(GitAskPassSessionStatus.rejected);
+        return;
+      }
+
+      final secret = await onPrompt(request);
+      if (_closeFuture != null) return;
+      if (secret == null) {
+        await _closeWithStatus(GitAskPassSessionStatus.rejected);
+        return;
+      }
+      await _sendSecret(client, secret);
+      await _closeWithStatus(GitAskPassSessionStatus.completed);
+    } on FormatException {
+      await _closeWithStatus(GitAskPassSessionStatus.rejected);
+    } on SocketException {
+      await _closeWithStatus(GitAskPassSessionStatus.rejected);
+    } on IOException {
+      await _closeWithStatus(GitAskPassSessionStatus.rejected);
+    } on ArgumentError {
+      await _closeWithStatus(GitAskPassSessionStatus.rejected);
+    } catch (_) {
+      await _closeWithStatus(GitAskPassSessionStatus.rejected);
+    }
+  }
+
+  Future<void> _sendSecret(Socket client, String secret) async {
+    final secretBytes = utf8.encode(secret);
+    if (secretBytes.length > maxSecretBytes ||
+        _containsControlCharacter(secret)) {
+      throw const FormatException('AskPass secret is invalid.');
+    }
+    final response = '${jsonEncode(<String, String>{'secret': secret})}\n';
+    final responseBytes = utf8.encode(response);
+    // The current helper reserves 16 KiB for the complete JSON line, not only
+    // the secret. Reject instead of truncating a credential.
+    if (responseBytes.length > maxSecretBytes) {
+      throw const FormatException('AskPass response is too large.');
+    }
+    client.add(responseBytes);
+    await client.flush();
+  }
+
+  Future<void> _closeWithStatus(GitAskPassSessionStatus status) {
+    return _closeFuture ??= _close(status);
+  }
+
+  Future<void> _close(GitAskPassSessionStatus status) async {
+    _status = status;
+    _timeoutTimer?.cancel();
+    _timeoutTimer = null;
+    try {
+      await _serverSubscription?.cancel();
+    } catch (_) {
+      // The session still owns the endpoint and must continue cleanup.
+    }
+    try {
+      await _server.close();
+    } catch (_) {
+      // Closing an already-closed listener is not security relevant.
+    }
+    for (final client in _clients) {
+      try {
+        await client.close();
+      } catch (_) {
+        // A disconnected helper cannot prevent endpoint cleanup.
+      }
+    }
+    _clients.clear();
+    try {
+      await _deleteDirectory(_socketDirectory);
+    } finally {
+      if (!_closedCompleter.isCompleted) {
+        _closedCompleter.complete();
+      }
+    }
+  }
+
+  static Future<Directory> _createPrivateDirectory() async {
+    final temporaryDirectory = Directory.systemTemp;
+    final directory = await temporaryDirectory.createTemp('gda_');
+    try {
+      await _setPermissions(directory.path, '0700');
+      final mode = (await directory.stat()).mode & 0x1ff;
+      if (mode != 0x1c0) {
+        throw FileSystemException(
+          'AskPass directory permissions are not private.',
+        );
+      }
+      return directory;
+    } catch (_) {
+      await _deleteDirectory(directory);
+      rethrow;
+    }
+  }
+
+  static Future<void> _verifyPrivateEndpoint(
+    Directory directory,
+    String socketPath,
+  ) async {
+    final directoryStat = await directory.stat();
+    final socketStat = await FileStat.stat(socketPath);
+    if ((directoryStat.mode & 0x1ff) != 0x1c0 ||
+        socketStat.type != FileSystemEntityType.unixDomainSock ||
+        (socketStat.mode & 0x1ff) != 0x180) {
+      throw FileSystemException(
+        'AskPass socket permissions could not be verified.',
+      );
+    }
+  }
+
+  static Future<void> _setPermissions(String path, String mode) async {
+    final result = await Process.run('/bin/chmod', <String>[mode, path]);
+    if (result.exitCode != 0) {
+      throw FileSystemException('Could not protect AskPass IPC endpoint.');
+    }
+  }
+
+  static Future<void> _deleteDirectory(Directory directory) async {
+    try {
+      await directory.delete(recursive: true);
+    } on FileSystemException {
+      // Cleanup must not replace the real operation result. The directory is
+      // private and contains no persisted secret.
+    }
+  }
+
+  static String _newNonce() {
+    final random = Random.secure();
+    final buffer = StringBuffer();
+    for (var index = 0; index < 32; index += 1) {
+      buffer.write(random.nextInt(256).toRadixString(16).padLeft(2, '0'));
+    }
+    return buffer.toString();
+  }
+
+  static bool _containsControlCharacter(String value) {
+    return value.codeUnits.any((unit) => unit < 0x20);
+  }
+
+  static Future<String> _readRequestLine(Socket client) {
+    final completer = Completer<String>();
+    final bytes = BytesBuilder(copy: false);
+    late final StreamSubscription<List<int>> subscription;
+
+    void fail(Object error) {
+      if (!completer.isCompleted) {
+        completer.completeError(error);
+      }
+      unawaited(subscription.cancel());
+    }
+
+    subscription = client.listen(
+      (chunk) {
+        for (var index = 0; index < chunk.length; index += 1) {
+          final byte = chunk[index];
+          if (byte == 0x0a) {
+            if (index != chunk.length - 1 || completer.isCompleted) {
+              fail(
+                const FormatException('AskPass request contains extra data.'),
+              );
+              return;
+            }
+            try {
+              completer.complete(utf8.decode(bytes.takeBytes()));
+            } on FormatException catch (error) {
+              completer.completeError(error);
+            }
+            unawaited(subscription.cancel());
+            return;
+          }
+          if (bytes.length >= _maxRequestBytes) {
+            fail(const FormatException('AskPass request is too large.'));
+            return;
+          }
+          bytes.addByte(byte);
+        }
+      },
+      onError: (Object error, StackTrace _) => fail(error),
+      onDone: () {
+        if (!completer.isCompleted) {
+          fail(
+            const FormatException('AskPass request ended before a newline.'),
+          );
+        }
+      },
+      cancelOnError: true,
+    );
+    return completer.future;
+  }
+}

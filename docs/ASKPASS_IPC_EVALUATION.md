@@ -32,13 +32,19 @@ AskPass helper 不应解析或保存 Git 命令；它只将单次 prompt 转发�
 
 应用侧已实现并测试非秘密请求的协议校验：nonce 必须为 256-bit 十六进制值，消息
 只允许 `nonce` 和 `prompt` 两个字段，prompt 限制为 8 KiB。该代码不接收、保存或
-序列化秘密；秘密响应仍须等 native helper 与受限 socket 会话实施后才能启用。
+序列化秘密。Flutter 侧现已实现一次性 Unix socket session：在权限为 `0700` 的
+随机临时目录创建 `0600` socket，每次生成新 nonce，只接受一条连接/请求，并在成功、
+拒绝、取消或 60 秒超时后关闭并删除 endpoint。它只把 UI 回调的单次回答编码为响应
+帧，限制整个响应为 16 KiB，且不保留秘密；取消时不发送空秘密。Dart 标准库暂未暴露
+UID，当前版本以随机私有目录和权限复核收紧访问面；发布前仍须补充 native UID owner
+校验，不能将这项约束标记完成。
 
 macOS 已有固定路径的 `git-desktop-askpass` C helper，Xcode 会将其编译到
 `Git Desktop.app/Contents/MacOS/`，并已通过 Debug bundle 的签名完整性验证。
 helper 只接受绝对 Unix socket 路径、64 位十六进制 nonce 和一个 prompt；它转发
-长度受限的 JSON 请求，并仅将 socket 返回的秘密写到 stdout。当前应用尚未启动
-socket server 或设置 `GIT_ASKPASS`，故 helper 不能被真实 Git 操作调用。
+长度受限的 JSON 请求，并仅将 socket 返回的秘密写到 stdout。应用现有 session
+可启动 socket server，但 GitRunner 尚未设置 `GIT_ASKPASS` 或传入会话环境，因此
+helper 仍不能被真实 Git 操作调用。
 
 ## 不可妥协的安全契约
 
@@ -73,6 +79,7 @@ socket server 或设置 `GIT_ASKPASS`，故 helper 不能被真实 Git 操作调
 - [ ] Release/Developer ID 签名与 Gatekeeper 行为验证。
 - [ ] nonce 重放、错误 UID、第二连接、畸形 UTF-8 和 helper 欺骗测试。
 - [x] 非秘密 IPC 请求的未知字段、非法 nonce 与超长 prompt 校验。
+- [x] 一次性 Flutter Unix socket 的 nonce、单连接、超时、拒绝和清理测试。
 - [ ] Token、用户名密码、SSH passphrase、拒绝认证、网络中断和用户取消测试。
 - [ ] 日志、异常、操作面板和 macOS 诊断包的秘密泄漏扫描。
 - [ ] 真实 Git credential helper、SSH Agent、Keychain 与企业 SSO 的兼容性测试。
@@ -80,6 +87,6 @@ socket server 或设置 `GIT_ASKPASS`，故 helper 不能被真实 Git 操作调
 
 ## 当前边界
 
-当前版本尚未提供认证输入 UI 或 AskPass helper；私有远端依赖用户现有无交互
-credential helper 或 SSH Agent。出现认证需求时应用显示可操作的认证错误，不会在
-隐藏的 Git 子进程中等待终端输入。
+当前版本尚未提供认证输入 UI，也尚未把 helper/session 接入 GitRunner；私有远端
+仍依赖用户现有无交互 credential helper 或 SSH Agent。出现认证需求时应用显示
+可操作的认证错误，不会在隐藏的 Git 子进程中等待终端输入。
