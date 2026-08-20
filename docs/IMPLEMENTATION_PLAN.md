@@ -133,6 +133,8 @@ RepositoryId = canonical common-dir + canonical worktree root
 ### 初始技术选择
 
 - UI：Flutter stable。
+- 设计基础：本地 `yeknom_ui_kit` package 的 Workbench 入口；Git 客户端采用 Cobalt
+  配色并可逐步复用其无业务依赖的组件。
 - 状态与依赖注入：首选 `flutter_riverpod`，不混用多套状态框架。
 - Git 引擎：系统或用户指定的 Git CLI。
 - 本地数据：早期只保存最近仓库和布局；确需缓存时再引入 SQLite。

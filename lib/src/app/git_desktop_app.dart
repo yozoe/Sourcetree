@@ -3,6 +3,7 @@ import 'dart:async';
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:yeknom_ui_kit/yeknom_workbench.dart';
 
 import '../git/git.dart';
 import '../presentation/presentation.dart';
@@ -28,26 +29,12 @@ class GitDesktopApp extends StatelessWidget {
   }
 }
 
-/// 中文：根据亮度创建应用主题，并统一紧凑密度、背景、分隔线和提示样式。
+/// 中文：根据亮度创建 Git 桌面客户端的 Yeknom Workbench 主题，并使用 Cobalt 颜色组合。
 ///
-/// English: Creates the application theme for a brightness and standardizes
-/// compact density, backgrounds, dividers, and tooltip styling.
-ThemeData _theme(Brightness brightness) {
-  final colors = ColorScheme.fromSeed(
-    seedColor: const Color(0xFF2767D8),
-    brightness: brightness,
-  );
-  return ThemeData(
-    useMaterial3: true,
-    colorScheme: colors,
-    visualDensity: VisualDensity.compact,
-    scaffoldBackgroundColor: colors.surface,
-    dividerTheme: DividerThemeData(color: colors.outlineVariant, thickness: 1),
-    tooltipTheme: const TooltipThemeData(
-      waitDuration: Duration(milliseconds: 650),
-    ),
-  );
-}
+/// English: Creates the Git desktop application's Yeknom Workbench theme for
+/// a brightness using the Cobalt color preset.
+ThemeData _theme(Brightness brightness) =>
+    YeknomWorkbenchTheme.build(brightness, preset: YeknomColorPreset.cobalt);
 
 class RepositoryWorkspaceScreen extends ConsumerStatefulWidget {
   const RepositoryWorkspaceScreen({super.key});

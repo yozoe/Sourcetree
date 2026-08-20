@@ -27,6 +27,12 @@ macOS bundle 的用户主动远端操作可使用单次受控 AskPass；发布�
 可依赖的行为。禁止使用“处理某方法相关逻辑”这类占位说明；新增或修改方法时，必须同步更新
 双语注释及相关测试。
 
+## UI 基础库
+
+桌面界面通过本地 package 依赖接入 `yeknom_ui_kit` 的 `lib/`，并使用
+`YeknomWorkbenchTheme` 的 Cobalt 配色。该依赖只提供 Flutter Material 的主题、语义颜色
+和可复用控件；Git、状态管理、文件访问和业务文案仍保留在本项目中。
+
 ## 运行
 
 ```sh

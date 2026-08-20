@@ -36,6 +36,8 @@ dependencies:
   meta: ^1.17.0
   path: ^1.9.1
   path_provider: ^2.1.5
+  yeknom_ui_kit:
+    path: ../private/yeknom-ui-kit
 
 dev_dependencies:
   flutter_test:

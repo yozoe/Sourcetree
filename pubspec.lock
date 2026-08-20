@@ -772,6 +772,13 @@ packages:
       url: "https://pub.flutter-io.cn"
     source: hosted
     version: "3.1.3"
+  yeknom_ui_kit:
+    dependency: "direct main"
+    description:
+      path: "../private/yeknom-ui-kit"
+      relative: true
+    source: path
+    version: "0.3.0"
 sdks:
   dart: ">=3.11.4 <4.0.0"
   flutter: ">=3.38.4"
