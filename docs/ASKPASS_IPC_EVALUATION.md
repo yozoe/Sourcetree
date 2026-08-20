@@ -46,10 +46,10 @@ helper 只接受绝对 Unix socket 路径、64 位十六进制 nonce 和一个 p
 可启动 socket server，但 GitRunner 尚未设置 `GIT_ASKPASS` 或传入会话环境，因此
 helper 仍不能被真实 Git 操作调用。
 
-session 只可根据 app 可执行文件的 `*.app/Contents/MacOS/` 固定 bundle 布局推导
-helper 路径，并生成 `GIT_ASKPASS`、`GIT_TERMINAL_PROMPT=0`、socket 与 nonce 四项
-环境变量；不接受仓库配置、remote 或 UI 文本指定 helper。该构建器尚未接入
-`GitInvocation`，因此不会改变当前无交互认证行为。
+session 只可根据 `Platform.resolvedExecutable` 的 `*.app/Contents/MacOS/` 固定 bundle
+布局推导 helper 路径，并生成 `GIT_ASKPASS`、`GIT_TERMINAL_PROMPT=0`、socket 与 nonce
+四项环境变量；生产调用不接受仓库配置、remote 或 UI 文本指定 helper。测试可使用独立
+fixture 路径验证 IPC，但该构建器尚未接入 `GitInvocation`，因此不会改变当前无交互认证行为。
 
 ## 不可妥协的安全契约
 

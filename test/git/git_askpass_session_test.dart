@@ -104,34 +104,29 @@ void main() {
     expect(await directory.exists(), isFalse);
   });
 
-  test('builds AskPass environment only from the bundled app path', () async {
-    final session = await GitAskPassSession.start(onPrompt: (_) async => null);
-    addTearDown(session.close);
+  test(
+    'builds AskPass environment only from the session bundle path',
+    () async {
+      const appExecutablePath =
+          '/Applications/Git Desktop.app/Contents/MacOS/Git Desktop';
+      final session = await GitAskPassSession.startForTesting(
+        onPrompt: (_) async => null,
+        appExecutablePath: appExecutablePath,
+      );
+      addTearDown(session.close);
 
-    final environment = session.environmentForBundledHelper(
-      appExecutablePath:
-          '/Applications/Git Desktop.app/Contents/MacOS/Git Desktop',
-    );
+      final environment = session.environmentForBundledHelper();
 
-    expect(
-      environment['GIT_ASKPASS'],
-      '/Applications/Git Desktop.app/Contents/MacOS/git-desktop-askpass',
-    );
-    expect(environment['GIT_TERMINAL_PROMPT'], '0');
-    expect(environment['GIT_DESKTOP_ASKPASS_SOCKET'], session.socketPath);
-    expect(environment['GIT_DESKTOP_ASKPASS_NONCE'], session.nonce);
-    expect(
-      () => session.environmentForBundledHelper(
-        appExecutablePath: 'not-a-bundle',
-      ),
-      throwsArgumentError,
-    );
-    expect(
-      () =>
-          session.environmentForBundledHelper(appExecutablePath: '/tmp/helper'),
-      throwsArgumentError,
-    );
-  });
+      expect(
+        environment['GIT_ASKPASS'],
+        '/Applications/Git Desktop.app/Contents/MacOS/git-desktop-askpass',
+      );
+      expect(environment['GIT_TERMINAL_PROMPT'], '0');
+      expect(environment['GIT_DESKTOP_ASKPASS_SOCKET'], session.socketPath);
+      expect(environment['GIT_DESKTOP_ASKPASS_NONCE'], session.nonce);
+      expect(session.environmentForBundledHelper, returnsNormally);
+    },
+  );
 
   test(
     'the native helper exchanges one secret only through the session socket',
@@ -162,19 +157,18 @@ void main() {
       ]);
       expect(compilation.exitCode, 0, reason: compilation.stderr);
 
-      final session = await GitAskPassSession.start(
+      final session = await GitAskPassSession.startForTesting(
         onPrompt: (request) async {
           expect(request.kind, GitAskPassPromptKind.password);
           return 'test-only-secret';
         },
+        appExecutablePath: '${macosDirectory.path}/Git Desktop',
       );
       addTearDown(session.close);
       final result = await Process.run(
         helper.path,
         <String>['Password for https://example.test:'],
-        environment: session.environmentForBundledHelper(
-          appExecutablePath: '${macosDirectory.path}/Git Desktop',
-        ),
+        environment: session.environmentForBundledHelper(),
         includeParentEnvironment: false,
       );
 

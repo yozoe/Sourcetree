@@ -34,9 +34,11 @@ final class GitAskPassSession {
     required Directory socketDirectory,
     required ServerSocket server,
     required Duration timeout,
+    required String appExecutablePath,
   }) : _socketDirectory = socketDirectory,
        _server = server,
-       _timeout = timeout;
+       _timeout = timeout,
+       _appExecutablePath = appExecutablePath;
 
   static const Duration defaultTimeout = Duration(seconds: 60);
   static const int maxSecretBytes = 16 * 1024;
@@ -49,6 +51,30 @@ final class GitAskPassSession {
   static Future<GitAskPassSession> start({
     required GitAskPassPromptHandler onPrompt,
     Duration timeout = defaultTimeout,
+  }) => _start(
+    onPrompt: onPrompt,
+    timeout: timeout,
+    appExecutablePath: Platform.resolvedExecutable,
+  );
+
+  /// Creates a session with a fixture app executable path.
+  ///
+  /// This must only be used by tests. Production callers always derive the
+  /// helper path from [Platform.resolvedExecutable] through [start].
+  static Future<GitAskPassSession> startForTesting({
+    required GitAskPassPromptHandler onPrompt,
+    required String appExecutablePath,
+    Duration timeout = defaultTimeout,
+  }) => _start(
+    onPrompt: onPrompt,
+    timeout: timeout,
+    appExecutablePath: appExecutablePath,
+  );
+
+  static Future<GitAskPassSession> _start({
+    required GitAskPassPromptHandler onPrompt,
+    required Duration timeout,
+    required String appExecutablePath,
   }) async {
     if (Platform.isWindows) {
       throw UnsupportedError(
@@ -83,6 +109,7 @@ final class GitAskPassSession {
         socketDirectory: socketDirectory,
         server: server,
         timeout: timeout,
+        appExecutablePath: appExecutablePath,
       );
       session._startListening();
       return session;
@@ -98,6 +125,7 @@ final class GitAskPassSession {
   final Directory _socketDirectory;
   final ServerSocket _server;
   final Duration _timeout;
+  final String _appExecutablePath;
   final Completer<void> _closedCompleter = Completer<void>();
   final Set<Socket> _clients = <Socket>{};
 
@@ -117,10 +145,8 @@ final class GitAskPassSession {
   /// The path is derived from the app bundle layout rather than a repository
   /// setting or remote input, so a repository cannot choose which executable
   /// receives credentials.
-  Map<String, String> environmentForBundledHelper({
-    required String appExecutablePath,
-  }) {
-    final helperPath = _bundledHelperPathForExecutable(appExecutablePath);
+  Map<String, String> environmentForBundledHelper() {
+    final helperPath = _bundledHelperPathForExecutable(_appExecutablePath);
     return Map<String, String>.unmodifiable(<String, String>{
       'GIT_ASKPASS': helperPath,
       'GIT_TERMINAL_PROMPT': '0',

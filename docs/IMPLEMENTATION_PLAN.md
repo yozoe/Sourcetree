@@ -274,9 +274,9 @@ detached HEAD、SHA-1/SHA-256 等边界。
 - AskPass macOS helper：固定路径的 socket 转发 helper 已编译并打包进 Debug app，尚未启用 server 或 `GIT_ASKPASS`。
 - AskPass Flutter 一次性 socket session：随机 `0700` 临时目录中的 `0600` Unix socket、
   每次 256-bit nonce、单连接、16 KiB 响应限制、取消/拒绝/超时清理均已由单元测试覆盖；
-  会话环境只能从固定 app bundle 路径推导 helper；尚未接入 GitRunner、认证 UI 或真实
-  Git 操作，且发布前仍需 native UID owner 校验；同一份 C helper 已通过与 Flutter
-  session 的进程级 socket 往返测试。
+  会话环境只能从 `Platform.resolvedExecutable` 的固定 app bundle 路径推导 helper；
+  尚未接入 GitRunner、认证 UI 或真实 Git 操作，且发布前仍需 native UID owner 校验；
+  同一份 C helper 已通过与 Flutter session 的进程级 socket 往返测试。
 
 待完成：一次性 AskPass helper 与交互认证，以及应用驱动的 macOS UI E2E。
 
