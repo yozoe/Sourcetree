@@ -54,7 +54,7 @@
 | 提交 | Commit、作者校验、hook 错误展示 | Amend、模板、签名状态 | 提交草稿 |
 | 历史 | 分页列表、基础 DAG、提交详情 | 搜索、文件历史、Blame、Reflog | 高级查询 |
 | Branch / Tag | 创建、切换、删除本地分支 | 重命名、跟踪关系、Tag | Worktree |
-| 远端 | Fetch、Pull、Push、进度和取消 | Remote 管理、Prune、安全 Force Push | 托管平台适配 |
+| 远端 | 已获取远端跟踪分支展示、Fetch、Pull、Push、进度和取消 | Remote 管理、Prune、安全 Force Push | 托管平台适配 |
 | 高级操作 | — | Merge、Rebase、Cherry-pick、Revert、Reset、Stash | 高级批量操作 |
 | 冲突 | 检测并展示进行中状态 | ours/theirs、Continue/Skip/Abort、外部工具 | 内置三方合并器评估 |
 | Git 扩展 | — | Submodule、LFS 基础能力 | 深度增强 |

@@ -271,6 +271,17 @@ final class GitLocalBranch {
   final String? upstream;
 }
 
+/// A remote-tracking branch discovered through `git for-each-ref`.
+final class GitRemoteBranch {
+  const GitRemoteBranch({required this.name, required this.objectId});
+
+  /// The short remote-tracking name, for example `origin/main`.
+  final String name;
+
+  /// The object currently referenced by this remote-tracking branch.
+  final String objectId;
+}
+
 final class GitStatusSnapshot {
   GitStatusSnapshot({
     required this.branch,

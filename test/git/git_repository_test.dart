@@ -261,6 +261,51 @@ void main() {
     expect(branches.every((branch) => branch.objectId.isNotEmpty), isTrue);
   });
 
+  test(
+    'reads remote-tracking branches and skips symbolic remote heads',
+    () async {
+      const fileName = 'README.md';
+      await File(
+        '${temporaryDirectory.path}${Platform.pathSeparator}$fileName',
+      ).writeAsString('# Git Desktop\n');
+      await _git(temporaryDirectory.path, ['add', '--', fileName]);
+      await _git(temporaryDirectory.path, [
+        'commit',
+        '--quiet',
+        '-m',
+        'initial',
+      ]);
+      await _git(temporaryDirectory.path, [
+        'update-ref',
+        'refs/remotes/origin/main',
+        'HEAD',
+      ]);
+      await _git(temporaryDirectory.path, [
+        'update-ref',
+        'refs/remotes/origin/feature/list-branches',
+        'HEAD',
+      ]);
+      await _git(temporaryDirectory.path, [
+        'symbolic-ref',
+        'refs/remotes/origin/HEAD',
+        'refs/remotes/origin/main',
+      ]);
+
+      final repository = (await inspector.inspect(temporaryDirectory.path))!;
+      final branches = await reader.readRemoteBranches(repository);
+
+      expect(
+        branches.map((branch) => branch.name),
+        containsAll(['origin/main', 'origin/feature/list-branches']),
+      );
+      expect(
+        branches.map((branch) => branch.name),
+        isNot(contains('origin/HEAD')),
+      );
+      expect(branches.every((branch) => branch.objectId.isNotEmpty), isTrue);
+    },
+  );
+
   test('marks a diff as truncated at its configured byte limit', () async {
     const fileName = 'large.txt';
     final file = File(

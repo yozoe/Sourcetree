@@ -295,6 +295,52 @@ final class GitRepositoryReader {
     return List<GitLocalBranch>.unmodifiable(branches);
   }
 
+  /// 中文：读取全部远端跟踪分支，并跳过 `origin/HEAD` 等符号引用。
+  ///
+  /// English: Reads all remote-tracking branches while skipping symbolic refs
+  /// such as `origin/HEAD`.
+  Future<List<GitRemoteBranch>> readRemoteBranches(
+    GitRepository repository,
+  ) async {
+    final result = await runner.run(
+      GitInvocation(
+        arguments: const [
+          '--no-pager',
+          '-c',
+          'color.ui=false',
+          'for-each-ref',
+          '--sort=refname',
+          '--format=%(refname:short)%00%(objectname)%00%(symref)',
+          'refs/remotes',
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 4 * 1024 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Reading remote branches');
+    if (result.stdoutTruncated) {
+      throw const GitParseException(
+        'Remote branch list exceeded the configured output limit.',
+      );
+    }
+
+    final branches = <GitRemoteBranch>[];
+    final output = utf8.decode(result.stdoutBytes, allowMalformed: true);
+    for (final record in output.split('\n')) {
+      if (record.isEmpty) continue;
+      final fields = record.split('\u0000');
+      if (fields.length != 3 || fields[0].isEmpty || fields[1].isEmpty) {
+        throw GitParseException('Unexpected remote branch record: $record');
+      }
+      if (fields[2].isNotEmpty) continue;
+      branches.add(GitRemoteBranch(name: fields[0], objectId: fields[1]));
+    }
+    return List<GitRemoteBranch>.unmodifiable(branches);
+  }
+
   /// Returns whether the conventional `origin` remote is configured.
   /// 中文：检查目标是否存在或可用。
   /// English: Checks whether the target exists or is available.

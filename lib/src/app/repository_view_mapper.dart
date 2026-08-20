@@ -110,10 +110,10 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
           ahead: localBranch.name == branch.head ? branch.ahead : 0,
           behind: localBranch.name == branch.head ? branch.behind : 0,
         ),
-      if (branch.upstream != null)
+      for (final remoteBranch in state.remoteBranches)
         RepositoryRefViewData(
-          id: branch.upstream!,
-          label: branch.upstream!,
+          id: 'refs/remotes/${remoteBranch.name}',
+          label: remoteBranch.name,
           kind: RepositoryRefKind.remoteBranch,
         ),
       if (branch.stashCount > 0)

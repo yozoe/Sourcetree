@@ -133,6 +133,7 @@ final class RepositorySessionState {
     this.status,
     this.hasOriginRemote = false,
     this.localBranches = const [],
+    this.remoteBranches = const [],
     this.commits = const [],
     this.selectedCommitId,
     this.commitChanges = const [],
@@ -167,6 +168,7 @@ final class RepositorySessionState {
   final GitStatusSnapshot? status;
   final bool hasOriginRemote;
   final List<GitLocalBranch> localBranches;
+  final List<GitRemoteBranch> remoteBranches;
   final List<GitCommit> commits;
   final String? selectedCommitId;
   final List<GitCommitFileChange> commitChanges;
@@ -203,6 +205,7 @@ final class RepositorySessionState {
     GitStatusSnapshot? status,
     bool? hasOriginRemote,
     List<GitLocalBranch>? localBranches,
+    List<GitRemoteBranch>? remoteBranches,
     List<GitCommit>? commits,
     String? selectedCommitId,
     List<GitCommitFileChange>? commitChanges,
@@ -239,6 +242,7 @@ final class RepositorySessionState {
       status: status ?? this.status,
       hasOriginRemote: hasOriginRemote ?? this.hasOriginRemote,
       localBranches: localBranches ?? this.localBranches,
+      remoteBranches: remoteBranches ?? this.remoteBranches,
       commits: commits ?? this.commits,
       selectedCommitId: selectedCommitId ?? this.selectedCommitId,
       commitChanges: commitChanges ?? this.commitChanges,
@@ -450,6 +454,7 @@ final class RepositorySessionController
         _reader.readStatus(repository),
         _reader.hasOriginRemote(repository),
         _reader.readLocalBranches(repository),
+        _reader.readRemoteBranches(repository),
         _reader.readRecentHistory(repository),
         _readGitVersion(),
       ]);
@@ -460,7 +465,8 @@ final class RepositorySessionController
       final status = results[0] as GitStatusSnapshot;
       final hasOriginRemote = results[1] as bool;
       final localBranches = results[2] as List<GitLocalBranch>;
-      final commits = results[3] as List<GitCommit>;
+      final remoteBranches = results[3] as List<GitRemoteBranch>;
+      final commits = results[4] as List<GitCommit>;
       final tab = RepositoryTab(
         path: repository.commandDirectory,
         label: path_utils.basename(
@@ -474,6 +480,7 @@ final class RepositorySessionController
         status: status,
         hasOriginRemote: hasOriginRemote,
         localBranches: localBranches,
+        remoteBranches: remoteBranches,
         commits: commits,
         // Keep the working-tree inspector visible until the user chooses a
         // historical commit. Selecting a commit then replaces it with that
@@ -484,7 +491,7 @@ final class RepositorySessionController
           _upsertRepositoryTab(state.openRepositoryTabs, tab),
         ),
         activeRepositoryTabPath: tab.path,
-        gitVersion: results[4] as String,
+        gitVersion: results[5] as String,
         searchQuery: state.searchQuery,
       );
       _persistRepositorySession();

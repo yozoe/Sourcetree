@@ -5,6 +5,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:git_desktop/src/app/repository_session.dart';
 import 'package:git_desktop/src/app/repository_session_store.dart';
 import 'package:git_desktop/src/app/repository_view_mapper.dart';
+import 'package:git_desktop/src/presentation/presentation.dart';
 
 import '../support/git_test_repository.dart';
 
@@ -352,6 +353,53 @@ void main() {
     expect(operation.outcome, RepositoryOperationOutcome.succeeded);
     expect(operation.completedAt, isNotNull);
   });
+
+  test(
+    'maps every remote-tracking branch into the remote refs section',
+    () async {
+      final source = await GitTestRepository.create();
+      addTearDown(source.dispose);
+      await source.writeFile('README.md', '# Git Desktop\n');
+      await source.commit('Initial commit');
+      final origin = await source.createBareOrigin();
+      await source.runGit(['push', 'origin', 'main']);
+      await source.runGit(['branch', 'feature/remote']);
+      await source.runGit(['push', 'origin', 'feature/remote']);
+      final directory = await Directory.systemTemp.createTemp(
+        'git-desktop-remote-branches-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+
+      expect(
+        await container
+            .read(repositorySessionProvider.notifier)
+            .cloneRepository(
+              remoteUrl: origin.path,
+              directoryPath: directory.path,
+            ),
+        isTrue,
+      );
+
+      final state = container.read(repositorySessionProvider);
+      final overview = mapRepositoryOverview(state).repository!;
+      expect(
+        state.remoteBranches.map((branch) => branch.name),
+        containsAll(['origin/main', 'origin/feature/remote']),
+      );
+      expect(
+        overview.refs
+            .where((ref) => ref.kind == RepositoryRefKind.remoteBranch)
+            .map((ref) => ref.label),
+        containsAll(['origin/main', 'origin/feature/remote']),
+      );
+      expect(
+        overview.refs.map((ref) => ref.label),
+        isNot(contains('origin/HEAD')),
+      );
+    },
+  );
 
   test('fetches origin and refreshes ahead-behind state', () async {
     final source = await GitTestRepository.create();
