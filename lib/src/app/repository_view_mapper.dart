@@ -52,6 +52,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
   final selectedCommit = _findCommit(state.commits, state.selectedCommitId);
   final commitChanges = _mapCommitChanges(state);
   final runningOperation = _runningOperation(state.operations);
+  final focusedRefCommitId = _selectedRefObjectId(state);
 
   final disabledActions = <RepositoryAction>{
     RepositoryAction.cloneRepository,
@@ -78,7 +79,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
   if (branch.isUnborn ||
       branch.head == null ||
       state.localBranches.length < 2 ||
-      !status.isClean ||
+      status.conflictedEntries.isNotEmpty ||
       state.phase == RepositorySessionPhase.loading) {
     disabledActions.add(RepositoryAction.mergeBranch);
   }
@@ -106,7 +107,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
         label: '文件状态',
         kind: RepositoryRefKind.workspace,
         childCount: status.entries.length,
-        isSelected: true,
+        isSelected: state.selectedRefId == 'workspace',
       ),
       for (final localBranch in state.localBranches)
         RepositoryRefViewData(
@@ -115,6 +116,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
           kind: RepositoryRefKind.localBranch,
           secondaryLabel: localBranch.upstream,
           isCurrent: localBranch.name == branch.head,
+          isSelected: state.selectedRefId == 'refs/heads/${localBranch.name}',
           ahead: localBranch.name == branch.head ? branch.ahead : 0,
           behind: localBranch.name == branch.head ? branch.behind : 0,
         ),
@@ -123,6 +125,8 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
           id: 'refs/remotes/${remoteBranch.name}',
           label: remoteBranch.name,
           kind: RepositoryRefKind.remoteBranch,
+          isSelected:
+              state.selectedRefId == 'refs/remotes/${remoteBranch.name}',
         ),
       if (branch.stashCount > 0)
         RepositoryRefViewData(
@@ -133,6 +137,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
         ),
     ],
     commits: commits,
+    focusedRefCommitId: focusedRefCommitId,
     changes: changes,
     selectedCommit: selectedCommit == null
         ? null
@@ -146,11 +151,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
                 ? null
                 : selectedCommit.body.trim(),
             parents: selectedCommit.parentIds,
-            refs:
-                selectedCommit.objectId == branch.objectId &&
-                    branch.head != null
-                ? [branch.head!]
-                : const [],
+            refs: _refsForCommit(state, selectedCommit.objectId),
             changedFiles: state.commitChanges.length,
             additions: state.commitAdditions,
             deletions: state.commitDeletions,
@@ -282,11 +283,7 @@ List<CommitViewData> _mapCommits(
               : state.commits[index].subject,
           author: state.commits[index].author.name,
           relativeDate: _relativeDate(state.commits[index].author.when),
-          refs:
-              state.commits[index].objectId == branch.objectId &&
-                  branch.head != null
-              ? [branch.head!]
-              : const [],
+          refs: _refsForCommit(state, state.commits[index].objectId),
           graph: graph[index],
           isHead: state.commits[index].objectId == branch.objectId,
           isSelected: state.commits[index].objectId == state.selectedCommitId,
@@ -294,6 +291,31 @@ List<CommitViewData> _mapCommits(
         ),
   ];
 }
+
+/// 中文：返回选中分支指向的提交对象；工作区及其他引用没有历史定位目标。
+/// English: Returns the commit targeted by the selected branch ref.
+String? _selectedRefObjectId(RepositorySessionState state) {
+  for (final branch in state.localBranches) {
+    if (state.selectedRefId == 'refs/heads/${branch.name}') {
+      return branch.objectId;
+    }
+  }
+  for (final branch in state.remoteBranches) {
+    if (state.selectedRefId == 'refs/remotes/${branch.name}') {
+      return branch.objectId;
+    }
+  }
+  return null;
+}
+
+/// 中文：收集指向同一提交的本地和远端分支标签。
+/// English: Collects local and remote branch labels pointing to a commit.
+List<String> _refsForCommit(RepositorySessionState state, String objectId) => [
+  for (final branch in state.localBranches)
+    if (branch.objectId == objectId) branch.name,
+  for (final branch in state.remoteBranches)
+    if (branch.objectId == objectId) branch.name,
+];
 
 /// 中文：判断是否与目标匹配。
 /// English: Determines whether this matches the target.

@@ -123,6 +123,7 @@ final class RepositoryViewData {
     this.isWorkingTreeClean = true,
     this.refs = const [],
     this.commits = const [],
+    this.focusedRefCommitId,
     this.changes = const [],
     this.selectedCommit,
     this.commitChanges = const [],
@@ -150,6 +151,7 @@ final class RepositoryViewData {
   final bool isWorkingTreeClean;
   final List<RepositoryRefViewData> refs;
   final List<CommitViewData> commits;
+  final String? focusedRefCommitId;
   final List<RepositoryChangeViewData> changes;
   final CommitDetailsViewData? selectedCommit;
   final List<CommitFileViewData> commitChanges;

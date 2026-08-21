@@ -135,6 +135,7 @@ final class RepositorySessionState {
     this.localBranches = const [],
     this.remoteBranches = const [],
     this.commits = const [],
+    this.selectedRefId = 'workspace',
     this.selectedCommitId,
     this.commitChanges = const [],
     this.selectedCommitFile,
@@ -170,6 +171,7 @@ final class RepositorySessionState {
   final List<GitLocalBranch> localBranches;
   final List<GitRemoteBranch> remoteBranches;
   final List<GitCommit> commits;
+  final String selectedRefId;
   final String? selectedCommitId;
   final List<GitCommitFileChange> commitChanges;
   final SelectedCommitFile? selectedCommitFile;
@@ -207,6 +209,7 @@ final class RepositorySessionState {
     List<GitLocalBranch>? localBranches,
     List<GitRemoteBranch>? remoteBranches,
     List<GitCommit>? commits,
+    String? selectedRefId,
     String? selectedCommitId,
     List<GitCommitFileChange>? commitChanges,
     SelectedCommitFile? selectedCommitFile,
@@ -231,6 +234,7 @@ final class RepositorySessionState {
     String? technicalDetails,
     bool clearSelectedChange = false,
     bool clearDiff = false,
+    bool clearSelectedCommit = false,
     bool clearSelectedCommitFile = false,
     bool clearCommitDiff = false,
     bool clearMessage = false,
@@ -244,7 +248,10 @@ final class RepositorySessionState {
       localBranches: localBranches ?? this.localBranches,
       remoteBranches: remoteBranches ?? this.remoteBranches,
       commits: commits ?? this.commits,
-      selectedCommitId: selectedCommitId ?? this.selectedCommitId,
+      selectedRefId: selectedRefId ?? this.selectedRefId,
+      selectedCommitId: clearSelectedCommit
+          ? null
+          : selectedCommitId ?? this.selectedCommitId,
       commitChanges: commitChanges ?? this.commitChanges,
       selectedCommitFile: clearSelectedCommitFile
           ? null
@@ -969,15 +976,62 @@ final class RepositorySessionController
     }
   }
 
+  /// 中文：浏览左侧引用；选择分支会定位到分支尖端并加载该提交的文件改动，
+  /// 选择工作区则恢复未提交文件状态。该操作不会切换当前检出的分支。
+  ///
+  /// English: Browses a sidebar ref. Branches focus their tip commit and load
+  /// its changed files, while the workspace restores uncommitted changes. This
+  /// never checks out a branch.
+  Future<void> selectReference(RepositoryRefViewData reference) async {
+    if (state.repository == null) return;
+    if (reference.kind == RepositoryRefKind.workspace) {
+      _commitGeneration++;
+      _commitDiffGeneration++;
+      state = state.copyWith(
+        selectedRefId: 'workspace',
+        clearSelectedCommit: true,
+        commitChanges: const [],
+        commitAdditions: 0,
+        commitDeletions: 0,
+        isCommitLoading: false,
+        isCommitDiffLoading: false,
+        clearSelectedCommitFile: true,
+        clearCommitDiff: true,
+        clearMessage: true,
+      );
+      return;
+    }
+
+    String? objectId;
+    String? selectedRefId;
+    if (reference.kind == RepositoryRefKind.localBranch) {
+      for (final branch in state.localBranches) {
+        if (branch.name == reference.label) {
+          objectId = branch.objectId;
+          selectedRefId = 'refs/heads/${branch.name}';
+          break;
+        }
+      }
+    } else if (reference.kind == RepositoryRefKind.remoteBranch) {
+      for (final branch in state.remoteBranches) {
+        if (branch.name == reference.label) {
+          objectId = branch.objectId;
+          selectedRefId = 'refs/remotes/${branch.name}';
+          break;
+        }
+      }
+    }
+    if (objectId == null || selectedRefId == null) return;
+
+    state = state.copyWith(selectedRefId: selectedRefId);
+    await selectCommit(objectId);
+  }
+
   /// 中文：更新当前选择。
   /// English: Updates the current selection.
   Future<void> selectCommit(String objectId) async {
-    if (!state.commits.any((GitCommit commit) => commit.objectId == objectId)) {
-      return;
-    }
     final repository = state.repository;
     if (repository == null) return;
-    final parentObjectId = _parentObjectId(objectId);
     final generation = ++_commitGeneration;
     _commitDiffGeneration++;
     state = state.copyWith(
@@ -992,6 +1046,26 @@ final class RepositorySessionController
       clearMessage: true,
     );
     try {
+      var selectedCommit = state.commits
+          .where((commit) => commit.objectId == objectId)
+          .firstOrNull;
+      if (selectedCommit == null) {
+        selectedCommit = await _reader.readCommit(
+          repository,
+          objectId: objectId,
+        );
+        if (!ref.mounted ||
+            generation != _commitGeneration ||
+            state.repository?.id != repository.id ||
+            state.selectedCommitId != objectId) {
+          return;
+        }
+        if (selectedCommit == null) {
+          throw GitException('找不到提交 $objectId。');
+        }
+        state = state.copyWith(commits: [selectedCommit, ...state.commits]);
+      }
+      final parentObjectId = selectedCommit.parentIds.firstOrNull;
       final summary = await _reader.readCommitChanges(
         repository,
         objectId: objectId,
@@ -1512,13 +1586,15 @@ final class RepositorySessionController
     }
   }
 
-  /// 中文：将指定本地分支合并到当前分支；仅在工作区干净、来源不是当前分支且来源已加载时执行。
+  /// 中文：将指定本地分支合并到当前分支；来源不是当前分支、来源已加载且当前没有未解决冲突时执行。
+  /// 普通未提交改动的兼容性由 Git 判断，避免在界面层过早禁用操作。
   /// 合并冲突会保留在仓库中并刷新为可见冲突状态，但不会自动继续或中止。
   ///
-  /// English: Merges a loaded local source branch into the current branch only
-  /// with a clean work tree and a distinct source. Merge conflicts remain in
-  /// the repository and are refreshed for display; they are never continued or
-  /// aborted automatically.
+  /// English: Merges a loaded local source branch into the current branch when
+  /// it is distinct from the current branch and no unresolved conflicts exist.
+  /// Git determines whether ordinary working-tree changes are compatible.
+  /// Merge conflicts remain in the repository and are refreshed for display;
+  /// they are never continued or aborted automatically.
   Future<bool> mergeLocalBranch(String sourceName) async {
     final repository = state.repository;
     final status = state.status;
@@ -1526,7 +1602,7 @@ final class RepositorySessionController
     if (repository == null ||
         status == null ||
         currentBranch == null ||
-        !status.isClean ||
+        status.conflictedEntries.isNotEmpty ||
         state.phase == RepositorySessionPhase.loading ||
         sourceName == currentBranch ||
         !state.localBranches.any((branch) => branch.name == sourceName)) {

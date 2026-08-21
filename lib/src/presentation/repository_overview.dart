@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:math' as math;
 
+import 'package:flutter/gestures.dart' show kPrimaryButton;
 import 'package:flutter/material.dart';
 
 import 'models/repository_overview_view_data.dart';
@@ -27,6 +28,7 @@ final class RepositoryOverviewCallbacks {
     this.onAction,
     this.onSearchChanged,
     this.onRefSelected,
+    this.onRefActivated,
     this.onRefContextAction,
     this.onCommitSelected,
     this.onChangeSelected,
@@ -38,6 +40,7 @@ final class RepositoryOverviewCallbacks {
   final RepositoryActionCallback? onAction;
   final ValueChanged<String>? onSearchChanged;
   final RepositoryRefCallback? onRefSelected;
+  final RepositoryRefCallback? onRefActivated;
   final RepositoryRefContextActionCallback? onRefContextAction;
   final RepositoryCommitCallback? onCommitSelected;
   final RepositoryChangeCallback? onChangeSelected;
@@ -78,6 +81,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
   late RepositoryOverviewLayout _layout = widget.initialLayout;
   _InspectorTab _inspectorTab = _InspectorTab.changes;
   _CompactPane _compactPane = _CompactPane.history;
+  String? _selectedRefId;
 
   /// 中文：响应上层组件配置更新。
   /// English: Responds to updated widget configuration.
@@ -87,6 +91,40 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
     if (oldWidget.initialLayout != widget.initialLayout) {
       _layout = widget.initialLayout;
     }
+    final previousRepository = oldWidget.data.repository;
+    final repository = widget.data.repository;
+    final previousModelSelection = previousRepository?.refs
+        .where((ref) => ref.isSelected)
+        .firstOrNull
+        ?.id;
+    final modelSelection = repository?.refs
+        .where((ref) => ref.isSelected)
+        .firstOrNull
+        ?.id;
+    if (previousRepository?.path != repository?.path ||
+        previousModelSelection != modelSelection ||
+        (repository != null &&
+            _selectedRefId != null &&
+            !repository.refs.any((ref) => ref.id == _selectedRefId))) {
+      _selectedRefId = modelSelection;
+    }
+  }
+
+  /// 中文：仅更新引用列表的选中态，不触发分支切换。
+  /// English: Updates only the selected ref without switching branches.
+  void _selectReference(RepositoryRefViewData reference) {
+    if (_selectedRefId == reference.id) return;
+    setState(() => _selectedRefId = reference.id);
+    widget.callbacks.onRefSelected?.call(reference);
+  }
+
+  /// 中文：双击激活引用，并将切换意图交给应用层。
+  /// English: Activates a ref on double-click and delegates switching.
+  void _activateReference(RepositoryRefViewData reference) {
+    if (_selectedRefId != reference.id) {
+      setState(() => _selectedRefId = reference.id);
+    }
+    widget.callbacks.onRefActivated?.call(reference);
   }
 
   /// 中文：更新可调整面板的布局并通知上层回调保存新尺寸。
@@ -204,7 +242,9 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
           width: navigationWidth,
           child: _RefsNavigation(
             repository: repository,
-            onSelected: widget.callbacks.onRefSelected,
+            selectedRefId: _selectedRefId,
+            onSelected: _selectReference,
+            onActivated: _activateReference,
             onContextAction: widget.callbacks.onRefContextAction,
           ),
         ),
@@ -282,7 +322,9 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
           width: navigationWidth,
           child: _RefsNavigation(
             repository: repository,
-            onSelected: widget.callbacks.onRefSelected,
+            selectedRefId: _selectedRefId,
+            onSelected: _selectReference,
+            onActivated: _activateReference,
             onContextAction: widget.callbacks.onRefContextAction,
           ),
         ),
@@ -337,7 +379,9 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
     final Widget pane = switch (_compactPane) {
       _CompactPane.refs => _RefsNavigation(
         repository: repository,
-        onSelected: widget.callbacks.onRefSelected,
+        selectedRefId: _selectedRefId,
+        onSelected: _selectReference,
+        onActivated: _activateReference,
         onContextAction: widget.callbacks.onRefContextAction,
       ),
       _CompactPane.history => _HistoryPane(
@@ -719,12 +763,16 @@ class _HistorySearchField extends StatelessWidget {
 class _RefsNavigation extends StatelessWidget {
   const _RefsNavigation({
     required this.repository,
+    required this.selectedRefId,
     required this.onSelected,
+    required this.onActivated,
     required this.onContextAction,
   });
 
   final RepositoryViewData repository;
+  final String? selectedRefId;
   final RepositoryRefCallback? onSelected;
+  final RepositoryRefCallback? onActivated;
   final RepositoryRefContextActionCallback? onContextAction;
 
   /// 中文：构建当前组件的界面。
@@ -759,7 +807,13 @@ class _RefsNavigation extends StatelessWidget {
                   final RepositoryRefViewData ref = sections[kind]![index];
                   return _RefTile(
                     ref: ref,
+                    isSelected:
+                        selectedRefId == ref.id ||
+                        (selectedRefId == null && ref.isSelected),
                     onTap: onSelected == null ? null : () => onSelected!(ref),
+                    onDoubleTap: onActivated == null
+                        ? null
+                        : () => onActivated!(ref),
                     contextItems: _contextItemsFor(ref),
                     onContextAction: onContextAction == null
                         ? null
@@ -978,13 +1032,17 @@ IconData _refKindIcon(RepositoryRefKind kind) {
 class _RefTile extends StatelessWidget {
   const _RefTile({
     required this.ref,
+    required this.isSelected,
     required this.onTap,
+    required this.onDoubleTap,
     required this.contextItems,
     required this.onContextAction,
   });
 
   final RepositoryRefViewData ref;
+  final bool isSelected;
   final VoidCallback? onTap;
+  final VoidCallback? onDoubleTap;
   final List<_RefContextMenuItem> contextItems;
   final ValueChanged<RepositoryRefContextAction>? onContextAction;
 
@@ -1040,7 +1098,7 @@ class _RefTile extends StatelessWidget {
 
     return Semantics(
       button: true,
-      selected: ref.isSelected,
+      selected: isSelected,
       label: '${_refKindLabel(ref.kind)} ${ref.label}',
       child: Tooltip(
         message: ref.secondaryLabel ?? ref.label,
@@ -1048,56 +1106,62 @@ class _RefTile extends StatelessWidget {
         child: GestureDetector(
           onLongPressStart: (details) =>
               unawaited(_showContextMenu(context, details.globalPosition)),
-          child: InkWell(
-            onTap: onTap,
-            onSecondaryTapDown: (details) =>
-                unawaited(_showContextMenu(context, details.globalPosition)),
-            child: Container(
-              height: 31,
-              padding: const EdgeInsets.only(left: 14, right: 8),
-              color: ref.isSelected ? colors.secondaryContainer : null,
-              child: Row(
-                children: [
-                  Icon(
-                    ref.isCurrent
-                        ? Icons.radio_button_checked
-                        : _refKindIcon(ref.kind),
-                    size: 15,
-                    color: ref.isCurrent
-                        ? colors.primary
-                        : colors.onSurfaceVariant,
-                  ),
-                  const SizedBox(width: 7),
-                  Expanded(
-                    child: Text(
-                      ref.label,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: theme.textTheme.bodySmall?.copyWith(
-                        fontWeight: ref.isCurrent ? FontWeight.w600 : null,
-                        color: ref.isSelected
-                            ? colors.onSecondaryContainer
-                            : null,
+          child: Listener(
+            onPointerDown: (event) {
+              if (event.buttons == kPrimaryButton) onTap?.call();
+            },
+            child: InkWell(
+              onTap: onTap,
+              onDoubleTap: onDoubleTap,
+              onSecondaryTapDown: (details) =>
+                  unawaited(_showContextMenu(context, details.globalPosition)),
+              child: Container(
+                height: 31,
+                padding: const EdgeInsets.only(left: 14, right: 8),
+                color: isSelected ? colors.secondaryContainer : null,
+                child: Row(
+                  children: [
+                    Icon(
+                      ref.isCurrent
+                          ? Icons.radio_button_checked
+                          : _refKindIcon(ref.kind),
+                      size: 15,
+                      color: ref.isCurrent
+                          ? colors.primary
+                          : colors.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 7),
+                    Expanded(
+                      child: Text(
+                        ref.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontWeight: ref.isCurrent ? FontWeight.w600 : null,
+                          color: isSelected
+                              ? colors.onSecondaryContainer
+                              : null,
+                        ),
                       ),
                     ),
-                  ),
-                  if (tracking.isNotEmpty)
-                    Text(
-                      tracking,
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: colors.onSurfaceVariant,
-                        fontFeatures: const [FontFeature.tabularFigures()],
+                    if (tracking.isNotEmpty)
+                      Text(
+                        tracking,
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: colors.onSurfaceVariant,
+                          fontFeatures: const [FontFeature.tabularFigures()],
+                        ),
+                      )
+                    else if (ref.childCount case final int count)
+                      Text(
+                        '$count',
+                        style: theme.textTheme.labelSmall?.copyWith(
+                          color: colors.onSurfaceVariant,
+                          fontFeatures: const [FontFeature.tabularFigures()],
+                        ),
                       ),
-                    )
-                  else if (ref.childCount case final int count)
-                    Text(
-                      '$count',
-                      style: theme.textTheme.labelSmall?.copyWith(
-                        color: colors.onSurfaceVariant,
-                        fontFeatures: const [FontFeature.tabularFigures()],
-                      ),
-                    ),
-                ],
+                  ],
+                ),
               ),
             ),
           ),
@@ -1109,11 +1173,66 @@ class _RefTile extends StatelessWidget {
 
 const double _historyRowHeight = 26;
 
-class _HistoryPane extends StatelessWidget {
+class _HistoryPane extends StatefulWidget {
   const _HistoryPane({required this.repository, required this.onSelected});
 
   final RepositoryViewData repository;
   final RepositoryCommitCallback? onSelected;
+
+  @override
+  State<_HistoryPane> createState() => _HistoryPaneState();
+}
+
+class _HistoryPaneState extends State<_HistoryPane> {
+  final ScrollController _scrollController = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    _scheduleFocusedRefScroll();
+  }
+
+  @override
+  void didUpdateWidget(_HistoryPane oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final focusedId = widget.repository.focusedRefCommitId;
+    final selectedId = widget.repository.selectedCommit?.oid;
+    if (focusedId != null &&
+        selectedId == focusedId &&
+        (oldWidget.repository.focusedRefCommitId != focusedId ||
+            oldWidget.repository.selectedCommit?.oid != selectedId)) {
+      _scheduleFocusedRefScroll();
+    }
+  }
+
+  /// 中文：在历史列表完成布局后，将选中分支的尖端提交滚动到可见区域顶部。
+  /// English: Scrolls the selected branch tip to the top after history layout.
+  void _scheduleFocusedRefScroll() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.hasClients) return;
+      final objectId = widget.repository.focusedRefCommitId;
+      if (objectId == null) return;
+      final index = widget.repository.commits.indexWhere(
+        (commit) => commit.oid == objectId,
+      );
+      if (index < 0) return;
+      final target = (index * _historyRowHeight).clamp(
+        0.0,
+        _scrollController.position.maxScrollExtent,
+      );
+      _scrollController.animateTo(
+        target,
+        duration: const Duration(milliseconds: 180),
+        curve: Curves.easeOutCubic,
+      );
+    });
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    super.dispose();
+  }
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -1127,26 +1246,28 @@ class _HistoryPane extends StatelessWidget {
           _PaneHeader(
             title: '历史',
             icon: Icons.history,
-            trailing: '${repository.commits.length} 个提交',
+            trailing: '${widget.repository.commits.length} 个提交',
           ),
           const _HistoryColumnHeader(),
           Expanded(
-            child: repository.commits.isEmpty
+            child: widget.repository.commits.isEmpty
                 ? const _PaneEmptyState(
                     icon: Icons.commit,
                     title: '暂无提交',
                     message: '空仓库的首次提交会显示在这里。',
                   )
                 : ListView.builder(
+                    controller: _scrollController,
                     itemExtent: _historyRowHeight,
-                    itemCount: repository.commits.length,
+                    itemCount: widget.repository.commits.length,
                     itemBuilder: (BuildContext context, int index) {
-                      final CommitViewData commit = repository.commits[index];
+                      final CommitViewData commit =
+                          widget.repository.commits[index];
                       return _CommitRow(
                         commit: commit,
-                        onTap: onSelected == null
+                        onTap: widget.onSelected == null
                             ? null
-                            : () => onSelected!(commit),
+                            : () => widget.onSelected!(commit),
                       );
                     },
                   ),

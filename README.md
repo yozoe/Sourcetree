@@ -4,7 +4,8 @@
 Sourcetree 的核心工作流和信息密度，但不会复制其闭源代码、商标、
 品牌素材或私有服务。
 
-当前状态：**P1 MVP 垂直闭环进行中。**
+当前状态：**P1 MVP 垂直闭环进行中。** macOS 已采用独立仓库首页与
+单仓库工作区窗口模型。
 
 当前版本可以打开、初始化和克隆仓库，展示工作区状态、最近提交、基础提交图和
 单文件 Unified Diff。选中历史提交后，会读取该提交的文件清单、增删行统计和所选文件
@@ -24,12 +25,14 @@ Sourcetree 的核心工作流和信息密度，但不会复制其闭源代码、
 macOS bundle 的用户主动远端操作可使用单次受控 AskPass；发布签名、真实私有远端和
 系统凭据兼容性仍在验证中。
 
-已打开或成功克隆的仓库会保留在窗口顶部的横向 tab 中；点击 tab 会切回该仓库并重新
-读取 Git 状态。读取失败会保留原先激活的 tab。为避免操作归属混淆，Clone、Fetch、Pull
-或 Push 运行期间不允许切换 tab。
+macOS 启动后首先显示独立的仓库首页。首页保存并恢复成功打开过的仓库路径，支持筛选、
+打开、克隆和初始化；已被移动、删除或不再可读的路径会自动跳过。点击仓库会创建独立的
+单仓库工作区窗口，同一路径只允许存在一个窗口；再次点击会把已有窗口带到最前方，连续点击
+会合并为同一次启动请求。工作区中的“打开仓库”也使用这一窗口入口，不会把其他仓库追加为 tab。
 
-应用会在本机应用支持目录保存已打开仓库的路径和当前 tab；下次启动会自动恢复仍然有效的
-仓库，已被移动、删除或不再可读的路径会自动跳过。不会保存 Git 凭据、操作记录或工作区内容。
+工作区加载仓库成功后会立即通知首页更新仓库清单。首页按顺序处理多个窗口的回传，避免并发
+打开时丢失仓库记录。窗口进程不会保存 Git 凭据、操作记录或工作区内容。macOS 窗口与进程
+契约详见 [macOS 窗口模型](docs/MACOS_WINDOW_MODEL.md)。
 
 ## 代码文档
 
@@ -41,9 +44,10 @@ macOS bundle 的用户主动远端操作可使用单次受控 AskPass；发布�
 ## UI 基础库
 
 桌面界面通过固定 Git 提交依赖接入 `yeknom_ui_kit` 的 `lib/`，并使用
-`YeknomWorkbenchTheme` 的 Cobalt 配色。该依赖只提供 Flutter Material 的主题、语义颜色
-和可复用控件；Git、状态管理、文件访问和业务文案仍保留在本项目中。固定提交使本项目在
-全新克隆和 CI 环境中无需特定本地目录结构即可复现构建。
+`YeknomWorkbenchTheme`。首页与所有工作区共享系统/浅色/深色模式和主题色偏好，修改后会
+同步到其他已打开窗口。该依赖只提供 Flutter Material 的主题、语义颜色和可复用控件；Git、
+状态管理、文件访问和业务文案仍保留在本项目中。固定提交使本项目在全新克隆和 CI 环境中
+无需特定本地目录结构即可复现构建。
 
 ## 运行
 
@@ -69,9 +73,10 @@ flutter build macos --debug
 ./install_macos.sh
 ```
 
-脚本会构建 Release app，使用系统授权安装到 `/Applications/Git Desktop.app`，并立即启动。
-如已存在同名 app，会先移动到带时间戳的 `/Applications/Git Desktop.backup-*.app` 备份；
-脚本不会关闭 Gatekeeper 或修改任何 macOS 安全设置。
+脚本会构建 Release app，先请求已安装的首页和工作区进程退出，再将新版本暂存到
+`/Applications` 内的隐藏临时目录。替换或 LaunchServices 注册失败时会恢复旧版本；成功后
+清理暂存目录并启动 `/Applications/Git Desktop.app`。脚本不会留下重复 app bundle、关闭
+Gatekeeper 或修改任何 macOS 安全设置。
 
 ## 首发目标
 
@@ -84,6 +89,7 @@ flutter build macos --debug
 详细范围、架构、路线图和验收标准见：
 
 - [实施规划](docs/IMPLEMENTATION_PLAN.md)
+- [macOS 窗口模型](docs/MACOS_WINDOW_MODEL.md)
 
 ## 当前验证环境
 

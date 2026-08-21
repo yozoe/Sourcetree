@@ -243,6 +243,45 @@ final class GitRepositoryReader {
     return historyParser.parse(result.stdoutBytes).commits;
   }
 
+  /// 中文：按对象 ID 读取单个提交，供分支尖端不在当前历史窗口时补充定位。
+  /// English: Reads one commit by object ID when a branch tip is outside the
+  /// current history window.
+  Future<GitCommit?> readCommit(
+    GitRepository repository, {
+    required String objectId,
+  }) async {
+    _validateObjectId(objectId);
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          '-c',
+          'color.ui=false',
+          'log',
+          '-1',
+          '-z',
+          '--encoding=UTF-8',
+          '--format=$gitHistoryFormat',
+          objectId,
+          '--',
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 2 * 1024 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Reading commit');
+    if (result.stdoutTruncated) {
+      throw const GitParseException(
+        'Commit details exceeded the configured output limit.',
+      );
+    }
+    final commits = historyParser.parse(result.stdoutBytes).commits;
+    return commits.isEmpty ? null : commits.single;
+  }
+
   /// Reads local branches without parsing human-oriented `git branch` output.
   /// 中文：读取所需的数据。
   /// English: Reads the required data.

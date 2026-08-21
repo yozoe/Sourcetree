@@ -38,6 +38,82 @@ void main() {
     expect(selected.commitDiff.lines, isNotEmpty);
   });
 
+  test(
+    'selecting a branch focuses its tip and refreshes commit file status',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      await repository.commit('Initial commit');
+      await repository.runGit(['branch', 'feature/browse']);
+      await repository.runGit(['switch', 'feature/browse']);
+      await repository.writeFile('feature.txt', 'feature\n');
+      final featureCommit = await repository.commit('Feature commit');
+      await repository.runGit(['switch', 'main']);
+      await repository.writeFile('main.txt', 'main\n');
+      await repository.commit('Main commit');
+      await repository.writeFile('draft.txt', 'uncommitted\n');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      var overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      final featureRef = overview.refs.singleWhere(
+        (reference) => reference.label == 'feature/browse',
+      );
+
+      await controller.selectReference(featureRef);
+
+      final branchState = container.read(repositorySessionProvider);
+      overview = mapRepositoryOverview(branchState).repository!;
+      expect(branchState.status!.branch.head, 'main');
+      expect(branchState.selectedRefId, 'refs/heads/feature/browse');
+      expect(branchState.selectedCommitId, featureCommit);
+      expect(overview.focusedRefCommitId, featureCommit);
+      expect(overview.selectedCommit!.oid, featureCommit);
+      expect(overview.commitChanges.single.path, 'feature.txt');
+      expect(overview.selectedCommitFile!.path, 'feature.txt');
+      expect(
+        overview.refs
+            .singleWhere((reference) => reference.label == 'feature/browse')
+            .isSelected,
+        isTrue,
+      );
+      expect(
+        overview.commits
+            .singleWhere((commit) => commit.oid == featureCommit)
+            .refs,
+        contains('feature/browse'),
+      );
+
+      await controller.selectReference(
+        overview.refs.singleWhere(
+          (reference) => reference.kind == RepositoryRefKind.workspace,
+        ),
+      );
+
+      final workspace = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      expect(workspace.selectedCommit, isNull);
+      expect(
+        workspace.changes.map((change) => change.path),
+        contains('draft.txt'),
+      );
+      expect(
+        workspace.refs
+            .singleWhere(
+              (reference) => reference.kind == RepositoryRefKind.workspace,
+            )
+            .isSelected,
+        isTrue,
+      );
+    },
+  );
+
   test('restores opened repository tabs and the active repository', () async {
     final firstRepository = await GitTestRepository.create();
     addTearDown(firstRepository.dispose);
@@ -503,6 +579,43 @@ void main() {
     expect(state.commits.first.parentIds, hasLength(2));
   });
 
+  test(
+    'allows merging a local branch with unrelated uncommitted changes',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      await repository.commit('Initial commit');
+      await repository.runGit(['branch', 'feature/merge']);
+      await repository.runGit(['switch', 'feature/merge']);
+      await repository.writeFile('feature.txt', 'feature\n');
+      await repository.commit('Feature commit');
+      await repository.runGit(['switch', 'main']);
+      await repository.writeFile('draft.txt', 'uncommitted\n');
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+
+      final overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      expect(
+        overview.disabledActions,
+        isNot(contains(RepositoryAction.mergeBranch)),
+      );
+      expect(await controller.mergeLocalBranch('feature/merge'), isTrue);
+
+      final state = container.read(repositorySessionProvider);
+      expect(state.phase, RepositorySessionPhase.ready);
+      expect(state.status!.isClean, isFalse);
+      expect(
+        await File('${repository.workingDirectory.path}/feature.txt').exists(),
+        isTrue,
+      );
+    },
+  );
+
   test('refreshes conflict state when a branch merge conflicts', () async {
     final repository = await GitTestRepository.create();
     addTearDown(repository.dispose);
@@ -526,6 +639,9 @@ void main() {
     expect(state.phase, RepositorySessionPhase.error);
     expect(state.status!.conflictedEntries, isNotEmpty);
     expect(state.message, contains('合并遇到冲突'));
+    final overview = mapRepositoryOverview(state).repository!;
+    expect(overview.disabledActions, contains(RepositoryAction.mergeBranch));
+    expect(await controller.mergeLocalBranch('feature/conflict'), isFalse);
   });
 
   test('fetches origin and refreshes ahead-behind state', () async {

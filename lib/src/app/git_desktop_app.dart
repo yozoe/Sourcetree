@@ -7,24 +7,229 @@ import 'package:yeknom_ui_kit/yeknom_workbench.dart';
 
 import '../git/git.dart';
 import '../presentation/presentation.dart';
+import 'desktop_window_bridge.dart';
 import 'git_askpass_prompt_coordinator.dart';
 import 'repository_session.dart';
 import 'repository_view_mapper.dart';
+import 'theme_preferences.dart';
 
-class GitDesktopApp extends StatelessWidget {
-  const GitDesktopApp({super.key});
+class GitDesktopApp extends StatefulWidget {
+  const GitDesktopApp({
+    super.key,
+    this.isWorkspaceWindow = false,
+    this.initialRepositoryPath,
+    this.initialWorkspaceAction,
+    this.initialThemePreferences = GitDesktopThemePreferences.defaults,
+    this.themePreferencesStore,
+  });
+
+  /// Whether this Flutter engine is hosted by a repository workspace window.
+  final bool isWorkspaceWindow;
+
+  /// Repository path opened automatically by a newly created workspace.
+  final String? initialRepositoryPath;
+
+  /// Optional action requested by the repository library for a new workspace.
+  final String? initialWorkspaceAction;
+  final GitDesktopThemePreferences initialThemePreferences;
+  final GitDesktopThemePreferencesStore? themePreferencesStore;
+
+  @override
+  State<GitDesktopApp> createState() => _GitDesktopAppState();
+}
+
+class _GitDesktopAppState extends State<GitDesktopApp> {
+  late bool _isWorkspaceWindow;
+  String? _initialRepositoryPath;
+  String? _initialWorkspaceAction;
+  late GitDesktopThemePreferences _themePreferences;
+  final _messengerKey = GlobalKey<ScaffoldMessengerState>();
+  Future<void> _themeSaveTail = Future<void>.value();
+  StreamSubscription<GitDesktopThemePreferences>? _themeSubscription;
+
+  /// 中文：注册原生窗口传入的工作区配置。
+  /// English: Registers workspace configuration sent by the native window
+  /// host after its Flutter engine becomes ready.
+  @override
+  void initState() {
+    super.initState();
+    _isWorkspaceWindow = widget.isWorkspaceWindow;
+    _initialRepositoryPath = widget.initialRepositoryPath;
+    _initialWorkspaceAction = widget.initialWorkspaceAction;
+    _themePreferences = widget.initialThemePreferences;
+    final store = widget.themePreferencesStore;
+    if (store is WatchableGitDesktopThemePreferencesStore) {
+      _themeSubscription = store.watch().listen((next) {
+        if (mounted && next != _themePreferences) {
+          setState(() => _themePreferences = next);
+        }
+      }, onError: (_) {});
+    }
+  }
+
+  /// 中文：释放当前对象持有的资源。
+  /// English: Releases resources held by the current object.
+  @override
+  void dispose() {
+    final themeSubscription = _themeSubscription;
+    if (themeSubscription != null) unawaited(themeSubscription.cancel());
+    super.dispose();
+  }
+
+  void _setThemeMode(ThemeMode mode) =>
+      _updateThemePreferences(_themePreferences.copyWith(mode: mode));
+
+  void _setThemePreset(YeknomColorPreset preset) =>
+      _updateThemePreferences(_themePreferences.copyWith(preset: preset));
+
+  void _updateThemePreferences(GitDesktopThemePreferences next) {
+    if (next == _themePreferences) return;
+    setState(() => _themePreferences = next);
+    final store = widget.themePreferencesStore;
+    if (store == null) return;
+    _themeSaveTail = _themeSaveTail.then((_) async {
+      try {
+        await store.save(next);
+      } on Object {
+        _messengerKey.currentState
+          ?..hideCurrentSnackBar()
+          ..showSnackBar(const SnackBar(content: Text('主题偏好保存失败；本次切换仍然有效。')));
+      }
+    });
+  }
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
+    final themeControl = GitDesktopThemeMenuButton(
+      preferences: _themePreferences,
+      onThemeModeChanged: _setThemeMode,
+      onThemePresetChanged: _setThemePreset,
+    );
     return MaterialApp(
       title: 'Git Desktop',
       debugShowCheckedModeBanner: false,
-      themeMode: ThemeMode.system,
-      theme: _theme(Brightness.light),
-      darkTheme: _theme(Brightness.dark),
-      home: const RepositoryWorkspaceScreen(),
+      scaffoldMessengerKey: _messengerKey,
+      themeMode: _themePreferences.mode,
+      theme: _theme(Brightness.light, _themePreferences.preset),
+      darkTheme: _theme(Brightness.dark, _themePreferences.preset),
+      home: _isWorkspaceWindow
+          ? RepositoryWorkspaceScreen(
+              key: ValueKey<String>(
+                '${_initialRepositoryPath ?? ''}|${_initialWorkspaceAction ?? ''}',
+              ),
+              initialRepositoryPath: _initialRepositoryPath,
+              initialAction: _initialWorkspaceAction,
+              themeControl: themeControl,
+            )
+          : RepositoryLibraryWindow(themeControl: themeControl),
+    );
+  }
+}
+
+/// The independent window that lists locally known repositories.
+class RepositoryLibraryWindow extends ConsumerStatefulWidget {
+  const RepositoryLibraryWindow({super.key, this.themeControl});
+
+  final Widget? themeControl;
+
+  /// 中文：创建关联的状态对象。
+  /// English: Creates the associated state object.
+  @override
+  ConsumerState<RepositoryLibraryWindow> createState() =>
+      _RepositoryLibraryWindowState();
+}
+
+class _RepositoryLibraryWindowState
+    extends ConsumerState<RepositoryLibraryWindow> {
+  late final Future<void> _restoreFuture;
+  Future<void> _repositoryRegistrationTail = Future<void>.value();
+
+  /// 中文：首页窗口初始化时恢复本地仓库清单。
+  /// English: Restores the local repository list when the library window
+  /// initializes.
+  @override
+  void initState() {
+    super.initState();
+    _restoreFuture = ref
+        .read(repositorySessionProvider.notifier)
+        .restoreSession();
+    DesktopWindowBridge.setRepositoryOpenedHandler(_recordRepositoryOpened);
+  }
+
+  @override
+  void dispose() {
+    DesktopWindowBridge.setRepositoryOpenedHandler(null);
+    super.dispose();
+  }
+
+  /// Adds a repository confirmed by a workspace to the live library and its
+  /// persisted repository list.
+  Future<void> _recordRepositoryOpened(String repositoryPath) {
+    final registration = _repositoryRegistrationTail.then((_) async {
+      await _restoreFuture;
+      if (!mounted) return;
+      await ref
+          .read(repositorySessionProvider.notifier)
+          .openRepository(repositoryPath);
+    });
+    _repositoryRegistrationTail = registration.catchError((_) {});
+    return registration;
+  }
+
+  /// 中文：在独立工作区窗口中显示选中的仓库。
+  /// English: Shows the selected repository in an independent workspace
+  /// window.
+  Future<void> _openWorkspace(
+    String? repositoryPath, {
+    String? initialAction,
+  }) async {
+    try {
+      await DesktopWindowBridge.openWorkspace(
+        repositoryPath: repositoryPath,
+        initialAction: initialAction,
+      );
+    } on Object catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('无法创建工作区窗口：$error')));
+    }
+  }
+
+  /// 中文：从首页直接选择本地仓库，并在独立工作区窗口中打开它。
+  /// English: Picks a local repository from the library and opens it directly
+  /// in an independent workspace window.
+  Future<void> _pickRepositoryAndOpen() async {
+    final directory = await getDirectoryPath(confirmButtonText: '打开仓库');
+    if (directory == null || !mounted) return;
+    await _openWorkspace(directory);
+  }
+
+  /// 中文：构建当前组件的界面。
+  /// English: Builds the current component UI.
+  @override
+  Widget build(BuildContext context) {
+    final session = ref.watch(repositorySessionProvider);
+    return Scaffold(
+      body: RepositoryLibraryPage(
+        repositories: session.openRepositoryTabs
+            .map(
+              (RepositoryTab tab) =>
+                  RepositoryLibraryItem(path: tab.path, label: tab.label),
+            )
+            .toList(growable: false),
+        activePath: null,
+        onRepositorySelected: (String path) => _openWorkspace(path),
+        onOpenRepository: () => unawaited(_pickRepositoryAndOpen()),
+        onCloneRepository: () =>
+            unawaited(_openWorkspace(null, initialAction: 'cloneRepository')),
+        onInitializeRepository: () => unawaited(
+          _openWorkspace(null, initialAction: 'initializeRepository'),
+        ),
+        trailing: widget.themeControl,
+      ),
     );
   }
 }
@@ -33,11 +238,31 @@ class GitDesktopApp extends StatelessWidget {
 ///
 /// English: Creates the Git desktop application's Yeknom Workbench theme for
 /// a brightness using the Cobalt color preset.
-ThemeData _theme(Brightness brightness) =>
-    YeknomWorkbenchTheme.build(brightness, preset: YeknomColorPreset.cobalt);
+ThemeData _theme(Brightness brightness, YeknomColorPreset preset) =>
+    YeknomWorkbenchTheme.build(brightness, preset: preset);
+
+/// Maps a route action name to the safe workspace action it requests.
+RepositoryAction? _repositoryActionFromName(String? name) => switch (name) {
+  'openRepository' => RepositoryAction.openRepository,
+  'cloneRepository' => RepositoryAction.cloneRepository,
+  'initializeRepository' => RepositoryAction.initializeRepository,
+  _ => null,
+};
 
 class RepositoryWorkspaceScreen extends ConsumerStatefulWidget {
-  const RepositoryWorkspaceScreen({super.key});
+  const RepositoryWorkspaceScreen({
+    super.key,
+    this.initialRepositoryPath,
+    this.initialAction,
+    this.themeControl,
+  });
+
+  /// Repository selected by the independent repository library window.
+  final String? initialRepositoryPath;
+
+  /// Action to start after this independent workspace window is ready.
+  final String? initialAction;
+  final Widget? themeControl;
 
   /// 中文：创建关联的状态对象。
   /// English: Creates the associated state object.
@@ -49,6 +274,35 @@ class RepositoryWorkspaceScreen extends ConsumerStatefulWidget {
 class _RepositoryWorkspaceScreenState
     extends ConsumerState<RepositoryWorkspaceScreen> {
   bool _isAskPassDialogVisible = false;
+  bool _hasHandledInitialAction = false;
+
+  /// 中文：在窗口首次绘制后执行首页请求的仓库操作。
+  /// English: Starts the repository action requested by the library after the
+  /// workspace window has drawn for the first time.
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) => _prepareWorkspace());
+  }
+
+  /// 中文：执行首页请求的单仓库打开或新建操作。
+  /// English: Fulfills the single-repository request from the library window.
+  Future<void> _prepareWorkspace() async {
+    if (!mounted || _hasHandledInitialAction) return;
+    final controller = ref.read(repositorySessionProvider.notifier);
+    final String? repositoryPath = widget.initialRepositoryPath;
+    if (repositoryPath != null && repositoryPath.isNotEmpty) {
+      _hasHandledInitialAction = true;
+      await controller.openRepository(repositoryPath);
+      return;
+    }
+    final RepositoryAction? action = _repositoryActionFromName(
+      widget.initialAction,
+    );
+    if (action == null) return;
+    _hasHandledInitialAction = true;
+    _handleAction(action);
+  }
 
   /// 中文：显示相应界面或信息。
   /// English: Shows the corresponding UI or information.
@@ -68,9 +322,34 @@ class _RepositoryWorkspaceScreenState
   Future<void> _openRepository() async {
     final directory = await getDirectoryPath(confirmButtonText: '打开仓库');
     if (directory == null || !mounted) return;
-    await ref
-        .read(repositorySessionProvider.notifier)
-        .openRepository(directory);
+    try {
+      await DesktopWindowBridge.openWorkspace(repositoryPath: directory);
+    } on Object catch (error) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('无法创建工作区窗口：$error')));
+    }
+  }
+
+  /// Tells the repository library which repository this workspace now owns.
+  void _reportOpenedRepository(
+    RepositorySessionState? previous,
+    RepositorySessionState next,
+  ) {
+    final repository = next.repository;
+    if (next.phase != RepositorySessionPhase.ready || repository == null) {
+      return;
+    }
+    if (previous?.phase == RepositorySessionPhase.ready &&
+        previous?.repository?.id == repository.id) {
+      return;
+    }
+    unawaited(
+      DesktopWindowBridge.repositoryOpened(
+        repository.commandDirectory,
+      ).catchError((_) {}),
+    );
   }
 
   /// 中文：初始化当前功能。
@@ -592,7 +871,7 @@ class _RepositoryWorkspaceScreenState
 
   /// 中文：处理当前事件。
   /// English: Handles the current event.
-  void _handleReferenceSelected(RepositoryRefViewData reference) {
+  void _handleReferenceActivated(RepositoryRefViewData reference) {
     switch (reference.kind) {
       case RepositoryRefKind.localBranch when !reference.isCurrent:
         _confirmSwitchBranch(reference.label);
@@ -621,7 +900,7 @@ class _RepositoryWorkspaceScreenState
       case RepositoryRefContextAction.refresh:
         _handleAction(RepositoryAction.refresh);
       case RepositoryRefContextAction.checkout:
-        _handleReferenceSelected(reference);
+        _handleReferenceActivated(reference);
       case RepositoryRefContextAction.mergeIntoCurrent:
         if (reference.kind != RepositoryRefKind.localBranch ||
             reference.isCurrent) {
@@ -752,23 +1031,29 @@ class _RepositoryWorkspaceScreenState
         unawaited(Navigator.of(context, rootNavigator: true).maybePop());
       }
     });
+    ref.listen<RepositorySessionState>(
+      repositorySessionProvider,
+      _reportOpenedRepository,
+    );
     final session = ref.watch(repositorySessionProvider);
     final controller = ref.read(repositorySessionProvider.notifier);
     return Scaffold(
       body: Column(
         children: [
-          if (session.openRepositoryTabs.isNotEmpty)
-            RepositoryTabStrip(
-              tabs: session.openRepositoryTabs,
-              activePath: session.activeRepositoryTabPath,
-              onSelected: controller.selectRepositoryTab,
-            ),
+          RepositoryTabStrip(
+            tabs: session.openRepositoryTabs,
+            activePath: session.activeRepositoryTabPath,
+            onSelected: controller.selectRepositoryTab,
+            trailing: widget.themeControl,
+          ),
           Expanded(
             child: RepositoryOverview(
               data: mapRepositoryOverview(session),
               callbacks: RepositoryOverviewCallbacks(
                 onAction: _handleAction,
-                onRefSelected: _handleReferenceSelected,
+                onRefSelected: (reference) =>
+                    unawaited(controller.selectReference(reference)),
+                onRefActivated: _handleReferenceActivated,
                 onRefContextAction: _handleReferenceContextAction,
                 onSearchChanged: controller.setSearchQuery,
                 onCommitSelected: (commit) =>
@@ -792,11 +1077,13 @@ final class RepositoryTabStrip extends StatelessWidget {
     required this.tabs,
     required this.activePath,
     required this.onSelected,
+    this.trailing,
   });
 
   final List<RepositoryTab> tabs;
   final String? activePath;
   final Future<void> Function(String path) onSelected;
+  final Widget? trailing;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -807,41 +1094,59 @@ final class RepositoryTabStrip extends StatelessWidget {
       color: colors.surfaceContainerHighest,
       child: SizedBox(
         height: 42,
-        child: ListView.separated(
-          key: const ValueKey<String>('repository-tab-strip'),
-          scrollDirection: Axis.horizontal,
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-          itemCount: tabs.length,
-          separatorBuilder: (context, index) => const SizedBox(width: 4),
-          itemBuilder: (context, index) {
-            final tab = tabs[index];
-            final selected = tab.path == activePath;
-            return Semantics(
-              button: true,
-              selected: selected,
-              label: '仓库标签 ${tab.label}',
-              child: Tooltip(
-                message: tab.path,
-                child: TextButton.icon(
-                  onPressed: () => unawaited(onSelected(tab.path)),
-                  style: TextButton.styleFrom(
-                    backgroundColor: selected
-                        ? colors.secondaryContainer
-                        : Colors.transparent,
-                    foregroundColor: selected
-                        ? colors.onSecondaryContainer
-                        : colors.onSurfaceVariant,
-                    padding: const EdgeInsets.symmetric(horizontal: 12),
-                    shape: const RoundedRectangleBorder(
-                      borderRadius: BorderRadius.all(Radius.circular(8)),
+        child: Row(
+          children: [
+            Expanded(
+              child: ListView.separated(
+                key: const ValueKey<String>('repository-tab-strip'),
+                scrollDirection: Axis.horizontal,
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+                itemCount: tabs.length,
+                separatorBuilder: (context, index) => const SizedBox(width: 4),
+                itemBuilder: (context, index) {
+                  final tab = tabs[index];
+                  final selected = tab.path == activePath;
+                  return Semantics(
+                    button: true,
+                    selected: selected,
+                    label: '仓库标签 ${tab.label}',
+                    child: Tooltip(
+                      message: tab.path,
+                      child: TextButton.icon(
+                        onPressed: () => unawaited(onSelected(tab.path)),
+                        style: TextButton.styleFrom(
+                          backgroundColor: selected
+                              ? colors.secondaryContainer
+                              : Colors.transparent,
+                          foregroundColor: selected
+                              ? colors.onSecondaryContainer
+                              : colors.onSurfaceVariant,
+                          padding: const EdgeInsets.symmetric(horizontal: 12),
+                          shape: const RoundedRectangleBorder(
+                            borderRadius: BorderRadius.all(Radius.circular(8)),
+                          ),
+                        ),
+                        icon: const Icon(Icons.folder_outlined, size: 16),
+                        label: Text(tab.label, overflow: TextOverflow.ellipsis),
+                      ),
                     ),
-                  ),
-                  icon: const Icon(Icons.folder_outlined, size: 16),
-                  label: Text(tab.label, overflow: TextOverflow.ellipsis),
-                ),
+                  );
+                },
               ),
-            );
-          },
+            ),
+            if (trailing case final trailing?) ...[
+              VerticalDivider(
+                width: 1,
+                indent: 8,
+                endIndent: 8,
+                color: colors.outlineVariant,
+              ),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 4),
+                child: trailing,
+              ),
+            ],
+          ],
         ),
       ),
     );

@@ -7,8 +7,41 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:git_desktop/src/app/git_askpass_prompt_coordinator.dart';
 import 'package:git_desktop/src/app/git_desktop_app.dart';
 import 'package:git_desktop/src/app/repository_session.dart';
+import 'package:git_desktop/src/app/repository_session_store.dart';
+import 'package:git_desktop/src/app/theme_preferences.dart';
 import 'package:git_desktop/src/git/git.dart';
 import 'package:git_desktop/src/presentation/presentation.dart';
+import 'package:yeknom_ui_kit/yeknom_workbench.dart';
+
+final class _MemoryThemePreferencesStore
+    implements GitDesktopThemePreferencesStore {
+  final List<GitDesktopThemePreferences> saved = [];
+
+  @override
+  Future<GitDesktopThemePreferences> load() async =>
+      GitDesktopThemePreferences.defaults;
+
+  @override
+  Future<void> save(GitDesktopThemePreferences preferences) async {
+    saved.add(preferences);
+  }
+}
+
+final class _CountingSessionStore implements RepositorySessionStore {
+  int loadCount = 0;
+
+  @override
+  Future<RepositorySessionSnapshot> load() async {
+    loadCount++;
+    return const RepositorySessionSnapshot(
+      openRepositoryPaths: ['/tmp/should-not-restore'],
+      activeRepositoryPath: '/tmp/should-not-restore',
+    );
+  }
+
+  @override
+  Future<void> save(RepositorySessionSnapshot snapshot) async {}
+}
 
 void main() {
   testWidgets('shows supported actions on first launch', (tester) async {
@@ -20,6 +53,89 @@ void main() {
     expect(find.text('初始化仓库'), findsOneWidget);
   });
 
+  testWidgets('workspace windows do not restore the global repository list', (
+    tester,
+  ) async {
+    final store = _CountingSessionStore();
+    final container = ProviderContainer(
+      overrides: [repositorySessionStoreProvider.overrideWithValue(store)],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const GitDesktopApp(isWorkspaceWindow: true),
+      ),
+    );
+    await tester.pump();
+
+    expect(store.loadCount, 0);
+    expect(
+      container.read(repositorySessionProvider).openRepositoryTabs,
+      isEmpty,
+    );
+  });
+
+  testWidgets('switches and persists shared theme preferences', (tester) async {
+    final store = _MemoryThemePreferencesStore();
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: GitDesktopApp(themePreferencesStore: store),
+      ),
+    );
+
+    await tester.tap(find.byKey(const ValueKey('theme-menu-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('theme-mode-dark')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('theme-menu-button')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('theme-preset-obsidian')));
+    await tester.pumpAndSettle();
+
+    final materialApp = tester.widget<MaterialApp>(find.byType(MaterialApp));
+    expect(materialApp.themeMode, ThemeMode.dark);
+    expect(store.saved.last.preset, YeknomColorPreset.obsidian);
+  });
+
+  testWidgets('groups, filters and selects local repositories', (tester) async {
+    String? selectedPath;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryLibraryPage(
+          repositories: const [
+            RepositoryLibraryItem(path: '/work/alpha/api', label: 'api'),
+            RepositoryLibraryItem(path: '/work/beta/app', label: 'app'),
+            RepositoryLibraryItem(path: '/work/alpha/web', label: 'web'),
+          ],
+          activePath: '/work/alpha/web',
+          onRepositorySelected: (path) async => selectedPath = path,
+        ),
+      ),
+    );
+
+    expect(find.text('alpha'), findsOneWidget);
+    expect(find.text('beta'), findsOneWidget);
+    expect(find.text('当前'), findsOneWidget);
+
+    await tester.enterText(find.byType(TextField), 'web');
+    await tester.pumpAndSettle();
+    expect(find.text('api'), findsNothing);
+    expect(find.text('web'), findsAtLeastNWidgets(1));
+
+    await tester.tap(
+      find.byKey(
+        const ValueKey<String>('repository-library-tile:/work/alpha/web'),
+      ),
+    );
+    await tester.pump();
+    expect(selectedPath, '/work/alpha/web');
+  });
+
   testWidgets('routes a one-time AskPass request through the controlled UI', (
     tester,
   ) async {
@@ -28,7 +144,7 @@ void main() {
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
-        child: const GitDesktopApp(),
+        child: const GitDesktopApp(isWorkspaceWindow: true),
       ),
     );
 
@@ -58,7 +174,7 @@ void main() {
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
-        child: const GitDesktopApp(),
+        child: const GitDesktopApp(isWorkspaceWindow: true),
       ),
     );
 
@@ -226,6 +342,167 @@ void main() {
 
     expect(selectedReference, featureBranch);
     expect(selectedAction, RepositoryRefContextAction.mergeIntoCurrent);
+  });
+
+  testWidgets('single-click selects a branch and double-click activates it', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    RepositoryRefViewData? selectedReference;
+    RepositoryRefViewData? activatedReference;
+    const featureBranch = RepositoryRefViewData(
+      id: 'refs/heads/feature/select',
+      label: 'feature/select',
+      kind: RepositoryRefKind.localBranch,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              refs: const [
+                RepositoryRefViewData(
+                  id: 'refs/heads/main',
+                  label: 'main',
+                  kind: RepositoryRefKind.localBranch,
+                  isCurrent: true,
+                ),
+                featureBranch,
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onRefSelected: (reference) => selectedReference = reference,
+            onRefActivated: (reference) => activatedReference = reference,
+          ),
+        ),
+      ),
+    );
+
+    final feature = find.text('feature/select');
+    await tester.tap(feature);
+    await tester.pumpAndSettle();
+
+    expect(selectedReference, featureBranch);
+    expect(activatedReference, isNull);
+    final selectedTile = find.ancestor(
+      of: feature,
+      matching: find.byWidgetPredicate(
+        (widget) =>
+            widget is Container &&
+            widget.constraints?.minHeight == 31 &&
+            widget.constraints?.maxHeight == 31,
+      ),
+    );
+    expect(tester.widget<Container>(selectedTile).color, isNotNull);
+
+    await tester.tap(feature);
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(feature);
+    await tester.pumpAndSettle();
+
+    expect(activatedReference, featureBranch);
+  });
+
+  testWidgets('external refresh resets the locally highlighted reference', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    var selectedRefId = 'workspace';
+    var selectionCount = 0;
+    late StateSetter rebuild;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: StatefulBuilder(
+          builder: (context, setState) {
+            rebuild = setState;
+            return RepositoryOverview(
+              data: RepositoryOverviewViewData.ready(
+                RepositoryViewData(
+                  name: 'example',
+                  path: '/tmp/example',
+                  currentBranch: 'main',
+                  refs: [
+                    RepositoryRefViewData(
+                      id: 'workspace',
+                      label: '文件状态',
+                      kind: RepositoryRefKind.workspace,
+                      isSelected: selectedRefId == 'workspace',
+                    ),
+                    RepositoryRefViewData(
+                      id: 'refs/heads/feature/refresh',
+                      label: 'feature/refresh',
+                      kind: RepositoryRefKind.localBranch,
+                      isSelected: selectedRefId == 'refs/heads/feature/refresh',
+                    ),
+                  ],
+                ),
+              ),
+              callbacks: RepositoryOverviewCallbacks(
+                onRefSelected: (reference) {
+                  selectionCount++;
+                  setState(() => selectedRefId = reference.id);
+                },
+              ),
+            );
+          },
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('feature/refresh'));
+    await tester.pumpAndSettle();
+    expect(selectionCount, 1);
+
+    rebuild(() => selectedRefId = 'workspace');
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('feature/refresh'));
+    await tester.pumpAndSettle();
+
+    expect(selectionCount, 2);
+  });
+
+  testWidgets('history scrolls to the selected branch tip', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final commits = List<CommitViewData>.generate(40, (index) {
+      final oid = index.toRadixString(16).padLeft(40, '0');
+      return CommitViewData(
+        oid: oid,
+        shortOid: oid.substring(0, 8),
+        subject: index == 35 ? 'target branch tip' : 'commit $index',
+        author: 'Test',
+        relativeDate: '刚刚',
+        isSelected: index == 35,
+      );
+    });
+    final targetId = commits[35].oid;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              focusedRefCommitId: targetId,
+              commits: commits,
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('target branch tip'), findsOneWidget);
   });
 
   testWidgets(

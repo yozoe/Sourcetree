@@ -102,6 +102,13 @@ void main() {
     expect(history, hasLength(1));
     expect(history.single.subject, 'first');
     expect(history.single.parentIds, isEmpty);
+    expect(
+      (await reader.readCommit(
+        repository,
+        objectId: history.single.objectId,
+      ))?.subject,
+      'first',
+    );
 
     final commitChanges = await reader.readCommitChanges(
       repository,
