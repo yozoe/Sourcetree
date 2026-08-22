@@ -56,6 +56,32 @@ void main() {
     expect(await reader.readRecentHistory(repository), isEmpty);
   });
 
+  test('detects Git operation markers for merge and rebase recovery', () async {
+    final repository = (await inspector.inspect(temporaryDirectory.path))!;
+    expect(
+      await reader.readOperationState(repository),
+      GitRepositoryOperationState.none,
+    );
+
+    final rebaseMarker = Directory(
+      '${repository.gitDirectory}${Platform.pathSeparator}rebase-merge',
+    )..createSync();
+    expect(
+      await reader.readOperationState(repository),
+      GitRepositoryOperationState.rebase,
+    );
+    rebaseMarker.deleteSync();
+
+    final mergeHead = File(
+      '${repository.gitDirectory}${Platform.pathSeparator}MERGE_HEAD',
+    )..writeAsStringSync('deadbeef\n');
+    expect(
+      await reader.readOperationState(repository),
+      GitRepositoryOperationState.merge,
+    );
+    mergeHead.deleteSync();
+  });
+
   test('returns null for a directory outside a repository', () async {
     final outside = await Directory.systemTemp.createTemp(
       'git_desktop_outside_',

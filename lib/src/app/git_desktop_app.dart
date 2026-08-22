@@ -450,6 +450,10 @@ class _RepositoryWorkspaceScreenState
         _confirmPull();
       case RepositoryAction.cancelPull:
         ref.read(repositorySessionProvider.notifier).cancelPull();
+      case RepositoryAction.continueRebase:
+        unawaited(_continueRebase());
+      case RepositoryAction.abortRebase:
+        unawaited(_confirmAbortRebase());
       case RepositoryAction.push:
         _confirmPush();
       case RepositoryAction.cancelPush:
@@ -522,7 +526,7 @@ class _RepositoryWorkspaceScreenState
   String _operationName(RepositoryOperationKind kind) => switch (kind) {
     RepositoryOperationKind.clone => '克隆仓库',
     RepositoryOperationKind.fetch => '获取远端更新',
-    RepositoryOperationKind.pull => '快速前进拉取',
+    RepositoryOperationKind.pull => '拉取更新',
     RepositoryOperationKind.push => '推送当前分支',
   };
 
@@ -573,32 +577,120 @@ class _RepositoryWorkspaceScreenState
   /// 中文：请求并处理用户确认。
   /// English: Requests and handles user confirmation.
   Future<void> _confirmPull() async {
+    final session = ref.read(repositorySessionProvider);
+    final branch = session.status?.branch;
+    final localBranch = branch?.head;
+    final upstream = branch?.upstream;
+    if (localBranch == null || upstream == null) return;
+    final separator = upstream.indexOf('/');
+    if (separator <= 0 || separator == upstream.length - 1) return;
+    final upstreamRemote = upstream.substring(0, separator);
+    final upstreamBranch = upstream.substring(separator + 1);
+    final remoteNames = <String>{upstreamRemote};
+    final branchesByRemote = <String, List<String>>{};
+    for (final remoteBranch in session.remoteBranches) {
+      final slash = remoteBranch.name.indexOf('/');
+      if (slash > 0) {
+        final remote = remoteBranch.name.substring(0, slash);
+        remoteNames.add(remote);
+        branchesByRemote
+            .putIfAbsent(remote, () => <String>[])
+            .add(remoteBranch.name.substring(slash + 1));
+      }
+    }
+    branchesByRemote.putIfAbsent(upstreamRemote, () => <String>[]);
+    if (!branchesByRemote[upstreamRemote]!.contains(upstreamBranch)) {
+      branchesByRemote[upstreamRemote]!.add(upstreamBranch);
+    }
+    for (final branches in branchesByRemote.values) {
+      branches.sort();
+    }
+    final options = await showDialog<GitPullOptions>(
+      context: context,
+      builder: (BuildContext context) => _PullDialog(
+        remoteNames: remoteNames.toList()..sort(),
+        branchesByRemote: branchesByRemote,
+        selectedRemote: upstreamRemote,
+        remoteBranch: upstreamBranch,
+        localBranch: localBranch,
+        remoteUrl: session.originUrl,
+        onRefresh: (remoteName) async {
+          final controller = ref.read(repositorySessionProvider.notifier);
+          final fetched = await controller.fetchRemote(remoteName);
+          if (!fetched) {
+            throw const GitException('Unable to refresh the selected remote.');
+          }
+          final latest = ref.read(repositorySessionProvider);
+          final refreshed = <String, List<String>>{};
+          for (final remoteBranch in latest.remoteBranches) {
+            final slash = remoteBranch.name.indexOf('/');
+            if (slash <= 0) continue;
+            refreshed
+                .putIfAbsent(remoteBranch.name.substring(0, slash), () => [])
+                .add(remoteBranch.name.substring(slash + 1));
+          }
+          return _PullRefreshResult(
+            branchesByRemote: refreshed,
+            remoteUrl: await controller.readRemoteUrl(remoteName),
+          );
+        },
+        onRemoteChanged: (remoteName) => ref
+            .read(repositorySessionProvider.notifier)
+            .readRemoteUrl(remoteName),
+      ),
+    );
+    if (options == null || !mounted) return;
+    final pulled = await ref
+        .read(repositorySessionProvider.notifier)
+        .pullWithOptions(options);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(pulled ? '已拉取更新。' : '未拉取，请查看仓库状态和错误信息。'),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  Future<void> _continueRebase() async {
+    final continued = await ref
+        .read(repositorySessionProvider.notifier)
+        .continueRebase();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(continued ? '已继续变基。' : '变基尚未完成，请处理冲突后重试。'),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  Future<void> _confirmAbortRebase() async {
     final approved = await showDialog<bool>(
       context: context,
       builder: (BuildContext context) => AlertDialog(
-        title: const Text('快速前进拉取'),
-        content: const Text('将从当前分支的上游拉取更新。仅允许快速前进，不会自动创建合并提交。'),
+        title: const Text('中止变基'),
+        content: const Text('将放弃当前变基过程并恢复变基前的分支状态。此操作不会删除未提交文件。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
             child: const Text('取消'),
           ),
-          FilledButton.icon(
+          FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            icon: const Icon(Icons.south),
-            label: const Text('拉取'),
+            child: const Text('中止变基'),
           ),
         ],
       ),
     );
     if (approved != true || !mounted) return;
-    final pulled = await ref
+    final aborted = await ref
         .read(repositorySessionProvider.notifier)
-        .pullFastForward();
+        .abortRebase();
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(pulled ? '已快速前进拉取。' : '未拉取，请查看仓库状态和错误信息。'),
+        content: Text(aborted ? '已中止变基。' : '中止变基失败，请查看仓库错误信息。'),
         duration: const Duration(seconds: 3),
       ),
     );
@@ -1516,6 +1608,349 @@ class _CommitDialogState extends State<_CommitDialog> {
           label: const Text('提交'),
         ),
       ],
+    );
+  }
+}
+
+final class _PullRefreshResult {
+  const _PullRefreshResult({required this.branchesByRemote, this.remoteUrl});
+
+  final Map<String, List<String>> branchesByRemote;
+  final String? remoteUrl;
+}
+
+/// A compact pull configuration dialog modeled after Sourcetree's native
+/// pull sheet. It deliberately keeps the working branch read-only: pulling
+/// always updates the currently checked-out branch.
+class _PullDialog extends StatefulWidget {
+  const _PullDialog({
+    required this.remoteNames,
+    required this.branchesByRemote,
+    required this.selectedRemote,
+    required this.remoteBranch,
+    required this.localBranch,
+    required this.remoteUrl,
+    this.onRefresh,
+    this.onRemoteChanged,
+  });
+
+  final List<String> remoteNames;
+  final Map<String, List<String>> branchesByRemote;
+  final String selectedRemote;
+  final String remoteBranch;
+  final String localBranch;
+  final String? remoteUrl;
+  final Future<_PullRefreshResult> Function(String remoteName)? onRefresh;
+  final Future<String?> Function(String remoteName)? onRemoteChanged;
+
+  @override
+  State<_PullDialog> createState() => _PullDialogState();
+}
+
+class _PullDialogState extends State<_PullDialog> {
+  late String _remote;
+  late String _branch;
+  late Map<String, List<String>> _branchesByRemote;
+  String? _remoteUrl;
+  var _isRefreshing = false;
+  String? _refreshError;
+  var _commitMerge = false;
+  var _includeMergedCommits = false;
+  var _createMergeCommit = false;
+  var _rebase = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _branchesByRemote = {
+      for (final entry in widget.branchesByRemote.entries)
+        entry.key: List<String>.of(entry.value),
+    };
+    _remoteUrl = widget.remoteUrl;
+    _remote = widget.remoteNames.contains(widget.selectedRemote)
+        ? widget.selectedRemote
+        : widget.remoteNames.first;
+    _branch = _branchesFor(_remote).contains(widget.remoteBranch)
+        ? widget.remoteBranch
+        : _branchesFor(_remote).first;
+    unawaited(_loadRemoteUrl(_remote));
+  }
+
+  List<String> _branchesFor(String remote) {
+    final branches = _branchesByRemote[remote];
+    if (branches == null || branches.isEmpty) {
+      return <String>[widget.remoteBranch];
+    }
+    return branches;
+  }
+
+  Future<void> _refresh() async {
+    final callback = widget.onRefresh;
+    if (_isRefreshing || callback == null) return;
+    setState(() {
+      _isRefreshing = true;
+      _refreshError = null;
+    });
+    try {
+      final result = await callback(_remote);
+      if (!mounted) return;
+      setState(() {
+        _branchesByRemote = {
+          for (final entry in result.branchesByRemote.entries)
+            entry.key: List<String>.of(entry.value)..sort(),
+        };
+        _remoteUrl = result.remoteUrl;
+        final branches = _branchesFor(_remote);
+        if (!branches.contains(_branch)) _branch = branches.first;
+      });
+    } on Object {
+      if (mounted) {
+        setState(() => _refreshError = '刷新失败，请检查网络或 Git 凭据。');
+      }
+    } finally {
+      if (mounted) setState(() => _isRefreshing = false);
+    }
+  }
+
+  Future<void> _loadRemoteUrl(String remote) async {
+    final callback = widget.onRemoteChanged;
+    if (callback == null) return;
+    try {
+      final url = await callback(remote);
+      if (!mounted || _remote != remote) return;
+      setState(() => _remoteUrl = url);
+    } on Object {
+      if (mounted && _remote == remote) setState(() => _remoteUrl = null);
+    }
+  }
+
+  void _submit() {
+    Navigator.of(context).pop(
+      GitPullOptions(
+        remoteName: _remote,
+        remoteBranch: _branch,
+        commitMerge: _commitMerge,
+        includeMergedCommits: _includeMergedCommits,
+        createMergeCommit: _createMergeCommit,
+        rebase: _rebase,
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final branches = _branchesFor(_remote);
+    return AlertDialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      contentPadding: const EdgeInsets.fromLTRB(24, 20, 24, 4),
+      actionsPadding: const EdgeInsets.fromLTRB(24, 4, 24, 16),
+      content: SizedBox(
+        width: 560,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            _PullRow(
+              label: '从仓库拉取：',
+              child: _PullSelect<String>(
+                value: _remote,
+                items: widget.remoteNames,
+                onChanged: (value) {
+                  if (value == null) return;
+                  final nextBranches = _branchesFor(value);
+                  setState(() {
+                    _remote = value;
+                    _branch = nextBranches.first;
+                  });
+                  unawaited(_loadRemoteUrl(value));
+                },
+              ),
+            ),
+            const SizedBox(height: 7),
+            _PullRow(
+              label: '',
+              child: Text(
+                _remoteUrl ?? '未读取到远端地址',
+                style: theme.textTheme.bodySmall?.copyWith(
+                  color: theme.colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            _PullRow(
+              label: '要拉取的远程分支：',
+              child: Row(
+                children: [
+                  Expanded(
+                    child: _PullSelect<String>(
+                      value: _branch,
+                      items: branches,
+                      onChanged: (value) {
+                        if (value != null) setState(() => _branch = value);
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton(
+                    onPressed: widget.onRefresh == null ? null : _refresh,
+                    style: OutlinedButton.styleFrom(
+                      minimumSize: const Size(54, 36),
+                      padding: const EdgeInsets.symmetric(horizontal: 10),
+                    ),
+                    child: const Text('刷新'),
+                  ),
+                ],
+              ),
+            ),
+            if (_refreshError != null) ...[
+              const SizedBox(height: 4),
+              Text(
+                _refreshError!,
+                style: TextStyle(color: theme.colorScheme.error),
+              ),
+            ],
+            const SizedBox(height: 10),
+            _PullRow(
+              label: '拉取到本地分支：',
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  widget.localBranch,
+                  style: theme.textTheme.bodyMedium,
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              decoration: BoxDecoration(
+                color: theme.colorScheme.surfaceContainerHighest.withAlpha(90),
+                border: Border.all(
+                  color: theme.colorScheme.outlineVariant.withAlpha(110),
+                ),
+                borderRadius: BorderRadius.circular(7),
+              ),
+              padding: const EdgeInsets.symmetric(vertical: 7),
+              child: Column(
+                children: [
+                  _PullCheckbox(
+                    value: _commitMerge,
+                    label: '立即提交合并的改动',
+                    onChanged: (value) =>
+                        setState(() => _commitMerge = value ?? false),
+                  ),
+                  _PullCheckbox(
+                    value: _includeMergedCommits,
+                    label: '包括被合并提交的信息内容',
+                    onChanged: (value) =>
+                        setState(() => _includeMergedCommits = value ?? false),
+                  ),
+                  _PullCheckbox(
+                    value: _createMergeCommit,
+                    label: '无论是否可以快速更新都创建新的提交',
+                    onChanged: (value) =>
+                        setState(() => _createMergeCommit = value ?? false),
+                  ),
+                  _PullCheckbox(
+                    value: _rebase,
+                    label: '用变基代替合并（警告：请确保您还没有推送您的变更）',
+                    onChanged: (value) =>
+                        setState(() => _rebase = value ?? false),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        OutlinedButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(onPressed: _submit, child: const Text('确定')),
+      ],
+    );
+  }
+}
+
+class _PullRow extends StatelessWidget {
+  const _PullRow({required this.label, required this.child});
+
+  final String label;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        SizedBox(width: 112, child: Text(label, textAlign: TextAlign.right)),
+        const SizedBox(width: 10),
+        Expanded(child: child),
+      ],
+    );
+  }
+}
+
+class _PullSelect<T> extends StatelessWidget {
+  const _PullSelect({
+    required this.value,
+    required this.items,
+    required this.onChanged,
+  });
+
+  final T value;
+  final List<T> items;
+  final ValueChanged<T?> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border.all(color: Theme.of(context).colorScheme.outline),
+        borderRadius: BorderRadius.circular(5),
+      ),
+      child: DropdownButtonHideUnderline(
+        child: DropdownButton<T>(
+          value: value,
+          isExpanded: true,
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          icon: const Icon(Icons.unfold_more, size: 18),
+          items: [
+            for (final item in items)
+              DropdownMenuItem<T>(value: item, child: Text('$item')),
+          ],
+          onChanged: onChanged,
+        ),
+      ),
+    );
+  }
+}
+
+class _PullCheckbox extends StatelessWidget {
+  const _PullCheckbox({
+    required this.value,
+    required this.label,
+    required this.onChanged,
+  });
+
+  final bool value;
+  final String label;
+  final ValueChanged<bool?> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 28,
+      child: CheckboxListTile(
+        value: value,
+        onChanged: onChanged,
+        dense: true,
+        contentPadding: const EdgeInsets.symmetric(horizontal: 8),
+        controlAffinity: ListTileControlAffinity.leading,
+        title: Text(label, style: Theme.of(context).textTheme.bodyMedium),
+      ),
     );
   }
 }

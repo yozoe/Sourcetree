@@ -996,6 +996,31 @@ while true; do sleep 1; done
   });
 
   test(
+    'redacts credentials from the remote URL kept in session state',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.runGit([
+        'remote',
+        'add',
+        'origin',
+        'https://alice:secret@example.invalid/repository.git',
+      ]);
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      await container
+          .read(repositorySessionProvider.notifier)
+          .openRepository(repository.workingDirectory.path);
+
+      expect(
+        container.read(repositorySessionProvider).originUrl,
+        'https://***@example.invalid/repository.git',
+      );
+    },
+  );
+
+  test(
     'fast-forward pulls a configured upstream into a clean work tree',
     () async {
       final source = await GitTestRepository.create();

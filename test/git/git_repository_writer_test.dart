@@ -644,6 +644,82 @@ void main() {
     );
   });
 
+  test('pulls with rebase options and keeps a linear history', () async {
+    await fixture.writeFile('README.md', '# Git Desktop\n');
+    await fixture.commit('Initial commit');
+    final origin = await fixture.createBareOrigin();
+    await fixture.runGit(['push', 'origin', 'main']);
+
+    final directory = await Directory.systemTemp.createTemp(
+      'git-desktop-rebase-pull-',
+    );
+    addTearDown(() async {
+      if (directory.existsSync()) await directory.delete(recursive: true);
+    });
+    await writer.cloneRepository(
+      remoteUrl: origin.path,
+      directoryPath: directory.path,
+    );
+    final repository = (await inspector.inspect(directory.path))!;
+    for (final arguments in const [
+      ['config', 'user.name', 'Git Desktop Test'],
+      ['config', 'user.email', 'git-desktop-test@example.invalid'],
+    ]) {
+      final result = await writer.runner.run(
+        GitInvocation(arguments: arguments, workingDirectory: directory.path),
+      );
+      result.throwIfFailed(operation: 'Configuring rebase test repository');
+    }
+
+    await File(
+      '${directory.path}${Platform.pathSeparator}local.txt',
+    ).writeAsString('local\n');
+    await writer.stagePath(repository, GitPath.fromString('local.txt'));
+    await writer.createCommit(repository, message: 'Local commit');
+
+    await fixture.writeFile('remote.txt', 'remote\n');
+    await fixture.commit('Remote commit');
+    await fixture.runGit(['push', 'origin', 'main']);
+
+    await writer.pull(
+      repository,
+      options: const GitPullOptions(
+        remoteName: 'origin',
+        remoteBranch: 'main',
+        rebase: true,
+      ),
+    );
+
+    final count = await writer.runner.run(
+      GitInvocation(
+        arguments: const ['rev-list', '--count', 'HEAD'],
+        workingDirectory: directory.path,
+      ),
+    );
+    count.throwIfFailed(operation: 'Reading rebase test commit count');
+    expect(count.stdoutText.trim(), '3');
+
+    final log = await writer.runner.run(
+      GitInvocation(
+        arguments: const ['log', '--format=%P', '-3'],
+        workingDirectory: directory.path,
+      ),
+    );
+    log.throwIfFailed(operation: 'Reading rebase test history');
+    final parentLines = log.stdoutText
+        .trim()
+        .split('\n')
+        .where((line) => line.isNotEmpty)
+        .toList();
+    expect(parentLines, hasLength(2));
+    expect(
+      parentLines.every(
+        (line) => line.trim().split(RegExp(r'\s+')).length <= 1,
+      ),
+      isTrue,
+    );
+  });
+
   test(
     'pushes ahead commits to the configured upstream without force',
     () async {

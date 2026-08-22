@@ -310,6 +310,26 @@ final class GitRemoteBranch {
   final String objectId;
 }
 
+/// Options exposed by the pull configuration dialog.
+/// 中文：拉取配置对话框暴露的选项。
+final class GitPullOptions {
+  const GitPullOptions({
+    required this.remoteName,
+    required this.remoteBranch,
+    this.commitMerge = false,
+    this.includeMergedCommits = false,
+    this.createMergeCommit = false,
+    this.rebase = false,
+  });
+
+  final String remoteName;
+  final String remoteBranch;
+  final bool commitMerge;
+  final bool includeMergedCommits;
+  final bool createMergeCommit;
+  final bool rebase;
+}
+
 final class GitStatusSnapshot {
   GitStatusSnapshot({
     required this.branch,
@@ -365,6 +385,10 @@ final class GitCommit {
 }
 
 enum GitDiffSource { workingTree, staged, commit }
+
+/// An operation marker currently owned by Git in this repository.
+/// 中文：仓库中当前由 Git 持有的进行中操作标记。
+enum GitRepositoryOperationState { none, merge, rebase, cherryPick, revert }
 
 enum GitCommitChangeKind {
   added,

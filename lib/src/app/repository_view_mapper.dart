@@ -58,6 +58,24 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     RepositoryAction.cloneRepository,
     RepositoryAction.initializeRepository,
   };
+  final isRebaseInProgress =
+      state.operationState == GitRepositoryOperationState.rebase;
+  if (state.operationState != GitRepositoryOperationState.none) {
+    disabledActions.addAll([
+      RepositoryAction.fetch,
+      RepositoryAction.pull,
+      RepositoryAction.push,
+      RepositoryAction.createBranch,
+      RepositoryAction.mergeBranch,
+      RepositoryAction.commit,
+    ]);
+    if (!isRebaseInProgress) {
+      disabledActions.addAll([
+        RepositoryAction.continueRebase,
+        RepositoryAction.abortRebase,
+      ]);
+    }
+  }
   if (!state.hasOriginRemote ||
       (state.phase == RepositorySessionPhase.loading &&
           !state.isFetchRunning)) {
@@ -105,6 +123,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     isFetching: state.isFetchRunning,
     isPulling: state.isPullRunning,
     isPushing: state.isPushRunning,
+    isRebaseInProgress: isRebaseInProgress,
     isWorkingTreeClean: status.isClean,
     refs: [
       RepositoryRefViewData(
@@ -249,7 +268,7 @@ RepositoryOperationRecord? _runningOperation(
 String _operationLabel(RepositoryOperationKind kind) => switch (kind) {
   RepositoryOperationKind.clone => '克隆仓库',
   RepositoryOperationKind.fetch => '获取远端更新',
-  RepositoryOperationKind.pull => '快速前进拉取',
+  RepositoryOperationKind.pull => '拉取更新',
   RepositoryOperationKind.push => '推送当前分支',
 };
 

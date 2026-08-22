@@ -11,6 +11,8 @@ enum RepositoryAction {
   cancelClone,
   cancelFetch,
   cancelPull,
+  continueRebase,
+  abortRebase,
   cancelPush,
   initializeRepository,
   fetch,
@@ -130,6 +132,7 @@ final class RepositoryViewData {
     this.isFetching = false,
     this.isPulling = false,
     this.isPushing = false,
+    this.isRebaseInProgress = false,
     this.isWorkingTreeClean = true,
     this.refs = const [],
     this.commits = const [],
@@ -158,6 +161,7 @@ final class RepositoryViewData {
   final bool isFetching;
   final bool isPulling;
   final bool isPushing;
+  final bool isRebaseInProgress;
   final bool isWorkingTreeClean;
   final List<RepositoryRefViewData> refs;
   final List<CommitViewData> commits;

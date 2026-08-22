@@ -550,19 +550,40 @@ class _RepositoryToolbar extends StatelessWidget {
                                     onAction: callbacks.onAction,
                                     badge: repository.stagedChangeCount,
                                   ),
-                                  _ToolbarAction(
-                                    action: repository.isPulling
-                                        ? RepositoryAction.cancelPull
-                                        : RepositoryAction.pull,
-                                    icon: repository.isPulling
-                                        ? Icons.cancel_outlined
-                                        : Icons.south,
-                                    label: repository.isPulling ? '取消拉取' : '拉取',
-                                    showLabel: showLabels,
-                                    repository: repository,
-                                    onAction: callbacks.onAction,
-                                    isBusy: repository.isPulling,
-                                  ),
+                                  if (repository.isRebaseInProgress &&
+                                      !repository.isPulling) ...[
+                                    _ToolbarAction(
+                                      action: RepositoryAction.continueRebase,
+                                      icon: Icons.play_arrow_outlined,
+                                      label: '继续变基',
+                                      showLabel: showLabels,
+                                      repository: repository,
+                                      onAction: callbacks.onAction,
+                                    ),
+                                    _ToolbarAction(
+                                      action: RepositoryAction.abortRebase,
+                                      icon: Icons.stop_circle_outlined,
+                                      label: '中止变基',
+                                      showLabel: showLabels,
+                                      repository: repository,
+                                      onAction: callbacks.onAction,
+                                    ),
+                                  ] else
+                                    _ToolbarAction(
+                                      action: repository.isPulling
+                                          ? RepositoryAction.cancelPull
+                                          : RepositoryAction.pull,
+                                      icon: repository.isPulling
+                                          ? Icons.cancel_outlined
+                                          : Icons.south,
+                                      label: repository.isPulling
+                                          ? '取消拉取'
+                                          : '拉取',
+                                      showLabel: showLabels,
+                                      repository: repository,
+                                      onAction: callbacks.onAction,
+                                      isBusy: repository.isPulling,
+                                    ),
                                   _ToolbarAction(
                                     action: repository.isPushing
                                         ? RepositoryAction.cancelPush

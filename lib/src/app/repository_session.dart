@@ -210,6 +210,8 @@ final class RepositorySessionState {
     this.repository,
     this.status,
     this.hasOriginRemote = false,
+    this.originUrl,
+    this.operationState = GitRepositoryOperationState.none,
     this.localBranches = const [],
     this.remoteBranches = const [],
     this.commits = const [],
@@ -246,6 +248,8 @@ final class RepositorySessionState {
   final GitRepository? repository;
   final GitStatusSnapshot? status;
   final bool hasOriginRemote;
+  final String? originUrl;
+  final GitRepositoryOperationState operationState;
   final List<GitLocalBranch> localBranches;
   final List<GitRemoteBranch> remoteBranches;
   final List<GitCommit> commits;
@@ -284,6 +288,8 @@ final class RepositorySessionState {
     GitRepository? repository,
     GitStatusSnapshot? status,
     bool? hasOriginRemote,
+    String? originUrl,
+    GitRepositoryOperationState? operationState,
     List<GitLocalBranch>? localBranches,
     List<GitRemoteBranch>? remoteBranches,
     List<GitCommit>? commits,
@@ -323,6 +329,8 @@ final class RepositorySessionState {
       repository: repository ?? this.repository,
       status: status ?? this.status,
       hasOriginRemote: hasOriginRemote ?? this.hasOriginRemote,
+      originUrl: originUrl ?? this.originUrl,
+      operationState: operationState ?? this.operationState,
       localBranches: localBranches ?? this.localBranches,
       remoteBranches: remoteBranches ?? this.remoteBranches,
       commits: commits ?? this.commits,
@@ -570,9 +578,10 @@ final class RepositorySessionController
         throw const GitException('所选目录不在 Git 仓库中。');
       }
 
-      final results = await Future.wait<Object>([
+      final results = await Future.wait<Object?>([
         _reader.readStatus(repository),
-        _reader.hasOriginRemote(repository),
+        _reader.readRemoteUrl(repository),
+        _reader.readOperationState(repository),
         _reader.readLocalBranches(repository),
         _reader.readRemoteBranches(repository),
         _reader.readRecentHistory(repository),
@@ -583,10 +592,15 @@ final class RepositorySessionController
       }
 
       final status = results[0] as GitStatusSnapshot;
-      final hasOriginRemote = results[1] as bool;
-      final localBranches = results[2] as List<GitLocalBranch>;
-      final remoteBranches = results[3] as List<GitRemoteBranch>;
-      final commits = results[4] as List<GitCommit>;
+      final rawOriginUrl = results[1] as String?;
+      final originUrl = rawOriginUrl == null
+          ? null
+          : _redactSensitiveText(rawOriginUrl);
+      final hasOriginRemote = rawOriginUrl != null;
+      final operationState = results[2] as GitRepositoryOperationState;
+      final localBranches = results[3] as List<GitLocalBranch>;
+      final remoteBranches = results[4] as List<GitRemoteBranch>;
+      final commits = results[5] as List<GitCommit>;
       final tab = RepositoryTab(
         path: repository.commandDirectory,
         label: path_utils.basename(
@@ -599,6 +613,8 @@ final class RepositorySessionController
         repository: repository,
         status: status,
         hasOriginRemote: hasOriginRemote,
+        originUrl: originUrl,
+        operationState: operationState,
         localBranches: localBranches,
         remoteBranches: remoteBranches,
         commits: commits,
@@ -611,7 +627,7 @@ final class RepositorySessionController
           _upsertRepositoryTab(state.openRepositoryTabs, tab),
         ),
         activeRepositoryTabPath: tab.path,
-        gitVersion: results[5] as String,
+        gitVersion: results[6] as String,
         searchQuery: state.searchQuery,
       );
       _persistRepositorySession();
@@ -854,10 +870,21 @@ final class RepositorySessionController
   ///
   /// English: Fetches `origin` for the current repository, records the
   /// outcome, and refreshes local reference state on success.
-  Future<bool> fetchOrigin() async {
+  Future<bool> fetchOrigin() => fetchRemote('origin');
+
+  /// Fetches one configured remote and refreshes its tracking references.
+  /// 中文：获取指定远端并刷新该远端的跟踪引用。
+  Future<bool> fetchRemote(String remoteName) async {
+    final normalizedRemote = remoteName.trim();
     final repository = state.repository;
+    final hasRemote = normalizedRemote == 'origin'
+        ? state.hasOriginRemote
+        : state.remoteBranches.any(
+            (branch) => branch.name.startsWith('$normalizedRemote/'),
+          );
     if (repository == null ||
-        !state.hasOriginRemote ||
+        normalizedRemote.isEmpty ||
+        !hasRemote ||
         state.phase == RepositorySessionPhase.loading) {
       return false;
     }
@@ -875,8 +902,9 @@ final class RepositorySessionController
     try {
       await _runWithAskPassSession(
         cancellation: cancellation,
-        run: (environment) => _writer.fetchOrigin(
+        run: (environment) => _writer.fetchRemote(
           repository,
+          remoteName: normalizedRemote,
           cancellationToken: cancellation,
           environment: environment,
         ),
@@ -916,6 +944,16 @@ final class RepositorySessionController
   /// 中文：取消当前操作。
   /// English: Cancels the current operation.
   void cancelFetch() => _fetchCancellation?.cancel();
+
+  /// Reads a configured remote URL for the pull dialog with credentials
+  /// redacted before it reaches UI state.
+  /// 中文：读取拉取对话框所需的远端地址，并在返回前脱敏凭据。
+  Future<String?> readRemoteUrl(String remoteName) async {
+    final repository = state.repository;
+    if (repository == null) return null;
+    final url = await _reader.readRemoteUrl(repository, remoteName: remoteName);
+    return url == null ? null : _redactSensitiveText(url);
+  }
 
   /// 中文：仅在工作区和索引干净且有上游时快速前进拉取，并在失败后刷新引用状态。
   ///
@@ -966,6 +1004,149 @@ final class RepositorySessionController
       // Refresh before showing the error so refs and ahead/behind stay accurate.
       await refresh();
       final message = _friendlyError(error);
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isPullRunning: false,
+        isDiffLoading: false,
+        message: message,
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: message,
+      );
+      return false;
+    } finally {
+      if (identical(_pullCancellation, cancellation)) {
+        _pullCancellation = null;
+      }
+    }
+  }
+
+  /// Runs a configured pull from the Sourcetree-style dialog.
+  /// 中文：按 Sourcetree 风格拉取对话框的配置执行拉取。
+  Future<bool> pullWithOptions(GitPullOptions options) async {
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        status.branch.upstream == null ||
+        !status.isClean ||
+        state.phase == RepositorySessionPhase.loading) {
+      return false;
+    }
+    final cancellation = GitCancellationToken();
+    _pullCancellation = cancellation;
+    final operation = _startOperation(RepositoryOperationKind.pull);
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isPullRunning: true,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _runWithAskPassSession(
+        cancellation: cancellation,
+        run: (environment) => _writer.pull(
+          repository,
+          options: options,
+          cancellationToken: cancellation,
+          environment: environment,
+        ),
+      );
+      await refresh();
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.failed,
+        message: succeeded ? '已拉取更新。' : state.message,
+      );
+      return succeeded;
+    } on Object catch (error, stackTrace) {
+      await refresh();
+      final message = _friendlyError(error);
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isPullRunning: false,
+        isDiffLoading: false,
+        message: message,
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: message,
+      );
+      return false;
+    } finally {
+      if (identical(_pullCancellation, cancellation)) {
+        _pullCancellation = null;
+      }
+    }
+  }
+
+  /// Continues the paused rebase after conflict fixes have been staged.
+  /// 中文：暂存冲突修复后继续暂停的变基。
+  Future<bool> continueRebase() => _finishPausedRebase(abort: false);
+
+  /// Aborts the paused rebase and restores the pre-rebase state.
+  /// 中文：中止暂停的变基并恢复变基前状态。
+  Future<bool> abortRebase() => _finishPausedRebase(abort: true);
+
+  Future<bool> _finishPausedRebase({required bool abort}) async {
+    final repository = state.repository;
+    if (repository == null ||
+        state.operationState != GitRepositoryOperationState.rebase ||
+        state.phase == RepositorySessionPhase.loading) {
+      return false;
+    }
+    final cancellation = GitCancellationToken();
+    _pullCancellation = cancellation;
+    final operation = _startOperation(RepositoryOperationKind.pull);
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isPullRunning: true,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _runWithAskPassSession(
+        cancellation: cancellation,
+        run: (environment) => abort
+            ? _writer.abortRebase(
+                repository,
+                cancellationToken: cancellation,
+                environment: environment,
+              )
+            : _writer.continueRebase(
+                repository,
+                cancellationToken: cancellation,
+                environment: environment,
+              ),
+      );
+      await refresh();
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.failed,
+        message: succeeded ? (abort ? '已中止变基。' : '已继续变基。') : state.message,
+      );
+      return succeeded;
+    } on Object catch (error, stackTrace) {
+      await refresh();
+      final message =
+          error is GitCommandException && error.kind == GitErrorKind.conflicts
+          ? '变基仍有冲突。请解决冲突并暂存后继续，或选择中止变基。'
+          : _friendlyError(error);
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isPullRunning: false,

@@ -518,9 +518,28 @@ final class GitRepositoryReader {
   /// 中文：检查目标是否存在或可用。
   /// English: Checks whether the target exists or is available.
   Future<bool> hasOriginRemote(GitRepository repository) async {
+    final url = await readRemoteUrl(repository, remoteName: 'origin');
+    return url != null;
+  }
+
+  /// Reads a configured remote's fetch URL, returning null when it is absent.
+  /// 中文：读取远端的拉取地址；远端不存在时返回 null。
+  Future<String?> readRemoteUrl(
+    GitRepository repository, {
+    String remoteName = 'origin',
+  }) async {
+    final normalizedName = remoteName.trim();
+    if (normalizedName.isEmpty ||
+        normalizedName.contains(RegExp(r'[\x00\s]'))) {
+      throw ArgumentError.value(
+        remoteName,
+        'remoteName',
+        'A remote name is required.',
+      );
+    }
     final result = await runner.run(
       GitInvocation(
-        arguments: const ['--no-pager', 'remote', 'get-url', 'origin'],
+        arguments: ['--no-pager', 'remote', 'get-url', normalizedName],
         workingDirectory: repository.commandDirectory,
         outputLimit: const GitOutputLimit(
           stdoutBytes: 256 * 1024,
@@ -529,14 +548,44 @@ final class GitRepositoryReader {
       ),
     );
     if (result.isSuccess) {
-      return true;
+      final url = result.stdoutText.trim();
+      return url.isEmpty ? null : url;
     }
     final message = result.stderrText.toLowerCase();
     if (result.exitCode == 2 && message.contains('no such remote')) {
-      return false;
+      return null;
     }
-    result.throwIfFailed(operation: 'Reading origin remote');
-    return false;
+    result.throwIfFailed(operation: 'Reading remote URL');
+    return null;
+  }
+
+  /// Reads Git's operation markers without changing the repository.
+  /// 中文：读取 Git 的进行中操作标记，不修改仓库。
+  Future<GitRepositoryOperationState> readOperationState(
+    GitRepository repository,
+  ) async {
+    final gitDirectory = repository.gitDirectory;
+    if (await _entityExists(path_utils.join(gitDirectory, 'rebase-merge')) ||
+        await _entityExists(path_utils.join(gitDirectory, 'rebase-apply'))) {
+      return GitRepositoryOperationState.rebase;
+    }
+    if (await _entityExists(path_utils.join(gitDirectory, 'MERGE_HEAD'))) {
+      return GitRepositoryOperationState.merge;
+    }
+    if (await _entityExists(
+      path_utils.join(gitDirectory, 'CHERRY_PICK_HEAD'),
+    )) {
+      return GitRepositoryOperationState.cherryPick;
+    }
+    if (await _entityExists(path_utils.join(gitDirectory, 'REVERT_HEAD'))) {
+      return GitRepositoryOperationState.revert;
+    }
+    return GitRepositoryOperationState.none;
+  }
+
+  Future<bool> _entityExists(String target) async {
+    final type = await FileSystemEntity.type(target, followLinks: false);
+    return type != FileSystemEntityType.notFound;
   }
 
   /// Reads the file list and line statistics produced by one committed revision.

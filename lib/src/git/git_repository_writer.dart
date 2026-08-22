@@ -528,13 +528,39 @@ final class GitRepositoryWriter {
     GitCancellationToken? cancellationToken,
     Map<String, String> environment = const {},
   }) async {
+    await fetchRemote(
+      repository,
+      remoteName: 'origin',
+      cancellationToken: cancellationToken,
+      environment: environment,
+    );
+  }
+
+  /// Fetches one configured remote without changing the working tree.
+  /// 中文：获取指定远端引用，不修改工作区。
+  Future<void> fetchRemote(
+    GitRepository repository, {
+    required String remoteName,
+    GitCancellationToken? cancellationToken,
+    Map<String, String> environment = const {},
+  }) async {
+    final normalizedName = remoteName.trim();
+    if (normalizedName.isEmpty ||
+        normalizedName.startsWith('-') ||
+        normalizedName.contains(RegExp(r'[\x00\s]'))) {
+      throw ArgumentError.value(
+        remoteName,
+        'remoteName',
+        'A valid remote name is required.',
+      );
+    }
     final result = await runner.run(
       GitInvocation(
-        arguments: const [
+        arguments: [
           '--no-pager',
           'fetch',
           '--no-recurse-submodules',
-          'origin',
+          normalizedName,
         ],
         workingDirectory: repository.commandDirectory,
         cancellationToken: cancellationToken,
@@ -545,7 +571,7 @@ final class GitRepositoryWriter {
         ),
       ),
     );
-    result.throwIfFailed(operation: 'Fetching origin');
+    result.throwIfFailed(operation: 'Fetching remote');
   }
 
   /// 中文：仅在当前 HEAD 可快速前进时从已配置上游拉取；`--ff-only` 会拒绝隐式合并提交。
@@ -576,6 +602,123 @@ final class GitRepositoryWriter {
       ),
     );
     result.throwIfFailed(operation: 'Pulling current branch');
+  }
+
+  /// Executes a pull configured by the Sourcetree-style pull dialog.
+  /// 中文：按 Sourcetree 风格拉取对话框的选项执行拉取。
+  Future<void> pull(
+    GitRepository repository, {
+    required GitPullOptions options,
+    GitCancellationToken? cancellationToken,
+    Map<String, String> environment = const {},
+  }) async {
+    final remoteName = options.remoteName.trim();
+    final remoteBranch = options.remoteBranch.trim();
+    _validatePullRef(remoteName, 'remoteName');
+    _validatePullRef(remoteBranch, 'remoteBranch');
+
+    final arguments = <String>[
+      '--no-pager',
+      '-c',
+      'submodule.recurse=false',
+      'pull',
+    ];
+    if (options.rebase) {
+      arguments.add('--rebase');
+    } else {
+      // Git commits a merge automatically by default. Sourcetree's
+      // "立即提交合并的改动" checkbox controls that behavior.
+      if (!options.commitMerge) arguments.add('--no-commit');
+      if (options.createMergeCommit) arguments.add('--no-ff');
+    }
+    if (options.includeMergedCommits) arguments.add('--log');
+    arguments
+      ..add(remoteName)
+      ..add(remoteBranch);
+
+    final result = await runner.run(
+      GitInvocation(
+        arguments: arguments,
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        environment: environment,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 1024 * 1024,
+          stderrBytes: 1024 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Pulling current branch');
+  }
+
+  static void _validatePullRef(String value, String name) {
+    if (value.isEmpty ||
+        value.startsWith('-') ||
+        value.contains(RegExp(r'[\x00\s~^:?*\\\[]')) ||
+        value.contains('..') ||
+        value.contains('@{')) {
+      throw ArgumentError.value(value, name, 'Must be a valid Git ref name.');
+    }
+  }
+
+  /// Continues a paused rebase after the user has staged conflict fixes.
+  /// 中文：用户暂存冲突修复后继续变基。
+  Future<void> continueRebase(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+    Map<String, String> environment = const {},
+  }) async {
+    await _runRebaseCommand(
+      repository,
+      const ['--continue'],
+      operation: 'Continuing rebase',
+      cancellationToken: cancellationToken,
+      environment: environment,
+    );
+  }
+
+  /// Aborts the paused rebase and restores the pre-rebase branch state.
+  /// 中文：中止暂停的变基并恢复变基前的分支状态。
+  Future<void> abortRebase(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+    Map<String, String> environment = const {},
+  }) async {
+    await _runRebaseCommand(
+      repository,
+      const ['--abort'],
+      operation: 'Aborting rebase',
+      cancellationToken: cancellationToken,
+      environment: environment,
+    );
+  }
+
+  Future<void> _runRebaseCommand(
+    GitRepository repository,
+    List<String> commandArguments, {
+    required String operation,
+    GitCancellationToken? cancellationToken,
+    Map<String, String> environment = const {},
+  }) async {
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          '-c',
+          'core.editor=true',
+          'rebase',
+          ...commandArguments,
+        ],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        environment: environment,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 1024 * 1024,
+          stderrBytes: 1024 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: operation);
   }
 
   /// 中文：将当前分支推送到已配置上游；首次推送时使用 origin 上的同名分支并设置上游。始终不提供 force 选项。
