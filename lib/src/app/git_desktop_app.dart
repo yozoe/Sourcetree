@@ -387,23 +387,24 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
-  /// 中文：收集远端地址和空目标目录，经用户确认后克隆并在界面提示结果。
+  /// 中文：收集远端地址和存放位置，经用户确认后创建同名子目录并克隆。
   ///
-  /// English: Collects a remote URL and empty destination, confirms with the
-  /// user, then clones and reports the result in the UI.
+  /// English: Collects a remote URL and parent destination, confirms with the
+  /// user, then creates a repository-named child and clones into it.
   Future<void> _cloneRepository() async {
     final remoteUrl = await showDialog<String>(
       context: context,
       builder: (BuildContext context) => const _CloneDialog(),
     );
     if (remoteUrl == null || !mounted) return;
-    final directory = await getDirectoryPath(confirmButtonText: '选择空目录');
+    final directory = await getDirectoryPath(confirmButtonText: '选择存放位置');
     if (directory == null || !mounted) return;
+    final repositoryName = cloneRepositoryNameFromRemote(remoteUrl);
     final approved = await showDialog<bool>(
       context: context,
       builder: (BuildContext context) => AlertDialog(
         title: const Text('克隆 Git 仓库'),
-        content: const Text('仅当所选目标目录为空时才会继续。克隆可能需要现有 Git 凭据。'),
+        content: Text('将在所选位置下自动创建“$repositoryName”目录。克隆可能需要现有 Git 凭据。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -419,7 +420,10 @@ class _RepositoryWorkspaceScreenState
     if (approved != true || !mounted) return;
     final cloned = await ref
         .read(repositorySessionProvider.notifier)
-        .cloneRepository(remoteUrl: remoteUrl, directoryPath: directory);
+        .cloneRepositoryIntoParent(
+          remoteUrl: remoteUrl,
+          parentDirectoryPath: directory,
+        );
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(cloned ? '已克隆并打开仓库。' : '克隆失败，请查看仓库错误信息。')),
@@ -1208,8 +1212,17 @@ class _CloneDialogState extends State<_CloneDialog> {
             labelText: '远端地址',
             hintText: 'https://… 或 git@host:owner/repository.git',
           ),
-          validator: (value) =>
-              value == null || value.trim().isEmpty ? '请输入远端地址。' : null,
+          validator: (value) {
+            if (value == null || value.trim().isEmpty) {
+              return '请输入远端地址。';
+            }
+            try {
+              cloneRepositoryNameFromRemote(value);
+              return null;
+            } on Object {
+              return '无法从远端地址确定仓库名称。';
+            }
+          },
           onFieldSubmitted: (_) => _submit(),
         ),
       ),

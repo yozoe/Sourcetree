@@ -1,6 +1,11 @@
 import Cocoa
 import FlutterMacOS
 
+enum GitDesktopWindowRole {
+  case repositoryLibrary
+  case workspace
+}
+
 private final class DockIconView: NSView {
   private let imageView: NSImageView
 
@@ -36,158 +41,55 @@ private final class DockIconView: NSView {
 }
 
 class MainFlutterWindow: NSWindow {
-  private var isWorkspaceProcess = false
-  private var workspaceRepositoryPath: String?
-  private var windowChannel: FlutterMethodChannel?
+  private(set) var role = GitDesktopWindowRole.repositoryLibrary
 
-  deinit {
-    DistributedNotificationCenter.default().removeObserver(self)
+  func configure(role: GitDesktopWindowRole) {
+    self.role = role
+    title = role == .workspace ? "Git Desktop — Workspace" : "Git Desktop"
+  }
+
+  override func performKeyEquivalent(with event: NSEvent) -> Bool {
+    if let appDelegate = NSApp.delegate as? AppDelegate,
+       appDelegate.handleShortcut(event) {
+      return true
+    }
+    return super.performKeyEquivalent(with: event)
+  }
+
+  override func becomeKey() {
+    super.becomeKey()
+    (NSApp.delegate as? AppDelegate)?.windowDidBecomeKey(self)
   }
 
   override func awakeFromNib() {
-    isWorkspaceProcess = ProcessInfo.processInfo.arguments.contains(
-      "--git-desktop-workspace"
-    )
-    workspaceRepositoryPath = gitDesktopCanonicalRepositoryPath(
-      gitDesktopArgumentValue("--git-desktop-repository=")
-    )
+    configure(role: .repositoryLibrary)
     let flutterViewController = FlutterViewController()
-    self.contentViewController = flutterViewController
-    self.setContentSize(NSSize(width: 1280, height: 800))
-    self.minSize = NSSize(width: 900, height: 600)
-    self.center()
-    self.title = isWorkspaceProcess
-      ? "Git Desktop — Workspace"
-      : "Git Desktop"
+    contentViewController = flutterViewController
+    setContentSize(NSSize(width: 1280, height: 800))
+    minSize = NSSize(width: 900, height: 600)
+    center()
 
     RegisterGeneratedPlugins(registry: flutterViewController)
 
     super.awakeFromNib()
 
-    if isWorkspaceProcess {
-      DistributedNotificationCenter.default().addObserver(
-        self,
-        selector: #selector(handleWorkspaceActivation(_:)),
-        name: gitDesktopWorkspaceActivationNotification,
-        object: nil,
-        suspensionBehavior: .deliverImmediately
-      )
-    } else {
-      DistributedNotificationCenter.default().addObserver(
-        self,
-        selector: #selector(handleRepositoryOpened(_:)),
-        name: gitDesktopRepositoryOpenedNotification,
-        object: nil,
-        suspensionBehavior: .deliverImmediately
+    (NSApp.delegate as? AppDelegate)?.attachRepositoryLibrary(
+      window: self,
+      flutterViewController: flutterViewController
+    )
+
+    if let icon = NSImage(named: "DockIcon") {
+      icon.isTemplate = false
+      NSApp.applicationIconImage = icon
+      NSApp.dockTile.contentView = DockIconView(
+        icon: icon,
+        size: NSApp.dockTile.size
       )
     }
-
-    windowChannel = FlutterMethodChannel(
-      name: "com.yeknom.git_desktop/window",
-      binaryMessenger: flutterViewController.engine.binaryMessenger
-    )
-    windowChannel?.setMethodCallHandler { [weak self] call, result in
-      guard let self else { return }
-      let arguments = call.arguments as? [String: Any]
-      let repositoryPath = arguments?["repositoryPath"] as? String
-      switch call.method {
-      case "openWorkspace":
-        let initialAction = arguments?["initialAction"] as? String
-        guard let appDelegate = NSApp.delegate as? AppDelegate else {
-          result(
-            FlutterError(
-              code: "window_host_unavailable",
-              message: "The macOS window host is unavailable.",
-              details: nil
-            )
-          )
-          return
-        }
-        appDelegate.openWorkspace(
-          repositoryPath: repositoryPath,
-          initialAction: initialAction
-        ) { error in
-          if let error {
-            result(
-              FlutterError(
-                code: "workspace_engine_failed",
-                message: error.localizedDescription,
-                details: nil
-              )
-            )
-          } else {
-            result(nil)
-          }
-        }
-      case "repositoryOpened":
-        guard self.isWorkspaceProcess,
-              let repositoryPath = gitDesktopCanonicalRepositoryPath(
-                repositoryPath
-              ),
-              let appDelegate = NSApp.delegate as? AppDelegate else {
-          result(
-            FlutterError(
-              code: "invalid_repository_registration",
-              message: "The workspace repository could not be registered.",
-              details: nil
-            )
-          )
-          return
-        }
-        self.workspaceRepositoryPath = repositoryPath
-        appDelegate.registerCurrentWorkspace(repositoryPath: repositoryPath)
-        DistributedNotificationCenter.default().postNotificationName(
-          gitDesktopRepositoryOpenedNotification,
-          object: repositoryPath,
-          userInfo: nil,
-          deliverImmediately: true
-        )
-        result(nil)
-      default:
-        result(FlutterMethodNotImplemented)
-      }
-    }
-
-    DispatchQueue.main.async {
-      guard !self.isWorkspaceProcess else {
-        // The repository window is a Dock-less accessory process. The launch
-        // configuration activates it, and ordering it here ensures the new
-        // workspace receives focus as soon as Flutter is ready.
-        self.bringWorkspaceToFront()
-        return
-      }
-      if let icon = NSImage(named: "DockIcon") {
-        icon.isTemplate = false
-        NSApp.applicationIconImage = icon
-        NSApp.dockTile.contentView = DockIconView(
-          icon: icon,
-          size: NSApp.dockTile.size
-        )
-      }
-      NSApp.dockTile.display()
-    }
+    NSApp.dockTile.display()
   }
 
-  @objc private func handleWorkspaceActivation(_ notification: Notification) {
-    guard let requestedPath = notification.object as? String,
-          requestedPath == workspaceRepositoryPath else {
-      return
-    }
-    bringWorkspaceToFront()
-  }
-
-  @objc private func handleRepositoryOpened(_ notification: Notification) {
-    guard !isWorkspaceProcess,
-          let repositoryPath = notification.object as? String else {
-      return
-    }
-    windowChannel?.invokeMethod(
-      "repositoryOpened",
-      arguments: ["repositoryPath": repositoryPath]
-    )
-  }
-
-  private func bringWorkspaceToFront() {
+  func bringToFront() {
     if isMiniaturized {
       deminiaturize(nil)
     }
@@ -206,4 +108,34 @@ class MainFlutterWindow: NSWindow {
       self.orderFrontRegardless()
     }
   }
+}
+
+func gitDesktopIsRepositoryWindowToggle(_ event: NSEvent) -> Bool {
+  guard event.type == .keyDown, !event.isARepeat else { return false }
+  let modifiers = event.modifierFlags.intersection(
+    .deviceIndependentFlagsMask
+  )
+  guard modifiers.contains(.command),
+        !modifiers.contains(.control),
+        !modifiers.contains(.option) else {
+    return false
+  }
+  return event.keyCode == 50
+    || event.charactersIgnoringModifiers == "`"
+    || event.charactersIgnoringModifiers == "~"
+}
+
+func gitDesktopIsRepositoryLibraryShortcut(_ event: NSEvent) -> Bool {
+  guard event.type == .keyDown, !event.isARepeat else { return false }
+  let modifiers = event.modifierFlags.intersection(
+    .deviceIndependentFlagsMask
+  )
+  guard modifiers.contains(.command),
+        !modifiers.contains(.shift),
+        !modifiers.contains(.control),
+        !modifiers.contains(.option) else {
+    return false
+  }
+  return event.keyCode == 45
+    || event.charactersIgnoringModifiers?.lowercased() == "n"
 }

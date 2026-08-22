@@ -28,8 +28,7 @@ run_installer_command() {
 
 running_app_pids() {
   # Match only processes launched from the canonical installed bundle. This
-  # includes the library process and every Dock-less repository workspace,
-  # without stopping Debug builds or an unrelated app with the same name.
+  # excludes Debug builds and unrelated apps with the same display name.
   /usr/bin/pgrep -f "$target_process_pattern"
 }
 
@@ -50,9 +49,9 @@ terminate_remaining_app_processes() {
     return
   fi
 
-  echo 'Stopping remaining Git Desktop workspace processes…'
-  # A process can finish between pgrep and kill; the verification loop below
-  # remains the source of truth for whether every installed instance exited.
+  echo 'Stopping the remaining Git Desktop process…'
+  # The process can finish between pgrep and kill; the verification loop below
+  # remains the source of truth for whether the installed app exited.
   /bin/kill -TERM "${pids[@]}" 2>/dev/null || true
 }
 
@@ -94,9 +93,8 @@ if [[ -d "$target_app" ]]; then
     sleep 0.25
   done
   if is_app_running; then
-    # Apple Events address one application instance. Repository workspaces are
-    # separate accessory processes, so stop only the remaining processes that
-    # belong to the canonical installed bundle before replacing it.
+    # Stop only the remaining process from the canonical installed bundle
+    # before replacing it.
     terminate_remaining_app_processes
     for _ in {1..40}; do
       if ! is_app_running; then

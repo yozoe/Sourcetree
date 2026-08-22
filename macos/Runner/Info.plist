@@ -22,13 +22,6 @@
 	<string>$(FLUTTER_BUILD_NUMBER)</string>
 	<key>LSMinimumSystemVersion</key>
 	<string>$(MACOSX_DEPLOYMENT_TARGET)</string>
-	<!--
-		Launch every process without a Dock tile. AppDelegate promotes only the
-		repository library process to a regular app before its window appears;
-		workspace processes remain accessories from their first launch frame.
-	-->
-	<key>LSUIElement</key>
-	<true/>
 	<key>NSHumanReadableCopyright</key>
 	<string>$(PRODUCT_COPYRIGHT)</string>
 	<key>NSMainNibFile</key>

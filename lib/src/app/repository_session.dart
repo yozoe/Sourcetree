@@ -39,6 +39,53 @@ enum RepositoryOperationKind { clone, fetch, pull, push }
 
 enum RepositoryOperationOutcome { running, succeeded, cancelled, failed }
 
+/// Returns the directory name Git would conventionally use for [remoteUrl].
+///
+/// URL, SCP-style and local-path remotes are supported. The result is always
+/// one safe path component.
+String cloneRepositoryNameFromRemote(String remoteUrl) {
+  var remote = remoteUrl.trim();
+  if (remote.isEmpty) {
+    throw ArgumentError.value(remoteUrl, 'remoteUrl', 'Must not be empty.');
+  }
+
+  final suffixStart = <int>[remote.indexOf('?'), remote.indexOf('#')]
+      .where((index) => index >= 0)
+      .fold<int>(
+        remote.length,
+        (earliest, index) => index < earliest ? index : earliest,
+      );
+  remote = remote.substring(0, suffixStart);
+  while (remote.endsWith('/') || remote.endsWith(r'\')) {
+    remote = remote.substring(0, remote.length - 1);
+  }
+
+  final separatorIndex = <int>[
+    remote.lastIndexOf('/'),
+    remote.lastIndexOf(r'\'),
+    remote.lastIndexOf(':'),
+  ].reduce((latest, index) => index > latest ? index : latest);
+  var name = remote.substring(separatorIndex + 1);
+  try {
+    name = Uri.decodeComponent(name);
+  } on FormatException {
+    // Git may accept a literal percent sign in a local or SCP-style path.
+  }
+  if (name.toLowerCase().endsWith('.git')) {
+    name = name.substring(0, name.length - 4);
+  }
+
+  if (name.isEmpty ||
+      name == '.' ||
+      name == '..' ||
+      name.contains('/') ||
+      name.contains(r'\') ||
+      name.contains('\u0000')) {
+    throw const GitException('无法从远端地址确定仓库目录名。');
+  }
+  return name;
+}
+
 /// A workspace tab for a successfully opened repository or linked worktree.
 final class RepositoryTab {
   const RepositoryTab({
@@ -314,7 +361,42 @@ final class RepositorySessionController
     _reader = ref.watch(gitRepositoryReaderProvider);
     _writer = ref.watch(gitRepositoryWriterProvider);
     _sessionStore = ref.watch(repositorySessionStoreProvider);
+    ref.onDispose(_cancelActiveRemoteOperations);
     return const RepositorySessionState.empty();
+  }
+
+  /// 中文：取消当前 Engine 的远端操作，并短暂等待 Git 与 AskPass 释放原生资源。
+  ///
+  /// English: Cancels Engine-owned remote operations and waits briefly for
+  /// their Git processes and AskPass sessions to release native resources.
+  Future<void> prepareForShutdown({
+    Duration timeout = const Duration(seconds: 2),
+  }) async {
+    _repositoryGeneration++;
+    _diffGeneration++;
+    _commitGeneration++;
+    _commitDiffGeneration++;
+    _cancelActiveRemoteOperations();
+
+    final deadline = DateTime.now().add(timeout);
+    while (_hasActiveRemoteOperation && DateTime.now().isBefore(deadline)) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+  }
+
+  bool get _hasActiveRemoteOperation =>
+      _cloneCancellation != null ||
+      _fetchCancellation != null ||
+      _pullCancellation != null ||
+      _pushCancellation != null ||
+      _pushVerificationCancellation != null;
+
+  void _cancelActiveRemoteOperations() {
+    _cloneCancellation?.cancel();
+    _fetchCancellation?.cancel();
+    _pullCancellation?.cancel();
+    _pushCancellation?.cancel();
+    _pushVerificationCancellation?.cancel();
   }
 
   /// 中文：恢复上次成功打开的仓库和活动标签，不保存凭据或运行中的操作；失效路径会被丢弃。
@@ -666,7 +748,20 @@ final class RepositorySessionController
       );
       return succeeded;
     } on Object catch (error, stackTrace) {
-      final recovery = await _cloneRecoveryMessage(directoryPath);
+      final wasCancelled =
+          _operationOutcomeForError(error) ==
+          RepositoryOperationOutcome.cancelled;
+      // Cancellation after Git starts is represented by GitCommandException
+      // with a cancelled kind and may leave files behind. GitCancelledException
+      // is raised before the process starts, so it cannot create clone residue.
+      final recovery = error is GitCommandException
+          ? await _cloneRecoveryMessage(
+              directoryPath,
+              wasCancelled: wasCancelled,
+            )
+          : error is GitCancelledException
+          ? '克隆已取消，未留下文件，可以重试。'
+          : null;
       final message = recovery ?? _friendlyError(error);
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
@@ -685,6 +780,38 @@ final class RepositorySessionController
       if (identical(_cloneCancellation, cancellation)) {
         _cloneCancellation = null;
       }
+    }
+  }
+
+  /// 中文：在用户选择的存放位置下按远端仓库名创建子目录并克隆。
+  ///
+  /// English: Clones into a repository-named child of the selected parent.
+  Future<bool> cloneRepositoryIntoParent({
+    required String remoteUrl,
+    required String parentDirectoryPath,
+  }) async {
+    if (remoteUrl.trim().isEmpty || parentDirectoryPath.trim().isEmpty) {
+      return false;
+    }
+    try {
+      final targetPath = path_utils.join(
+        parentDirectoryPath.trim(),
+        cloneRepositoryNameFromRemote(remoteUrl),
+      );
+      return await cloneRepository(
+        remoteUrl: remoteUrl,
+        directoryPath: targetPath,
+      );
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        requestedPath: parentDirectoryPath.trim(),
+        isDiffLoading: false,
+        isCloneRunning: false,
+        message: _friendlyError(error),
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      return false;
     }
   }
 
@@ -1702,22 +1829,30 @@ final class RepositorySessionController
   ///
   /// English: Inspects residual clone-target contents and returns guidance for
   /// recovery or manual cleanup.
-  Future<String?> _cloneRecoveryMessage(String directoryPath) async {
+  Future<String?> _cloneRecoveryMessage(
+    String directoryPath, {
+    required bool wasCancelled,
+  }) async {
     final directory = Directory(directoryPath.trim());
     if (!await directory.exists()) {
-      return '克隆未完成，目标目录不存在，可重新选择目录后重试。';
+      return wasCancelled ? '克隆已取消，未留下文件，可以重试。' : '克隆未完成，目标目录不存在，可重新选择目录后重试。';
     }
     final entries = await directory.list(followLinks: false).toList();
     if (entries.isEmpty) {
-      return '克隆已取消或失败，目标目录仍为空，可以重试。';
+      return wasCancelled ? '克隆已取消，目标目录仍为空，可以重试。' : '克隆失败，目标目录仍为空，可以重试。';
     }
     final hasGitDirectory = entries.any(
       (entry) =>
           entry is Directory &&
           entry.path.endsWith('${Platform.pathSeparator}.git'),
     );
-    return hasGitDirectory
-        ? '克隆未完成，目标目录保留了部分 Git 数据。请检查后删除该目录或用命令行恢复。'
+    if (hasGitDirectory) {
+      return wasCancelled
+          ? '克隆已取消，目标目录保留了部分 Git 数据。请检查后删除该目录或用命令行恢复。'
+          : '克隆未完成，目标目录保留了部分 Git 数据。请检查后删除该目录或用命令行恢复。';
+    }
+    return wasCancelled
+        ? '克隆已取消，目标目录保留了部分文件。请检查后删除该目录再重试。'
         : '克隆未完成，目标目录已有部分文件。请检查后删除该目录再重试。';
   }
 

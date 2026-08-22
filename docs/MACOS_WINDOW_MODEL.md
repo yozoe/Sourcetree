@@ -1,109 +1,151 @@
-# macOS 窗口与进程模型
+# macOS 单进程多窗口模型
 
-日期：2026-08-21
+日期：2026-08-22
 
-状态：已实现，自动化与 Release 构建验证通过
+状态：已实现
 
 ## 目标
 
-Git Desktop 在 macOS 上采用“一个仓库首页 + 每个仓库一个独立工作区进程”的模型：
+Git Desktop 在 macOS 上采用“一个应用进程 + 一个仓库首页窗口 + 多个单仓库工作区窗口”的模型：
 
-- 首页是唯一显示 Dock 图标的仓库入口。
-- 一个工作区窗口只承载一个仓库。
-- 同一仓库路径只能存在一个工作区窗口。
-- 新窗口出现时位于最前方，重复点击已有仓库时激活已有窗口。
-- 工作区进程的创建和退出不会让 Dock 短暂出现第二个图标。
+- 整个 App 只有一个 `NSApplication` 进程和一个 Dock 图标。
+- 首页和每个工作区都是独立的原生 `NSWindow`。
+- 每个窗口拥有自己的 `FlutterEngine`、`FlutterViewController` 和 Dart isolate。
+- 一个工作区窗口只承载一个仓库，同一标准化仓库路径只能存在一个工作区窗口。
+- 新窗口位于最前方；重复打开同一仓库时激活已有窗口。
+- 明确退出 App 或在 `flutter run` 中按 `q` 时，整个进程及全部窗口一起退出。
 
-## 进程角色
+单进程是窗口生命周期和应用生命周期的边界；多 Engine 用于保持各工作区 UI 与仓库状态隔离，
+不再通过启动同一 app bundle 的多个实例实现窗口隔离。
 
-### 仓库首页
+## 进程与窗口角色
 
-首页进程使用 regular activation policy，负责：
+### 应用进程
 
-- 恢复并显示已知仓库清单。
-- 发起打开、克隆和初始化工作区请求。
-- 接收工作区成功加载仓库的通知。
-- 串行登记仓库并持久化会话快照。
-- 显示 LaunchServices 启动失败等用户可恢复错误。
+唯一的 regular app 进程负责：
 
-首页的 Riverpod 状态只属于首页进程。工作区不能通过写同一个会话文件假装直接修改首页
-内存，因此仓库成功加载后必须显式回传首页。
+- 持有 `AppDelegate`、Dock 菜单和应用级快捷键。
+- 创建并持有窗口协调器 `WindowCoordinator`。
+- 管理首页窗口和全部工作区窗口的创建、激活、关闭与去重。
+- 在应用退出时关闭全部 Flutter Engine、Git 子进程和原生资源。
 
-### 仓库工作区
+不再使用 accessory 工作区进程、PID 注册、进程启动时间、
+`DistributedNotificationCenter` 或 `NSWorkspace.openApplication` 创建工作区。
 
-每个工作区是由同一 app bundle 启动的独立 accessory 进程，负责一个仓库的 Git 状态、
-历史、Diff 和写操作。工作区不执行全局会话恢复；其初始仓库来自以下启动参数：
+### 仓库首页窗口
+
+首页窗口负责恢复并显示已知仓库清单，发起打开、克隆和初始化请求，并持久化成功打开的仓库。
+首页窗口可以被关闭；只要仍有工作区窗口，应用进程继续运行。工作区按 `Command + N` 时，
+窗口协调器激活已有首页窗口，或在首页已销毁时重新创建它。
+
+### 仓库工作区窗口
+
+每个工作区窗口拥有独立 Flutter Engine 和独立 Riverpod 容器，只加载一个标准化仓库路径，
+负责该仓库的 Git 状态、历史、Diff 和写操作。工作区不恢复首页的全局仓库清单，也不在同一
+窗口内切换为另一个仓库；“打开仓库”请求继续交给窗口协调器创建或激活目标工作区窗口。
+
+工作区初始配置由创建该 Engine 的原生宿主通过 `dartEntrypointArguments` 注入。这些参数属于
+当前进程中新建 Engine 的 Dart 入口，不是另一个应用进程的启动参数。
+
+## 原生结构
+
+建议的所有权关系如下：
 
 ```text
---git-desktop-workspace
---git-desktop-repository=<canonical path>
---git-desktop-action=<cloneRepository|initializeRepository>
+NSApplication / AppDelegate
+└── WindowCoordinator
+    ├── repositoryLibrary: MainFlutterWindow（NIB 创建的初始 Engine）
+    └── workspaces: [CanonicalRepositoryPath: WorkspaceWindowController]
+        └── FlutterEngine + FlutterViewController（每个仓库一组）
 ```
 
-在已有工作区中选择“打开仓库”时，应用会请求另一个独立工作区，而不是在当前进程追加
-仓库 tab。克隆或初始化成功后，原先没有仓库身份的工作区会注册最终仓库路径。
+`WindowCoordinator` 是窗口身份和生命周期的唯一事实来源。窗口控制器关闭时必须注销自身；
+Flutter 状态不得自行维护另一份原生窗口注册表。
 
 ## 打开与去重流程
 
 ```text
 首页/工作区选择仓库
   → Flutter MethodChannel: openWorkspace
-  → 原生层标准化路径并解析 symlink
-  → 已存在：发送激活通知并置前窗口
-  → 正在启动：追加到该路径的 completion 队列
-  → 尚未启动：LaunchServices 创建新的 app 实例
-  → 启动成功：完成所有等待请求
-  → 启动失败：向所有等待请求返回 FlutterError
+  → WindowCoordinator 标准化路径并解析 symlink
+  → 已存在：恢复最小化状态并激活已有 NSWindow
+  → 尚未创建：在主线程同步注册路径并在当前进程创建 FlutterEngine、FlutterViewController 和 NSWindow
+  → Engine 就绪：通过 Dart 入口参数注入仓库路径和初始动作
+  → 创建失败：向发起请求的 Engine 返回 FlutterError
 ```
 
-去重注册包含标准化仓库路径、PID 和进程启动时间。仅比较 PID 不安全，因为工作区退出后
-macOS 可以把相同 PID 分配给首页或另一个仓库进程。查找已有窗口时必须同时验证：
+去重键使用标准化仓库路径；由于全部窗口属于同一进程，不再需要 PID 和进程启动时间防止复用。
+同一路径窗口关闭后，协调器先移除对应注册，再允许创建新窗口。
 
-1. PID 仍对应运行中的应用。
-2. bundle identifier 和 bundle 路径与当前 app 一致。
-3. `NSRunningApplication.launchDate` 与注册的启动时间一致。
+## 窗口激活、快捷键与 Dock
 
-工作区正常退出时只在注册 PID 仍属于自身时删除记录，避免清理后来进程的新注册。
+App 以普通 regular activation policy 运行，所有窗口共享唯一 Dock 图标。工作区不再需要
+`LSUIElement`、accessory policy 或临时启动另一个 app 实例来隐藏额外 Dock tile。
 
-## 前台激活与 Dock
+窗口协调器直接执行以下操作：
 
-`Info.plist` 将 app 声明为 `LSUIElement`，因此 LaunchServices 创建任何新进程时都不会先
-产生 Dock tile。`AppDelegate` 在首页进程初始化时将 activation policy 提升为 regular；
-工作区保持 accessory。
+- `Command + ~`：在仓库首页与最近获得焦点的工作区之间切换。
+- 工作区中的 `Command + N`：显示或激活仓库首页。
+- 重复打开同一仓库：取消最小化、移动到当前 Space 并置前已有窗口。
+- App 的 `Quit` 或 `flutter run` 的 `q`：终止唯一进程，全部窗口一起退出。
 
-新工作区完成原生窗口初始化后会：
+协调器使用有序的 MRU 记录维护工作区焦点历史；当前工作区关闭后，切换目标是仍存活窗口中
+最近获得过焦点的一个，而不是依赖字典枚举顺序。
 
-1. 移动到当前 Space。
-2. 取消最小化并激活进程。
-3. 将窗口短暂设为 floating 并 `orderFrontRegardless`。
-4. 200 ms 后恢复 normal level，同时保持 key window 和前台顺序。
+快捷键由应用菜单或应用级事件处理器路由到 `WindowCoordinator`，不再发送跨进程通知。
 
-这一短暂层级只用于跨应用启动时可靠置前，不会让仓库窗口长期覆盖其他应用。
+## 跨窗口状态
 
-## 首页同步
+多个 Flutter Engine 拥有不同 Dart isolate，不能直接共享 Riverpod 内存。跨窗口协调通过当前
+进程内的原生协调器完成：
 
-工作区进入 ready 状态后通过 MethodChannel 向其原生宿主报告标准化仓库路径。原生宿主：
+1. 工作区进入 ready 状态后，通过 MethodChannel 报告标准化仓库路径。
+2. 协调器更新工作区注册并通知首页 Engine。
+3. 首页等待初始会话恢复结束，再按接收顺序登记仓库。
+4. 主题或其他全局偏好持久化后，由协调器广播给所有存活 Engine，文件仍作为重启后的事实来源。
 
-1. 更新该工作区的去重注册和激活目标。
-2. 通过 `DistributedNotificationCenter` 通知首页进程。
-3. 首页原生窗口将通知转发给 Flutter。
-4. 首页等待初始会话恢复结束，再按接收顺序打开并登记仓库。
+这里是进程内消息路由，不使用分布式通知，也不依赖不同进程刷新同一份 `UserDefaults` 缓存。
 
-串行队列保证两个工作区同时完成时，不会让 `repositoryGeneration` 互相失效，也不会基于
-同一个旧快照产生最后写入者覆盖。
+## 关闭与退出语义
 
-## 主题共享
+- 关闭工作区窗口：销毁该窗口控制器和对应 Flutter Engine，不影响其他窗口。
+- 关闭仓库首页窗口：隐藏或销毁首页窗口，但应用在存在工作区时继续运行。
+- 工作区按 `Command + N`：重新显示或创建首页窗口。
+- 明确退出 App：按顺序停止全部窗口、Engine 和 Git 子进程，然后结束唯一进程。
+- `flutter run` 控制台按 `q`：终止被调试的唯一应用进程，因此全部窗口一起退出。
 
-主题模式和主题色保存在应用支持目录的 `ui-preferences.json`。每次保存先写独占临时文件，
-刷新后以 rename 替换目标；其他进程监听父目录事件并重新加载，因此首页和工作区会同步主题。
-无法读取或解析时使用系统模式与 Cobalt 默认主题，保存失败只影响持久化，不撤销当前切换。
+工作区关闭或应用退出前，原生协调器先通过 `prepareToClose` 请求对应 Dart isolate 取消
+Clone、Fetch、Pull、Push 和 AskPass，卸载 Widget 树并释放该 Engine 的 Riverpod 容器。
+收到回执后才销毁 Engine；回执异常时使用有界超时，避免退出流程永久挂起。
+
+不再存在“仓库首页进程退出但工作区进程残留”或“工作区重新启动首页进程”的状态。
+
+## Flutter 调试边界
+
+单进程保证一次 `flutter run` 控制整个 App 的退出生命周期，但不承诺动态创建的所有
+Flutter Engine 都自动加入同一次热重载或热重启。当前调试边界是：
+
+- `q` 必须结束整个进程和全部窗口。
+- `r`/`R` 至少作用于 `flutter run` 直接连接的初始 Engine。
+- 若次级 Engine 不能稳定热更新，开发文档必须明确要求关闭并重新创建对应工作区窗口。
+- Swift/AppKit 修改始终需要停止并重新执行 `flutter run`。
+
+不能为了宣称“所有窗口可热重载”而重新引入多个应用进程。
 
 ## 安装与升级
 
-`./install_macos.sh` 会先请求首页退出，再终止仍属于已安装 bundle 的 accessory 工作区。
-确认全部进程退出后，新 app 和旧 app 都暂存在 `/Applications` 下的同一隐藏目录中完成替换。
-安装或 LaunchServices 注册失败时恢复旧 app；成功后删除暂存目录并正常启动，不保留会造成
-LaunchServices 或 Dock 识别冲突的第二个 app bundle。
+`./install_macos.sh` 只需要请求唯一的已安装应用进程退出，并确认该进程结束后替换 app bundle。
+不再枚举或强制清理 accessory 工作区进程。替换或 LaunchServices 注册失败时仍需恢复旧版本，
+且不得留下重复 app bundle。
+
+## 实现状态
+
+- `WindowCoordinator` 和 `WorkspaceFlutterWindowController` 已在唯一应用进程中管理工作区。
+- 每个工作区拥有独立 Flutter Engine，关闭窗口时注销路径、移除 MethodChannel handler 并关闭 Engine。
+- 窗口路由已改为进程内 MethodChannel；工作区 app 实例、PID 注册、分布式通知、accessory policy
+  和孤儿进程清理逻辑均已删除。
+- 安装脚本只管理 `/Applications/Git Desktop.app` 的唯一进程。
+- 原生测试覆盖 Engine 入口参数、路径索引替换与清理、`Command + N` 和 `Command + ~` 识别。
 
 ## 验证
 
@@ -117,10 +159,13 @@ flutter build macos --release
 
 macOS 人工冒烟应覆盖：
 
-1. 首页点击仓库后，新窗口位于最前方且 Dock 始终只有一个图标。
-2. 快速连续点击同一仓库，只出现一个工作区。
+1. 首页点击仓库后，新工作区窗口位于最前方且 Dock 始终只有一个图标。
+2. 快速连续点击同一仓库，只出现一个工作区窗口。
 3. 再次点击已打开仓库，已有窗口从最小化或其他 Space 恢复并置前。
 4. 同时打开两个不同仓库，两个工作区各自只显示自己的仓库。
-5. 克隆或初始化成功后，仓库立即出现在仍打开的首页中。
-6. 退出工作区并反复打开不同仓库，不会因 PID 复用激活错误窗口。
-7. 人为制造 LaunchServices 启动失败时，首页显示错误而不是静默无响应。
+5. 克隆或初始化成功后，仓库立即出现在仍打开或重新创建的首页中。
+6. 关闭一个工作区不会影响其他窗口，再次打开同一路径会创建新的工作区。
+7. `Command + ~` 可在首页与最近使用的工作区之间往返。
+8. 工作区按 `Command + N` 会显示首页，首页中的相同按键仍交给产品定义的首页行为。
+9. 明确退出 App 或在 `flutter run` 中按 `q`，全部窗口和应用进程同时结束。
+10. 验证 `r`/`R` 对初始 Engine 和次级 Engine 的实际影响，并记录不支持的调试边界。

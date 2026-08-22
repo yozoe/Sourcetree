@@ -576,14 +576,17 @@ class _RepositoryToolbar extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (constraints.maxWidth >= 620)
+                if (constraints.maxWidth >= 620) ...[
+                  const SizedBox(width: 12),
                   SizedBox(
                     width: constraints.maxWidth >= 940 ? 220 : 150,
+                    height: 32,
                     child: _HistorySearchField(
                       query: repository.searchQuery,
                       onChanged: callbacks.onSearchChanged,
                     ),
                   ),
+                ],
                 const SizedBox(width: 10),
               ],
             );
@@ -751,8 +754,9 @@ class _HistorySearchField extends StatelessWidget {
         decoration: const InputDecoration(
           hintText: '搜索提交',
           prefixIcon: Icon(Icons.search, size: 17),
+          prefixIconConstraints: BoxConstraints(minWidth: 34, minHeight: 32),
           isDense: true,
-          contentPadding: EdgeInsets.symmetric(horizontal: 8, vertical: 8),
+          contentPadding: EdgeInsets.only(right: 10),
           border: OutlineInputBorder(),
         ),
       ),

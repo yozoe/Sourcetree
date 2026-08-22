@@ -351,9 +351,9 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Initializing repository');
   }
 
-  /// 中文：仅向已有的空目录克隆远端 URL，并将取消令牌和 AskPass 环境传给 Git。
+  /// 中文：向不存在或已有的空目录克隆远端 URL，并将取消令牌和 AskPass 环境传给 Git。
   ///
-  /// English: Clones a remote URL only into an existing empty directory and
+  /// English: Clones a remote URL into a missing or existing empty directory and
   /// forwards cancellation and AskPass environment to Git.
   Future<void> cloneRepository({
     required String remoteUrl,
@@ -366,11 +366,21 @@ final class GitRepositoryWriter {
       throw ArgumentError.value(remoteUrl, 'remoteUrl', 'Must not be empty.');
     }
     final directory = Directory(directoryPath.trim());
-    if (!await directory.exists()) {
-      throw const GitException('The selected directory no longer exists.');
-    }
-    if (!await directory.list(followLinks: false).isEmpty) {
+    final targetType = await FileSystemEntity.type(
+      directory.path,
+      followLinks: false,
+    );
+    if (targetType == FileSystemEntityType.directory &&
+        !await directory.list(followLinks: false).isEmpty) {
       throw const GitException('只能克隆到空目录，避免覆盖现有文件。');
+    }
+    if (targetType != FileSystemEntityType.notFound &&
+        targetType != FileSystemEntityType.directory) {
+      throw const GitException('克隆目标已存在，但它不是目录。');
+    }
+    if (targetType == FileSystemEntityType.notFound &&
+        !await directory.parent.exists()) {
+      throw const GitException('所选存放位置已不存在。');
     }
     final result = await runner.run(
       GitInvocation(

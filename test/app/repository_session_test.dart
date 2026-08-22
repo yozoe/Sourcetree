@@ -5,11 +5,33 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:git_desktop/src/app/repository_session.dart';
 import 'package:git_desktop/src/app/repository_session_store.dart';
 import 'package:git_desktop/src/app/repository_view_mapper.dart';
+import 'package:git_desktop/src/git/git.dart';
 import 'package:git_desktop/src/presentation/presentation.dart';
 
 import '../support/git_test_repository.dart';
 
 void main() {
+  test('derives clone directory names from common remote formats', () {
+    expect(
+      cloneRepositoryNameFromRemote('https://example.com/team/source-tree.git'),
+      'source-tree',
+    );
+    expect(
+      cloneRepositoryNameFromRemote('git@example.com:team/source-tree.git'),
+      'source-tree',
+    );
+    expect(
+      cloneRepositoryNameFromRemote(
+        'ssh://example.com/team/source%20tree.git?ref=main',
+      ),
+      'source tree',
+    );
+    expect(
+      cloneRepositoryNameFromRemote('/tmp/source-tree.git/'),
+      'source-tree',
+    );
+  });
+
   test('loads selected commit files, statistics and file diff', () async {
     final repository = await GitTestRepository.create();
     addTearDown(repository.dispose);
@@ -461,6 +483,190 @@ void main() {
     expect(operation.kind, RepositoryOperationKind.clone);
     expect(operation.outcome, RepositoryOperationOutcome.succeeded);
     expect(operation.completedAt, isNotNull);
+  });
+
+  test('clones into a named child of a selected non-empty parent', () async {
+    final source = await GitTestRepository.create();
+    addTearDown(source.dispose);
+    await source.writeFile('README.md', '# Git Desktop\n');
+    await source.commit('Initial commit');
+    final origin = await source.createBareOrigin();
+    await source.runGit(['push', 'origin', 'main']);
+    final parent = await Directory.systemTemp.createTemp(
+      'git-desktop-clone-parent-',
+    );
+    addTearDown(() => parent.delete(recursive: true));
+    final existingFile = File(
+      '${parent.path}${Platform.pathSeparator}existing-project.txt',
+    );
+    await existingFile.writeAsString('keep');
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+
+    expect(
+      await container
+          .read(repositorySessionProvider.notifier)
+          .cloneRepositoryIntoParent(
+            remoteUrl: origin.path,
+            parentDirectoryPath: parent.path,
+          ),
+      isTrue,
+    );
+
+    final target = Directory('${parent.path}${Platform.pathSeparator}origin');
+    expect(await existingFile.readAsString(), 'keep');
+    expect(await File('${target.path}/README.md').exists(), isTrue);
+    expect(
+      container.read(repositorySessionProvider).repository!.workTreeRoot,
+      await target.resolveSymbolicLinks(),
+    );
+  });
+
+  test('does not overwrite a non-empty same-name clone directory', () async {
+    final parent = await Directory.systemTemp.createTemp(
+      'git-desktop-clone-conflict-',
+    );
+    addTearDown(() => parent.delete(recursive: true));
+    final target = Directory('${parent.path}${Platform.pathSeparator}project');
+    await target.create();
+    final existingFile = File('${target.path}/keep.txt');
+    await existingFile.writeAsString('keep');
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+
+    expect(
+      await container
+          .read(repositorySessionProvider.notifier)
+          .cloneRepositoryIntoParent(
+            remoteUrl: 'https://example.com/team/project.git',
+            parentDirectoryPath: parent.path,
+          ),
+      isFalse,
+    );
+
+    expect(await existingFile.readAsString(), 'keep');
+    expect(
+      container.read(repositorySessionProvider).message,
+      '只能克隆到空目录，避免覆盖现有文件。',
+    );
+  });
+
+  test(
+    'reports no residue when clone is cancelled before Git starts',
+    () async {
+      final parent = await Directory.systemTemp.createTemp(
+        'git-desktop-clone-cancel-',
+      );
+      addTearDown(() => parent.delete(recursive: true));
+      final target = Directory(
+        '${parent.path}${Platform.pathSeparator}project',
+      );
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+
+      final clone = controller.cloneRepository(
+        remoteUrl: 'https://example.invalid/team/project.git',
+        directoryPath: target.path,
+      );
+      controller.cancelClone();
+
+      expect(await clone, isFalse);
+      expect(await target.exists(), isFalse);
+      final state = container.read(repositorySessionProvider);
+      expect(state.message, '克隆已取消，未留下文件，可以重试。');
+      expect(
+        state.operations.single.outcome,
+        RepositoryOperationOutcome.cancelled,
+      );
+    },
+  );
+
+  test('reports partial Git data when a running clone is cancelled', () async {
+    if (Platform.isWindows) return;
+    final parent = await Directory.systemTemp.createTemp(
+      'git-desktop-clone-running-cancel-',
+    );
+    addTearDown(() => parent.delete(recursive: true));
+    final helper = File('${parent.path}/fake-git');
+    await helper.writeAsString('''#!/bin/sh
+target="\$5"
+mkdir -p "\$target/.git"
+printf partial > "\$target/.git/partial"
+while true; do sleep 1; done
+''');
+    final chmod = await Process.run('chmod', ['+x', helper.path]);
+    expect(chmod.exitCode, 0);
+    final target = Directory('${parent.path}/project');
+    final marker = File('${target.path}/.git/partial');
+    final container = ProviderContainer(
+      overrides: [
+        gitRunnerProvider.overrideWithValue(GitRunner(executable: helper.path)),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+
+    final clone = controller.cloneRepository(
+      remoteUrl: 'https://example.invalid/team/project.git',
+      directoryPath: target.path,
+    );
+    for (var attempt = 0; attempt < 200 && !await marker.exists(); attempt++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(await marker.exists(), isTrue);
+    controller.cancelClone();
+
+    expect(await clone, isFalse);
+    final state = container.read(repositorySessionProvider);
+    expect(state.message, contains('目标目录保留了部分 Git 数据'));
+    expect(
+      state.operations.single.outcome,
+      RepositoryOperationOutcome.cancelled,
+    );
+  });
+
+  test('prepares a workspace shutdown by stopping a running clone', () async {
+    if (Platform.isWindows) return;
+    final parent = await Directory.systemTemp.createTemp(
+      'git-desktop-clone-shutdown-',
+    );
+    addTearDown(() => parent.delete(recursive: true));
+    final helper = File('${parent.path}/fake-git');
+    await helper.writeAsString('''#!/bin/sh
+target="\$5"
+mkdir -p "\$target/.git"
+printf partial > "\$target/.git/partial"
+while true; do sleep 1; done
+''');
+    final chmod = await Process.run('chmod', ['+x', helper.path]);
+    expect(chmod.exitCode, 0);
+    final target = Directory('${parent.path}/project');
+    final marker = File('${target.path}/.git/partial');
+    final container = ProviderContainer(
+      overrides: [
+        gitRunnerProvider.overrideWithValue(GitRunner(executable: helper.path)),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+
+    final clone = controller.cloneRepository(
+      remoteUrl: 'https://example.invalid/team/project.git',
+      directoryPath: target.path,
+    );
+    for (var attempt = 0; attempt < 200 && !await marker.exists(); attempt++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(await marker.exists(), isTrue);
+
+    await controller.prepareForShutdown(timeout: const Duration(seconds: 5));
+
+    expect(await clone, isFalse);
+    expect(
+      container.read(repositorySessionProvider).operations.single.outcome,
+      RepositoryOperationOutcome.cancelled,
+    );
   });
 
   test(

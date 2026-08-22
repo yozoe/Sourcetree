@@ -130,21 +130,26 @@ RepositoryId = canonical common-dir + canonical worktree root
 不能只用目录路径，否则无法正确区分 linked worktree、bare repo、submodule
 和普通仓库。
 
-### macOS 窗口与进程模型
+### macOS 单进程多窗口模型
 
-- 仓库首页是唯一的常规前台应用进程，负责恢复、展示和持久化已知仓库清单。
-- 每个工作区由独立 accessory 进程承载，只加载启动参数指定的一个仓库，不恢复首页的
-  全局仓库列表，也不在窗口内切换到第二个仓库。
-- 原生层按解析 symlink 后的标准化仓库路径去重。窗口正在启动时，后续点击加入同一个
-  completion 队列；窗口已存在时，激活并置前该窗口。
-- 工作区 PID 注册同时记录进程启动时间，防止 PID 被复用后激活错误窗口；正常退出时仅
-  清理仍属于当前 PID 的注册项。
-- LaunchServices 的异步启动结果必须通过 MethodChannel 返回 Flutter。失败不能只写日志，
-  首页和工作区都必须显示可见错误。
-- 工作区成功加载或创建仓库后，通过进程间通知回传首页。首页等待初始恢复完成并串行处理
-  回传，避免并发打开造成 generation 互相失效或覆盖会话快照。
-- 所有进程启动时均为 `LSUIElement`；只有首页在窗口出现前提升为 regular app，工作区始终
-  保持 accessory，避免创建瞬时或永久的第二个 Dock 图标。
+- 唯一的 regular app 进程持有首页窗口和全部工作区窗口，始终只有一个 Dock 图标。
+- 首页及每个工作区都是独立 `NSWindow`，分别拥有 Flutter Engine、FlutterViewController
+  和 Dart isolate；每个工作区只加载一个仓库。
+- `WindowCoordinator` 按解析 symlink 后的标准化仓库路径管理窗口。窗口正在创建时，后续
+  点击加入同一个 completion 队列；窗口已存在时，直接恢复并置前。
+- 工作区窗口在当前进程内创建，不再启动新的 app 实例，也不再保存 PID、进程启动时间或
+  accessory 进程注册。
+- Flutter Engine 创建结果必须通过 MethodChannel 返回调用窗口。失败不能只写日志，首页和
+  工作区都必须显示可见错误。
+- 工作区成功加载或创建仓库后，通过当前进程的窗口协调器通知首页 Engine。首页等待初始恢复
+  完成并串行处理回传，避免 generation 互相失效或覆盖会话快照。
+- 明确退出 App 或在 `flutter run` 中按 `q` 时终止唯一进程，全部窗口、Engine 和 Git 子进程
+  一起退出；关闭单个窗口只释放该窗口自己的资源。
+- 关闭窗口或退出前先通过 MethodChannel 执行有界的 Dart 清理握手，取消活动远端 Git 操作、
+  关闭 AskPass 并释放对应 ProviderContainer，再销毁 Flutter Engine。
+- 工作区切换使用有序 MRU 记录；关闭当前工作区后继续指向仍存活窗口中最近使用的一个。
+- 单进程不等于所有次级 Flutter Engine 必然支持同一次热重载，必须针对当前 Flutter 版本验证
+  `r`/`R` 的实际覆盖范围并记录开发边界。
 
 完整生命周期与不变量见 [MACOS_WINDOW_MODEL.md](MACOS_WINDOW_MODEL.md)。
 
@@ -285,19 +290,21 @@ detached HEAD、SHA-1/SHA-256 等边界。
 
 ### P1：MVP 垂直闭环
 
-当前进度（2026-08-21）：进行中。
+当前进度（2026-08-22）：进行中。
 
-已完成并由真实 Git fixture 覆盖：
+以下产品行为已完成并由真实 Git fixture 或原生单元测试覆盖：
 
 - 单仓库打开、空目录初始化和克隆到空目录。
-- 独立仓库首页与单仓库工作区：首页按父目录分组并筛选已知仓库；点击仓库创建独立的
-  Dock-less accessory 工作区进程。同一标准化路径只允许一个工作区，重复点击激活已有窗口，
-  启动中的重复请求共享异步结果。工作区内打开其他仓库会继续走新窗口入口。
+- 独立仓库首页与单仓库工作区界面：首页按父目录分组并筛选已知仓库；同一标准化路径只允许
+  一个工作区，重复点击激活已有窗口。工作区内打开其他仓库会继续走新窗口入口。
 - 仓库清单恢复与跨窗口同步：本机应用支持目录仅保存成功打开的 worktree 路径和最后激活项；
   首页启动时顺序恢复并自动丢弃失效路径。工作区不恢复全局清单，成功打开、克隆或初始化后
-  回传首页串行登记；不保存凭据、Git 操作记录或仓库内容。
-- macOS Dock 与激活：所有进程由 `LSUIElement` 启动，首页提升为 regular app，工作区保持
-  accessory；新工作区短暂提升窗口层级确保位于最前方，但不会产生第二个 Dock 图标。
+  通过进程内协调器回传首页串行登记；不保存凭据、Git 操作记录或仓库内容。
+- macOS Dock 与激活：唯一 regular app 进程管理全部窗口；窗口协调器负责恢复最小化窗口、
+  移动到当前 Space 并置前，不创建额外 Dock 图标。
+- macOS 单进程多窗口宿主：首页使用初始 Flutter Engine，每个工作区在当前进程创建并持有独立
+  Engine；关闭窗口释放对应 Engine，退出 App 或 `flutter run` 按 `q` 会结束全部窗口。
+  工作区 `Command + N` 显示首页，`Command + ~` 在首页与最近使用的工作区之间切换。
 - 共享主题偏好：系统/浅色/深色模式及多套 Workbench 主题色写入原子偏好文件，并通过文件
   监听同步到所有已打开窗口。
 - 工作区状态、整文件 stage/unstage、Unified Diff、基础历史 DAG 和提交详情；提交图采用
@@ -455,3 +462,5 @@ CRLF、长路径、大小写、symlink、可执行位、窗口和系统菜单差
    Keychain 兼容性，完成凭据泄漏扫描。
 2. 扩展 macOS UI E2E，覆盖原生目录选择/Clone、同仓库窗口去重、前台激活、Dock 单图标，
    以及认证等待、取消、恢复和远端结果核验。
+3. 人工验证当前 Flutter 版本中 `r`/`R` 对动态创建的次级 Engine 的覆盖范围，并记录工作区
+   窗口需要关闭重建的场景。
