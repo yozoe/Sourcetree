@@ -84,6 +84,72 @@ void main() {
     expect(restored.entries.single.kind, GitFileStatusKind.untracked);
   });
 
+  test('resolves a conflicted file using the selected side', () async {
+    final repository = await _createContentConflict(fixture, inspector);
+    final conflicted = (await reader.readStatus(repository)).entries.single;
+
+    await writer.resolveConflictUsingSide(
+      repository,
+      conflicted.path,
+      useOurs: true,
+    );
+
+    final resolved = await reader.readStatus(repository);
+    expect(resolved.conflictedEntries, isEmpty);
+    expect(resolved.entries, isEmpty);
+    expect(
+      await File(
+        '${fixture.workingDirectory.path}${Platform.pathSeparator}conflict.txt',
+      ).readAsString(),
+      'main version\n',
+    );
+  });
+
+  test('writes and stages a custom internal Diff conflict result', () async {
+    final repository = await _createContentConflict(fixture, inspector);
+    final conflicted = (await reader.readStatus(repository)).entries.single;
+
+    await writer.resolveConflictWithContent(
+      repository,
+      conflicted.path,
+      'custom merged result\n',
+    );
+
+    final resolved = await reader.readStatus(repository);
+    expect(resolved.conflictedEntries, isEmpty);
+    expect(resolved.stagedEntries, hasLength(1));
+    expect(
+      await File(
+        '${fixture.workingDirectory.path}${Platform.pathSeparator}conflict.txt',
+      ).readAsString(),
+      'custom merged result\n',
+    );
+  });
+
+  test(
+    'marks a resolved file unresolved and rebuilds conflict markers',
+    () async {
+      final repository = await _createContentConflict(fixture, inspector);
+      final conflicted = (await reader.readStatus(repository)).entries.single;
+      await writer.stagePath(repository, conflicted.path);
+      expect((await reader.readStatus(repository)).conflictedEntries, isEmpty);
+
+      await writer.markConflictUnresolved(repository, conflicted.path);
+      expect(
+        (await reader.readStatus(repository)).conflictedEntries,
+        hasLength(1),
+      );
+
+      await writer.restartConflictMerge(repository, conflicted.path);
+      final contents = await File(
+        '${fixture.workingDirectory.path}${Platform.pathSeparator}conflict.txt',
+      ).readAsString();
+      expect(contents, contains('<<<<<<<'));
+      expect(contents, contains('main version'));
+      expect(contents, contains('feature version'));
+    },
+  );
+
   test('refuses to mutate a path that is not valid UTF-8', () async {
     final repository = (await inspector.inspect(
       fixture.workingDirectory.path,
@@ -601,6 +667,41 @@ void main() {
     },
   );
 
+  test('creates a same-named origin branch on first push', () async {
+    await fixture.writeFile('README.md', '# First push\n');
+    final localHead = await fixture.commit('Initial commit');
+    final origin = await fixture.createBareOrigin();
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await writer.pushUpstream(repository);
+
+    expect(
+      (await fixture.runGit([
+        'rev-parse',
+        'refs/heads/main',
+      ], workingDirectory: origin)).stdout.toString().trim(),
+      localHead,
+    );
+    expect(
+      (await fixture.runGit([
+        'config',
+        '--get',
+        'branch.main.remote',
+      ])).stdout.toString().trim(),
+      'origin',
+    );
+    expect(
+      (await fixture.runGit([
+        'config',
+        '--get',
+        'branch.main.merge',
+      ])).stdout.toString().trim(),
+      'refs/heads/main',
+    );
+  });
+
   test(
     'pushes only the current upstream when push.default is matching',
     () async {
@@ -715,4 +816,33 @@ void main() {
       throwsA(isA<GitCancelledException>()),
     );
   });
+}
+
+Future<GitRepository> _createContentConflict(
+  GitTestRepository fixture,
+  GitRepositoryInspector inspector,
+) async {
+  await fixture.writeFile('conflict.txt', 'base\n');
+  await fixture.commit('Base');
+  await fixture.runGit(['branch', 'feature/conflict-actions']);
+  await fixture.runGit(['switch', 'feature/conflict-actions']);
+  await fixture.writeFile('conflict.txt', 'feature version\n');
+  await fixture.commit('Feature version');
+  await fixture.runGit(['switch', 'main']);
+  await fixture.writeFile('conflict.txt', 'main version\n');
+  await fixture.commit('Main version');
+  final merge = await fixture.runGit([
+    'merge',
+    '--no-edit',
+    'feature/conflict-actions',
+  ], throwOnError: false);
+  expect(merge.exitCode, isNot(0));
+  final repository = (await inspector.inspect(fixture.workingDirectory.path))!;
+  expect(
+    (await GitRepositoryReader(
+      GitRunner(),
+    ).readStatus(repository)).conflictedEntries,
+    hasLength(1),
+  );
+  return repository;
 }

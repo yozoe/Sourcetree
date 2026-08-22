@@ -17,6 +17,11 @@ typedef RepositoryChangeCallback =
     void Function(RepositoryChangeViewData? change);
 typedef RepositoryChangeStageCallback =
     void Function(RepositoryChangeViewData change);
+typedef RepositoryConflictActionCallback =
+    void Function(
+      RepositoryChangeViewData change,
+      RepositoryConflictAction action,
+    );
 typedef RepositoryCommitFileCallback = void Function(CommitFileViewData? file);
 
 /// Interaction surface for [RepositoryOverview].
@@ -33,6 +38,7 @@ final class RepositoryOverviewCallbacks {
     this.onCommitSelected,
     this.onChangeSelected,
     this.onChangeStageToggled,
+    this.onConflictAction,
     this.onCommitFileSelected,
     this.onLayoutChanged,
   });
@@ -45,6 +51,7 @@ final class RepositoryOverviewCallbacks {
   final RepositoryCommitCallback? onCommitSelected;
   final RepositoryChangeCallback? onChangeSelected;
   final RepositoryChangeStageCallback? onChangeStageToggled;
+  final RepositoryConflictActionCallback? onConflictAction;
   final RepositoryCommitFileCallback? onCommitFileSelected;
   final ValueChanged<RepositoryOverviewLayout>? onLayoutChanged;
 }
@@ -125,6 +132,20 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
       setState(() => _selectedRefId = reference.id);
     }
     widget.callbacks.onRefActivated?.call(reference);
+  }
+
+  /// 中文：从历史列表中的未提交记录返回工作区文件状态。
+  /// English: Returns to workspace changes from the uncommitted history row.
+  void _selectWorkspace(RepositoryViewData repository) {
+    for (final reference in repository.refs) {
+      if (reference.kind == RepositoryRefKind.workspace) {
+        if (_selectedRefId != reference.id) {
+          setState(() => _selectedRefId = reference.id);
+        }
+        widget.callbacks.onRefSelected?.call(reference);
+        return;
+      }
+    }
   }
 
   /// 中文：更新可调整面板的布局并通知上层回调保存新尺寸。
@@ -262,10 +283,12 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                 child: _HistoryPane(
                   repository: repository,
                   onSelected: widget.callbacks.onCommitSelected,
+                  onWorkspaceSelected: () => _selectWorkspace(repository),
                 ),
               ),
-              _ResizeDivider(
-                axis: Axis.horizontal,
+              _HistorySplitBar(
+                query: repository.searchQuery,
+                onSearchChanged: widget.callbacks.onSearchChanged,
                 semanticsLabel: '调整改动面板高度',
                 onDelta: (double delta) => _updateLayout(
                   _layout.copyWith(changesHeight: changesHeight - delta),
@@ -273,26 +296,37 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
               ),
               SizedBox(
                 height: changesHeight,
-                child: _SelectedChangesPane(
-                  repository: repository,
-                  onSelected: widget.callbacks.onChangeSelected,
-                  onStageToggled: widget.callbacks.onChangeStageToggled,
-                  onCommitFileSelected: widget.callbacks.onCommitFileSelected,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    Expanded(
+                      child: _SelectedChangesPane(
+                        repository: repository,
+                        onSelected: widget.callbacks.onChangeSelected,
+                        onStageToggled: widget.callbacks.onChangeStageToggled,
+                        onConflictAction: widget.callbacks.onConflictAction,
+                        onCommitFileSelected:
+                            widget.callbacks.onCommitFileSelected,
+                      ),
+                    ),
+                    _ResizeDivider(
+                      axis: Axis.vertical,
+                      semanticsLabel: '调整提交详情宽度',
+                      onDelta: (double delta) => _updateLayout(
+                        _layout.copyWith(detailsWidth: detailsWidth - delta),
+                      ),
+                    ),
+                    SizedBox(
+                      width: detailsWidth,
+                      child: _CommitDetailsPane(
+                        details: repository.selectedCommit,
+                      ),
+                    ),
+                  ],
                 ),
               ),
             ],
           ),
-        ),
-        _ResizeDivider(
-          axis: Axis.vertical,
-          semanticsLabel: '调整提交详情宽度',
-          onDelta: (double delta) => _updateLayout(
-            _layout.copyWith(detailsWidth: detailsWidth - delta),
-          ),
-        ),
-        SizedBox(
-          width: detailsWidth,
-          child: _CommitDetailsPane(details: repository.selectedCommit),
         ),
       ],
     );
@@ -342,10 +376,12 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                 child: _HistoryPane(
                   repository: repository,
                   onSelected: widget.callbacks.onCommitSelected,
+                  onWorkspaceSelected: () => _selectWorkspace(repository),
                 ),
               ),
-              _ResizeDivider(
-                axis: Axis.horizontal,
+              _HistorySplitBar(
+                query: repository.searchQuery,
+                onSearchChanged: widget.callbacks.onSearchChanged,
                 semanticsLabel: '调整检查器高度',
                 onDelta: (double delta) => _updateLayout(
                   _layout.copyWith(changesHeight: changesHeight - delta),
@@ -361,6 +397,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                   repository: repository,
                   onChangeSelected: widget.callbacks.onChangeSelected,
                   onChangeStageToggled: widget.callbacks.onChangeStageToggled,
+                  onConflictAction: widget.callbacks.onConflictAction,
                   onCommitFileSelected: widget.callbacks.onCommitFileSelected,
                 ),
               ),
@@ -387,11 +424,15 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
       _CompactPane.history => _HistoryPane(
         repository: repository,
         onSelected: widget.callbacks.onCommitSelected,
+        onWorkspaceSelected: () => _selectWorkspace(repository),
+        showSearch: true,
+        onSearchChanged: widget.callbacks.onSearchChanged,
       ),
       _CompactPane.changes => _SelectedChangesPane(
         repository: repository,
         onSelected: widget.callbacks.onChangeSelected,
         onStageToggled: widget.callbacks.onChangeStageToggled,
+        onConflictAction: widget.callbacks.onConflictAction,
         onCommitFileSelected: widget.callbacks.onCommitFileSelected,
       ),
       _CompactPane.details => _CommitDetailsPane(
@@ -487,106 +528,109 @@ class _RepositoryToolbar extends StatelessWidget {
                   color: colors.outlineVariant,
                 ),
                 Expanded(
-                  child: SingleChildScrollView(
-                    scrollDirection: Axis.horizontal,
-                    child: Row(
-                      children: [
-                        _ToolbarAction(
-                          action: RepositoryAction.openRepository,
-                          icon: Icons.folder_open_outlined,
-                          label: '打开仓库',
-                          showLabel: showLabels,
-                          repository: repository,
-                          onAction: callbacks.onAction,
-                        ),
-                        _ToolbarAction(
-                          action: repository.isFetching
-                              ? RepositoryAction.cancelFetch
-                              : RepositoryAction.fetch,
-                          icon: repository.isFetching
-                              ? Icons.cancel_outlined
-                              : Icons.sync,
-                          label: repository.isFetching ? '取消获取' : '获取',
-                          showLabel: showLabels,
-                          repository: repository,
-                          onAction: callbacks.onAction,
-                          isBusy: repository.isFetching,
-                        ),
-                        _ToolbarAction(
-                          action: repository.isPulling
-                              ? RepositoryAction.cancelPull
-                              : RepositoryAction.pull,
-                          icon: repository.isPulling
-                              ? Icons.cancel_outlined
-                              : Icons.south,
-                          label: repository.isPulling ? '取消拉取' : '拉取',
-                          showLabel: showLabels,
-                          repository: repository,
-                          onAction: callbacks.onAction,
-                          isBusy: repository.isPulling,
-                        ),
-                        _ToolbarAction(
-                          action: repository.isPushing
-                              ? RepositoryAction.cancelPush
-                              : RepositoryAction.push,
-                          icon: repository.isPushing
-                              ? Icons.cancel_outlined
-                              : Icons.north,
-                          label: repository.isPushing ? '取消推送' : '推送',
-                          showLabel: showLabels,
-                          repository: repository,
-                          onAction: callbacks.onAction,
-                          isBusy: repository.isPushing,
-                        ),
-                        _ToolbarAction(
-                          action: RepositoryAction.createBranch,
-                          icon: Icons.call_split,
-                          label: '分支',
-                          showLabel: showLabels,
-                          repository: repository,
-                          onAction: callbacks.onAction,
-                        ),
-                        _ToolbarAction(
-                          action: RepositoryAction.mergeBranch,
-                          icon: Icons.merge_type,
-                          label: '合并',
-                          showLabel: showLabels,
-                          repository: repository,
-                          onAction: callbacks.onAction,
-                        ),
-                        _ToolbarAction(
-                          action: RepositoryAction.commit,
-                          icon: Icons.check_circle_outline,
-                          label: '提交',
-                          showLabel: showLabels,
-                          repository: repository,
-                          onAction: callbacks.onAction,
-                          badge: repository.stagedChangeCount,
-                        ),
-                        _ToolbarAction(
-                          action: RepositoryAction.refresh,
-                          icon: Icons.refresh,
-                          label: '刷新',
-                          showLabel: false,
-                          repository: repository,
-                          onAction: callbacks.onAction,
-                          isBusy: repository.isRefreshing,
-                        ),
-                      ],
-                    ),
+                  child: LayoutBuilder(
+                    builder:
+                        (BuildContext context, BoxConstraints constraints) {
+                          return SingleChildScrollView(
+                            scrollDirection: Axis.horizontal,
+                            reverse: true,
+                            child: ConstrainedBox(
+                              constraints: BoxConstraints(
+                                minWidth: constraints.maxWidth,
+                              ),
+                              child: Row(
+                                mainAxisAlignment: MainAxisAlignment.end,
+                                children: [
+                                  _ToolbarAction(
+                                    action: RepositoryAction.commit,
+                                    icon: Icons.check_circle_outline,
+                                    label: '提交',
+                                    showLabel: showLabels,
+                                    repository: repository,
+                                    onAction: callbacks.onAction,
+                                    badge: repository.stagedChangeCount,
+                                  ),
+                                  _ToolbarAction(
+                                    action: repository.isPulling
+                                        ? RepositoryAction.cancelPull
+                                        : RepositoryAction.pull,
+                                    icon: repository.isPulling
+                                        ? Icons.cancel_outlined
+                                        : Icons.south,
+                                    label: repository.isPulling ? '取消拉取' : '拉取',
+                                    showLabel: showLabels,
+                                    repository: repository,
+                                    onAction: callbacks.onAction,
+                                    isBusy: repository.isPulling,
+                                  ),
+                                  _ToolbarAction(
+                                    action: repository.isPushing
+                                        ? RepositoryAction.cancelPush
+                                        : RepositoryAction.push,
+                                    icon: repository.isPushing
+                                        ? Icons.cancel_outlined
+                                        : Icons.north,
+                                    label: repository.isPushing ? '取消推送' : '推送',
+                                    showLabel: showLabels,
+                                    repository: repository,
+                                    onAction: callbacks.onAction,
+                                    isBusy: repository.isPushing,
+                                  ),
+                                  _ToolbarAction(
+                                    action: repository.isFetching
+                                        ? RepositoryAction.cancelFetch
+                                        : RepositoryAction.fetch,
+                                    icon: repository.isFetching
+                                        ? Icons.cancel_outlined
+                                        : Icons.sync,
+                                    label: repository.isFetching
+                                        ? '取消获取'
+                                        : '获取',
+                                    showLabel: showLabels,
+                                    repository: repository,
+                                    onAction: callbacks.onAction,
+                                    isBusy: repository.isFetching,
+                                  ),
+                                  _ToolbarAction(
+                                    action: RepositoryAction.createBranch,
+                                    icon: Icons.call_split,
+                                    label: '分支',
+                                    showLabel: showLabels,
+                                    repository: repository,
+                                    onAction: callbacks.onAction,
+                                  ),
+                                  _ToolbarAction(
+                                    action: RepositoryAction.mergeBranch,
+                                    icon: Icons.merge_type,
+                                    label: '合并',
+                                    showLabel: showLabels,
+                                    repository: repository,
+                                    onAction: callbacks.onAction,
+                                  ),
+                                  _ToolbarAction(
+                                    action: RepositoryAction.refresh,
+                                    icon: Icons.refresh,
+                                    label: '刷新',
+                                    showLabel: false,
+                                    repository: repository,
+                                    onAction: callbacks.onAction,
+                                    isBusy: repository.isRefreshing,
+                                  ),
+                                  _ToolbarAction(
+                                    action: RepositoryAction.openRepository,
+                                    icon: Icons.folder_open_outlined,
+                                    label: '打开仓库',
+                                    showLabel: false,
+                                    repository: repository,
+                                    onAction: callbacks.onAction,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          );
+                        },
                   ),
                 ),
-                if (constraints.maxWidth >= 620) ...[
-                  const SizedBox(width: 12),
-                  SizedBox(
-                    width: constraints.maxWidth >= 940 ? 220 : 150,
-                    height: 32,
-                    child: _HistorySearchField(
-                      query: repository.searchQuery,
-                      onChanged: callbacks.onSearchChanged,
-                    ),
-                  ),
-                ],
                 const SizedBox(width: 10),
               ],
             );
@@ -707,6 +751,7 @@ class _ToolbarAction extends StatelessWidget {
           );
 
     return Tooltip(
+      key: ValueKey<String>('repository-action-${action.name}'),
       message: label,
       child: Semantics(
         button: true,
@@ -747,6 +792,7 @@ class _HistorySearchField extends StatelessWidget {
       textField: true,
       label: '搜索提交历史',
       child: TextFormField(
+        key: const ValueKey<String>('history-search-field'),
         initialValue: query,
         onChanged: onChanged,
         enabled: onChanged != null,
@@ -760,6 +806,32 @@ class _HistorySearchField extends StatelessWidget {
           border: OutlineInputBorder(),
         ),
       ),
+    );
+  }
+}
+
+class _CompactHistorySearchBar extends StatelessWidget {
+  const _CompactHistorySearchBar({
+    required this.query,
+    required this.onChanged,
+  });
+
+  final String query;
+  final ValueChanged<String>? onChanged;
+
+  /// 中文：在紧凑布局中保留提交搜索入口。
+  /// English: Keeps commit search available in compact layouts.
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    return Container(
+      height: 42,
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerLow,
+        border: Border(bottom: BorderSide(color: colors.outlineVariant)),
+      ),
+      child: _HistorySearchField(query: query, onChanged: onChanged),
     );
   }
 }
@@ -1178,10 +1250,19 @@ class _RefTile extends StatelessWidget {
 const double _historyRowHeight = 26;
 
 class _HistoryPane extends StatefulWidget {
-  const _HistoryPane({required this.repository, required this.onSelected});
+  const _HistoryPane({
+    required this.repository,
+    required this.onSelected,
+    required this.onWorkspaceSelected,
+    this.showSearch = false,
+    this.onSearchChanged,
+  });
 
   final RepositoryViewData repository;
   final RepositoryCommitCallback? onSelected;
+  final VoidCallback? onWorkspaceSelected;
+  final bool showSearch;
+  final ValueChanged<String>? onSearchChanged;
 
   @override
   State<_HistoryPane> createState() => _HistoryPaneState();
@@ -1220,7 +1301,8 @@ class _HistoryPaneState extends State<_HistoryPane> {
         (commit) => commit.oid == objectId,
       );
       if (index < 0) return;
-      final target = (index * _historyRowHeight).clamp(
+      final rowIndex = index + (widget.repository.isWorkingTreeClean ? 0 : 1);
+      final target = (rowIndex * _historyRowHeight).clamp(
         0.0,
         _scrollController.position.maxScrollExtent,
       );
@@ -1243,6 +1325,16 @@ class _HistoryPaneState extends State<_HistoryPane> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final showUncommittedChanges = !widget.repository.isWorkingTreeClean;
+    final workspaceSelected =
+        widget.repository.selectedCommit == null &&
+        widget.repository.refs.any(
+          (reference) =>
+              reference.kind == RepositoryRefKind.workspace &&
+              reference.isSelected,
+        );
+    final historyRowCount =
+        widget.repository.commits.length + (showUncommittedChanges ? 1 : 0);
     return Material(
       color: _historyBackground(colors),
       child: Column(
@@ -1252,9 +1344,14 @@ class _HistoryPaneState extends State<_HistoryPane> {
             icon: Icons.history,
             trailing: '${widget.repository.commits.length} 个提交',
           ),
+          if (widget.showSearch)
+            _CompactHistorySearchBar(
+              query: widget.repository.searchQuery,
+              onChanged: widget.onSearchChanged,
+            ),
           const _HistoryColumnHeader(),
           Expanded(
-            child: widget.repository.commits.isEmpty
+            child: historyRowCount == 0
                 ? const _PaneEmptyState(
                     icon: Icons.commit,
                     title: '暂无提交',
@@ -1263,10 +1360,18 @@ class _HistoryPaneState extends State<_HistoryPane> {
                 : ListView.builder(
                     controller: _scrollController,
                     itemExtent: _historyRowHeight,
-                    itemCount: widget.repository.commits.length,
+                    itemCount: historyRowCount,
                     itemBuilder: (BuildContext context, int index) {
+                      if (showUncommittedChanges && index == 0) {
+                        return _UncommittedChangesRow(
+                          isSelected: workspaceSelected,
+                          onTap: widget.onWorkspaceSelected,
+                        );
+                      }
+                      final commitIndex =
+                          index - (showUncommittedChanges ? 1 : 0);
                       final CommitViewData commit =
-                          widget.repository.commits[index];
+                          widget.repository.commits[commitIndex];
                       return _CommitRow(
                         commit: commit,
                         onTap: widget.onSelected == null
@@ -1277,6 +1382,91 @@ class _HistoryPaneState extends State<_HistoryPane> {
                   ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+class _UncommittedChangesRow extends StatelessWidget {
+  const _UncommittedChangesRow({required this.isSelected, required this.onTap});
+
+  final bool isSelected;
+  final VoidCallback? onTap;
+
+  /// 中文：在历史顶部展示不属于真实提交的工作区改动入口。
+  /// English: Shows the non-commit workspace entry at the top of history.
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+
+    return Semantics(
+      button: true,
+      selected: isSelected,
+      label: 'Uncommitted changes，工作区未提交的更改，今天',
+      child: Tooltip(
+        message: '查看工作区未提交的更改',
+        waitDuration: const Duration(milliseconds: 750),
+        child: InkWell(
+          onTap: onTap,
+          child: Container(
+            key: const ValueKey<String>('uncommitted-changes-row'),
+            padding: const EdgeInsets.symmetric(horizontal: 8),
+            decoration: BoxDecoration(
+              color: isSelected ? colors.secondaryContainer : null,
+              border: Border(
+                bottom: BorderSide(
+                  color: colors.outlineVariant.withValues(alpha: .5),
+                ),
+              ),
+            ),
+            child: Row(
+              children: [
+                SizedBox(
+                  width: 96,
+                  height: _historyRowHeight,
+                  child: Align(
+                    alignment: const Alignment(-.54, 0),
+                    child: Icon(
+                      Icons.radio_button_unchecked,
+                      size: 11,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                Expanded(
+                  child: Text(
+                    'Uncommitted changes',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 108,
+                  child: Text(
+                    '*',
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                SizedBox(
+                  width: 86,
+                  child: Text(
+                    '今天',
+                    textAlign: TextAlign.end,
+                    style: theme.textTheme.labelSmall?.copyWith(
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
       ),
     );
   }
@@ -1478,10 +1668,13 @@ class _CommitGraphPainter extends CustomPainter {
         canvas,
         fromLane: activeLane,
         toLane: destination,
-        top: 0,
+        top: graph.hasPreviousNode ? 0 : centerY,
         centerY: centerY,
         bottom: size.height,
         color: _color(activeLane),
+        targetColor: destination == null
+            ? _color(activeLane)
+            : _color(destination),
       );
     }
 
@@ -1494,7 +1687,11 @@ class _CommitGraphPainter extends CustomPainter {
         top: centerY,
         centerY: centerY,
         bottom: size.height,
-        color: _color(colorIndex),
+        // Keep the moving branch's color through the turn. Only the rail after
+        // it reaches the parent lane adopts the target branch color, so an
+        // orange branch never becomes blue while merging left.
+        color: _color(graph.lane),
+        targetColor: _color(parentLane),
       );
     }
 
@@ -1543,6 +1740,7 @@ class _CommitGraphPainter extends CustomPainter {
     required double centerY,
     required double bottom,
     required Color color,
+    required Color targetColor,
   }) {
     final sourceX = _laneX(fromLane);
     _drawVerticalRail(
@@ -1569,14 +1767,17 @@ class _CommitGraphPainter extends CustomPainter {
         math.max(sourceX, targetX),
         turnY + 1.5,
       ),
-      Paint()..color = color,
+      // The bridge belongs to the branch that turns: a right turn adopts the
+      // target branch color, while a left turn keeps the source branch color.
+      // This keeps the orange branch orange on both sides of a merge.
+      Paint()..color = targetX > sourceX ? targetColor : color,
     );
     _drawVerticalRail(
       canvas,
       x: targetX,
       top: turnY,
       bottom: bottom,
-      color: color,
+      color: targetColor,
     );
   }
 
@@ -1649,12 +1850,14 @@ class _SelectedChangesPane extends StatelessWidget {
     required this.repository,
     required this.onSelected,
     required this.onStageToggled,
+    required this.onConflictAction,
     required this.onCommitFileSelected,
   });
 
   final RepositoryViewData repository;
   final RepositoryChangeCallback? onSelected;
   final RepositoryChangeStageCallback? onStageToggled;
+  final RepositoryConflictActionCallback? onConflictAction;
   final RepositoryCommitFileCallback? onCommitFileSelected;
 
   /// 中文：构建当前组件的界面。
@@ -1671,6 +1874,7 @@ class _SelectedChangesPane extends StatelessWidget {
       repository: repository,
       onSelected: onSelected,
       onStageToggled: onStageToggled,
+      onConflictAction: onConflictAction,
     );
   }
 }
@@ -1853,11 +2057,13 @@ class _ChangesPane extends StatelessWidget {
     required this.repository,
     required this.onSelected,
     required this.onStageToggled,
+    required this.onConflictAction,
   });
 
   final RepositoryViewData repository;
   final RepositoryChangeCallback? onSelected;
   final RepositoryChangeStageCallback? onStageToggled;
+  final RepositoryConflictActionCallback? onConflictAction;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -1882,6 +2088,8 @@ class _ChangesPane extends StatelessWidget {
                           changes: repository.changes,
                           onSelected: onSelected,
                           onStageToggled: onStageToggled,
+                          onConflictAction: onConflictAction,
+                          currentBranch: repository.currentBranch,
                         )
                       : _DiffPreview(
                           diff: repository.diff,
@@ -1898,6 +2106,8 @@ class _ChangesPane extends StatelessWidget {
                         changes: repository.changes,
                         onSelected: onSelected,
                         onStageToggled: onStageToggled,
+                        onConflictAction: onConflictAction,
+                        currentBranch: repository.currentBranch,
                       ),
                     ),
                     VerticalDivider(
@@ -1921,11 +2131,15 @@ class _ChangeList extends StatelessWidget {
     required this.changes,
     required this.onSelected,
     required this.onStageToggled,
+    required this.onConflictAction,
+    required this.currentBranch,
   });
 
   final List<RepositoryChangeViewData> changes;
   final RepositoryChangeCallback? onSelected;
   final RepositoryChangeStageCallback? onStageToggled;
+  final RepositoryConflictActionCallback? onConflictAction;
+  final String currentBranch;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -1939,19 +2153,117 @@ class _ChangeList extends StatelessWidget {
       );
     }
 
-    return ListView.builder(
-      itemExtent: 34,
-      itemCount: changes.length,
-      itemBuilder: (BuildContext context, int index) {
-        final RepositoryChangeViewData change = changes[index];
-        return _ChangeTile(
-          change: change,
-          onTap: onSelected == null ? null : () => onSelected!(change),
-          onStageToggled: onStageToggled == null
-              ? null
-              : () => onStageToggled!(change),
-        );
-      },
+    final staged = changes.where((change) => change.isStaged).toList();
+    final unstaged = changes.where((change) => !change.isStaged).toList();
+    return ListView(
+      children: [
+        _ChangeGroup(
+          title: '已暂存文件',
+          isChecked: true,
+          changes: staged,
+          onSelected: onSelected,
+          onStageToggled: onStageToggled,
+          onConflictAction: onConflictAction,
+          currentBranch: currentBranch,
+        ),
+        _ChangeGroup(
+          title: '未暂存文件',
+          isChecked: false,
+          changes: unstaged,
+          onSelected: onSelected,
+          onStageToggled: onStageToggled,
+          onConflictAction: onConflictAction,
+          currentBranch: currentBranch,
+        ),
+      ],
+    );
+  }
+}
+
+class _ChangeGroup extends StatelessWidget {
+  const _ChangeGroup({
+    required this.title,
+    required this.isChecked,
+    required this.changes,
+    required this.onSelected,
+    required this.onStageToggled,
+    required this.onConflictAction,
+    required this.currentBranch,
+  });
+
+  final String title;
+  final bool isChecked;
+  final List<RepositoryChangeViewData> changes;
+  final RepositoryChangeCallback? onSelected;
+  final RepositoryChangeStageCallback? onStageToggled;
+  final RepositoryConflictActionCallback? onConflictAction;
+  final String currentBranch;
+
+  /// 中文：将工作区文件按暂存状态分组，保持与桌面 Git 客户端一致的扫描顺序。
+  /// English: Groups workspace files by staging state for a desktop Git-client
+  /// scanning order.
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          key: ValueKey<String>(
+            isChecked ? 'staged-files-header' : 'unstaged-files-header',
+          ),
+          height: 30,
+          padding: const EdgeInsets.symmetric(horizontal: 8),
+          decoration: BoxDecoration(
+            color: colors.surfaceContainerLow,
+            border: Border(
+              top: BorderSide(color: colors.outlineVariant),
+              bottom: BorderSide(color: colors.outlineVariant),
+            ),
+          ),
+          child: Row(
+            children: [
+              Icon(
+                isChecked ? Icons.check_box : Icons.check_box_outline_blank,
+                size: 16,
+                color: isChecked ? colors.primary : colors.onSurfaceVariant,
+              ),
+              const SizedBox(width: 6),
+              Expanded(
+                child: Text(
+                  title,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+              ),
+              Text(
+                '${changes.length}',
+                style: theme.textTheme.labelSmall?.copyWith(
+                  color: colors.onSurfaceVariant,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+            ],
+          ),
+        ),
+        for (final change in changes)
+          SizedBox(
+            height: 34,
+            child: _ChangeTile(
+              change: change,
+              onTap: onSelected == null ? null : () => onSelected!(change),
+              onStageToggled: onStageToggled == null
+                  ? null
+                  : () => onStageToggled!(change),
+              onConflictAction: onConflictAction == null
+                  ? null
+                  : (action) => onConflictAction!(change, action),
+              currentBranch: currentBranch,
+            ),
+          ),
+      ],
     );
   }
 }
@@ -1961,11 +2273,15 @@ class _ChangeTile extends StatelessWidget {
     required this.change,
     required this.onTap,
     required this.onStageToggled,
+    required this.onConflictAction,
+    required this.currentBranch,
   });
 
   final RepositoryChangeViewData change;
   final VoidCallback? onTap;
   final VoidCallback? onStageToggled;
+  final ValueChanged<RepositoryConflictAction>? onConflictAction;
+  final String currentBranch;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -1981,7 +2297,7 @@ class _ChangeTile extends StatelessWidget {
       if (change.deletions case final int value) '−$value',
     ].join(' ');
 
-    return Semantics(
+    final content = Semantics(
       button: true,
       selected: change.isSelected,
       label:
@@ -1996,6 +2312,35 @@ class _ChangeTile extends StatelessWidget {
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Row(
               children: [
+                Tooltip(
+                  message: !change.canToggleStage
+                      ? '冲突或无法安全表示的文件名不能在此暂存'
+                      : change.isStaged
+                      ? '取消暂存 ${change.path}'
+                      : '暂存 ${change.path}',
+                  child: IconButton(
+                    onPressed: onStageToggled == null || !change.canToggleStage
+                        ? null
+                        : onStageToggled,
+                    icon: Icon(
+                      change.isStaged
+                          ? Icons.check_box
+                          : Icons.check_box_outline_blank,
+                      size: 17,
+                    ),
+                    color: change.isStaged
+                        ? colors.primary
+                        : colors.onSurfaceVariant,
+                    disabledColor: colors.onSurface.withValues(alpha: .32),
+                    iconSize: 17,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints.tightFor(
+                      width: 25,
+                      height: 30,
+                    ),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
                 _ChangeStatusBadge(kind: change.kind),
                 const SizedBox(width: 7),
                 Expanded(
@@ -2033,40 +2378,59 @@ class _ChangeTile extends StatelessWidget {
                       fontFeatures: const [FontFeature.tabularFigures()],
                     ),
                   ),
-                Tooltip(
-                  message: !change.canToggleStage
-                      ? '冲突或无法安全表示的文件名不能在此暂存'
-                      : change.isStaged
-                      ? '取消暂存 ${change.path}'
-                      : '暂存 ${change.path}',
-                  child: IconButton(
-                    onPressed: onStageToggled == null || !change.canToggleStage
-                        ? null
-                        : onStageToggled,
-                    icon: Icon(
-                      change.isStaged
-                          ? Icons.check_box
-                          : Icons.check_box_outline_blank,
-                      size: 17,
-                    ),
-                    color: change.isStaged
-                        ? colors.primary
-                        : colors.onSurfaceVariant,
-                    disabledColor: colors.onSurface.withValues(alpha: .32),
-                    iconSize: 17,
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints.tightFor(
-                      width: 30,
-                      height: 30,
-                    ),
-                    visualDensity: VisualDensity.compact,
-                  ),
-                ),
               ],
             ),
           ),
         ),
       ),
+    );
+    final handler = onConflictAction;
+    if (change.kind != RepositoryChangeKind.conflicted || handler == null) {
+      return content;
+    }
+    return MenuAnchor(
+      consumeOutsideTap: true,
+      useRootOverlay: true,
+      menuChildren: [
+        SubmenuButton(
+          leadingIcon: const Icon(Icons.merge_type, size: 18),
+          menuChildren: [
+            MenuItemButton(
+              onPressed: () =>
+                  handler(RepositoryConflictAction.launchInternalDiffTool),
+              child: const Text('打开内部 Diff 工具'),
+            ),
+            MenuItemButton(
+              onPressed: () => handler(RepositoryConflictAction.useOurs),
+              child: Text('使用“我的”版本解决（保留来自 $currentBranch 的更改）'),
+            ),
+            MenuItemButton(
+              onPressed: () => handler(RepositoryConflictAction.useTheirs),
+              child: const Text('使用“他们的”版本解决（接受合并来源的更改）'),
+            ),
+            const Divider(height: 1),
+            MenuItemButton(
+              onPressed: () => handler(RepositoryConflictAction.restartMerge),
+              child: const Text('重新合并'),
+            ),
+            MenuItemButton(
+              onPressed: () => handler(RepositoryConflictAction.markResolved),
+              child: const Text('标记为已解决'),
+            ),
+            MenuItemButton(
+              onPressed: () => handler(RepositoryConflictAction.markUnresolved),
+              child: const Text('标记为未解决'),
+            ),
+          ],
+          child: const Text('解决冲突'),
+        ),
+      ],
+      builder: (context, controller, child) => GestureDetector(
+        onSecondaryTapDown: (details) =>
+            controller.open(position: details.localPosition),
+        child: child,
+      ),
+      child: content,
     );
   }
 }
@@ -2098,7 +2462,7 @@ class _ChangeStatusBadge extends StatelessWidget {
     final ColorScheme colors = Theme.of(context).colorScheme;
     final (String, Color) display = switch (kind) {
       RepositoryChangeKind.modified => ('M', colors.primary),
-      RepositoryChangeKind.added => ('A', colors.tertiary),
+      RepositoryChangeKind.added => ('+', colors.tertiary),
       RepositoryChangeKind.deleted => ('D', colors.error),
       RepositoryChangeKind.renamed => ('R', colors.secondary),
       RepositoryChangeKind.copied => ('C', colors.secondary),
@@ -2492,6 +2856,7 @@ class _TabbedInspector extends StatelessWidget {
     required this.repository,
     required this.onChangeSelected,
     required this.onChangeStageToggled,
+    required this.onConflictAction,
     required this.onCommitFileSelected,
   });
 
@@ -2500,6 +2865,7 @@ class _TabbedInspector extends StatelessWidget {
   final RepositoryViewData repository;
   final RepositoryChangeCallback? onChangeSelected;
   final RepositoryChangeStageCallback? onChangeStageToggled;
+  final RepositoryConflictActionCallback? onConflictAction;
   final RepositoryCommitFileCallback? onCommitFileSelected;
 
   /// 中文：构建当前组件的界面。
@@ -2522,6 +2888,7 @@ class _TabbedInspector extends StatelessWidget {
               repository: repository,
               onSelected: onChangeSelected,
               onStageToggled: onChangeStageToggled,
+              onConflictAction: onConflictAction,
               onCommitFileSelected: onCommitFileSelected,
             ),
             _InspectorTab.details => _CommitDetailsPane(
@@ -2837,6 +3204,74 @@ class _RepositoryStatusBar extends StatelessWidget {
                 ),
               ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _HistorySplitBar extends StatelessWidget {
+  const _HistorySplitBar({
+    required this.query,
+    required this.onSearchChanged,
+    required this.semanticsLabel,
+    required this.onDelta,
+  });
+
+  final String query;
+  final ValueChanged<String>? onSearchChanged;
+  final String semanticsLabel;
+  final ValueChanged<double> onDelta;
+
+  /// 中文：构建位于历史与检查器之间、右侧承载搜索框的可拖拽工具条。
+  /// English: Builds the draggable history/inspector bar with search aligned
+  /// to its trailing edge.
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    return Material(
+      color: colors.surfaceContainerLow,
+      child: MouseRegion(
+        cursor: SystemMouseCursors.resizeRow,
+        child: GestureDetector(
+          behavior: HitTestBehavior.translucent,
+          onVerticalDragUpdate: (DragUpdateDetails details) =>
+              onDelta(details.delta.dy),
+          child: Semantics(
+            label: semanticsLabel,
+            slider: true,
+            child: Container(
+              key: const ValueKey<String>('history-split-bar'),
+              height: 34,
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+              decoration: BoxDecoration(
+                border: Border(
+                  top: BorderSide(color: colors.outlineVariant),
+                  bottom: BorderSide(color: colors.outlineVariant),
+                ),
+              ),
+              child: Row(
+                children: [
+                  Icon(
+                    Icons.drag_handle,
+                    size: 16,
+                    color: colors.onSurfaceVariant,
+                  ),
+                  const Spacer(),
+                  SizedBox(
+                    key: const ValueKey<String>('history-search-slot'),
+                    width: 190,
+                    height: 28,
+                    child: _HistorySearchField(
+                      query: query,
+                      onChanged: onSearchChanged,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
         ),
       ),
     );

@@ -68,8 +68,13 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
       (state.phase == RepositorySessionPhase.loading && !state.isPullRunning)) {
     disabledActions.add(RepositoryAction.pull);
   }
-  if (branch.upstream == null ||
-      branch.ahead <= 0 ||
+  final canPushCurrentBranch =
+      branch.objectId != null &&
+      !branch.isDetached &&
+      ((branch.upstream == null && state.hasOriginRemote) ||
+          (branch.upstream != null &&
+              (branch.ahead > 0 || branch.isUpstreamGone)));
+  if (!canPushCurrentBranch ||
       (state.phase == RepositorySessionPhase.loading && !state.isPushRunning)) {
     disabledActions.add(RepositoryAction.push);
   }
@@ -383,6 +388,7 @@ List<CommitGraphViewData> _buildGraph(
         activeLaneDestinations: destinations,
         parentLanes: parents,
         colorIndex: lane,
+        hasPreviousNode: result.isNotEmpty,
       ),
     );
   }
@@ -477,12 +483,6 @@ DiffViewData _mapDiff(RepositorySessionState state) {
     return DiffViewData(
       path: selected.entry.path.display,
       notice: '文件名不是有效 UTF-8，当前版本无法安全读取 Diff。',
-    );
-  }
-  if (selected.kind == RepositoryChangeKind.untracked) {
-    return DiffViewData(
-      path: selected.entry.path.display,
-      notice: '未跟踪文件尚未进入 Git，当前版本暂不直接读取其内容。',
     );
   }
   if (state.isDiffLoading) {

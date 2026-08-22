@@ -160,6 +160,37 @@ final class SelectedRepositoryChange {
   }
 }
 
+/// 中文：在暂存状态切换并刷新后，从 Git 状态恢复同一文件在目标分组中的展示数据。
+/// English: Rebuilds the same file's display data in its target group after a
+/// staging toggle and status refresh.
+RepositoryChangeViewData? _changeAfterStageToggle(
+  GitStatusEntry entry, {
+  required bool isStaged,
+}) {
+  if (entry.isConflicted) return null;
+  if (isStaged ? !entry.hasStagedChange : !entry.hasWorkTreeChange) return null;
+  final type = isStaged ? entry.indexStatus : entry.workTreeStatus;
+  final kind =
+      entry.kind == GitFileStatusKind.renamed || type == GitChangeType.renamed
+      ? RepositoryChangeKind.renamed
+      : entry.kind == GitFileStatusKind.copied || type == GitChangeType.copied
+      ? RepositoryChangeKind.copied
+      : type == GitChangeType.added
+      ? RepositoryChangeKind.added
+      : type == GitChangeType.deleted
+      ? RepositoryChangeKind.deleted
+      : type == GitChangeType.untracked
+      ? RepositoryChangeKind.untracked
+      : RepositoryChangeKind.modified;
+  return RepositoryChangeViewData(
+    path: entry.path.display,
+    previousPath: entry.originalPath?.display,
+    kind: kind,
+    isStaged: isStaged,
+    canToggleStage: entry.path.isValidUtf8,
+  );
+}
+
 final class SelectedCommitFile {
   const SelectedCommitFile({required this.objectId, required this.file});
 
@@ -959,18 +990,23 @@ final class RepositorySessionController
   /// English: Cancels the current operation.
   void cancelPull() => _pullCancellation?.cancel();
 
-  /// 中文：仅在当前分支领先上游时推送；异常结束后会验证远端是否已包含 HEAD。
+  /// 中文：推送领先上游的提交，或在首次推送时创建同名远端分支；异常结束后会验证远端是否已包含 HEAD。
   ///
-  /// English: Pushes only when the current branch is ahead of its upstream and
-  /// verifies whether the remote already contains HEAD after an uncertain exit.
+  /// English: Pushes commits ahead of upstream or creates the matching remote
+  /// branch on first push, then verifies uncertain outcomes against remote.
   Future<bool> pushUpstream() async {
     final repository = state.repository;
     final status = state.status;
-    if (repository == null ||
-        status == null ||
-        status.branch.upstream == null ||
-        status.branch.ahead <= 0 ||
-        state.phase == RepositorySessionPhase.loading) {
+    final branch = status?.branch;
+    final canPush =
+        repository != null &&
+        branch != null &&
+        branch.objectId != null &&
+        !branch.isDetached &&
+        ((branch.upstream == null && state.hasOriginRemote) ||
+            (branch.upstream != null &&
+                (branch.ahead > 0 || branch.isUpstreamGone)));
+    if (!canPush || state.phase == RepositorySessionPhase.loading) {
       return false;
     }
     final cancellation = GitCancellationToken();
@@ -1343,18 +1379,22 @@ final class RepositorySessionController
       clearMessage: true,
     );
 
-    if (!entry.path.isValidUtf8 ||
-        change.kind == RepositoryChangeKind.untracked) {
+    if (!entry.path.isValidUtf8) {
       state = state.copyWith(isDiffLoading: false);
       return;
     }
 
     try {
-      final diff = await _reader.readUnifiedDiff(
-        repository,
-        path: entry.path.display,
-        source: selected.source,
-      );
+      final diff = change.kind == RepositoryChangeKind.untracked
+          ? await _reader.readUntrackedFileDiff(
+              repository,
+              path: entry.path.display,
+            )
+          : await _reader.readUnifiedDiff(
+              repository,
+              path: entry.path.display,
+              source: selected.source,
+            );
       if (generation != _diffGeneration) {
         return;
       }
@@ -1411,12 +1451,180 @@ final class RepositorySessionController
         await _writer.stagePath(repository, entry.path);
       }
       await refresh();
+      if (state.phase != RepositorySessionPhase.ready) return;
+      final refreshedStatus = state.status;
+      if (refreshedStatus == null) return;
+      final shouldBeStaged = !change.isStaged;
+      for (final refreshedEntry in refreshedStatus.entries) {
+        if (refreshedEntry.path.display != change.path) continue;
+        final refreshedChange = _changeAfterStageToggle(
+          refreshedEntry,
+          isStaged: shouldBeStaged,
+        );
+        if (refreshedChange != null) {
+          await selectChange(refreshedChange);
+        }
+        break;
+      }
     } on Object catch (error, stackTrace) {
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         message: _friendlyError(error),
         technicalDetails: '$error\n$stackTrace',
       );
+    }
+  }
+
+  /// Executes one explicit conflict-resolution action for an unmerged file.
+  /// 中文：对一个未合并文件执行明确选择的冲突解决操作，并刷新文件与 Diff 状态。
+  Future<bool> resolveConflict(
+    RepositoryChangeViewData change,
+    RepositoryConflictAction action,
+  ) async {
+    if (action == RepositoryConflictAction.launchInternalDiffTool) {
+      return false;
+    }
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        state.phase == RepositorySessionPhase.loading) {
+      return false;
+    }
+
+    GitStatusEntry? entry;
+    for (final candidate in status.entries) {
+      if (candidate.path.display == change.path) {
+        entry = candidate;
+        break;
+      }
+    }
+    if (entry == null || !entry.isConflicted || !entry.path.isValidUtf8) {
+      return false;
+    }
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      switch (action) {
+        case RepositoryConflictAction.launchInternalDiffTool:
+          return false;
+        case RepositoryConflictAction.useOurs:
+          await _writer.resolveConflictUsingSide(
+            repository,
+            entry.path,
+            useOurs: true,
+          );
+        case RepositoryConflictAction.useTheirs:
+          await _writer.resolveConflictUsingSide(
+            repository,
+            entry.path,
+            useOurs: false,
+          );
+        case RepositoryConflictAction.restartMerge:
+          await _writer.restartConflictMerge(repository, entry.path);
+        case RepositoryConflictAction.markResolved:
+          await _writer.stagePath(repository, entry.path);
+        case RepositoryConflictAction.markUnresolved:
+          await _writer.markConflictUnresolved(repository, entry.path);
+      }
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
+  /// 中文：为内部 Diff 读取选中冲突文件的各个 Git 阶段与工作区内容。
+  ///
+  /// English: Reads the Git stages and work-tree result for the selected
+  /// conflicted file shown by the internal Diff.
+  Future<GitConflictFileVersions?> readConflictVersions(
+    RepositoryChangeViewData change,
+  ) async {
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null || status == null) return null;
+
+    GitStatusEntry? entry;
+    for (final candidate in status.entries) {
+      if (candidate.path.display == change.path) {
+        entry = candidate;
+        break;
+      }
+    }
+    if (entry == null || !entry.isConflicted || !entry.path.isValidUtf8) {
+      return null;
+    }
+    try {
+      return await _reader.readConflictFileVersions(repository, entry);
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return null;
+    }
+  }
+
+  /// 中文：保存内部 Diff 的自定义合并结果，暂存文件并刷新冲突状态。
+  ///
+  /// English: Saves a custom internal-Diff merge result, stages the file, and
+  /// refreshes conflict state.
+  Future<bool> resolveConflictWithContent(
+    RepositoryChangeViewData change,
+    String content,
+  ) async {
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        state.phase == RepositorySessionPhase.loading) {
+      return false;
+    }
+
+    GitStatusEntry? entry;
+    for (final candidate in status.entries) {
+      if (candidate.path.display == change.path) {
+        entry = candidate;
+        break;
+      }
+    }
+    if (entry == null || !entry.isConflicted || !entry.path.isValidUtf8) {
+      return false;
+    }
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.resolveConflictWithContent(repository, entry.path, content);
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
     }
   }
 

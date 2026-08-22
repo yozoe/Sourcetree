@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:path/path.dart' as path_utils;
+
 import 'git_errors.dart';
 import 'git_history_parser.dart';
 import 'git_models.dart';
@@ -141,6 +143,138 @@ final class GitRepositoryReader {
   final GitRunner runner;
   final GitStatusParser statusParser;
   final GitHistoryParser historyParser;
+
+  /// 中文：读取冲突文件的共同基线、我的版本、他们的版本和当前工作区内容。
+  ///
+  /// English: Reads the base, ours, theirs, and current working-tree text for
+  /// a conflicted file with a bounded output size.
+  Future<GitConflictFileVersions> readConflictFileVersions(
+    GitRepository repository,
+    GitStatusEntry entry, {
+    int maxBytesPerVersion = 2 * 1024 * 1024,
+  }) async {
+    if (!entry.isConflicted || !entry.path.isValidUtf8) {
+      throw const GitException('A UTF-8 conflicted path is required.');
+    }
+    if (maxBytesPerVersion <= 0) {
+      throw RangeError.value(
+        maxBytesPerVersion,
+        'maxBytesPerVersion',
+        'Must be positive.',
+      );
+    }
+
+    final base = await _readConflictBlob(
+      repository,
+      entry.stage1ObjectId,
+      maxBytesPerVersion,
+    );
+    final ours = await _readConflictBlob(
+      repository,
+      entry.stage2ObjectId,
+      maxBytesPerVersion,
+    );
+    final theirs = await _readConflictBlob(
+      repository,
+      entry.stage3ObjectId,
+      maxBytesPerVersion,
+    );
+    final working = await _readWorkingTreeConflictFile(
+      repository,
+      entry.path,
+      maxBytesPerVersion,
+    );
+    return GitConflictFileVersions(
+      path: entry.path,
+      baseText: base.text,
+      oursText: ours.text,
+      theirsText: theirs.text,
+      workingText: working.text,
+      isBinary:
+          base.isBinary || ours.isBinary || theirs.isBinary || working.isBinary,
+      isTruncated:
+          base.isTruncated ||
+          ours.isTruncated ||
+          theirs.isTruncated ||
+          working.isTruncated,
+    );
+  }
+
+  /// 中文：按 Git 对象 ID 读取一个有大小上限的冲突阶段 blob。
+  /// English: Reads one bounded conflict-stage blob by Git object ID.
+  Future<_ConflictTextSnapshot> _readConflictBlob(
+    GitRepository repository,
+    String? objectId,
+    int maxBytes,
+  ) async {
+    if (objectId == null || RegExp(r'^0+$').hasMatch(objectId)) {
+      return const _ConflictTextSnapshot.empty();
+    }
+    _validateObjectId(objectId);
+    final result = await runner.run(
+      GitInvocation(
+        arguments: ['--no-pager', 'cat-file', 'blob', objectId],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: GitOutputLimit(
+          stdoutBytes: maxBytes,
+          stderrBytes: 256 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Reading conflict version');
+    return _ConflictTextSnapshot.fromBytes(
+      result.stdoutBytes,
+      isTruncated: result.stdoutTruncated,
+    );
+  }
+
+  /// 中文：在不跟随文件符号链接的前提下，有界读取冲突工作区文件。
+  /// English: Reads a conflicted work-tree file within a byte limit without
+  /// following a symlink at the file itself.
+  Future<_ConflictTextSnapshot> _readWorkingTreeConflictFile(
+    GitRepository repository,
+    GitPath path,
+    int maxBytes,
+  ) async {
+    final root = repository.workTreeRoot;
+    if (root == null) {
+      throw const GitException('A working tree is required.');
+    }
+    final relativePath = path.display;
+    if (path_utils.isAbsolute(relativePath)) {
+      throw const GitException('The conflicted path is outside the work tree.');
+    }
+    final target = path_utils.normalize(path_utils.join(root, relativePath));
+    if (!path_utils.isWithin(root, target)) {
+      throw const GitException('The conflicted path is outside the work tree.');
+    }
+    final canonicalRoot = await Directory(root).resolveSymbolicLinks();
+    final canonicalParent = await Directory(
+      path_utils.dirname(target),
+    ).resolveSymbolicLinks();
+    if (canonicalParent != canonicalRoot &&
+        !path_utils.isWithin(canonicalRoot, canonicalParent)) {
+      throw const GitException('The conflicted path is outside the work tree.');
+    }
+    final type = await FileSystemEntity.type(target, followLinks: false);
+    if (type == FileSystemEntityType.notFound) {
+      return const _ConflictTextSnapshot.empty();
+    }
+    if (type != FileSystemEntityType.file) {
+      return const _ConflictTextSnapshot.binary();
+    }
+    final file = await File(target).open();
+    try {
+      final length = await file.length();
+      final bytes = await file.read(length > maxBytes ? maxBytes : length);
+      return _ConflictTextSnapshot.fromBytes(
+        bytes,
+        isTruncated: length > maxBytes,
+      );
+    } finally {
+      await file.close();
+    }
+  }
 
   /// 中文：读取所需的数据。
   /// English: Reads the required data.
@@ -621,6 +755,76 @@ final class GitRepositoryReader {
       isTruncated: result.stdoutTruncated,
     );
   }
+
+  /// Reads an untracked file as a unified diff against an empty file.
+  ///
+  /// `git diff` normally omits untracked paths. No-index mode gives the UI the
+  /// same full-file addition patch Git would produce after the path is staged,
+  /// without changing the repository index.
+  /// 中文：把未跟踪文件与空文件比较，在不修改暂存区的前提下生成整文件新增补丁。
+  Future<GitUnifiedDiff> readUntrackedFileDiff(
+    GitRepository repository, {
+    required String path,
+    int contextLines = 3,
+    int maxOutputBytes = 4 * 1024 * 1024,
+  }) async {
+    if (path.contains('\u0000')) {
+      throw ArgumentError.value(path, 'path', 'Git paths cannot contain NUL.');
+    }
+    if (contextLines < 0 || contextLines > 10000) {
+      throw RangeError.range(contextLines, 0, 10000, 'contextLines');
+    }
+    if (maxOutputBytes <= 0) {
+      throw RangeError.value(
+        maxOutputBytes,
+        'maxOutputBytes',
+        'Must be positive.',
+      );
+    }
+
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          '--no-optional-locks',
+          '--literal-pathspecs',
+          '-c',
+          'color.ui=false',
+          'diff',
+          '--no-index',
+          '--no-color',
+          '--no-ext-diff',
+          '--no-textconv',
+          '--unified=$contextLines',
+          '--',
+          '/dev/null',
+          path,
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: GitOutputLimit(
+          stdoutBytes: maxOutputBytes,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+
+    // `git diff --no-index` uses exit code 1 to report that differences were
+    // found. Only other non-zero codes represent an actual command failure.
+    if (result.exitCode != 0 && result.exitCode != 1) {
+      result.throwIfFailed(operation: 'Reading untracked file diff');
+    }
+    final decoded = utf8.decode(result.stdoutBytes, allowMalformed: true);
+    final text = result.stdoutTruncated
+        ? '$decoded\n… diff output truncated …\n'
+        : decoded;
+    return GitUnifiedDiff(
+      path: GitPath.fromString(path),
+      source: GitDiffSource.workingTree,
+      bytes: result.stdoutBytes,
+      text: text,
+      isTruncated: result.stdoutTruncated,
+    );
+  }
 }
 
 /// 中文：验证输入或状态。
@@ -633,6 +837,45 @@ void _validateObjectId(String objectId) {
       'Expected a Git object id.',
     );
   }
+}
+
+final class _ConflictTextSnapshot {
+  const _ConflictTextSnapshot({
+    this.text = '',
+    this.isBinary = false,
+    this.isTruncated = false,
+  });
+
+  const _ConflictTextSnapshot.empty() : this();
+
+  const _ConflictTextSnapshot.binary() : this(isBinary: true);
+
+  /// 中文：将有界原始字节解码为文本，并标记二进制或截断状态。
+  /// English: Decodes bounded raw bytes and records binary or truncation
+  /// state.
+  factory _ConflictTextSnapshot.fromBytes(
+    List<int> bytes, {
+    required bool isTruncated,
+  }) {
+    final containsNull = bytes.contains(0);
+    var isBinary = containsNull;
+    String text;
+    try {
+      text = utf8.decode(bytes);
+    } on FormatException {
+      isBinary = true;
+      text = utf8.decode(bytes, allowMalformed: true);
+    }
+    return _ConflictTextSnapshot(
+      text: text,
+      isBinary: isBinary,
+      isTruncated: isTruncated,
+    );
+  }
+
+  final String text;
+  final bool isBinary;
+  final bool isTruncated;
 }
 
 /// 中文：解析输入数据。

@@ -270,6 +270,26 @@ void main() {
     expect(tester.getSize(graphCanvas).height, greaterThan(0));
 
     final field = find.byType(TextFormField);
+    final splitBar = find.byKey(const ValueKey<String>('history-split-bar'));
+    final searchSlot = find.byKey(
+      const ValueKey<String>('history-search-slot'),
+    );
+    final commitAction = find.byKey(
+      const ValueKey<String>('repository-action-commit'),
+    );
+
+    expect(splitBar, findsOneWidget);
+    expect(searchSlot, findsOneWidget);
+    expect(commitAction, findsOneWidget);
+    expect(
+      tester.getCenter(searchSlot).dx,
+      greaterThan(tester.getCenter(splitBar).dx),
+    );
+    expect(
+      tester.getTopLeft(commitAction).dy,
+      lessThan(tester.getTopLeft(splitBar).dy),
+    );
+
     await tester.tap(field);
     await tester.enterText(field, 'initial');
     await tester.pump();

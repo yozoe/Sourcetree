@@ -43,6 +43,7 @@ void main() {
     expect(snapshot.branch.upstream, 'origin/feature/status');
     expect(snapshot.branch.ahead, 2);
     expect(snapshot.branch.behind, 3);
+    expect(snapshot.branch.isUpstreamGone, isFalse);
     expect(snapshot.branch.stashCount, 4);
     expect(snapshot.entries, hasLength(4));
 
@@ -59,6 +60,20 @@ void main() {
 
     expect(snapshot.entries[2].kind, GitFileStatusKind.untracked);
     expect(snapshot.entries[3].kind, GitFileStatusKind.ignored);
+  });
+
+  test('marks a configured upstream without branch.ab as gone', () {
+    final snapshot = parser.parse(
+      utf8.encode(
+        '# branch.oid 0123456789abcdef\u0000'
+        '# branch.head main\u0000'
+        '# branch.upstream origin/main\u0000',
+      ),
+    );
+
+    expect(snapshot.branch.upstream, 'origin/main');
+    expect(snapshot.branch.ahead, 0);
+    expect(snapshot.branch.isUpstreamGone, isTrue);
   });
 
   test('preserves Unicode, spaces, and newlines in rename paths', () {

@@ -1,6 +1,8 @@
 import 'dart:convert';
 import 'dart:io';
 
+import 'package:path/path.dart' as path_utils;
+
 import 'git_cancellation.dart';
 import 'git_errors.dart';
 import 'git_models.dart';
@@ -75,6 +77,127 @@ final class GitRepositoryWriter {
       ),
     );
     result.throwIfFailed(operation: 'Unstaging file');
+  }
+
+  /// Chooses one side of an unmerged path and stages that choice as resolved.
+  /// 中文：选择冲突文件的“我的”或“他们的”版本，并将该选择标记为已解决。
+  Future<void> resolveConflictUsingSide(
+    GitRepository repository,
+    GitPath path, {
+    required bool useOurs,
+  }) async {
+    final displayPath = _requireUtf8Path(path);
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          '--literal-pathspecs',
+          'checkout',
+          useOurs ? '--ours' : '--theirs',
+          '--',
+          displayPath,
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Choosing conflict side');
+    await stagePath(repository, path);
+  }
+
+  /// Restores Git's conflict-marker merge result for an unmerged path.
+  /// 中文：重新生成未解决文件的冲突标记。
+  Future<void> restartConflictMerge(
+    GitRepository repository,
+    GitPath path,
+  ) async {
+    final displayPath = _requireUtf8Path(path);
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          '--literal-pathspecs',
+          'checkout',
+          '--merge',
+          '--',
+          displayPath,
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Restarting conflict merge');
+  }
+
+  /// Restores the unmerged index stages retained by Git's resolve-undo data.
+  /// 中文：使用 Git 的 resolve-undo 记录把文件重新标记为未解决。
+  Future<void> markConflictUnresolved(
+    GitRepository repository,
+    GitPath path,
+  ) async {
+    final displayPath = _requireUtf8Path(path);
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          '--literal-pathspecs',
+          'update-index',
+          '--unresolve',
+          '--',
+          displayPath,
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Marking conflict unresolved');
+  }
+
+  /// 中文：将内部 Diff 中编辑的 UTF-8 结果安全写回工作区，并暂存为已解决。
+  ///
+  /// English: Safely writes the UTF-8 result edited in the internal Diff back
+  /// to the work tree and stages it as resolved.
+  Future<void> resolveConflictWithContent(
+    GitRepository repository,
+    GitPath path,
+    String content,
+  ) async {
+    final root = repository.workTreeRoot;
+    if (root == null) {
+      throw const GitException('A working tree is required.');
+    }
+    final displayPath = _requireUtf8Path(path);
+    if (path_utils.isAbsolute(displayPath)) {
+      throw const GitException('The conflicted path is outside the work tree.');
+    }
+    final canonicalRoot = await Directory(root).resolveSymbolicLinks();
+    final target = path_utils.normalize(path_utils.join(root, displayPath));
+    if (!path_utils.isWithin(root, target)) {
+      throw const GitException('The conflicted path is outside the work tree.');
+    }
+    final targetType = await FileSystemEntity.type(target, followLinks: false);
+    if (targetType == FileSystemEntityType.link ||
+        (targetType != FileSystemEntityType.file &&
+            targetType != FileSystemEntityType.notFound)) {
+      throw const GitException('The conflicted path is not a regular file.');
+    }
+    final parent = Directory(path_utils.dirname(target));
+    final canonicalParent = await parent.resolveSymbolicLinks();
+    if (canonicalParent != canonicalRoot &&
+        !path_utils.isWithin(canonicalRoot, canonicalParent)) {
+      throw const GitException('The conflicted path is outside the work tree.');
+    }
+    await File(target).writeAsString(content, encoding: utf8, flush: true);
+    await stagePath(repository, path);
   }
 
   /// Creates a commit from the current index without bypassing Git hooks.
@@ -455,10 +578,10 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Pulling current branch');
   }
 
-  /// 中文：将当前分支推送到已配置上游，且不提供 force 选项，因此不会重写远端历史。
+  /// 中文：将当前分支推送到已配置上游；首次推送时使用 origin 上的同名分支并设置上游。始终不提供 force 选项。
   ///
-  /// English: Pushes the current branch to its configured upstream without a
-  /// force option, so it never rewrites remote history.
+  /// English: Pushes to the configured upstream, or sets origin's same-named
+  /// branch as upstream on first push. No force option is ever supplied.
   Future<void> pushUpstream(
     GitRepository repository, {
     GitCancellationToken? cancellationToken,
@@ -474,6 +597,7 @@ final class GitRepositoryWriter {
           '--no-pager',
           'push',
           '--porcelain',
+          if (target.setUpstream) '--set-upstream',
           '--',
           target.remoteName,
           target.refspec,
@@ -570,18 +694,34 @@ final class GitRepositoryWriter {
       throw const GitException('The current branch has no push target.');
     }
 
-    final remoteName = await _readBranchConfig(
+    final configuredRemote = await _tryReadBranchConfig(
       repository,
       branchName: branchName,
       key: 'remote',
       cancellationToken: cancellationToken,
     );
-    final remoteRef = await _readBranchConfig(
+    final configuredMerge = await _tryReadBranchConfig(
       repository,
       branchName: branchName,
       key: 'merge',
       cancellationToken: cancellationToken,
     );
+    if (configuredRemote == null && configuredMerge == null) {
+      final remoteRef = 'refs/heads/$branchName';
+      return _GitPushTarget(
+        remoteName: 'origin',
+        remoteRef: remoteRef,
+        refspec: 'HEAD:$remoteRef',
+        setUpstream: true,
+      );
+    }
+    if (configuredRemote == null || configuredMerge == null) {
+      throw const GitException(
+        'The current branch has an incomplete remote tracking target.',
+      );
+    }
+    final remoteName = configuredRemote;
+    final remoteRef = configuredMerge;
     if (remoteName == '.' ||
         !remoteRef.startsWith('refs/heads/') ||
         remoteRef.length == 'refs/heads/'.length) {
@@ -593,12 +733,14 @@ final class GitRepositoryWriter {
       remoteName: remoteName,
       remoteRef: remoteRef,
       refspec: 'HEAD:$remoteRef',
+      setUpstream: false,
     );
   }
 
-  /// 中文：读取所需的数据。
-  /// English: Reads the required data.
-  Future<String> _readBranchConfig(
+  /// 中文：读取可选的分支配置；配置不存在时返回 null，其他 Git 错误仍向上传递。
+  /// English: Reads optional branch configuration, returning null only when
+  /// the key is absent while preserving all other Git failures.
+  Future<String?> _tryReadBranchConfig(
     GitRepository repository, {
     required String branchName,
     required String key,
@@ -615,12 +757,14 @@ final class GitRepositoryWriter {
         ),
       ),
     );
+    if (result.exitCode == 1 &&
+        result.stdoutBytes.isEmpty &&
+        result.stderrBytes.isEmpty) {
+      return null;
+    }
     result.throwIfFailed(operation: 'Reading branch push target');
     final value = result.stdoutText.trim();
-    if (value.isEmpty) {
-      throw const GitException('The current branch has no push target.');
-    }
-    return value;
+    return value.isEmpty ? null : value;
   }
 
   /// 中文：检查并返回所需值。
@@ -640,9 +784,11 @@ final class _GitPushTarget {
     required this.remoteName,
     required this.remoteRef,
     required this.refspec,
+    required this.setUpstream,
   });
 
   final String remoteName;
   final String remoteRef;
   final String refspec;
+  final bool setUpstream;
 }

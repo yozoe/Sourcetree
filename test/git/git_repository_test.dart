@@ -145,6 +145,24 @@ void main() {
     expect(stagedDiff.text, contains('+second'));
   });
 
+  test('reads an untracked file as a full-file addition', () async {
+    const fileName = 'draft ü.txt';
+    final file = File(
+      '${temporaryDirectory.path}${Platform.pathSeparator}$fileName',
+    );
+    await file.writeAsString('first line\nsecond line\n');
+
+    final repository = (await inspector.inspect(temporaryDirectory.path))!;
+    final diff = await reader.readUntrackedFileDiff(repository, path: fileName);
+
+    expect(diff.source, GitDiffSource.workingTree);
+    expect(diff.text, contains('new file mode'));
+    expect(diff.text, contains('@@ -0,0 +1,2 @@'));
+    expect(diff.text, contains('+first line'));
+    expect(diff.text, contains('+second line'));
+    expect(diff.isTruncated, isFalse);
+  });
+
   test(
     'reads reachable commits from every local branch for the graph',
     () async {

@@ -99,6 +99,7 @@ final class GitStatusParser {
         }
         branch.ahead = int.parse(match.group(1)!);
         branch.behind = int.parse(match.group(2)!);
+        branch.hasAheadBehind = true;
       case 'stash':
         final count = int.tryParse(value);
         if (count == null || count < 0) {
@@ -314,6 +315,7 @@ final class _BranchStatusBuilder {
   String? upstream;
   int ahead = 0;
   int behind = 0;
+  bool hasAheadBehind = false;
   int stashCount = 0;
   bool isDetached = false;
   bool isUnborn = false;
@@ -328,6 +330,7 @@ final class _BranchStatusBuilder {
       upstream: upstream,
       ahead: ahead,
       behind: behind,
+      isUpstreamGone: upstream != null && !hasAheadBehind,
       stashCount: stashCount,
       isDetached: isDetached,
       isUnborn: isUnborn,

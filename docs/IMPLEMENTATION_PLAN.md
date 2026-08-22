@@ -56,7 +56,7 @@
 | Branch / Tag | 创建/切换/重命名本地分支、从指定本地或已获取远端分支创建分支、引用右键菜单、安全删除已合并分支 | 跟踪关系、Tag | Worktree |
 | 远端 | 已获取远端跟踪分支展示、Fetch、Pull、Push、进度和取消 | Remote 管理、Prune、安全 Force Push | 托管平台适配 |
 | 高级操作 | 本地分支安全合并、冲突状态展示 | Rebase、Cherry-pick、Revert、Reset、Stash；合并 Continue/Abort | 高级批量操作 |
-| 冲突 | 检测并展示进行中状态 | ours/theirs、Continue/Skip/Abort、外部工具 | 内置三方合并器评估 |
+| 冲突 | 检测并展示进行中状态；内置文本 Diff 左右对比、选边、编辑结果并标记已解决 | Continue/Skip/Abort、外部工具 | 二进制和高级三方合并器评估 |
 | Git 扩展 | — | Submodule、LFS 基础能力 | 深度增强 |
 | 桌面集成 | Finder/终端入口、快捷键、深浅主题 | 中英文、外部 Diff/Merge、自动更新 | Windows/Linux 原生集成 |
 

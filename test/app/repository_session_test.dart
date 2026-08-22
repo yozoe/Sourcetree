@@ -60,6 +60,75 @@ void main() {
     expect(selected.commitDiff.lines, isNotEmpty);
   });
 
+  test('previews an untracked file as added content before staging', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile(
+      'hello_sourcetree.py',
+      'print("Hello, Sourcetree!")\n',
+    );
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    var overview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    final untracked = overview.changes.singleWhere(
+      (change) => change.path == 'hello_sourcetree.py',
+    );
+    expect(untracked.kind, RepositoryChangeKind.untracked);
+
+    await controller.selectChange(untracked);
+
+    overview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    expect(overview.selectedChange?.path, 'hello_sourcetree.py');
+    expect(
+      overview.diff.lines.where(
+        (line) =>
+            line.kind == DiffLineKind.addition &&
+            line.text == '+print("Hello, Sourcetree!")',
+      ),
+      hasLength(1),
+    );
+  });
+
+  test('keeps a newly staged file selected with its staged diff', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('hello_sourcetree.py', 'print("ready")\n');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    var overview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    await controller.toggleStage(overview.changes.single);
+
+    overview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    expect(overview.stagedChangeCount, 1);
+    expect(overview.unstagedChangeCount, 0);
+    expect(overview.selectedChange?.isStaged, isTrue);
+    expect(overview.selectedChange?.path, 'hello_sourcetree.py');
+    expect(
+      overview.diff.lines.any(
+        (line) =>
+            line.kind == DiffLineKind.addition &&
+            line.text == '+print("ready")',
+      ),
+      isTrue,
+    );
+  });
+
   test(
     'selecting a branch focuses its tip and refreshes commit file status',
     () async {
@@ -274,6 +343,8 @@ void main() {
       (commit) => commit.subject == 'feature commit',
     );
 
+    expect(commits.first.graph.hasPreviousNode, isFalse);
+    expect(commits[1].graph.hasPreviousNode, isTrue);
     expect(main.graph.activeLanes, containsAll([0, 1]));
     expect(
       main.graph.activeLaneDestinations,
@@ -848,6 +919,33 @@ while true; do sleep 1; done
     final overview = mapRepositoryOverview(state).repository!;
     expect(overview.disabledActions, contains(RepositoryAction.mergeBranch));
     expect(await controller.mergeLocalBranch('feature/conflict'), isFalse);
+
+    final conflict = overview.changes.singleWhere(
+      (change) => change.kind == RepositoryChangeKind.conflicted,
+    );
+    final versions = await controller.readConflictVersions(conflict);
+    expect(versions, isNotNull);
+    expect(versions!.baseText, 'base\n');
+    expect(versions.oursText, 'main\n');
+    expect(versions.theirsText, 'feature\n');
+    expect(versions.workingText, contains('<<<<<<<'));
+    expect(
+      await controller.resolveConflictWithContent(
+        conflict,
+        'merged in internal diff\n',
+      ),
+      isTrue,
+    );
+    expect(
+      container.read(repositorySessionProvider).status!.conflictedEntries,
+      isEmpty,
+    );
+    expect(
+      await File(
+        '${repository.workingDirectory.path}${Platform.pathSeparator}README.md',
+      ).readAsString(),
+      'merged in internal diff\n',
+    );
   });
 
   test('fetches origin and refreshes ahead-behind state', () async {
@@ -1007,6 +1105,46 @@ while true; do sleep 1; done
       (await target.runGit(['rev-parse', 'HEAD'])).stdout.toString().trim(),
     );
   });
+
+  test(
+    'enables and completes first push when configured upstream is gone',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', '# First push\n');
+      final localHead = await repository.commit('Initial commit');
+      final origin = await repository.createBareOrigin();
+      await repository.runGit(['config', 'branch.main.remote', 'origin']);
+      await repository.runGit([
+        'config',
+        'branch.main.merge',
+        'refs/heads/main',
+      ]);
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+
+      var state = container.read(repositorySessionProvider);
+      expect(state.status!.branch.isUpstreamGone, isTrue);
+      expect(
+        mapRepositoryOverview(state).repository!.disabledActions,
+        isNot(contains(RepositoryAction.push)),
+      );
+      expect(await controller.pushUpstream(), isTrue);
+
+      state = container.read(repositorySessionProvider);
+      expect(state.status!.branch.isUpstreamGone, isFalse);
+      expect(
+        (await repository.runGit([
+          'rev-parse',
+          'refs/heads/main',
+        ], workingDirectory: origin)).stdout.toString().trim(),
+        localHead,
+      );
+    },
+  );
 
   test('refuses push without an upstream or ahead commits', () async {
     final repository = await GitTestRepository.create();

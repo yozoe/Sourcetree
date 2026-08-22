@@ -610,13 +610,19 @@ class _RepositoryWorkspaceScreenState
     final session = ref.read(repositorySessionProvider);
     final branch = session.status?.branch;
     final branchName = branch?.head ?? '当前分支';
-    final upstream = branch?.upstream ?? '上游';
+    final upstream = branch?.upstream ?? 'origin/$branchName';
     final ahead = branch?.ahead ?? 0;
+    final isFirstPush =
+        branch != null && (branch.upstream == null || branch.isUpstreamGone);
     final approved = await showDialog<bool>(
       context: context,
       builder: (BuildContext context) => AlertDialog(
         title: const Text('推送提交'),
-        content: Text('将 $branchName 的 $ahead 个本地提交推送到 $upstream。不会执行强制推送。'),
+        content: Text(
+          isFirstPush
+              ? '远端分支 $upstream 尚不存在。将推送 $branchName 并创建该远端分支。不会执行强制推送。'
+              : '将 $branchName 的 $ahead 个本地提交推送到 $upstream。不会执行强制推送。',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -1019,6 +1025,60 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
+  /// 中文：将冲突菜单操作分流到内部 Diff 或直接的 Git 解决命令。
+  ///
+  /// English: Routes a conflict-menu action to the internal Diff or a direct
+  /// Git resolution command.
+  Future<void> _handleConflictAction(
+    RepositoryChangeViewData change,
+    RepositoryConflictAction action,
+  ) async {
+    final controller = ref.read(repositorySessionProvider.notifier);
+    if (action != RepositoryConflictAction.launchInternalDiffTool) {
+      await controller.resolveConflict(change, action);
+      return;
+    }
+
+    final versions = await controller.readConflictVersions(change);
+    if (!mounted) return;
+    if (versions == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('无法读取冲突版本，请刷新后重试。')));
+      return;
+    }
+    final branch = ref.read(repositorySessionProvider).status?.branch.head;
+    final result = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => InternalConflictResolverDialog(
+        path: versions.path.display,
+        currentBranch: branch ?? '当前分支',
+        oursText: versions.oursText,
+        theirsText: versions.theirsText,
+        workingText: versions.workingText,
+        isBinary: versions.isBinary,
+        isTruncated: versions.isTruncated,
+      ),
+    );
+    if (result == null || !mounted) return;
+
+    final resolved = await controller.resolveConflictWithContent(
+      change,
+      result,
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(
+          content: Text(
+            resolved ? '已保存 ${change.path} 并标记为已解决。' : '未能保存冲突结果，请查看仓库错误信息。',
+          ),
+        ),
+      );
+  }
+
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
   @override
@@ -1066,6 +1126,8 @@ class _RepositoryWorkspaceScreenState
                     unawaited(controller.selectCommitFile(file)),
                 onChangeSelected: controller.selectChange,
                 onChangeStageToggled: controller.toggleStage,
+                onConflictAction: (change, action) =>
+                    unawaited(_handleConflictAction(change, action)),
               ),
             ),
           ),

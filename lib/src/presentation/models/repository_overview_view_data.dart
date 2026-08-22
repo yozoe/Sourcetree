@@ -49,6 +49,16 @@ enum RepositoryChangeKind {
   conflicted,
 }
 
+/// Actions available from the context menu of a conflicted working-tree file.
+enum RepositoryConflictAction {
+  launchInternalDiffTool,
+  useOurs,
+  useTheirs,
+  restartMerge,
+  markResolved,
+  markUnresolved,
+}
+
 enum DiffLineKind { fileHeader, hunkHeader, context, addition, deletion, note }
 
 final class RepositoryOverviewViewData {
@@ -207,6 +217,7 @@ final class CommitGraphViewData {
     this.activeLaneDestinations = const [0],
     this.parentLanes = const [0],
     this.colorIndex = 0,
+    this.hasPreviousNode = false,
   });
 
   final int lane;
@@ -214,6 +225,11 @@ final class CommitGraphViewData {
   final List<int?> activeLaneDestinations;
   final List<int> parentLanes;
   final int colorIndex;
+
+  /// 中文：上方是否存在可将活动车道延续到当前行的提交节点。
+  /// English: Whether a graph row above this one contains nodes that can
+  /// continue active rails into the current row.
+  final bool hasPreviousNode;
 }
 
 final class CommitViewData {

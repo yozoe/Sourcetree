@@ -236,6 +236,32 @@ final class GitStatusEntry {
       workTreeStatus != GitChangeType.ignored;
 }
 
+/// 中文：内部冲突解决器使用的文本快照。
+///
+/// English: Text snapshots used by the internal conflict resolver. Missing
+/// index stages are represented by empty text, as happens for
+/// add/delete conflicts. Binary or truncated snapshots are read-only in the
+/// presentation layer so they cannot be accidentally rewritten as UTF-8.
+final class GitConflictFileVersions {
+  const GitConflictFileVersions({
+    required this.path,
+    required this.baseText,
+    required this.oursText,
+    required this.theirsText,
+    required this.workingText,
+    required this.isBinary,
+    required this.isTruncated,
+  });
+
+  final GitPath path;
+  final String baseText;
+  final String oursText;
+  final String theirsText;
+  final String workingText;
+  final bool isBinary;
+  final bool isTruncated;
+}
+
 final class GitBranchStatus {
   const GitBranchStatus({
     this.objectId,
@@ -243,6 +269,7 @@ final class GitBranchStatus {
     this.upstream,
     this.ahead = 0,
     this.behind = 0,
+    this.isUpstreamGone = false,
     this.stashCount = 0,
     this.isDetached = false,
     this.isUnborn = false,
@@ -253,6 +280,7 @@ final class GitBranchStatus {
   final String? upstream;
   final int ahead;
   final int behind;
+  final bool isUpstreamGone;
   final int stashCount;
   final bool isDetached;
   final bool isUnborn;
