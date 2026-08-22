@@ -429,6 +429,60 @@ void main() {
     expect(activatedReference, featureBranch);
   });
 
+  testWidgets('double-clicking a commit requests checkout activation', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    CommitViewData? activatedCommit;
+    const commit = CommitViewData(
+      oid: '4f5e6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6',
+      shortOid: '4f5e6b7c',
+      subject: '测试提交',
+      author: 'tester',
+      relativeDate: '今天',
+      refs: ['HEAD'],
+      isHead: true,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              headOid: '4f5e6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6',
+              isDetachedHead: true,
+              refs: [
+                RepositoryRefViewData(
+                  id: 'HEAD',
+                  label: 'HEAD',
+                  kind: RepositoryRefKind.localBranch,
+                  isCurrent: true,
+                ),
+              ],
+              commits: [commit],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onCommitActivated: (value) => activatedCommit = value,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('HEAD'), findsNWidgets(2));
+
+    await tester.tap(find.text('测试提交'));
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(find.text('测试提交'));
+    await tester.pumpAndSettle();
+
+    expect(activatedCommit, commit);
+  });
+
   testWidgets('external refresh resets the locally highlighted reference', (
     tester,
   ) async {

@@ -109,6 +109,93 @@ void main() {
     expect(find.text('hello_sourcetree.py'), findsNWidgets(2));
   });
 
+  testWidgets('stages an unstaged file from its checkbox', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    RepositoryChangeViewData? toggled;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: [
+                RepositoryChangeViewData(
+                  path: 'hello.py',
+                  kind: RepositoryChangeKind.untracked,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onChangeStageToggled: (change) async => toggled = change,
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.byType(Checkbox).last);
+    await tester.pump();
+
+    expect(toggled?.path, 'hello.py');
+  });
+
+  testWidgets('stages every unstaged file from the group checkbox', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    List<RepositoryChangeViewData>? staged;
+    var stage = false;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: [
+                RepositoryChangeViewData(
+                  path: 'one.py',
+                  kind: RepositoryChangeKind.untracked,
+                ),
+                RepositoryChangeViewData(
+                  path: 'two.py',
+                  kind: RepositoryChangeKind.modified,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onChangeGroupStageToggled: (changes, shouldStage) {
+              staged = changes;
+              stage = shouldStage;
+            },
+          ),
+        ),
+      ),
+    );
+
+    final header = find.byKey(const ValueKey('unstaged-files-header'));
+    await tester.tap(
+      find.descendant(of: header, matching: find.byType(Checkbox)),
+    );
+    await tester.pump();
+
+    expect(stage, isTrue);
+    expect(
+      staged?.map((change) => change.path),
+      containsAll(<String>['one.py', 'two.py']),
+    );
+  });
+
   testWidgets('offers conflict resolution actions from a file context menu', (
     tester,
   ) async {

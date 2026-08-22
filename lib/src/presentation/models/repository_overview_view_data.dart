@@ -209,6 +209,77 @@ final class RepositoryRefViewData {
   final int? childCount;
 }
 
+/// A small topology input used to calculate graph lanes for a history view.
+final class CommitGraphNode {
+  const CommitGraphNode({required this.oid, this.parents = const []});
+
+  final String oid;
+  final List<String> parents;
+}
+
+/// Builds the graph lanes used by the history list.
+///
+/// Keeping this in the presentation model lets a filtered history (for
+/// example, the current branch view) rebuild its graph without retaining
+/// lanes from commits that are not being rendered.
+List<CommitGraphViewData> buildCommitGraph(
+  List<CommitGraphNode> nodes, {
+  required String? headId,
+}) {
+  final parentIds = <String>{for (final node in nodes) ...node.parents};
+  final tips = <String>[
+    for (final node in nodes)
+      if (!parentIds.contains(node.oid)) node.oid,
+  ];
+  final lanes = <String>[
+    if (headId != null && tips.remove(headId)) headId,
+    ...tips,
+  ];
+  final result = <CommitGraphViewData>[];
+  for (final node in nodes) {
+    var lane = lanes.indexOf(node.oid);
+    if (lane < 0) {
+      lane = 0;
+      lanes.insert(0, node.oid);
+    }
+    final activeIds = List<String>.of(lanes);
+    final active = List<int>.generate(activeIds.length, (index) => index);
+    lanes.removeAt(lane);
+    final parents = <int>[];
+    for (var index = 0; index < node.parents.length; index++) {
+      final parent = node.parents[index];
+      var parentLane = lanes.indexOf(parent);
+      if (parentLane < 0) {
+        parentLane = lane + index;
+        if (parentLane > lanes.length) parentLane = lanes.length;
+        lanes.insert(parentLane, parent);
+      }
+      parents.add(parentLane);
+    }
+    final destinations = <int?>[
+      for (var index = 0; index < activeIds.length; index++)
+        if (index == lane)
+          parents.isEmpty ? null : parents.first
+        else
+          switch (lanes.indexOf(activeIds[index])) {
+            final destination when destination >= 0 => destination,
+            _ => null,
+          },
+    ];
+    result.add(
+      CommitGraphViewData(
+        lane: lane,
+        activeLanes: active,
+        activeLaneDestinations: destinations,
+        parentLanes: parents,
+        colorIndex: lane,
+        hasPreviousNode: result.isNotEmpty,
+      ),
+    );
+  }
+  return result;
+}
+
 /// A graph cell can be rendered without the presentation knowing Git topology.
 ///
 /// [activeLanes] contains the lanes crossing this commit row, [lane] is the
@@ -234,6 +305,15 @@ final class CommitGraphViewData {
   /// English: Whether a graph row above this one contains nodes that can
   /// continue active rails into the current row.
   final bool hasPreviousNode;
+
+  CommitGraphViewData copyWith({bool? hasPreviousNode}) => CommitGraphViewData(
+    lane: lane,
+    activeLanes: activeLanes,
+    activeLaneDestinations: activeLaneDestinations,
+    parentLanes: parentLanes,
+    colorIndex: colorIndex,
+    hasPreviousNode: hasPreviousNode ?? this.hasPreviousNode,
+  );
 }
 
 final class CommitViewData {
@@ -244,10 +324,12 @@ final class CommitViewData {
     required this.author,
     required this.relativeDate,
     this.refs = const [],
+    this.remoteRefs = const [],
     this.graph = const CommitGraphViewData(),
     this.isHead = false,
     this.isSelected = false,
     this.isMerge = false,
+    this.parents = const [],
   });
 
   final String oid;
@@ -256,10 +338,27 @@ final class CommitViewData {
   final String author;
   final String relativeDate;
   final List<String> refs;
+  final List<String> remoteRefs;
   final CommitGraphViewData graph;
   final bool isHead;
   final bool isSelected;
   final bool isMerge;
+  final List<String> parents;
+
+  CommitViewData copyWith({CommitGraphViewData? graph}) => CommitViewData(
+    oid: oid,
+    shortOid: shortOid,
+    subject: subject,
+    author: author,
+    relativeDate: relativeDate,
+    refs: refs,
+    remoteRefs: remoteRefs,
+    graph: graph ?? this.graph,
+    isHead: isHead,
+    isSelected: isSelected,
+    isMerge: isMerge,
+    parents: parents,
+  );
 }
 
 final class CommitDetailsViewData {

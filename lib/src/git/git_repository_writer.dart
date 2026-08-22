@@ -20,7 +20,14 @@ final class GitRepositoryWriter {
   /// 中文：暂存指定路径。
   /// English: Stages the specified path.
   Future<void> stagePath(GitRepository repository, GitPath path) async {
-    final displayPath = _requireUtf8Path(path);
+    await stagePaths(repository, [path]);
+  }
+
+  /// Stages multiple paths in one Git invocation.
+  /// 中文：在一次 Git 调用中暂存多个路径，避免批量操作只完成一部分。
+  Future<void> stagePaths(GitRepository repository, List<GitPath> paths) async {
+    final displayPaths = [for (final path in paths) _requireUtf8Path(path)];
+    if (displayPaths.isEmpty) return;
     final result = await runner.run(
       GitInvocation(
         arguments: [
@@ -28,7 +35,7 @@ final class GitRepositoryWriter {
           '--literal-pathspecs',
           'add',
           '--',
-          displayPath,
+          ...displayPaths,
         ],
         workingDirectory: repository.commandDirectory,
         outputLimit: const GitOutputLimit(
@@ -47,7 +54,18 @@ final class GitRepositoryWriter {
     GitPath path, {
     required bool isUnbornBranch,
   }) async {
-    final displayPath = _requireUtf8Path(path);
+    await unstagePaths(repository, [path], isUnbornBranch: isUnbornBranch);
+  }
+
+  /// Unstages multiple paths in one Git invocation.
+  /// 中文：在一次 Git 调用中取消暂存多个路径，保持批量操作的一致性。
+  Future<void> unstagePaths(
+    GitRepository repository,
+    List<GitPath> paths, {
+    required bool isUnbornBranch,
+  }) async {
+    final displayPaths = [for (final path in paths) _requireUtf8Path(path)];
+    if (displayPaths.isEmpty) return;
     final arguments = isUnbornBranch
         ? <String>[
             '--no-pager',
@@ -56,7 +74,7 @@ final class GitRepositoryWriter {
             '--cached',
             '--ignore-unmatch',
             '--',
-            displayPath,
+            ...displayPaths,
           ]
         : <String>[
             '--no-pager',
@@ -64,7 +82,7 @@ final class GitRepositoryWriter {
             'restore',
             '--staged',
             '--',
-            displayPath,
+            ...displayPaths,
           ];
     final result = await runner.run(
       GitInvocation(
@@ -279,6 +297,41 @@ final class GitRepositoryWriter {
       ),
     );
     result.throwIfFailed(operation: 'Switching local branch');
+  }
+
+  /// Checks out a commit in detached HEAD mode without altering refs.
+  /// 中文：以分离 HEAD 模式检出指定提交，不修改任何分支引用。
+  Future<void> checkoutCommit(
+    GitRepository repository, {
+    required String objectId,
+  }) async {
+    final normalizedId = objectId.trim();
+    if (normalizedId.isEmpty ||
+        !RegExp(r'^[0-9a-fA-F]{7,64}$').hasMatch(normalizedId)) {
+      throw ArgumentError.value(
+        objectId,
+        'objectId',
+        'A valid commit id is required.',
+      );
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          'switch',
+          '--detach',
+          '--no-guess',
+          '--',
+          normalizedId,
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Checking out commit');
   }
 
   /// 中文：从已获取的远端跟踪分支创建本地跟踪分支并切换过去，不猜测其他分支名。

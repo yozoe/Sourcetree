@@ -1347,7 +1347,10 @@ final class RepositorySessionController
 
     String? objectId;
     String? selectedRefId;
-    if (reference.kind == RepositoryRefKind.localBranch) {
+    if (reference.id == 'HEAD' && state.status?.branch.isDetached == true) {
+      objectId = state.status?.branch.objectId;
+      selectedRefId = 'HEAD';
+    } else if (reference.kind == RepositoryRefKind.localBranch) {
       for (final branch in state.localBranches) {
         if (branch.name == reference.label) {
           objectId = branch.objectId;
@@ -1646,6 +1649,62 @@ final class RepositorySessionController
         }
         break;
       }
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+    }
+  }
+
+  /// 中文：批量切换文件组的暂存状态，一次刷新工作区。
+  /// English: Stages or unstages a whole change group and refreshes once.
+  Future<void> toggleStageGroup(
+    List<RepositoryChangeViewData> changes, {
+    required bool stage,
+  }) async {
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        state.phase == RepositorySessionPhase.loading) {
+      return;
+    }
+
+    final entries = <GitStatusEntry>[];
+    for (final change in changes) {
+      if (!change.canToggleStage || change.isStaged == stage) continue;
+      for (final entry in status.entries) {
+        if (entry.path.display == change.path &&
+            !entry.isConflicted &&
+            entry.path.isValidUtf8) {
+          entries.add(entry);
+          break;
+        }
+      }
+    }
+    if (entries.isEmpty) return;
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      final paths = [for (final entry in entries) entry.path];
+      if (stage) {
+        await _writer.stagePaths(repository, paths);
+      } else {
+        await _writer.unstagePaths(
+          repository,
+          paths,
+          isUnbornBranch: status.branch.isUnborn,
+        );
+      }
+      await refresh();
     } on Object catch (error, stackTrace) {
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
@@ -1967,6 +2026,41 @@ final class RepositorySessionController
     );
     try {
       await _writer.switchToLocalBranch(repository, name: name);
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
+  /// Checks out a commit in detached HEAD mode, letting Git reject conflicts.
+  /// 中文：以分离 HEAD 模式检出提交，由 Git 拒绝会覆盖本地改动的情况。
+  Future<bool> checkoutCommit(String objectId) async {
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        state.phase == RepositorySessionPhase.loading) {
+      return false;
+    }
+    final normalizedId = objectId.trim();
+    if (normalizedId.isEmpty) return false;
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.checkoutCommit(repository, objectId: normalizedId);
       await refresh();
       return state.phase == RepositorySessionPhase.ready;
     } on Object catch (error, stackTrace) {

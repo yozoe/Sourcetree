@@ -131,6 +131,14 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
         childCount: status.entries.length,
         isSelected: state.selectedRefId == 'workspace',
       ),
+      if (branch.isDetached)
+        RepositoryRefViewData(
+          id: 'HEAD',
+          label: 'HEAD',
+          kind: RepositoryRefKind.localBranch,
+          isCurrent: true,
+          isSelected: state.selectedRefId == 'HEAD',
+        ),
       for (final localBranch in state.localBranches)
         RepositoryRefViewData(
           id: 'refs/heads/${localBranch.name}',
@@ -290,7 +298,10 @@ List<CommitViewData> _mapCommits(
   GitBranchStatus branch,
 ) {
   final query = state.searchQuery.trim().toLowerCase();
-  final graph = _buildGraph(state.commits, headId: branch.objectId);
+  final graph = buildCommitGraph([
+    for (final commit in state.commits)
+      CommitGraphNode(oid: commit.objectId, parents: commit.parentIds),
+  ], headId: branch.objectId);
   return [
     for (var index = 0; index < state.commits.length; index++)
       if (_matches(state.commits[index], query))
@@ -306,10 +317,15 @@ List<CommitViewData> _mapCommits(
           author: state.commits[index].author.name,
           relativeDate: _relativeDate(state.commits[index].author.when),
           refs: _refsForCommit(state, state.commits[index].objectId),
+          remoteRefs: _remoteRefsForCommit(
+            state,
+            state.commits[index].objectId,
+          ),
           graph: graph[index],
           isHead: state.commits[index].objectId == branch.objectId,
           isSelected: state.commits[index].objectId == state.selectedCommitId,
           isMerge: state.commits[index].parentIds.length > 1,
+          parents: state.commits[index].parentIds,
         ),
   ];
 }
@@ -317,6 +333,9 @@ List<CommitViewData> _mapCommits(
 /// 中文：返回选中分支指向的提交对象；工作区及其他引用没有历史定位目标。
 /// English: Returns the commit targeted by the selected branch ref.
 String? _selectedRefObjectId(RepositorySessionState state) {
+  if (state.selectedRefId == 'HEAD') {
+    return state.status?.branch.objectId;
+  }
   for (final branch in state.localBranches) {
     if (state.selectedRefId == 'refs/heads/${branch.name}') {
       return branch.objectId;
@@ -333,8 +352,19 @@ String? _selectedRefObjectId(RepositorySessionState state) {
 /// 中文：收集指向同一提交的本地和远端分支标签。
 /// English: Collects local and remote branch labels pointing to a commit.
 List<String> _refsForCommit(RepositorySessionState state, String objectId) => [
+  if (state.status?.branch.isDetached == true &&
+      state.status?.branch.objectId == objectId)
+    'HEAD',
   for (final branch in state.localBranches)
     if (branch.objectId == objectId) branch.name,
+  for (final branch in state.remoteBranches)
+    if (branch.objectId == objectId) branch.name,
+];
+
+List<String> _remoteRefsForCommit(
+  RepositorySessionState state,
+  String objectId,
+) => [
   for (final branch in state.remoteBranches)
     if (branch.objectId == objectId) branch.name,
 ];
@@ -346,70 +376,6 @@ bool _matches(GitCommit commit, String query) {
       commit.subject.toLowerCase().contains(query) ||
       commit.author.name.toLowerCase().contains(query) ||
       commit.objectId.toLowerCase().startsWith(query);
-}
-
-/// 中文：为按时间排序的提交生成稳定的车道、延续线和父提交连接信息。
-///
-/// English: Builds stable lanes, continuation rails, and parent connections
-/// for chronologically ordered commits.
-List<CommitGraphViewData> _buildGraph(
-  List<GitCommit> commits, {
-  required String? headId,
-}) {
-  final parentIds = <String>{for (final commit in commits) ...commit.parentIds};
-  // Start with every visible branch tip. This gives sibling branches a stable
-  // lane before either one is rendered, so their lines can remain continuous
-  // instead of collapsing into a single HEAD-only column.
-  final tips = <String>[
-    for (final commit in commits)
-      if (!parentIds.contains(commit.objectId)) commit.objectId,
-  ];
-  final lanes = <String>[
-    if (headId != null && tips.remove(headId)) headId,
-    ...tips,
-  ];
-  final result = <CommitGraphViewData>[];
-  for (final commit in commits) {
-    var lane = lanes.indexOf(commit.objectId);
-    if (lane < 0) {
-      lane = 0;
-      lanes.insert(0, commit.objectId);
-    }
-    final activeIds = List<String>.of(lanes);
-    final active = List<int>.generate(activeIds.length, (index) => index);
-    lanes.removeAt(lane);
-    final parents = <int>[];
-    for (var index = 0; index < commit.parentIds.length; index++) {
-      final parent = commit.parentIds[index];
-      var parentLane = lanes.indexOf(parent);
-      if (parentLane < 0) {
-        parentLane = math.min(lane + index, lanes.length);
-        lanes.insert(parentLane, parent);
-      }
-      parents.add(parentLane);
-    }
-    final destinations = <int?>[
-      for (var index = 0; index < activeIds.length; index++)
-        if (index == lane)
-          parents.firstOrNull
-        else
-          switch (lanes.indexOf(activeIds[index])) {
-            final destination when destination >= 0 => destination,
-            _ => null,
-          },
-    ];
-    result.add(
-      CommitGraphViewData(
-        lane: lane,
-        activeLanes: active,
-        activeLaneDestinations: destinations,
-        parentLanes: parents,
-        colorIndex: lane,
-        hasPreviousNode: result.isNotEmpty,
-      ),
-    );
-  }
-  return result;
 }
 
 /// 中文：将数据映射为目标表示。

@@ -13,10 +13,14 @@ typedef RepositoryRefCallback = void Function(RepositoryRefViewData ref);
 typedef RepositoryRefContextActionCallback =
     void Function(RepositoryRefViewData ref, RepositoryRefContextAction action);
 typedef RepositoryCommitCallback = void Function(CommitViewData commit);
+typedef RepositoryCommitActivationCallback =
+    void Function(CommitViewData commit);
 typedef RepositoryChangeCallback =
     void Function(RepositoryChangeViewData? change);
 typedef RepositoryChangeStageCallback =
     void Function(RepositoryChangeViewData change);
+typedef RepositoryChangeGroupStageCallback =
+    FutureOr<void> Function(List<RepositoryChangeViewData> changes, bool stage);
 typedef RepositoryConflictActionCallback =
     void Function(
       RepositoryChangeViewData change,
@@ -36,8 +40,10 @@ final class RepositoryOverviewCallbacks {
     this.onRefActivated,
     this.onRefContextAction,
     this.onCommitSelected,
+    this.onCommitActivated,
     this.onChangeSelected,
     this.onChangeStageToggled,
+    this.onChangeGroupStageToggled,
     this.onConflictAction,
     this.onCommitFileSelected,
     this.onLayoutChanged,
@@ -49,8 +55,10 @@ final class RepositoryOverviewCallbacks {
   final RepositoryRefCallback? onRefActivated;
   final RepositoryRefContextActionCallback? onRefContextAction;
   final RepositoryCommitCallback? onCommitSelected;
+  final RepositoryCommitActivationCallback? onCommitActivated;
   final RepositoryChangeCallback? onChangeSelected;
   final RepositoryChangeStageCallback? onChangeStageToggled;
+  final RepositoryChangeGroupStageCallback? onChangeGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
   final RepositoryCommitFileCallback? onCommitFileSelected;
   final ValueChanged<RepositoryOverviewLayout>? onLayoutChanged;
@@ -199,6 +207,13 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
               repository: repository,
               callbacks: widget.callbacks,
             ),
+            if (widget.data.state == RepositoryOverviewState.error)
+              _StaleDataErrorBanner(
+                message: widget.data.message ?? '刷新仓库失败',
+                onRetry: widget.callbacks.onAction == null
+                    ? null
+                    : () => widget.callbacks.onAction!(RepositoryAction.retry),
+              ),
             Expanded(
               child: Stack(
                 children: [
@@ -216,15 +231,6 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                   ),
                   if (widget.data.state == RepositoryOverviewState.loading)
                     const _StaleDataLoadingOverlay(),
-                  if (widget.data.state == RepositoryOverviewState.error)
-                    _StaleDataErrorBanner(
-                      message: widget.data.message ?? '刷新仓库失败',
-                      onRetry: widget.callbacks.onAction == null
-                          ? null
-                          : () => widget.callbacks.onAction!(
-                              RepositoryAction.retry,
-                            ),
-                    ),
                 ],
               ),
             ),
@@ -283,6 +289,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                 child: _HistoryPane(
                   repository: repository,
                   onSelected: widget.callbacks.onCommitSelected,
+                  onActivated: widget.callbacks.onCommitActivated,
                   onWorkspaceSelected: () => _selectWorkspace(repository),
                 ),
               ),
@@ -304,6 +311,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                         repository: repository,
                         onSelected: widget.callbacks.onChangeSelected,
                         onStageToggled: widget.callbacks.onChangeStageToggled,
+                        onGroupStageToggled:
+                            widget.callbacks.onChangeGroupStageToggled,
                         onConflictAction: widget.callbacks.onConflictAction,
                         onCommitFileSelected:
                             widget.callbacks.onCommitFileSelected,
@@ -376,6 +385,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                 child: _HistoryPane(
                   repository: repository,
                   onSelected: widget.callbacks.onCommitSelected,
+                  onActivated: widget.callbacks.onCommitActivated,
                   onWorkspaceSelected: () => _selectWorkspace(repository),
                 ),
               ),
@@ -397,6 +407,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                   repository: repository,
                   onChangeSelected: widget.callbacks.onChangeSelected,
                   onChangeStageToggled: widget.callbacks.onChangeStageToggled,
+                  onChangeGroupStageToggled:
+                      widget.callbacks.onChangeGroupStageToggled,
                   onConflictAction: widget.callbacks.onConflictAction,
                   onCommitFileSelected: widget.callbacks.onCommitFileSelected,
                 ),
@@ -424,6 +436,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
       _CompactPane.history => _HistoryPane(
         repository: repository,
         onSelected: widget.callbacks.onCommitSelected,
+        onActivated: widget.callbacks.onCommitActivated,
         onWorkspaceSelected: () => _selectWorkspace(repository),
         showSearch: true,
         onSearchChanged: widget.callbacks.onSearchChanged,
@@ -432,6 +445,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         repository: repository,
         onSelected: widget.callbacks.onChangeSelected,
         onStageToggled: widget.callbacks.onChangeStageToggled,
+        onGroupStageToggled: widget.callbacks.onChangeGroupStageToggled,
         onConflictAction: widget.callbacks.onConflictAction,
         onCommitFileSelected: widget.callbacks.onCommitFileSelected,
       ),
@@ -950,6 +964,16 @@ class _RefsNavigation extends StatelessWidget {
     final canCreate =
         !isBusy && !disabledActions.contains(RepositoryAction.createBranch);
     final canManageLocalBranch = repository.isWorkingTreeClean && !isBusy;
+    if (ref.id == 'HEAD') {
+      return [
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.refresh,
+          label: '刷新仓库',
+          icon: Icons.refresh,
+          enabled: !isBusy,
+        ),
+      ];
+    }
     return switch (ref.kind) {
       RepositoryRefKind.workspace => [
         _RefContextMenuItem(
@@ -1270,10 +1294,13 @@ class _RefTile extends StatelessWidget {
 
 const double _historyRowHeight = 26;
 
+enum _HistoryScope { currentBranch, allBranches }
+
 class _HistoryPane extends StatefulWidget {
   const _HistoryPane({
     required this.repository,
     required this.onSelected,
+    required this.onActivated,
     required this.onWorkspaceSelected,
     this.showSearch = false,
     this.onSearchChanged,
@@ -1281,6 +1308,7 @@ class _HistoryPane extends StatefulWidget {
 
   final RepositoryViewData repository;
   final RepositoryCommitCallback? onSelected;
+  final RepositoryCommitActivationCallback? onActivated;
   final VoidCallback? onWorkspaceSelected;
   final bool showSearch;
   final ValueChanged<String>? onSearchChanged;
@@ -1291,6 +1319,9 @@ class _HistoryPane extends StatefulWidget {
 
 class _HistoryPaneState extends State<_HistoryPane> {
   final ScrollController _scrollController = ScrollController();
+  _HistoryScope _scope = _HistoryScope.currentBranch;
+  bool _showRemoteRefs = true;
+  bool _compactGraph = false;
 
   @override
   void initState() {
@@ -1318,9 +1349,9 @@ class _HistoryPaneState extends State<_HistoryPane> {
       if (!mounted || !_scrollController.hasClients) return;
       final objectId = widget.repository.focusedRefCommitId;
       if (objectId == null) return;
-      final index = widget.repository.commits.indexWhere(
-        (commit) => commit.oid == objectId,
-      );
+      final index = _visibleCommits(
+        widget.repository,
+      ).indexWhere((commit) => commit.oid == objectId);
       if (index < 0) return;
       final rowIndex = index + (widget.repository.isWorkingTreeClean ? 0 : 1);
       final target = (rowIndex * _historyRowHeight).clamp(
@@ -1347,6 +1378,8 @@ class _HistoryPaneState extends State<_HistoryPane> {
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final showUncommittedChanges = !widget.repository.isWorkingTreeClean;
+    final commits = _visibleCommits(widget.repository);
+    final graphs = _graphsFor(commits, headId: widget.repository.headOid);
     final workspaceSelected =
         widget.repository.selectedCommit == null &&
         widget.repository.refs.any(
@@ -1354,8 +1387,7 @@ class _HistoryPaneState extends State<_HistoryPane> {
               reference.kind == RepositoryRefKind.workspace &&
               reference.isSelected,
         );
-    final historyRowCount =
-        widget.repository.commits.length + (showUncommittedChanges ? 1 : 0);
+    final historyRowCount = commits.length + (showUncommittedChanges ? 1 : 0);
     return Material(
       color: _historyBackground(colors),
       child: Column(
@@ -1363,14 +1395,24 @@ class _HistoryPaneState extends State<_HistoryPane> {
           _PaneHeader(
             title: '历史',
             icon: Icons.history,
-            trailing: '${widget.repository.commits.length} 个提交',
+            trailing: '${commits.length} 个提交',
+          ),
+          _HistoryDisplayToolbar(
+            scope: _scope,
+            showRemoteRefs: _showRemoteRefs,
+            compactGraph: _compactGraph,
+            onScopeChanged: (value) => setState(() => _scope = value),
+            onShowRemoteRefsChanged: (value) =>
+                setState(() => _showRemoteRefs = value),
+            onCompactGraphChanged: (value) =>
+                setState(() => _compactGraph = value),
           ),
           if (widget.showSearch)
             _CompactHistorySearchBar(
               query: widget.repository.searchQuery,
               onChanged: widget.onSearchChanged,
             ),
-          const _HistoryColumnHeader(),
+          _HistoryColumnHeader(compactGraph: _compactGraph),
           Expanded(
             child: historyRowCount == 0
                 ? const _PaneEmptyState(
@@ -1386,18 +1428,28 @@ class _HistoryPaneState extends State<_HistoryPane> {
                       if (showUncommittedChanges && index == 0) {
                         return _UncommittedChangesRow(
                           isSelected: workspaceSelected,
+                          compactGraph: _compactGraph,
                           onTap: widget.onWorkspaceSelected,
                         );
                       }
                       final commitIndex =
                           index - (showUncommittedChanges ? 1 : 0);
-                      final CommitViewData commit =
-                          widget.repository.commits[commitIndex];
+                      final CommitViewData commit = commits[commitIndex];
+                      final graph = graphs[commit.oid];
+                      final graphWithWorkspace =
+                          showUncommittedChanges && commitIndex == 0
+                          ? graph?.copyWith(hasPreviousNode: true)
+                          : graph;
                       return _CommitRow(
-                        commit: commit,
+                        commit: commit.copyWith(graph: graphWithWorkspace),
+                        showRemoteRefs: _showRemoteRefs,
+                        compactGraph: _compactGraph,
                         onTap: widget.onSelected == null
                             ? null
                             : () => widget.onSelected!(commit),
+                        onDoubleTap: widget.onActivated == null
+                            ? null
+                            : () => widget.onActivated!(commit),
                       );
                     },
                   ),
@@ -1406,12 +1458,173 @@ class _HistoryPaneState extends State<_HistoryPane> {
       ),
     );
   }
+
+  List<CommitViewData> _visibleCommits(RepositoryViewData repository) {
+    if (_scope == _HistoryScope.allBranches || repository.headOid == null) {
+      return repository.commits;
+    }
+    // Keep hand-built view data (and older persisted snapshots) usable when
+    // no parent topology is available to determine reachability.
+    if (repository.commits.length > 1 &&
+        repository.commits.every((commit) => commit.parents.isEmpty)) {
+      return repository.commits;
+    }
+    final byId = <String, CommitViewData>{
+      for (final commit in repository.commits) commit.oid: commit,
+    };
+    final reachable = <String>{};
+    final pending = <String>[repository.headOid!];
+    while (pending.isNotEmpty) {
+      final oid = pending.removeLast();
+      if (!reachable.add(oid)) continue;
+      final commit = byId[oid];
+      if (commit != null) pending.addAll(commit.parents);
+    }
+    return repository.commits
+        .where((commit) => reachable.contains(commit.oid))
+        .toList(growable: false);
+  }
+
+  Map<String, CommitGraphViewData> _graphsFor(
+    List<CommitViewData> commits, {
+    required String? headId,
+  }) {
+    final graphs = buildCommitGraph([
+      for (final commit in commits)
+        CommitGraphNode(oid: commit.oid, parents: commit.parents),
+    ], headId: headId);
+    return <String, CommitGraphViewData>{
+      for (var index = 0; index < commits.length; index++)
+        commits[index].oid: graphs[index],
+    };
+  }
+}
+
+class _HistoryDisplayToolbar extends StatelessWidget {
+  const _HistoryDisplayToolbar({
+    required this.scope,
+    required this.showRemoteRefs,
+    required this.compactGraph,
+    required this.onScopeChanged,
+    required this.onShowRemoteRefsChanged,
+    required this.onCompactGraphChanged,
+  });
+
+  final _HistoryScope scope;
+  final bool showRemoteRefs;
+  final bool compactGraph;
+  final ValueChanged<_HistoryScope> onScopeChanged;
+  final ValueChanged<bool> onShowRemoteRefsChanged;
+  final ValueChanged<bool> onCompactGraphChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    return Container(
+      height: 29,
+      padding: const EdgeInsets.symmetric(horizontal: 6),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerLowest,
+        border: Border(bottom: BorderSide(color: colors.outlineVariant)),
+      ),
+      child: Row(
+        children: [
+          _HistorySelect<_HistoryScope>(
+            value: scope,
+            items: const {
+              _HistoryScope.currentBranch: '当前分支',
+              _HistoryScope.allBranches: '所有分支',
+            },
+            onChanged: onScopeChanged,
+          ),
+          const SizedBox(width: 4),
+          Tooltip(
+            message: showRemoteRefs ? '隐藏远程分支标签' : '显示远程分支标签',
+            child: InkWell(
+              onTap: () => onShowRemoteRefsChanged(!showRemoteRefs),
+              borderRadius: BorderRadius.circular(3),
+              child: Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 5),
+                child: Row(
+                  children: [
+                    Icon(
+                      showRemoteRefs
+                          ? Icons.cloud_done_outlined
+                          : Icons.cloud_off_outlined,
+                      size: 14,
+                      color: showRemoteRefs
+                          ? colors.primary
+                          : colors.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 3),
+                    Text('远程分支', style: theme.textTheme.labelSmall),
+                  ],
+                ),
+              ),
+            ),
+          ),
+          const Spacer(),
+          Tooltip(
+            message: compactGraph ? '标准图表间距' : '紧凑图表间距',
+            child: IconButton(
+              onPressed: () => onCompactGraphChanged(!compactGraph),
+              icon: Icon(
+                compactGraph ? Icons.view_agenda_outlined : Icons.view_stream,
+                size: 15,
+              ),
+              padding: EdgeInsets.zero,
+              constraints: const BoxConstraints.tightFor(width: 24, height: 24),
+              visualDensity: VisualDensity.compact,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _HistorySelect<T> extends StatelessWidget {
+  const _HistorySelect({
+    required this.value,
+    required this.items,
+    required this.onChanged,
+  });
+
+  final T value;
+  final Map<T, String> items;
+  final ValueChanged<T> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return DropdownButtonHideUnderline(
+      child: DropdownButton<T>(
+        value: value,
+        isDense: true,
+        style: theme.textTheme.labelSmall,
+        iconSize: 14,
+        items: [
+          for (final entry in items.entries)
+            DropdownMenuItem<T>(value: entry.key, child: Text(entry.value)),
+        ],
+        onChanged: (next) {
+          if (next != null) onChanged(next);
+        },
+      ),
+    );
+  }
 }
 
 class _UncommittedChangesRow extends StatelessWidget {
-  const _UncommittedChangesRow({required this.isSelected, required this.onTap});
+  const _UncommittedChangesRow({
+    required this.isSelected,
+    required this.compactGraph,
+    required this.onTap,
+  });
 
   final bool isSelected;
+  final bool compactGraph;
   final VoidCallback? onTap;
 
   /// 中文：在历史顶部展示不属于真实提交的工作区改动入口。
@@ -1434,7 +1647,7 @@ class _UncommittedChangesRow extends StatelessWidget {
             key: const ValueKey<String>('uncommitted-changes-row'),
             padding: const EdgeInsets.symmetric(horizontal: 8),
             decoration: BoxDecoration(
-              color: isSelected ? colors.secondaryContainer : null,
+              color: isSelected ? colors.primary : null,
               border: Border(
                 bottom: BorderSide(
                   color: colors.outlineVariant.withValues(alpha: .5),
@@ -1444,14 +1657,13 @@ class _UncommittedChangesRow extends StatelessWidget {
             child: Row(
               children: [
                 SizedBox(
-                  width: 96,
+                  width: compactGraph ? 70 : 96,
                   height: _historyRowHeight,
-                  child: Align(
-                    alignment: const Alignment(-.54, 0),
-                    child: Icon(
-                      Icons.radio_button_unchecked,
-                      size: 11,
+                  child: CustomPaint(
+                    painter: _UncommittedGraphPainter(
                       color: colors.onSurfaceVariant,
+                      selected: isSelected,
+                      compact: compactGraph,
                     ),
                   ),
                 ),
@@ -1462,6 +1674,7 @@ class _UncommittedChangesRow extends StatelessWidget {
                     overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.bodySmall?.copyWith(
                       fontWeight: FontWeight.w600,
+                      color: isSelected ? colors.onPrimary : null,
                     ),
                   ),
                 ),
@@ -1470,7 +1683,9 @@ class _UncommittedChangesRow extends StatelessWidget {
                   child: Text(
                     '*',
                     style: theme.textTheme.bodySmall?.copyWith(
-                      color: colors.onSurfaceVariant,
+                      color: isSelected
+                          ? colors.onPrimary.withValues(alpha: .78)
+                          : colors.onSurfaceVariant,
                     ),
                   ),
                 ),
@@ -1480,7 +1695,9 @@ class _UncommittedChangesRow extends StatelessWidget {
                     '今天',
                     textAlign: TextAlign.end,
                     style: theme.textTheme.labelSmall?.copyWith(
-                      color: colors.onSurfaceVariant,
+                      color: isSelected
+                          ? colors.onPrimary.withValues(alpha: .78)
+                          : colors.onSurfaceVariant,
                     ),
                   ),
                 ),
@@ -1493,8 +1710,53 @@ class _UncommittedChangesRow extends StatelessWidget {
   }
 }
 
+class _UncommittedGraphPainter extends CustomPainter {
+  const _UncommittedGraphPainter({
+    required this.color,
+    required this.selected,
+    required this.compact,
+  });
+
+  final Color color;
+  final bool selected;
+  final bool compact;
+
+  @override
+  void paint(Canvas canvas, Size size) {
+    final x = compact ? 18.0 : 22.0;
+    final y = size.height / 2;
+    final rail = Paint()..color = color;
+    canvas.drawRect(Rect.fromLTRB(x - 1.5, y, x + 1.5, size.height), rail);
+    canvas.drawCircle(
+      Offset(x, y),
+      5,
+      Paint()
+        ..color = color
+        ..style = PaintingStyle.fill,
+    );
+    if (selected) {
+      canvas.drawCircle(
+        Offset(x, y),
+        6.5,
+        Paint()
+          ..color = color.withValues(alpha: .42)
+          ..style = PaintingStyle.stroke
+          ..strokeWidth = 1,
+      );
+    }
+  }
+
+  @override
+  bool shouldRepaint(_UncommittedGraphPainter oldDelegate) =>
+      oldDelegate.color != color ||
+      oldDelegate.selected != selected ||
+      oldDelegate.compact != compact;
+}
+
 class _HistoryColumnHeader extends StatelessWidget {
-  const _HistoryColumnHeader();
+  const _HistoryColumnHeader({required this.compactGraph});
+
+  final bool compactGraph;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -1515,7 +1777,7 @@ class _HistoryColumnHeader extends StatelessWidget {
       ),
       child: Row(
         children: [
-          const SizedBox(width: 96),
+          SizedBox(width: compactGraph ? 70 : 96),
           Expanded(child: Text('描述', style: theme.textTheme.labelSmall)),
           SizedBox(
             width: 108,
@@ -1536,10 +1798,19 @@ class _HistoryColumnHeader extends StatelessWidget {
 }
 
 class _CommitRow extends StatelessWidget {
-  const _CommitRow({required this.commit, required this.onTap});
+  const _CommitRow({
+    required this.commit,
+    required this.onTap,
+    this.onDoubleTap,
+    required this.showRemoteRefs,
+    required this.compactGraph,
+  });
 
   final CommitViewData commit;
   final VoidCallback? onTap;
+  final VoidCallback? onDoubleTap;
+  final bool showRemoteRefs;
+  final bool compactGraph;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -1558,6 +1829,7 @@ class _CommitRow extends StatelessWidget {
         waitDuration: const Duration(milliseconds: 750),
         child: InkWell(
           onTap: onTap,
+          onDoubleTap: onDoubleTap,
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 8),
             decoration: BoxDecoration(
@@ -1571,21 +1843,36 @@ class _CommitRow extends StatelessWidget {
             child: Row(
               children: [
                 SizedBox(
-                  width: 96,
+                  width: compactGraph ? 70 : 96,
                   height: _historyRowHeight,
                   child: CustomPaint(
                     key: const ValueKey<String>('commit-graph-canvas'),
                     painter: _CommitGraphPainter(
                       graph: commit.graph,
                       colors: _graphColors(colors),
-                      backgroundColor: _graphBackground(colors),
+                      backgroundColor: commit.isSelected
+                          ? colors.secondaryContainer
+                          : _graphBackground(colors),
                       selected: commit.isSelected,
+                      compact: compactGraph,
                     ),
                   ),
                 ),
                 Expanded(
                   child: Row(
                     children: [
+                      for (final String ref
+                          in commit.refs
+                              .where(
+                                (ref) =>
+                                    showRemoteRefs ||
+                                    !commit.remoteRefs.contains(ref),
+                              )
+                              .take(3))
+                        Padding(
+                          padding: const EdgeInsets.only(right: 5),
+                          child: _RefLabel(label: ref),
+                        ),
                       if (commit.isMerge)
                         Padding(
                           padding: const EdgeInsets.only(right: 5),
@@ -1605,11 +1892,6 @@ class _CommitRow extends StatelessWidget {
                           ),
                         ),
                       ),
-                      for (final String ref in commit.refs.take(2))
-                        Padding(
-                          padding: const EdgeInsets.only(left: 5),
-                          child: _RefLabel(label: ref),
-                        ),
                     ],
                   ),
                 ),
@@ -1651,15 +1933,17 @@ class _CommitGraphPainter extends CustomPainter {
     required this.colors,
     required this.backgroundColor,
     required this.selected,
+    required this.compact,
   });
 
   final CommitGraphViewData graph;
   final List<Color> colors;
   final Color backgroundColor;
   final bool selected;
+  final bool compact;
 
-  static const double laneSpacing = 12;
-  static const double laneStart = 22;
+  double get laneSpacing => compact ? 9 : 12;
+  double get laneStart => compact ? 18 : 22;
 
   /// 中文：按车道索引循环选择提交图颜色，支持负索引。
   ///
@@ -1808,6 +2092,7 @@ class _CommitGraphPainter extends CustomPainter {
   bool shouldRepaint(_CommitGraphPainter oldDelegate) {
     return oldDelegate.graph != graph ||
         oldDelegate.selected != selected ||
+        oldDelegate.compact != compact ||
         oldDelegate.colors != colors ||
         oldDelegate.backgroundColor != backgroundColor;
   }
@@ -1871,6 +2156,7 @@ class _SelectedChangesPane extends StatelessWidget {
     required this.repository,
     required this.onSelected,
     required this.onStageToggled,
+    required this.onGroupStageToggled,
     required this.onConflictAction,
     required this.onCommitFileSelected,
   });
@@ -1878,6 +2164,7 @@ class _SelectedChangesPane extends StatelessWidget {
   final RepositoryViewData repository;
   final RepositoryChangeCallback? onSelected;
   final RepositoryChangeStageCallback? onStageToggled;
+  final RepositoryChangeGroupStageCallback? onGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
   final RepositoryCommitFileCallback? onCommitFileSelected;
 
@@ -1895,6 +2182,7 @@ class _SelectedChangesPane extends StatelessWidget {
       repository: repository,
       onSelected: onSelected,
       onStageToggled: onStageToggled,
+      onGroupStageToggled: onGroupStageToggled,
       onConflictAction: onConflictAction,
     );
   }
@@ -2078,12 +2366,14 @@ class _ChangesPane extends StatelessWidget {
     required this.repository,
     required this.onSelected,
     required this.onStageToggled,
+    required this.onGroupStageToggled,
     required this.onConflictAction,
   });
 
   final RepositoryViewData repository;
   final RepositoryChangeCallback? onSelected;
   final RepositoryChangeStageCallback? onStageToggled;
+  final RepositoryChangeGroupStageCallback? onGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
 
   /// 中文：构建当前组件的界面。
@@ -2109,6 +2399,7 @@ class _ChangesPane extends StatelessWidget {
                           changes: repository.changes,
                           onSelected: onSelected,
                           onStageToggled: onStageToggled,
+                          onGroupStageToggled: onGroupStageToggled,
                           onConflictAction: onConflictAction,
                           currentBranch: repository.currentBranch,
                         )
@@ -2127,6 +2418,7 @@ class _ChangesPane extends StatelessWidget {
                         changes: repository.changes,
                         onSelected: onSelected,
                         onStageToggled: onStageToggled,
+                        onGroupStageToggled: onGroupStageToggled,
                         onConflictAction: onConflictAction,
                         currentBranch: repository.currentBranch,
                       ),
@@ -2152,6 +2444,7 @@ class _ChangeList extends StatelessWidget {
     required this.changes,
     required this.onSelected,
     required this.onStageToggled,
+    required this.onGroupStageToggled,
     required this.onConflictAction,
     required this.currentBranch,
   });
@@ -2159,6 +2452,7 @@ class _ChangeList extends StatelessWidget {
   final List<RepositoryChangeViewData> changes;
   final RepositoryChangeCallback? onSelected;
   final RepositoryChangeStageCallback? onStageToggled;
+  final RepositoryChangeGroupStageCallback? onGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
   final String currentBranch;
 
@@ -2184,6 +2478,7 @@ class _ChangeList extends StatelessWidget {
           changes: staged,
           onSelected: onSelected,
           onStageToggled: onStageToggled,
+          onGroupStageToggled: onGroupStageToggled,
           onConflictAction: onConflictAction,
           currentBranch: currentBranch,
         ),
@@ -2193,6 +2488,7 @@ class _ChangeList extends StatelessWidget {
           changes: unstaged,
           onSelected: onSelected,
           onStageToggled: onStageToggled,
+          onGroupStageToggled: onGroupStageToggled,
           onConflictAction: onConflictAction,
           currentBranch: currentBranch,
         ),
@@ -2208,6 +2504,7 @@ class _ChangeGroup extends StatelessWidget {
     required this.changes,
     required this.onSelected,
     required this.onStageToggled,
+    required this.onGroupStageToggled,
     required this.onConflictAction,
     required this.currentBranch,
   });
@@ -2217,6 +2514,7 @@ class _ChangeGroup extends StatelessWidget {
   final List<RepositoryChangeViewData> changes;
   final RepositoryChangeCallback? onSelected;
   final RepositoryChangeStageCallback? onStageToggled;
+  final RepositoryChangeGroupStageCallback? onGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
   final String currentBranch;
 
@@ -2245,12 +2543,28 @@ class _ChangeGroup extends StatelessWidget {
           ),
           child: Row(
             children: [
-              Icon(
-                isChecked ? Icons.check_box : Icons.check_box_outline_blank,
-                size: 16,
-                color: isChecked ? colors.primary : colors.onSurfaceVariant,
+              Checkbox(
+                value: isChecked,
+                onChanged:
+                    onGroupStageToggled == null ||
+                        changes.isEmpty ||
+                        changes.every((change) => !change.canToggleStage)
+                    ? null
+                    : (_) {
+                        final result = onGroupStageToggled!(
+                          changes,
+                          !isChecked,
+                        );
+                        if (result is Future<void>) unawaited(result);
+                      },
+                visualDensity: const VisualDensity(
+                  horizontal: -4,
+                  vertical: -4,
+                ),
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                side: BorderSide(color: colors.onSurfaceVariant),
               ),
-              const SizedBox(width: 6),
+              const SizedBox(width: 2),
               Expanded(
                 child: Text(
                   title,
@@ -2339,27 +2653,22 @@ class _ChangeTile extends StatelessWidget {
                       : change.isStaged
                       ? '取消暂存 ${change.path}'
                       : '暂存 ${change.path}',
-                  child: IconButton(
-                    onPressed: onStageToggled == null || !change.canToggleStage
-                        ? null
-                        : onStageToggled,
-                    icon: Icon(
-                      change.isStaged
-                          ? Icons.check_box
-                          : Icons.check_box_outline_blank,
-                      size: 17,
+                  child: SizedBox(
+                    width: 32,
+                    height: 32,
+                    child: Checkbox(
+                      value: change.isStaged,
+                      onChanged:
+                          onStageToggled == null || !change.canToggleStage
+                          ? null
+                          : (_) => onStageToggled!(),
+                      visualDensity: const VisualDensity(
+                        horizontal: -4,
+                        vertical: -4,
+                      ),
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      side: BorderSide(color: colors.onSurfaceVariant),
                     ),
-                    color: change.isStaged
-                        ? colors.primary
-                        : colors.onSurfaceVariant,
-                    disabledColor: colors.onSurface.withValues(alpha: .32),
-                    iconSize: 17,
-                    padding: EdgeInsets.zero,
-                    constraints: const BoxConstraints.tightFor(
-                      width: 25,
-                      height: 30,
-                    ),
-                    visualDensity: VisualDensity.compact,
                   ),
                 ),
                 _ChangeStatusBadge(kind: change.kind),
@@ -2877,6 +3186,7 @@ class _TabbedInspector extends StatelessWidget {
     required this.repository,
     required this.onChangeSelected,
     required this.onChangeStageToggled,
+    required this.onChangeGroupStageToggled,
     required this.onConflictAction,
     required this.onCommitFileSelected,
   });
@@ -2886,6 +3196,7 @@ class _TabbedInspector extends StatelessWidget {
   final RepositoryViewData repository;
   final RepositoryChangeCallback? onChangeSelected;
   final RepositoryChangeStageCallback? onChangeStageToggled;
+  final RepositoryChangeGroupStageCallback? onChangeGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
   final RepositoryCommitFileCallback? onCommitFileSelected;
 
@@ -2909,6 +3220,7 @@ class _TabbedInspector extends StatelessWidget {
               repository: repository,
               onSelected: onChangeSelected,
               onStageToggled: onChangeStageToggled,
+              onGroupStageToggled: onChangeGroupStageToggled,
               onConflictAction: onConflictAction,
               onCommitFileSelected: onCommitFileSelected,
             ),
@@ -3633,39 +3945,33 @@ class _StaleDataErrorBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;
-    return Positioned(
-      left: 10,
-      right: 10,
-      top: 8,
-      child: Material(
-        color: colors.errorContainer,
-        elevation: 2,
-        borderRadius: BorderRadius.circular(8),
-        child: Semantics(
-          liveRegion: true,
-          child: Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-            child: Row(
-              children: [
-                Icon(
-                  Icons.error_outline,
-                  size: 17,
-                  color: colors.onErrorContainer,
-                ),
-                const SizedBox(width: 7),
-                Expanded(
-                  child: Text(
-                    message,
-                    maxLines: 2,
-                    overflow: TextOverflow.ellipsis,
-                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
-                      color: colors.onErrorContainer,
-                    ),
+    return Material(
+      color: colors.errorContainer,
+      elevation: 1,
+      child: Semantics(
+        liveRegion: true,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+          child: Row(
+            children: [
+              Icon(
+                Icons.error_outline,
+                size: 17,
+                color: colors.onErrorContainer,
+              ),
+              const SizedBox(width: 7),
+              Expanded(
+                child: Text(
+                  message,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: colors.onErrorContainer,
                   ),
                 ),
-                TextButton(onPressed: onRetry, child: const Text('重试')),
-              ],
-            ),
+              ),
+              TextButton(onPressed: onRetry, child: const Text('重试')),
+            ],
           ),
         ),
       ),

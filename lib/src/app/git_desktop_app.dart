@@ -1048,6 +1048,53 @@ class _RepositoryWorkspaceScreenState
 
   /// 中文：处理当前事件。
   /// English: Handles the current event.
+  /// 中文：双击提交时确认修改工作副本并进入分离 HEAD 状态。
+  /// English: Confirms changing the working copy before checking out a commit.
+  Future<void> _confirmCheckoutCommit(CommitViewData commit) async {
+    final hasWorkingChanges =
+        !(ref.read(repositorySessionProvider).status?.isClean ?? true);
+    final workingChangesWarning = hasWorkingChanges
+        ? '当前工作区有未提交改动。Git 只会在不会覆盖这些改动时完成检出。\n\n'
+        : '';
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('确认修改工作副本'),
+        content: Text(
+          '你确定你想要检出 ${commit.oid}？\n\n'
+          '这样做会使你的工作区变成一个“分离的 HEAD”。这意味着你不能在任何一个分支上。'
+          '如果你在这之后想要提交，你很可能会丢失这些提交；要么创建一个新的分支。\n\n'
+          '$workingChangesWarning这样可以吗？',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('确定'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+    final checkedOut = await ref
+        .read(repositorySessionProvider.notifier)
+        .checkoutCommit(commit.oid);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          checkedOut
+              ? '已检出 ${commit.shortOid}（分离 HEAD）。'
+              : '未检出提交，请确认工作区干净并查看仓库状态。',
+        ),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
   void _handleReferenceActivated(RepositoryRefViewData reference) {
     switch (reference.kind) {
       case RepositoryRefKind.localBranch when !reference.isCurrent:
@@ -1289,10 +1336,14 @@ class _RepositoryWorkspaceScreenState
                 onSearchChanged: controller.setSearchQuery,
                 onCommitSelected: (commit) =>
                     unawaited(controller.selectCommit(commit.oid)),
+                onCommitActivated: (commit) =>
+                    unawaited(_confirmCheckoutCommit(commit)),
                 onCommitFileSelected: (file) =>
                     unawaited(controller.selectCommitFile(file)),
                 onChangeSelected: controller.selectChange,
                 onChangeStageToggled: controller.toggleStage,
+                onChangeGroupStageToggled: (changes, stage) =>
+                    controller.toggleStageGroup(changes, stage: stage),
                 onConflictAction: (change, action) =>
                     unawaited(_handleConflictAction(change, action)),
               ),

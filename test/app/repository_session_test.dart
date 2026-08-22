@@ -153,6 +153,32 @@ void main() {
     );
   });
 
+  test('stages every file in an unstaged change group', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('pull-test/local', 'local\n');
+    await repository.writeFile('pull-test/peer', 'peer\n');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final overview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    final unstaged = overview.changes
+        .where((change) => !change.isStaged)
+        .toList();
+
+    await controller.toggleStageGroup(unstaged, stage: true);
+
+    final refreshed = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    expect(refreshed.stagedChangeCount, 2);
+    expect(refreshed.unstagedChangeCount, 0);
+  });
+
   test(
     'selecting a branch focuses its tip and refreshes commit file status',
     () async {
