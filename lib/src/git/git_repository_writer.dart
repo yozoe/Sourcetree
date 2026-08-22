@@ -201,6 +201,8 @@ final class GitRepositoryWriter {
   }
 
   /// Creates a commit from the current index without bypassing Git hooks.
+  /// When [amend] is true, replaces the current HEAD commit while retaining
+  /// the same index semantics for staged and unstaged files.
   ///
   /// The message is sent through stdin rather than the command line, so it is
   /// not interpreted as an option and is not exposed in process arguments.
@@ -209,6 +211,7 @@ final class GitRepositoryWriter {
   Future<void> createCommit(
     GitRepository repository, {
     required String message,
+    bool amend = false,
   }) async {
     if (message.trim().isEmpty) {
       throw ArgumentError.value(message, 'message', 'Commit message is empty.');
@@ -218,7 +221,7 @@ final class GitRepositoryWriter {
     );
     final result = await runner.run(
       GitInvocation(
-        arguments: const ['--no-pager', 'commit', '--file=-'],
+        arguments: ['--no-pager', 'commit', if (amend) '--amend', '--file=-'],
         workingDirectory: repository.commandDirectory,
         stdinBytes: messageBytes,
         outputLimit: const GitOutputLimit(

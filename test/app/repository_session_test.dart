@@ -434,6 +434,38 @@ void main() {
     },
   );
 
+  test('amends the current commit and refreshes the session', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', '# Git Desktop\n');
+    await repository.commit('Initial commit');
+    await repository.writeFile('README.md', '# Git Desktop\nAmended\n');
+    await repository.runGit(['add', '--', 'README.md']);
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(
+      await controller.createCommit('Amended commit', amend: true),
+      isTrue,
+    );
+    final state = container.read(repositorySessionProvider);
+    expect(state.phase, RepositorySessionPhase.ready);
+    expect(state.status!.entries, isEmpty);
+    expect(state.commits.single.subject, 'Amended commit');
+
+    expect(
+      await controller.createCommit('Amended message only', amend: true),
+      isTrue,
+    );
+    expect(
+      container.read(repositorySessionProvider).commits.single.subject,
+      'Amended message only',
+    );
+  });
+
   test('creates a local branch without changing the active branch', () async {
     final repository = await GitTestRepository.create();
     addTearDown(repository.dispose);

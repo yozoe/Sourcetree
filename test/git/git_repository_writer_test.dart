@@ -193,6 +193,38 @@ void main() {
     );
   });
 
+  test('amends the current commit from the staged index', () async {
+    await fixture.writeFile('README.md', '# Git Desktop\n');
+    await fixture.commit('Initial commit');
+    await fixture.writeFile('README.md', '# Git Desktop\nAmended\n');
+    await fixture.writeFile('draft.txt', 'leave unstaged\n');
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+    final status = await reader.readStatus(repository);
+    await writer.stagePath(
+      repository,
+      status.entries
+          .singleWhere((entry) => entry.path.display == 'README.md')
+          .path,
+    );
+
+    await writer.createCommit(
+      repository,
+      message: 'Amended commit',
+      amend: true,
+    );
+
+    final after = await reader.readStatus(repository);
+    final history = await reader.readRecentHistory(repository);
+    expect(
+      after.entries.map((entry) => entry.path.display),
+      contains('draft.txt'),
+    );
+    expect(history, hasLength(1));
+    expect(history.single.subject, 'Amended commit');
+  });
+
   test('creates a local branch at HEAD without switching branches', () async {
     await fixture.writeFile('README.md', '# Git Desktop\n');
     await fixture.commit('Initial commit');

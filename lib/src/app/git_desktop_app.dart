@@ -754,7 +754,7 @@ class _RepositoryWorkspaceScreenState
 
     final created = await ref
         .read(repositorySessionProvider.notifier)
-        .createCommit(result.message);
+        .createCommit(result.message, amend: result.amend);
     if (!mounted) {
       return;
     }
@@ -1328,10 +1328,12 @@ final class _CommitDialogResult {
   const _CommitDialogResult({
     required this.message,
     this.pushAfterCommit = false,
+    this.amend = false,
   });
 
   final String message;
   final bool pushAfterCommit;
+  final bool amend;
 }
 
 class _CommitDialog extends ConsumerStatefulWidget {
@@ -1572,6 +1574,7 @@ class _CommitDialogState extends ConsumerState<_CommitDialog> {
   final _formKey = GlobalKey<FormState>();
   final _messageController = TextEditingController();
   bool _pushAfterCommit = false;
+  bool _amend = false;
 
   /// 中文：释放当前对象持有的资源。
   /// English: Releases resources held by this object.
@@ -1583,8 +1586,8 @@ class _CommitDialogState extends ConsumerState<_CommitDialog> {
 
   /// 中文：提交当前表单或请求。
   /// English: Submits the current form or request.
-  void _submit({required bool hasStagedChanges}) {
-    if (!hasStagedChanges) {
+  void _submit({required bool canSubmit}) {
+    if (!canSubmit) {
       return;
     }
     if (!(_formKey.currentState?.validate() ?? false)) {
@@ -1594,6 +1597,7 @@ class _CommitDialogState extends ConsumerState<_CommitDialog> {
       _CommitDialogResult(
         message: _messageController.text.trim(),
         pushAfterCommit: _pushAfterCommit,
+        amend: _amend,
       ),
     );
   }
@@ -1607,14 +1611,36 @@ class _CommitDialogState extends ConsumerState<_CommitDialog> {
     final changes = repository?.changes ?? const <RepositoryChangeViewData>[];
     final staged = changes.where((change) => change.isStaged).toList();
     final unstaged = changes.where((change) => !change.isStaged).toList();
-    final isBusy = session.phase == RepositorySessionPhase.loading;
+    final isBusy =
+        session.phase == RepositorySessionPhase.loading ||
+        session.operationState != GitRepositoryOperationState.none;
     final branch = session.status?.branch;
+    String? amendMessage;
+    final headObjectId = branch?.objectId;
+    if (headObjectId != null) {
+      for (final commit in session.commits) {
+        if (commit.objectId == headObjectId) {
+          final body = commit.body.trimRight();
+          amendMessage = body.isEmpty
+              ? commit.subject
+              : '${commit.subject}\n\n$body';
+          break;
+        }
+      }
+    }
     final pushAvailable =
         !isBusy &&
         branch != null &&
         (branch.objectId != null || branch.isUnborn) &&
         !branch.isDetached &&
         (session.hasOriginRemote || branch.upstream != null);
+    final amendAvailable =
+        !isBusy &&
+        branch != null &&
+        branch.objectId != null &&
+        !branch.isDetached;
+    final canSubmit = staged.isNotEmpty || _amend;
+    final pushOptionAvailable = pushAvailable && !_amend;
 
     Widget changeList(String title, List<RepositoryChangeViewData> entries) {
       if (entries.isEmpty) return const SizedBox.shrink();
@@ -1723,23 +1749,38 @@ class _CommitDialogState extends ConsumerState<_CommitDialog> {
                 dense: true,
                 contentPadding: EdgeInsets.zero,
                 value: _pushAfterCommit,
-                onChanged: pushAvailable
+                onChanged: pushOptionAvailable
                     ? (value) =>
                           setState(() => _pushAfterCommit = value ?? false)
                     : null,
                 title: Text(
                   '立即推送变更到 ${branch?.upstream ?? 'origin/${branch?.head ?? '当前分支'}'}',
                 ),
-                subtitle: pushAvailable ? null : const Text('当前分支没有可用的远端。'),
+                subtitle: pushOptionAvailable
+                    ? null
+                    : Text(
+                        _amend ? 'Amend 后不会自动强制推送，请手动处理远端分支。' : '当前分支没有可用的远端。',
+                      ),
                 controlAffinity: ListTileControlAffinity.leading,
               ),
               CheckboxListTile(
                 dense: true,
                 contentPadding: EdgeInsets.zero,
-                value: false,
-                onChanged: null,
+                value: _amend,
+                onChanged: amendAvailable
+                    ? (value) => setState(() {
+                        _amend = value ?? false;
+                        if (_amend) {
+                          _pushAfterCommit = false;
+                          if (_messageController.text.trim().isEmpty &&
+                              amendMessage != null) {
+                            _messageController.text = amendMessage;
+                          }
+                        }
+                      })
+                    : null,
                 title: const Text('更正上一次提交'),
-                subtitle: const Text('暂未支持'),
+                subtitle: amendAvailable ? null : const Text('当前分支没有可更正的提交。'),
                 controlAffinity: ListTileControlAffinity.leading,
               ),
             ],
@@ -1752,8 +1793,8 @@ class _CommitDialogState extends ConsumerState<_CommitDialog> {
           child: const Text('取消'),
         ),
         FilledButton.icon(
-          onPressed: staged.isNotEmpty && !isBusy
-              ? () => _submit(hasStagedChanges: staged.isNotEmpty)
+          onPressed: canSubmit && !isBusy
+              ? () => _submit(canSubmit: canSubmit)
               : null,
           icon: const Icon(Icons.check_circle_outline),
           label: const Text('提交'),

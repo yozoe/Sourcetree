@@ -1809,19 +1809,22 @@ final class RepositorySessionController
     }
   }
 
-  /// Commits exactly the files currently staged in the repository index.
+  /// Commits exactly the files currently staged in the repository index, or
+  /// amends the current HEAD when [amend] is true.
   ///
   /// Returns whether Git created the commit and the following refresh finished
   /// successfully. Git hooks are intentionally allowed to run.
   /// 中文：创建所需的对象或资源。
   /// English: Creates the required object or resource.
-  Future<bool> createCommit(String message) async {
+  Future<bool> createCommit(String message, {bool amend = false}) async {
     final repository = state.repository;
     final status = state.status;
     if (repository == null ||
         status == null ||
-        status.stagedEntries.isEmpty ||
-        state.phase == RepositorySessionPhase.loading) {
+        (!amend && status.stagedEntries.isEmpty) ||
+        (amend && status.branch.objectId == null) ||
+        state.phase == RepositorySessionPhase.loading ||
+        state.operationState != GitRepositoryOperationState.none) {
       return false;
     }
 
@@ -1837,7 +1840,7 @@ final class RepositorySessionController
       clearMessage: true,
     );
     try {
-      await _writer.createCommit(repository, message: message);
+      await _writer.createCommit(repository, message: message, amend: amend);
       await refresh();
       return state.phase == RepositorySessionPhase.ready;
     } on Object catch (error, stackTrace) {
