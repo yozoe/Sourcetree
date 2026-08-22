@@ -483,6 +483,47 @@ void main() {
     expect(activatedCommit, commit);
   });
 
+  testWidgets('keeps loaded history visible when the current tip is absent', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    const older = CommitViewData(
+      oid: '1111111111111111111111111111111111111111',
+      shortOid: '11111111',
+      subject: '历史提交',
+      author: 'tester',
+      relativeDate: '昨天',
+    );
+    const newer = CommitViewData(
+      oid: '2222222222222222222222222222222222222222',
+      shortOid: '22222222',
+      subject: '最近提交',
+      author: 'tester',
+      relativeDate: '今天',
+      parents: ['1111111111111111111111111111111111111111'],
+    );
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              headOid: 'missing',
+              commits: [newer, older],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('最近提交'), findsOneWidget);
+    expect(find.text('历史提交'), findsOneWidget);
+  });
+
   testWidgets('external refresh resets the locally highlighted reference', (
     tester,
   ) async {

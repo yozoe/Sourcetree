@@ -98,6 +98,59 @@ void main() {
   });
 
   test(
+    'shows files inside untracked directories without a directory row',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('pull-test/local/result.txt', 'local\n');
+      await repository.writeFile('pull-test/peer/result.txt', 'peer\n');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+
+      final changes = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!.changes;
+      expect(
+        changes.map((change) => change.path),
+        containsAll(<String>[
+          'pull-test/local/result.txt',
+          'pull-test/peer/result.txt',
+        ]),
+      );
+      expect(changes.any((change) => change.path == 'pull-test/'), isFalse);
+    },
+  );
+
+  test('hides an untracked nested repository directory', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    final nested = Directory(
+      '${repository.workingDirectory.path}${Platform.pathSeparator}pull-test'
+      '${Platform.pathSeparator}local',
+    );
+    await nested.create(recursive: true);
+    await repository.runGit(['init', nested.path]);
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    final session = container.read(repositorySessionProvider);
+    final changes = mapRepositoryOverview(session).repository!.changes;
+    expect(changes.any((change) => change.path == 'pull-test/local'), isFalse);
+    expect(session.status!.entries, isNotEmpty);
+    expect(session.status!.displayEntries, isEmpty);
+    expect(
+      mapRepositoryOverview(session).repository!.isWorkingTreeClean,
+      isFalse,
+    );
+  });
+
+  test(
     'enables commit for a dirty workspace before files are staged',
     () async {
       final repository = await GitTestRepository.create();

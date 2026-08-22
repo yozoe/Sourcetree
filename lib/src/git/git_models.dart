@@ -334,12 +334,20 @@ final class GitStatusSnapshot {
   GitStatusSnapshot({
     required this.branch,
     required List<GitStatusEntry> entries,
+    List<GitStatusEntry>? displayEntries,
     Map<String, String> additionalHeaders = const {},
   }) : entries = List<GitStatusEntry>.unmodifiable(entries),
+       displayEntries = List<GitStatusEntry>.unmodifiable(
+         displayEntries ?? entries,
+       ),
        additionalHeaders = Map<String, String>.unmodifiable(additionalHeaders);
 
   final GitBranchStatus branch;
   final List<GitStatusEntry> entries;
+
+  /// Entries suitable for the file-status UI. This can omit directory-only
+  /// untracked rows while [entries] remains the complete Git status.
+  final List<GitStatusEntry> displayEntries;
   final Map<String, String> additionalHeaders;
 
   bool get isClean => entries.isEmpty;

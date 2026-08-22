@@ -1,8 +1,10 @@
 import 'dart:async';
+import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
+import 'package:path/path.dart' as path_utils;
 import 'package:yeknom_ui_kit/yeknom_workbench.dart';
 
 import '../git/git.dart';
@@ -1293,6 +1295,94 @@ class _RepositoryWorkspaceScreenState
       );
   }
 
+  /// 中文：在 Finder 中定位选中的工作区文件。
+  /// English: Reveals selected working-tree files in Finder.
+  Future<void> _revealChangesInFinder(
+    List<RepositoryChangeViewData> changes,
+  ) async {
+    final root = ref.read(repositorySessionProvider).repository?.workTreeRoot;
+    if (root == null || changes.isEmpty) return;
+    final paths = <String>[];
+    for (final change in changes) {
+      final path = _workspaceChangePath(root, change.path);
+      if (path != null) paths.add(path);
+    }
+    if (paths.isEmpty) return;
+    final result = await Process.run('/usr/bin/open', ['-R', ...paths]);
+    if (!mounted || result.exitCode == 0) return;
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(const SnackBar(content: Text('无法在 Finder 中显示所选文件。')));
+  }
+
+  /// 中文：确认并移除选中的未跟踪文件；不会删除已跟踪改动。
+  /// English: Confirms and removes selected untracked files only.
+  Future<void> _removeUntrackedChanges(
+    List<RepositoryChangeViewData> changes,
+  ) async {
+    final root = ref.read(repositorySessionProvider).repository?.workTreeRoot;
+    if (root == null ||
+        changes.isEmpty ||
+        changes.any(
+          (change) => change.kind != RepositoryChangeKind.untracked,
+        )) {
+      return;
+    }
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('移除未跟踪文件'),
+        content: Text('确定要移除选中的 ${changes.length} 个未跟踪文件吗？此操作无法通过 Git 恢复。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('移除'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+
+    var removed = 0;
+    var failed = 0;
+    for (final change in changes) {
+      final filePath = _workspaceChangePath(root, change.path);
+      if (filePath == null) continue;
+      try {
+        final entityType = await FileSystemEntity.type(
+          filePath,
+          followLinks: false,
+        );
+        if (entityType == FileSystemEntityType.notFound) continue;
+        if (entityType == FileSystemEntityType.directory) {
+          await Directory(filePath).delete(recursive: true);
+        } else {
+          await File(filePath).delete();
+        }
+        removed++;
+      } on Object {
+        failed++;
+      }
+    }
+    await ref.read(repositorySessionProvider.notifier).refresh();
+    if (!mounted) return;
+    final message = failed == 0
+        ? '已移除 $removed 个未跟踪文件或目录。'
+        : '已移除 $removed 个项目，$failed 个项目删除失败。';
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  String? _workspaceChangePath(String root, String changePath) {
+    final target = path_utils.normalize(path_utils.join(root, changePath));
+    return path_utils.isWithin(root, target) ? target : null;
+  }
+
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
   @override
@@ -1346,6 +1436,10 @@ class _RepositoryWorkspaceScreenState
                     controller.toggleStageGroup(changes, stage: stage),
                 onConflictAction: (change, action) =>
                     unawaited(_handleConflictAction(change, action)),
+                onChangeRevealInFinder: (changes) =>
+                    unawaited(_revealChangesInFinder(changes)),
+                onChangeRemove: (changes) =>
+                    unawaited(_removeUntrackedChanges(changes)),
               ),
             ),
           ),

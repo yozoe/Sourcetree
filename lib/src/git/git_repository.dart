@@ -291,6 +291,8 @@ final class GitRepositoryReader {
           '-z',
           '--branch',
           '--show-stash',
+          // Show files inside untracked directories, without exposing the
+          // directory itself as a change row (matching Sourcetree's file list).
           '--untracked-files=all',
         ],
         workingDirectory: repository.commandDirectory,
@@ -306,7 +308,36 @@ final class GitRepositoryReader {
         'Repository status exceeded the configured output limit.',
       );
     }
-    return statusParser.parse(result.stdoutBytes);
+    final parsed = statusParser.parse(result.stdoutBytes);
+    final visibleEntries = <GitStatusEntry>[];
+    for (final entry in parsed.entries) {
+      if (entry.workTreeStatus == GitChangeType.untracked &&
+          await _isUntrackedDirectory(repository, entry.path)) {
+        continue;
+      }
+      visibleEntries.add(entry);
+    }
+    return GitStatusSnapshot(
+      branch: parsed.branch,
+      entries: parsed.entries,
+      displayEntries: visibleEntries,
+      additionalHeaders: parsed.additionalHeaders,
+    );
+  }
+
+  /// 中文：判断未跟踪状态项是否实际对应目录；Sourcetree 不展示这类目录项。
+  /// English: Checks whether an untracked status entry is a directory;
+  /// Sourcetree omits these directory-only rows.
+  Future<bool> _isUntrackedDirectory(
+    GitRepository repository,
+    GitPath gitPath,
+  ) async {
+    final target = path_utils.normalize(
+      path_utils.join(repository.commandDirectory, gitPath.display),
+    );
+    if (!path_utils.isWithin(repository.commandDirectory, target)) return false;
+    return await FileSystemEntity.type(target, followLinks: false) ==
+        FileSystemEntityType.directory;
   }
 
   /// 中文：读取所需的数据。

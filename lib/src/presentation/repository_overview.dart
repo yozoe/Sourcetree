@@ -3,6 +3,7 @@ import 'dart:math' as math;
 
 import 'package:flutter/gestures.dart' show kPrimaryButton;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import 'models/repository_overview_view_data.dart';
 
@@ -19,6 +20,8 @@ typedef RepositoryChangeCallback =
     void Function(RepositoryChangeViewData? change);
 typedef RepositoryChangeStageCallback =
     void Function(RepositoryChangeViewData change);
+typedef RepositoryChangeFilesCallback =
+    FutureOr<void> Function(List<RepositoryChangeViewData> changes);
 typedef RepositoryChangeGroupStageCallback =
     FutureOr<void> Function(List<RepositoryChangeViewData> changes, bool stage);
 typedef RepositoryConflictActionCallback =
@@ -45,6 +48,8 @@ final class RepositoryOverviewCallbacks {
     this.onChangeStageToggled,
     this.onChangeGroupStageToggled,
     this.onConflictAction,
+    this.onChangeRevealInFinder,
+    this.onChangeRemove,
     this.onCommitFileSelected,
     this.onLayoutChanged,
   });
@@ -60,6 +65,8 @@ final class RepositoryOverviewCallbacks {
   final RepositoryChangeStageCallback? onChangeStageToggled;
   final RepositoryChangeGroupStageCallback? onChangeGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
+  final RepositoryChangeFilesCallback? onChangeRevealInFinder;
+  final RepositoryChangeFilesCallback? onChangeRemove;
   final RepositoryCommitFileCallback? onCommitFileSelected;
   final ValueChanged<RepositoryOverviewLayout>? onLayoutChanged;
 }
@@ -314,6 +321,9 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                         onGroupStageToggled:
                             widget.callbacks.onChangeGroupStageToggled,
                         onConflictAction: widget.callbacks.onConflictAction,
+                        onRevealInFinder:
+                            widget.callbacks.onChangeRevealInFinder,
+                        onRemove: widget.callbacks.onChangeRemove,
                         onCommitFileSelected:
                             widget.callbacks.onCommitFileSelected,
                       ),
@@ -410,6 +420,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                   onChangeGroupStageToggled:
                       widget.callbacks.onChangeGroupStageToggled,
                   onConflictAction: widget.callbacks.onConflictAction,
+                  onRevealInFinder: widget.callbacks.onChangeRevealInFinder,
+                  onRemove: widget.callbacks.onChangeRemove,
                   onCommitFileSelected: widget.callbacks.onCommitFileSelected,
                 ),
               ),
@@ -447,6 +459,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         onStageToggled: widget.callbacks.onChangeStageToggled,
         onGroupStageToggled: widget.callbacks.onChangeGroupStageToggled,
         onConflictAction: widget.callbacks.onConflictAction,
+        onRevealInFinder: widget.callbacks.onChangeRevealInFinder,
+        onRemove: widget.callbacks.onChangeRemove,
         onCommitFileSelected: widget.callbacks.onCommitFileSelected,
       ),
       _CompactPane.details => _CommitDetailsPane(
@@ -1480,9 +1494,13 @@ class _HistoryPaneState extends State<_HistoryPane> {
       final commit = byId[oid];
       if (commit != null) pending.addAll(commit.parents);
     }
-    return repository.commits
+    final visible = repository.commits
         .where((commit) => reachable.contains(commit.oid))
         .toList(growable: false);
+    // A partial history window may not contain HEAD or one of its parents.
+    // Do not render an apparently empty history in that case; the complete
+    // set currently loaded by the application is a safer fallback.
+    return visible.isEmpty ? repository.commits : visible;
   }
 
   Map<String, CommitGraphViewData> _graphsFor(
@@ -2158,6 +2176,8 @@ class _SelectedChangesPane extends StatelessWidget {
     required this.onStageToggled,
     required this.onGroupStageToggled,
     required this.onConflictAction,
+    required this.onRevealInFinder,
+    required this.onRemove,
     required this.onCommitFileSelected,
   });
 
@@ -2166,6 +2186,8 @@ class _SelectedChangesPane extends StatelessWidget {
   final RepositoryChangeStageCallback? onStageToggled;
   final RepositoryChangeGroupStageCallback? onGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
+  final RepositoryChangeFilesCallback? onRevealInFinder;
+  final RepositoryChangeFilesCallback? onRemove;
   final RepositoryCommitFileCallback? onCommitFileSelected;
 
   /// 中文：构建当前组件的界面。
@@ -2184,6 +2206,8 @@ class _SelectedChangesPane extends StatelessWidget {
       onStageToggled: onStageToggled,
       onGroupStageToggled: onGroupStageToggled,
       onConflictAction: onConflictAction,
+      onRevealInFinder: onRevealInFinder,
+      onRemove: onRemove,
     );
   }
 }
@@ -2368,6 +2392,8 @@ class _ChangesPane extends StatelessWidget {
     required this.onStageToggled,
     required this.onGroupStageToggled,
     required this.onConflictAction,
+    required this.onRevealInFinder,
+    required this.onRemove,
   });
 
   final RepositoryViewData repository;
@@ -2375,6 +2401,8 @@ class _ChangesPane extends StatelessWidget {
   final RepositoryChangeStageCallback? onStageToggled;
   final RepositoryChangeGroupStageCallback? onGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
+  final RepositoryChangeFilesCallback? onRevealInFinder;
+  final RepositoryChangeFilesCallback? onRemove;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -2401,6 +2429,8 @@ class _ChangesPane extends StatelessWidget {
                           onStageToggled: onStageToggled,
                           onGroupStageToggled: onGroupStageToggled,
                           onConflictAction: onConflictAction,
+                          onRevealInFinder: onRevealInFinder,
+                          onRemove: onRemove,
                           currentBranch: repository.currentBranch,
                         )
                       : _DiffPreview(
@@ -2420,6 +2450,8 @@ class _ChangesPane extends StatelessWidget {
                         onStageToggled: onStageToggled,
                         onGroupStageToggled: onGroupStageToggled,
                         onConflictAction: onConflictAction,
+                        onRevealInFinder: onRevealInFinder,
+                        onRemove: onRemove,
                         currentBranch: repository.currentBranch,
                       ),
                     ),
@@ -2439,13 +2471,15 @@ class _ChangesPane extends StatelessWidget {
   }
 }
 
-class _ChangeList extends StatelessWidget {
+class _ChangeList extends StatefulWidget {
   const _ChangeList({
     required this.changes,
     required this.onSelected,
     required this.onStageToggled,
     required this.onGroupStageToggled,
     required this.onConflictAction,
+    required this.onRevealInFinder,
+    required this.onRemove,
     required this.currentBranch,
   });
 
@@ -2454,13 +2488,95 @@ class _ChangeList extends StatelessWidget {
   final RepositoryChangeStageCallback? onStageToggled;
   final RepositoryChangeGroupStageCallback? onGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
+  final RepositoryChangeFilesCallback? onRevealInFinder;
+  final RepositoryChangeFilesCallback? onRemove;
   final String currentBranch;
+
+  @override
+  State<_ChangeList> createState() => _ChangeListState();
+}
+
+class _ChangeListState extends State<_ChangeList> {
+  final Set<String> _selectedKeys = <String>{};
+
+  @override
+  void initState() {
+    super.initState();
+    _syncModelSelection();
+  }
+
+  @override
+  void didUpdateWidget(_ChangeList oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final available = widget.changes.map(_changeSelectionKey).toSet();
+    _selectedKeys.removeWhere((key) => !available.contains(key));
+    if (_selectedKeys.isEmpty) _syncModelSelection();
+  }
+
+  void _syncModelSelection() {
+    _selectedKeys.addAll(
+      widget.changes
+          .where((change) => change.isSelected)
+          .map(_changeSelectionKey),
+    );
+  }
+
+  List<RepositoryChangeViewData> get _selectedChanges => [
+    for (final change in widget.changes)
+      if (_selectedKeys.contains(_changeSelectionKey(change))) change,
+  ];
+
+  void _selectChange(RepositoryChangeViewData change) {
+    final key = _changeSelectionKey(change);
+    if (!HardwareKeyboard.instance.isMetaPressed) {
+      setState(() {
+        _selectedKeys
+          ..clear()
+          ..add(key);
+      });
+      widget.onSelected?.call(change);
+      return;
+    }
+
+    setState(() {
+      if (!_selectedKeys.add(key)) _selectedKeys.remove(key);
+    });
+    final selected = _selectedChanges;
+    widget.onSelected?.call(
+      _selectedKeys.contains(key)
+          ? change
+          : selected.isEmpty
+          ? null
+          : selected.last,
+    );
+  }
+
+  void _prepareContextMenu(RepositoryChangeViewData change) {
+    final key = _changeSelectionKey(change);
+    if (!_selectedKeys.contains(key)) {
+      setState(() {
+        _selectedKeys
+          ..clear()
+          ..add(key);
+      });
+    }
+    widget.onSelected?.call(change);
+  }
+
+  void _toggleSelectedStage(bool stage) {
+    final selected = _selectedChanges
+        .where((change) => change.canToggleStage && change.isStaged != stage)
+        .toList(growable: false);
+    if (selected.isEmpty) return;
+    final result = widget.onGroupStageToggled?.call(selected, stage);
+    if (result is Future<void>) unawaited(result);
+  }
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
-    if (changes.isEmpty) {
+    if (widget.changes.isEmpty) {
       return const _PaneEmptyState(
         icon: Icons.task_alt,
         title: '工作区干净',
@@ -2468,29 +2584,43 @@ class _ChangeList extends StatelessWidget {
       );
     }
 
-    final staged = changes.where((change) => change.isStaged).toList();
-    final unstaged = changes.where((change) => !change.isStaged).toList();
+    final staged = widget.changes.where((change) => change.isStaged).toList();
+    final unstaged = widget.changes
+        .where((change) => !change.isStaged)
+        .toList();
     return ListView(
       children: [
         _ChangeGroup(
           title: '已暂存文件',
           isChecked: true,
           changes: staged,
-          onSelected: onSelected,
-          onStageToggled: onStageToggled,
-          onGroupStageToggled: onGroupStageToggled,
-          onConflictAction: onConflictAction,
-          currentBranch: currentBranch,
+          selectedKeys: _selectedKeys,
+          selectedChanges: () => _selectedChanges,
+          onSelected: _selectChange,
+          onContextMenuRequested: _prepareContextMenu,
+          onSelectedStageToggled: _toggleSelectedStage,
+          onStageToggled: widget.onStageToggled,
+          onGroupStageToggled: widget.onGroupStageToggled,
+          onConflictAction: widget.onConflictAction,
+          onRevealInFinder: widget.onRevealInFinder,
+          onRemove: widget.onRemove,
+          currentBranch: widget.currentBranch,
         ),
         _ChangeGroup(
           title: '未暂存文件',
           isChecked: false,
           changes: unstaged,
-          onSelected: onSelected,
-          onStageToggled: onStageToggled,
-          onGroupStageToggled: onGroupStageToggled,
-          onConflictAction: onConflictAction,
-          currentBranch: currentBranch,
+          selectedKeys: _selectedKeys,
+          selectedChanges: () => _selectedChanges,
+          onSelected: _selectChange,
+          onContextMenuRequested: _prepareContextMenu,
+          onSelectedStageToggled: _toggleSelectedStage,
+          onStageToggled: widget.onStageToggled,
+          onGroupStageToggled: widget.onGroupStageToggled,
+          onConflictAction: widget.onConflictAction,
+          onRevealInFinder: widget.onRevealInFinder,
+          onRemove: widget.onRemove,
+          currentBranch: widget.currentBranch,
         ),
       ],
     );
@@ -2502,7 +2632,13 @@ class _ChangeGroup extends StatelessWidget {
     required this.title,
     required this.isChecked,
     required this.changes,
+    required this.selectedKeys,
+    required this.selectedChanges,
     required this.onSelected,
+    required this.onContextMenuRequested,
+    required this.onSelectedStageToggled,
+    required this.onRevealInFinder,
+    required this.onRemove,
     required this.onStageToggled,
     required this.onGroupStageToggled,
     required this.onConflictAction,
@@ -2512,7 +2648,13 @@ class _ChangeGroup extends StatelessWidget {
   final String title;
   final bool isChecked;
   final List<RepositoryChangeViewData> changes;
-  final RepositoryChangeCallback? onSelected;
+  final Set<String> selectedKeys;
+  final ValueGetter<List<RepositoryChangeViewData>> selectedChanges;
+  final ValueChanged<RepositoryChangeViewData> onSelected;
+  final ValueChanged<RepositoryChangeViewData> onContextMenuRequested;
+  final ValueChanged<bool> onSelectedStageToggled;
+  final RepositoryChangeFilesCallback? onRevealInFinder;
+  final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeStageCallback? onStageToggled;
   final RepositoryChangeGroupStageCallback? onGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
@@ -2588,7 +2730,13 @@ class _ChangeGroup extends StatelessWidget {
             height: 34,
             child: _ChangeTile(
               change: change,
-              onTap: onSelected == null ? null : () => onSelected!(change),
+              isSelected: selectedKeys.contains(_changeSelectionKey(change)),
+              selectedChanges: selectedChanges,
+              onTap: () => onSelected(change),
+              onContextMenuRequested: () => onContextMenuRequested(change),
+              onSelectedStageToggled: onSelectedStageToggled,
+              onRevealInFinder: onRevealInFinder,
+              onRemove: onRemove,
               onStageToggled: onStageToggled == null
                   ? null
                   : () => onStageToggled!(change),
@@ -2606,14 +2754,26 @@ class _ChangeGroup extends StatelessWidget {
 class _ChangeTile extends StatelessWidget {
   const _ChangeTile({
     required this.change,
+    required this.isSelected,
+    required this.selectedChanges,
     required this.onTap,
+    required this.onContextMenuRequested,
+    required this.onSelectedStageToggled,
+    required this.onRevealInFinder,
+    required this.onRemove,
     required this.onStageToggled,
     required this.onConflictAction,
     required this.currentBranch,
   });
 
   final RepositoryChangeViewData change;
+  final bool isSelected;
+  final ValueGetter<List<RepositoryChangeViewData>> selectedChanges;
   final VoidCallback? onTap;
+  final VoidCallback onContextMenuRequested;
+  final ValueChanged<bool> onSelectedStageToggled;
+  final RepositoryChangeFilesCallback? onRevealInFinder;
+  final RepositoryChangeFilesCallback? onRemove;
   final VoidCallback? onStageToggled;
   final ValueChanged<RepositoryConflictAction>? onConflictAction;
   final String currentBranch;
@@ -2634,7 +2794,7 @@ class _ChangeTile extends StatelessWidget {
 
     final content = Semantics(
       button: true,
-      selected: change.isSelected,
+      selected: isSelected,
       label:
           '${change.isStaged ? "已暂存" : "未暂存"}，${_changeKindLabel(change.kind)}，${change.path}',
       child: Tooltip(
@@ -2643,7 +2803,7 @@ class _ChangeTile extends StatelessWidget {
         child: InkWell(
           onTap: onTap,
           child: Container(
-            color: change.isSelected ? colors.secondaryContainer : null,
+            color: isSelected ? colors.primary : null,
             padding: const EdgeInsets.symmetric(horizontal: 8),
             child: Row(
               children: [
@@ -2681,7 +2841,9 @@ class _ChangeTile extends StatelessWidget {
                           fileName,
                           maxLines: 1,
                           overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.bodySmall,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            color: isSelected ? colors.onPrimary : null,
+                          ),
                         ),
                       ),
                       if (parentPath.isNotEmpty) ...[
@@ -2692,7 +2854,9 @@ class _ChangeTile extends StatelessWidget {
                             maxLines: 1,
                             overflow: TextOverflow.ellipsis,
                             style: theme.textTheme.labelSmall?.copyWith(
-                              color: colors.onSurfaceVariant,
+                              color: isSelected
+                                  ? colors.onPrimary.withValues(alpha: .82)
+                                  : colors.onSurfaceVariant,
                             ),
                           ),
                         ),
@@ -2704,7 +2868,9 @@ class _ChangeTile extends StatelessWidget {
                   Text(
                     stats,
                     style: theme.textTheme.labelSmall?.copyWith(
-                      color: colors.onSurfaceVariant,
+                      color: isSelected
+                          ? colors.onPrimary.withValues(alpha: .82)
+                          : colors.onSurfaceVariant,
                       fontFeatures: const [FontFeature.tabularFigures()],
                     ),
                   ),
@@ -2714,56 +2880,125 @@ class _ChangeTile extends StatelessWidget {
         ),
       ),
     );
-    final handler = onConflictAction;
-    if (change.kind != RepositoryChangeKind.conflicted || handler == null) {
-      return content;
-    }
     return MenuAnchor(
       consumeOutsideTap: true,
       useRootOverlay: true,
       menuChildren: [
-        SubmenuButton(
-          leadingIcon: const Icon(Icons.merge_type, size: 18),
-          menuChildren: [
-            MenuItemButton(
-              onPressed: () =>
-                  handler(RepositoryConflictAction.launchInternalDiffTool),
-              child: const Text('打开内部 Diff 工具'),
-            ),
-            MenuItemButton(
-              onPressed: () => handler(RepositoryConflictAction.useOurs),
-              child: Text('使用“我的”版本解决（保留来自 $currentBranch 的更改）'),
-            ),
-            MenuItemButton(
-              onPressed: () => handler(RepositoryConflictAction.useTheirs),
-              child: const Text('使用“他们的”版本解决（接受合并来源的更改）'),
-            ),
-            const Divider(height: 1),
-            MenuItemButton(
-              onPressed: () => handler(RepositoryConflictAction.restartMerge),
-              child: const Text('重新合并'),
-            ),
-            MenuItemButton(
-              onPressed: () => handler(RepositoryConflictAction.markResolved),
-              child: const Text('标记为已解决'),
-            ),
-            MenuItemButton(
-              onPressed: () => handler(RepositoryConflictAction.markUnresolved),
-              child: const Text('标记为未解决'),
-            ),
-          ],
-          child: const Text('解决冲突'),
+        MenuItemButton(onPressed: onTap, child: const Text('打开')),
+        MenuItemButton(
+          onPressed: onRevealInFinder == null
+              ? null
+              : () {
+                  final result = onRevealInFinder!(selectedChanges());
+                  if (result is Future<void>) unawaited(result);
+                },
+          child: const Text('在 Finder 中显示'),
         ),
+        MenuItemButton(
+          onPressed: () {
+            final paths = selectedChanges().map((item) => item.path).join('\n');
+            unawaited(Clipboard.setData(ClipboardData(text: paths)));
+          },
+          child: const Text('复制路径到剪贴板'),
+        ),
+        const MenuItemButton(onPressed: null, child: Text('在终端中打开')),
+        const MenuItemButton(onPressed: null, child: Text('快速查看')),
+        const Divider(height: 1),
+        const MenuItemButton(onPressed: null, child: Text('外部差异比对')),
+        const MenuItemButton(onPressed: null, child: Text('创建补丁…')),
+        const MenuItemButton(onPressed: null, child: Text('应用补丁…')),
+        const Divider(height: 1),
+        MenuItemButton(
+          onPressed:
+              selectedChanges().any(
+                (item) => !item.isStaged && item.canToggleStage,
+              )
+              ? () => onSelectedStageToggled(true)
+              : null,
+          child: const Text('添加到索引'),
+        ),
+        MenuItemButton(
+          onPressed:
+              selectedChanges().any(
+                (item) => item.isStaged && item.canToggleStage,
+              )
+              ? () => onSelectedStageToggled(false)
+              : null,
+          child: const Text('从索引中取消暂存'),
+        ),
+        MenuItemButton(
+          onPressed:
+              onRemove != null &&
+                  selectedChanges().every(
+                    (item) => item.kind == RepositoryChangeKind.untracked,
+                  )
+              ? () {
+                  final result = onRemove!(selectedChanges());
+                  if (result is Future<void>) unawaited(result);
+                }
+              : null,
+          child: const Text('移除'),
+        ),
+        const MenuItemButton(onPressed: null, child: Text('停止追踪')),
+        const MenuItemButton(onPressed: null, child: Text('忽略…')),
+        const Divider(height: 1),
+        if (change.kind == RepositoryChangeKind.conflicted &&
+            onConflictAction != null)
+          SubmenuButton(
+            leadingIcon: const Icon(Icons.merge_type, size: 18),
+            menuChildren: _conflictMenuChildren(),
+            child: const Text('解决冲突'),
+          ),
+        const MenuItemButton(onPressed: null, child: Text('查看选中的修改日志…')),
+        const MenuItemButton(onPressed: null, child: Text('审核选定的项目')),
       ],
       builder: (context, controller, child) => GestureDetector(
-        onSecondaryTapDown: (details) =>
-            controller.open(position: details.localPosition),
+        behavior: HitTestBehavior.opaque,
+        onSecondaryTapDown: (details) {
+          onContextMenuRequested();
+          controller.open(position: details.localPosition);
+        },
         child: child,
       ),
       child: content,
     );
   }
+
+  List<Widget> _conflictMenuChildren() {
+    final handler = onConflictAction!;
+    return [
+      MenuItemButton(
+        onPressed: () =>
+            handler(RepositoryConflictAction.launchInternalDiffTool),
+        child: const Text('打开内部 Diff 工具'),
+      ),
+      MenuItemButton(
+        onPressed: () => handler(RepositoryConflictAction.useOurs),
+        child: Text('使用“我的”版本解决（保留来自 $currentBranch 的更改）'),
+      ),
+      MenuItemButton(
+        onPressed: () => handler(RepositoryConflictAction.useTheirs),
+        child: const Text('使用“他们的”版本解决（接受合并来源的更改）'),
+      ),
+      const Divider(height: 1),
+      MenuItemButton(
+        onPressed: () => handler(RepositoryConflictAction.restartMerge),
+        child: const Text('重新合并'),
+      ),
+      MenuItemButton(
+        onPressed: () => handler(RepositoryConflictAction.markResolved),
+        child: const Text('标记为已解决'),
+      ),
+      MenuItemButton(
+        onPressed: () => handler(RepositoryConflictAction.markUnresolved),
+        child: const Text('标记为未解决'),
+      ),
+    ];
+  }
 }
+
+String _changeSelectionKey(RepositoryChangeViewData change) =>
+    '${change.isStaged ? 'staged' : 'unstaged'}\u0000${change.path}';
 
 /// 中文：返回文件改动类型在改动列表中展示的本地化标签。
 ///
@@ -3188,6 +3423,8 @@ class _TabbedInspector extends StatelessWidget {
     required this.onChangeStageToggled,
     required this.onChangeGroupStageToggled,
     required this.onConflictAction,
+    required this.onRevealInFinder,
+    required this.onRemove,
     required this.onCommitFileSelected,
   });
 
@@ -3198,6 +3435,8 @@ class _TabbedInspector extends StatelessWidget {
   final RepositoryChangeStageCallback? onChangeStageToggled;
   final RepositoryChangeGroupStageCallback? onChangeGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
+  final RepositoryChangeFilesCallback? onRevealInFinder;
+  final RepositoryChangeFilesCallback? onRemove;
   final RepositoryCommitFileCallback? onCommitFileSelected;
 
   /// 中文：构建当前组件的界面。
@@ -3222,6 +3461,8 @@ class _TabbedInspector extends StatelessWidget {
               onStageToggled: onChangeStageToggled,
               onGroupStageToggled: onChangeGroupStageToggled,
               onConflictAction: onConflictAction,
+              onRevealInFinder: onRevealInFinder,
+              onRemove: onRemove,
               onCommitFileSelected: onCommitFileSelected,
             ),
             _InspectorTab.details => _CommitDetailsPane(

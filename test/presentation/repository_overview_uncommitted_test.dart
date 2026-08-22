@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'dart:ui' show PointerDeviceKind;
 
 import 'package:flutter/gestures.dart' show kSecondaryMouseButton;
+import 'package:flutter/services.dart' show LogicalKeyboardKey;
 import 'package:flutter_test/flutter_test.dart';
 import 'package:git_desktop/src/presentation/presentation.dart';
 
@@ -251,5 +252,111 @@ void main() {
     await tester.tap(find.textContaining('使用“我的”版本解决'));
     await tester.pumpAndSettle();
     expect(selectedAction, RepositoryConflictAction.useOurs);
+  });
+
+  testWidgets('command-click keeps multiple working-tree files selected', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final selected = <String>[];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: [
+                RepositoryChangeViewData(
+                  path: 'one.py',
+                  kind: RepositoryChangeKind.modified,
+                ),
+                RepositoryChangeViewData(
+                  path: 'two.py',
+                  kind: RepositoryChangeKind.untracked,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onChangeSelected: (change) {
+              if (change != null) selected.add(change.path);
+            },
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('one.py'));
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
+    await tester.tap(find.text('two.py'));
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
+    await tester.pump();
+
+    expect(selected, containsAll(<String>['one.py', 'two.py']));
+    expect(selected, hasLength(2));
+  });
+
+  testWidgets('working-tree context menu stages all selected files', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    List<RepositoryChangeViewData>? staged;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: [
+                RepositoryChangeViewData(
+                  path: 'one.py',
+                  kind: RepositoryChangeKind.modified,
+                ),
+                RepositoryChangeViewData(
+                  path: 'two.py',
+                  kind: RepositoryChangeKind.untracked,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onChangeGroupStageToggled: (changes, stage) {
+              staged = changes;
+              expect(stage, isTrue);
+            },
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('one.py'));
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
+    await tester.tap(find.text('two.py'));
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('two.py')),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(find.text('添加到索引'), findsOneWidget);
+    await tester.tap(find.text('添加到索引'));
+    await tester.pumpAndSettle();
+    expect(
+      staged?.map((change) => change.path),
+      containsAll(<String>['one.py', 'two.py']),
+    );
   });
 }

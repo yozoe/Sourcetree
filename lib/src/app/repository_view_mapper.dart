@@ -105,7 +105,8 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
       state.phase == RepositorySessionPhase.loading) {
     disabledActions.add(RepositoryAction.mergeBranch);
   }
-  if (status.entries.isEmpty || state.phase == RepositorySessionPhase.loading) {
+  if (status.displayEntries.isEmpty ||
+      state.phase == RepositorySessionPhase.loading) {
     disabledActions.add(RepositoryAction.commit);
   }
 
@@ -128,7 +129,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
         id: 'workspace',
         label: '文件状态',
         kind: RepositoryRefKind.workspace,
-        childCount: status.entries.length,
+        childCount: status.displayEntries.length,
         isSelected: state.selectedRefId == 'workspace',
       ),
       if (branch.isDetached)
@@ -384,7 +385,7 @@ List<RepositoryChangeViewData> _mapChanges(RepositorySessionState state) {
   final status = state.status;
   if (status == null) return const [];
   final changes = <RepositoryChangeViewData>[];
-  for (final entry in status.entries) {
+  for (final entry in status.displayEntries) {
     if (entry.isConflicted) {
       changes.add(_changeData(state, entry, GitDiffSource.workingTree));
     } else {
