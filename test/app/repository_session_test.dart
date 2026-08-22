@@ -1117,38 +1117,69 @@ while true; do sleep 1; done
     },
   );
 
-  test('refuses pull while the work tree has uncommitted changes', () async {
-    final source = await GitTestRepository.create();
-    addTearDown(source.dispose);
-    await source.writeFile('README.md', '# Git Desktop\n');
-    await source.commit('Initial commit');
-    final origin = await source.createBareOrigin();
-    await source.runGit(['push', 'origin', 'main']);
-    final directory = await Directory.systemTemp.createTemp(
-      'git-desktop-pull-',
-    );
-    addTearDown(() => directory.delete(recursive: true));
-    final container = ProviderContainer();
-    addTearDown(container.dispose);
-    final controller = container.read(repositorySessionProvider.notifier);
-    expect(
-      await controller.cloneRepository(
-        remoteUrl: origin.path,
-        directoryPath: directory.path,
-      ),
-      isTrue,
-    );
-    await File(
-      '${directory.path}${Platform.pathSeparator}local.txt',
-    ).writeAsString('keep\n');
-    await controller.refresh();
+  test(
+    'keeps pull available while the work tree has uncommitted changes',
+    () async {
+      final source = await GitTestRepository.create();
+      addTearDown(source.dispose);
+      await source.writeFile('README.md', '# Git Desktop\n');
+      await source.commit('Initial commit');
+      final origin = await source.createBareOrigin();
+      await source.runGit(['push', 'origin', 'main']);
+      final directory = await Directory.systemTemp.createTemp(
+        'git-desktop-pull-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      expect(
+        await controller.cloneRepository(
+          remoteUrl: origin.path,
+          directoryPath: directory.path,
+        ),
+        isTrue,
+      );
+      await File(
+        '${directory.path}${Platform.pathSeparator}local.txt',
+      ).writeAsString('keep\n');
+      await controller.refresh();
 
-    expect(await controller.pullFastForward(), isFalse);
-    expect(
-      container.read(repositorySessionProvider).phase,
-      RepositorySessionPhase.ready,
-    );
-  });
+      expect(
+        mapRepositoryOverview(
+          container.read(repositorySessionProvider),
+        ).repository!.disabledActions,
+        isNot(contains(RepositoryAction.pull)),
+      );
+      expect(await controller.pullFastForward(), isFalse);
+      expect(
+        container.read(repositorySessionProvider).phase,
+        RepositorySessionPhase.ready,
+      );
+
+      await source.writeFile('remote.txt', 'remote change\n');
+      await source.commit('Remote change');
+      await source.runGit(['push', 'origin', 'main']);
+      expect(
+        await controller.pullWithOptions(
+          const GitPullOptions(remoteName: 'origin', remoteBranch: 'main'),
+        ),
+        isTrue,
+      );
+      expect(
+        await File(
+          '${directory.path}${Platform.pathSeparator}local.txt',
+        ).readAsString(),
+        'keep\n',
+      );
+      expect(
+        await File(
+          '${directory.path}${Platform.pathSeparator}remote.txt',
+        ).exists(),
+        isTrue,
+      );
+    },
+  );
 
   test('pushes ahead commits and refreshes ahead-behind state', () async {
     final source = await GitTestRepository.create();

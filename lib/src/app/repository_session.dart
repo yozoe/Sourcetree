@@ -1032,7 +1032,6 @@ final class RepositorySessionController
     if (repository == null ||
         status == null ||
         status.branch.upstream == null ||
-        !status.isClean ||
         state.phase == RepositorySessionPhase.loading) {
       return false;
     }

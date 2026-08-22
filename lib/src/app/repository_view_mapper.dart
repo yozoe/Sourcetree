@@ -82,7 +82,6 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     disabledActions.add(RepositoryAction.fetch);
   }
   if (branch.upstream == null ||
-      !status.isClean ||
       (state.phase == RepositorySessionPhase.loading && !state.isPullRunning)) {
     disabledActions.add(RepositoryAction.pull);
   }

@@ -249,6 +249,8 @@ RepositoryAction? _repositoryActionFromName(String? name) => switch (name) {
   _ => null,
 };
 
+enum _RebasePromptAction { continueRebase, abort, cancel }
+
 class RepositoryWorkspaceScreen extends ConsumerStatefulWidget {
   const RepositoryWorkspaceScreen({
     super.key,
@@ -274,6 +276,7 @@ class RepositoryWorkspaceScreen extends ConsumerStatefulWidget {
 class _RepositoryWorkspaceScreenState
     extends ConsumerState<RepositoryWorkspaceScreen> {
   bool _isAskPassDialogVisible = false;
+  bool _isRebasePromptVisible = false;
   bool _hasHandledInitialAction = false;
 
   /// 中文：在窗口首次绘制后执行首页请求的仓库操作。
@@ -350,6 +353,61 @@ class _RepositoryWorkspaceScreenState
         repository.commandDirectory,
       ).catchError((_) {}),
     );
+  }
+
+  /// 中文：在变基因冲突暂停时提供继续、中止或稍后处理的操作提示。
+  /// English: Offers continue, abort, or defer actions when a rebase pauses.
+  void _handleRepositoryStateChange(
+    RepositorySessionState? previous,
+    RepositorySessionState next,
+  ) {
+    _reportOpenedRepository(previous, next);
+    final enteredRebase =
+        next.operationState == GitRepositoryOperationState.rebase &&
+        previous?.operationState != GitRepositoryOperationState.rebase;
+    if (enteredRebase && !_isRebasePromptVisible && mounted) {
+      _isRebasePromptVisible = true;
+      unawaited(_showRebasePrompt());
+    }
+  }
+
+  Future<void> _showRebasePrompt() async {
+    final action = await showDialog<_RebasePromptAction>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('变基进行中'),
+        content: const Text(
+          '出现此种情况是因为你在变基的过程中被 Git 中止，可能是因为冲突。请解决冲突后继续变基，或放弃当前变基。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () =>
+                Navigator.of(context).pop(_RebasePromptAction.cancel),
+            child: const Text('取消'),
+          ),
+          OutlinedButton(
+            onPressed: () =>
+                Navigator.of(context).pop(_RebasePromptAction.abort),
+            child: const Text('放弃变基'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.of(context).pop(_RebasePromptAction.continueRebase),
+            child: const Text('继续变基'),
+          ),
+        ],
+      ),
+    );
+    _isRebasePromptVisible = false;
+    if (!mounted || action == null || action == _RebasePromptAction.cancel) {
+      return;
+    }
+    if (action == _RebasePromptAction.continueRebase) {
+      await _continueRebase();
+    } else {
+      await _abortRebase();
+    }
   }
 
   /// 中文：初始化当前功能。
@@ -684,6 +742,10 @@ class _RepositoryWorkspaceScreenState
       ),
     );
     if (approved != true || !mounted) return;
+    await _abortRebase();
+  }
+
+  Future<void> _abortRebase() async {
     final aborted = await ref
         .read(repositorySessionProvider.notifier)
         .abortRebase();
@@ -1202,7 +1264,7 @@ class _RepositoryWorkspaceScreenState
     });
     ref.listen<RepositorySessionState>(
       repositorySessionProvider,
-      _reportOpenedRepository,
+      _handleRepositoryStateChange,
     );
     final session = ref.watch(repositorySessionProvider);
     final controller = ref.read(repositorySessionProvider.notifier);

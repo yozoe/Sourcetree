@@ -318,8 +318,10 @@ detached HEAD、SHA-1/SHA-256 等边界。
   删除已合并的非当前分支。所有操作均根据安全前置条件禁用对应项目，且删除不会使用 force。
 - Fetch `origin`（不修改工作区，支持取消）；拉取配置框中的远端刷新会针对当前选中的远端执行。
 - Pull 配置框支持远端、远程分支和合并策略选择：默认使用 `--no-commit`，可选 `--log`、`--no-ff`
-  或 `--rebase`；仅在 clean worktree/index 且当前分支有 upstream 时启用，支持取消。
+  或 `--rebase`；当前分支有 upstream 时即可打开，即使 worktree/index 不干净也允许先配置，
+  最终由 Git 判断是否能安全执行，支持取消。
 - 检测进行中的 rebase 状态；变基冲突可在工具栏继续或中止，继续变基会使用非交互编辑器避免阻塞 UI。
+  检测到变基暂停时会弹出“继续变基 / 放弃变基 / 取消”提示；取消后仍可从工具栏继续处理。
 - 拉取对话框显示脱敏后的远端 URL；凭据形态的 userinfo、Token 和密码不会进入 UI 状态。
 - 安全 Push 当前分支 upstream（仅允许存在 ahead 提交时执行，显式锁定远端/refspec，不受用户 `push.default` 影响；显示目标与数量，支持取消，禁止 force push）。
 - Push 取消或异常退出后，使用可取消的只读 `ls-remote` 核验远端是否已包含本地 HEAD；核验不会修改本地 tracking refs，并提示用户 Fetch 刷新 ahead/behind。
