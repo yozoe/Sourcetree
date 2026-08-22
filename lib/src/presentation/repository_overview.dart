@@ -548,7 +548,7 @@ class _RepositoryToolbar extends StatelessWidget {
                                     showLabel: showLabels,
                                     repository: repository,
                                     onAction: callbacks.onAction,
-                                    badge: repository.stagedChangeCount,
+                                    badge: repository.changes.length,
                                   ),
                                   if (repository.isRebaseInProgress &&
                                       !repository.isPulling) ...[

@@ -106,8 +106,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
       state.phase == RepositorySessionPhase.loading) {
     disabledActions.add(RepositoryAction.mergeBranch);
   }
-  if (status.stagedEntries.isEmpty ||
-      state.phase == RepositorySessionPhase.loading) {
+  if (status.entries.isEmpty || state.phase == RepositorySessionPhase.loading) {
     disabledActions.add(RepositoryAction.commit);
   }
 

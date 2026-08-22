@@ -54,9 +54,9 @@
 | 提交 | Commit、作者校验、hook 错误展示 | Amend、模板、签名状态 | 提交草稿 |
 | 历史 | 分页列表、基础 DAG、提交详情 | 搜索、文件历史、Blame、Reflog | 高级查询 |
 | Branch / Tag | 创建/切换/重命名本地分支、从指定本地或已获取远端分支创建分支、引用右键菜单、安全删除已合并分支 | 跟踪关系、Tag | Worktree |
-| 远端 | 已获取远端跟踪分支展示、Fetch、Pull、Push、进度和取消 | Remote 管理、Prune、安全 Force Push | 托管平台适配 |
-| 高级操作 | 本地分支安全合并、冲突状态展示 | Rebase、Cherry-pick、Revert、Reset、Stash；合并 Continue/Abort | 高级批量操作 |
-| 冲突 | 检测并展示进行中状态；内置文本 Diff 左右对比、选边、编辑结果并标记已解决 | Continue/Skip/Abort、外部工具 | 二进制和高级三方合并器评估 |
+| 远端 | 已获取远端跟踪分支展示、按远端配置 Pull、Fetch、Push、进度和取消 | Remote 管理、Prune、安全 Force Push | 托管平台适配 |
+| 高级操作 | 本地分支安全合并、拉取变基、变基 Continue/Abort、冲突状态展示 | 独立 Rebase、Cherry-pick、Revert、Reset、Stash | 高级批量操作 |
+| 冲突 | 检测并展示进行中状态；内置文本 Diff 左右对比、选边、编辑结果并标记已解决；变基可 Continue/Abort | Skip、外部工具 | 二进制和高级三方合并器评估 |
 | Git 扩展 | — | Submodule、LFS 基础能力 | 深度增强 |
 | 桌面集成 | Finder/终端入口、快捷键、深浅主题 | 中英文、外部 Diff/Merge、自动更新 | Windows/Linux 原生集成 |
 
@@ -310,12 +310,17 @@ detached HEAD、SHA-1/SHA-256 等边界。
 - 工作区状态、整文件 stage/unstage、Unified Diff、基础历史 DAG 和提交详情；提交图采用
   96px 宽的连续深灰图栏、实心节点与直角分叉连线，主线和分支以蓝/橙等高对比色区分；历史
   读取覆盖所有本地分支，以呈现真实分叉与合并拓扑。
-- 安全 Commit（stdin 传递信息且不跳过 hooks）。
+- 安全 Commit（stdin 传递信息且不跳过 hooks）。工作区存在任意改动时提交入口可用；提交面板
+  同时展示已暂存/未暂存文件，支持在面板中暂存文件、填写提交信息以及提交后推送。没有已暂存
+  文件或 Git 正在执行操作时，最终提交按钮禁用。
 - 创建本地分支、分支列表，以及仅在干净工作区的安全分支切换；左侧引用右键菜单可执行
   Fetch、当前分支 Pull/Push、分支切换和合并；还可从所选本地分支创建新分支、重命名，或安全
   删除已合并的非当前分支。所有操作均根据安全前置条件禁用对应项目，且删除不会使用 force。
-- Fetch `origin`（不修改工作区，支持取消）。
-- Pull `--ff-only`（仅 clean worktree/index、配置 upstream 时启用，支持取消；拒绝隐式 merge commit）。
+- Fetch `origin`（不修改工作区，支持取消）；拉取配置框中的远端刷新会针对当前选中的远端执行。
+- Pull 配置框支持远端、远程分支和合并策略选择：默认使用 `--no-commit`，可选 `--log`、`--no-ff`
+  或 `--rebase`；仅在 clean worktree/index 且当前分支有 upstream 时启用，支持取消。
+- 检测进行中的 rebase 状态；变基冲突可在工具栏继续或中止，继续变基会使用非交互编辑器避免阻塞 UI。
+- 拉取对话框显示脱敏后的远端 URL；凭据形态的 userinfo、Token 和密码不会进入 UI 状态。
 - 安全 Push 当前分支 upstream（仅允许存在 ahead 提交时执行，显式锁定远端/refspec，不受用户 `push.default` 影响；显示目标与数量，支持取消，禁止 force push）。
 - Push 取消或异常退出后，使用可取消的只读 `ls-remote` 核验远端是否已包含本地 HEAD；核验不会修改本地 tracking refs，并提示用户 Fetch 刷新 ahead/behind。
 - 统一操作进度与日志：Clone、Fetch、Pull、Push 均记录运行/成功/取消/失败状态，状态栏显示不确定进度并可打开最近 12 条的脱敏操作记录。
@@ -353,7 +358,7 @@ Git 进程不阻塞 UI，危险操作不静默执行。
 
 - 仓库收藏、工作区分组和首页管理操作。
 - hunk/行级暂存、Amend。
-- Tag、Stash、Merge、Rebase、Cherry-pick、Revert、Reset。
+- Tag、Stash、独立 Rebase、Cherry-pick、Revert、Reset。
 - 历史搜索、左右 Diff、基础冲突处理。
 - Remote 管理、Keychain 和快捷键。
 

@@ -97,6 +97,30 @@ void main() {
     );
   });
 
+  test(
+    'enables commit for a dirty workspace before files are staged',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('draft.txt', 'pending\n');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+
+      final overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      expect(overview.changes, hasLength(1));
+      expect(overview.stagedChangeCount, 0);
+      expect(
+        overview.disabledActions,
+        isNot(contains(RepositoryAction.commit)),
+      );
+    },
+  );
+
   test('keeps a newly staged file selected with its staged diff', () async {
     final repository = await GitTestRepository.create();
     addTearDown(repository.dispose);

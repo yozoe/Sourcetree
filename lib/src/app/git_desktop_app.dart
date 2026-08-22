@@ -744,18 +744,31 @@ class _RepositoryWorkspaceScreenState
   /// 中文：显示相应界面或信息。
   /// English: Shows the corresponding UI or information.
   Future<void> _showCommitDialog() async {
-    final message = await showDialog<String>(
+    final result = await showDialog<_CommitDialogResult>(
       context: context,
       builder: (BuildContext context) => const _CommitDialog(),
     );
-    if (message == null || !mounted) {
+    if (result == null || !mounted) {
       return;
     }
 
     final created = await ref
         .read(repositorySessionProvider.notifier)
-        .createCommit(message);
+        .createCommit(result.message);
     if (!mounted) {
+      return;
+    }
+    if (created && result.pushAfterCommit) {
+      final pushed = await ref
+          .read(repositorySessionProvider.notifier)
+          .pushUpstream();
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(pushed ? '已创建提交并推送到上游。' : '已创建提交，但推送未完成，请查看仓库状态。'),
+          duration: const Duration(seconds: 3),
+        ),
+      );
       return;
     }
     ScaffoldMessenger.of(context).showSnackBar(
@@ -1311,13 +1324,23 @@ final class RepositoryTabStrip extends StatelessWidget {
   }
 }
 
-class _CommitDialog extends StatefulWidget {
+final class _CommitDialogResult {
+  const _CommitDialogResult({
+    required this.message,
+    this.pushAfterCommit = false,
+  });
+
+  final String message;
+  final bool pushAfterCommit;
+}
+
+class _CommitDialog extends ConsumerStatefulWidget {
   const _CommitDialog();
 
   /// 中文：创建关联的状态对象。
   /// English: Creates the associated state object.
   @override
-  State<_CommitDialog> createState() => _CommitDialogState();
+  ConsumerState<_CommitDialog> createState() => _CommitDialogState();
 }
 
 class _CloneDialog extends StatefulWidget {
@@ -1545,9 +1568,10 @@ class _RenameBranchDialogState extends State<_RenameBranchDialog> {
   }
 }
 
-class _CommitDialogState extends State<_CommitDialog> {
+class _CommitDialogState extends ConsumerState<_CommitDialog> {
   final _formKey = GlobalKey<FormState>();
   final _messageController = TextEditingController();
+  bool _pushAfterCommit = false;
 
   /// 中文：释放当前对象持有的资源。
   /// English: Releases resources held by this object.
@@ -1559,41 +1583,166 @@ class _CommitDialogState extends State<_CommitDialog> {
 
   /// 中文：提交当前表单或请求。
   /// English: Submits the current form or request.
-  void _submit() {
+  void _submit({required bool hasStagedChanges}) {
+    if (!hasStagedChanges) {
+      return;
+    }
     if (!(_formKey.currentState?.validate() ?? false)) {
       return;
     }
-    Navigator.of(context).pop(_messageController.text);
+    Navigator.of(context).pop(
+      _CommitDialogResult(
+        message: _messageController.text.trim(),
+        pushAfterCommit: _pushAfterCommit,
+      ),
+    );
   }
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
+    final session = ref.watch(repositorySessionProvider);
+    final repository = mapRepositoryOverview(session).repository;
+    final changes = repository?.changes ?? const <RepositoryChangeViewData>[];
+    final staged = changes.where((change) => change.isStaged).toList();
+    final unstaged = changes.where((change) => !change.isStaged).toList();
+    final isBusy = session.phase == RepositorySessionPhase.loading;
+    final branch = session.status?.branch;
+    final pushAvailable =
+        !isBusy &&
+        branch != null &&
+        (branch.objectId != null || branch.isUnborn) &&
+        !branch.isDetached &&
+        (session.hasOriginRemote || branch.upstream != null);
+
+    Widget changeList(String title, List<RepositoryChangeViewData> entries) {
+      if (entries.isEmpty) return const SizedBox.shrink();
+      final colors = Theme.of(context).colorScheme;
+      return Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            color: colors.surfaceContainerLow,
+            child: Row(
+              children: [
+                Icon(
+                  title == '已暂存文件'
+                      ? Icons.check_box
+                      : Icons.check_box_outline_blank,
+                  size: 17,
+                  color: title == '已暂存文件'
+                      ? colors.primary
+                      : colors.onSurfaceVariant,
+                ),
+                const SizedBox(width: 6),
+                Text(
+                  title,
+                  style: const TextStyle(fontWeight: FontWeight.w600),
+                ),
+                const Spacer(),
+                Text('${entries.length}'),
+              ],
+            ),
+          ),
+          ...entries.map(
+            (change) => CheckboxListTile(
+              dense: true,
+              visualDensity: VisualDensity.compact,
+              value: change.isStaged,
+              onChanged: !isBusy && change.canToggleStage
+                  ? (_) => ref
+                        .read(repositorySessionProvider.notifier)
+                        .toggleStage(change)
+                  : null,
+              title: Text(change.path, overflow: TextOverflow.ellipsis),
+              subtitle: change.previousPath == null
+                  ? null
+                  : Text('来自 ${change.previousPath}'),
+              controlAffinity: ListTileControlAffinity.leading,
+            ),
+          ),
+        ],
+      );
+    }
+
     return AlertDialog(
-      title: const Text('创建提交'),
-      content: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 520),
+      title: const Text('提交工作区改动'),
+      content: SizedBox(
+        width: 760,
+        height: 560,
         child: Form(
           key: _formKey,
-          child: TextFormField(
-            controller: _messageController,
-            autofocus: true,
-            minLines: 5,
-            maxLines: 10,
-            textCapitalization: TextCapitalization.sentences,
-            decoration: const InputDecoration(
-              alignLabelWithHint: true,
-              border: OutlineInputBorder(),
-              hintText: '简要说明这次提交的改动',
-              labelText: '提交信息',
-            ),
-            validator: (String? value) {
-              if (value == null || value.trim().isEmpty) {
-                return '请输入提交信息。';
-              }
-              return null;
-            },
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text('选择要提交的文件', style: Theme.of(context).textTheme.titleSmall),
+              const SizedBox(height: 8),
+              Expanded(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    border: Border.all(
+                      color: Theme.of(context).colorScheme.outlineVariant,
+                    ),
+                    borderRadius: BorderRadius.circular(4),
+                  ),
+                  child: changes.isEmpty
+                      ? const Center(child: Text('工作区没有待提交的改动。'))
+                      : ListView(
+                          padding: EdgeInsets.zero,
+                          children: [
+                            changeList('已暂存文件', staged),
+                            changeList('未暂存文件', unstaged),
+                          ],
+                        ),
+                ),
+              ),
+              const SizedBox(height: 14),
+              TextFormField(
+                controller: _messageController,
+                autofocus: true,
+                minLines: 3,
+                maxLines: 5,
+                textCapitalization: TextCapitalization.sentences,
+                decoration: const InputDecoration(
+                  alignLabelWithHint: true,
+                  border: OutlineInputBorder(),
+                  hintText: '简要说明这次提交的改动',
+                  labelText: '提交信息',
+                ),
+                validator: (String? value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return '请输入提交信息。';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 4),
+              CheckboxListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                value: _pushAfterCommit,
+                onChanged: pushAvailable
+                    ? (value) =>
+                          setState(() => _pushAfterCommit = value ?? false)
+                    : null,
+                title: Text(
+                  '立即推送变更到 ${branch?.upstream ?? 'origin/${branch?.head ?? '当前分支'}'}',
+                ),
+                subtitle: pushAvailable ? null : const Text('当前分支没有可用的远端。'),
+                controlAffinity: ListTileControlAffinity.leading,
+              ),
+              CheckboxListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                value: false,
+                onChanged: null,
+                title: const Text('更正上一次提交'),
+                subtitle: const Text('暂未支持'),
+                controlAffinity: ListTileControlAffinity.leading,
+              ),
+            ],
           ),
         ),
       ),
@@ -1603,7 +1752,9 @@ class _CommitDialogState extends State<_CommitDialog> {
           child: const Text('取消'),
         ),
         FilledButton.icon(
-          onPressed: _submit,
+          onPressed: staged.isNotEmpty && !isBusy
+              ? () => _submit(hasStagedChanges: staged.isNotEmpty)
+              : null,
           icon: const Icon(Icons.check_circle_outline),
           label: const Text('提交'),
         ),
