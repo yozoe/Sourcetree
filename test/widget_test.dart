@@ -483,6 +483,75 @@ void main() {
     expect(activatedCommit, commit);
   });
 
+  testWidgets('resizes history columns from their header dividers', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    const commit = CommitViewData(
+      oid: '4f5e6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6',
+      shortOid: '4f5e6b7c',
+      subject: '测试提交',
+      author: 'tester',
+      relativeDate: '今天',
+      refs: ['main', 'origin/main', 'feature/very-long-name'],
+      isHead: true,
+      isMerge: true,
+    );
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              headOid: '4f5e6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6',
+              refs: [
+                RepositoryRefViewData(
+                  id: 'main',
+                  label: 'main',
+                  kind: RepositoryRefKind.localBranch,
+                  isCurrent: true,
+                ),
+              ],
+              commits: [commit],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final header = find.byKey(const ValueKey<String>('history-column-header'));
+    expect(header, findsOneWidget);
+    for (final label in const ['图表', '描述', '提交', '作者', '日期']) {
+      expect(
+        find.descendant(of: header, matching: find.text(label)),
+        findsOneWidget,
+      );
+    }
+
+    for (final label in const ['调整图表列宽度', '调整描述列宽度', '调整提交列宽度', '调整作者列宽度']) {
+      final divider = find.bySemanticsLabel(label);
+      expect(divider, findsOneWidget);
+      final before = tester.getCenter(divider).dx;
+      await tester.drag(divider, const Offset(20, 0));
+      await tester.pump();
+      expect(tester.getCenter(divider).dx, greaterThan(before));
+    }
+
+    final descriptionDivider = find.bySemanticsLabel('调整描述列宽度');
+    final beforeCompression = tester.getCenter(descriptionDivider).dx;
+    await tester.drag(descriptionDivider, const Offset(-1500, 0));
+    await tester.pump();
+    expect(
+      tester.getCenter(descriptionDivider).dx,
+      lessThan(beforeCompression - 200),
+    );
+  });
+
   testWidgets('keeps loaded history visible when the current tip is absent', (
     tester,
   ) async {

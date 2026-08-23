@@ -145,6 +145,58 @@ void main() {
     expect(toggled?.path, 'hello.py');
   });
 
+  testWidgets('keeps empty staged group unchecked and resizable', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: [
+                RepositoryChangeViewData(
+                  path: 'hello.py',
+                  kind: RepositoryChangeKind.untracked,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final stagedHeader = find.byKey(const ValueKey('staged-files-header'));
+    expect(
+      tester
+          .widget<Checkbox>(
+            find.descendant(of: stagedHeader, matching: find.byType(Checkbox)),
+          )
+          .value,
+      isFalse,
+    );
+
+    final divider = find.bySemanticsLabel('调整已暂存文件区域高度');
+    expect(divider, findsOneWidget);
+    final before = tester.getTopLeft(find.text('未暂存文件')).dy;
+    await tester.drag(divider, const Offset(0, 24));
+    await tester.pump();
+    expect(tester.getTopLeft(find.text('未暂存文件')).dy, greaterThan(before));
+
+    final widthDivider = find.bySemanticsLabel('调整文件列表宽度');
+    expect(widthDivider, findsOneWidget);
+    final beforeWidth = tester.getCenter(widthDivider).dx;
+    await tester.drag(widthDivider, const Offset(80, 0));
+    await tester.pump();
+    expect(tester.getCenter(widthDivider).dx, greaterThan(beforeWidth));
+  });
+
   testWidgets('stages every unstaged file from the group checkbox', (
     tester,
   ) async {

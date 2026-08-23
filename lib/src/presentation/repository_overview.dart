@@ -1307,8 +1307,41 @@ class _RefTile extends StatelessWidget {
 }
 
 const double _historyRowHeight = 26;
+const double _historyDescriptionMinimumWidth = 0;
+const double _historyGraphMinimumWidth = 0;
+const double _historyCommitMinimumWidth = 0;
+const double _historyAuthorMinimumWidth = 0;
+const double _historyDateMinimumWidth = 0;
 
 enum _HistoryScope { currentBranch, allBranches }
+
+const double _historyColumnHandleWidth = 5;
+
+final class _HistoryColumnWidths {
+  const _HistoryColumnWidths({
+    required this.availableWidth,
+    required this.graph,
+    required this.graphMinimum,
+    required this.commit,
+    required this.commitMinimum,
+    required this.commitMaximum,
+    required this.author,
+    required this.authorMinimum,
+    required this.date,
+    required this.dateMinimum,
+  });
+
+  final double availableWidth;
+  final double graph;
+  final double graphMinimum;
+  final double commit;
+  final double commitMinimum;
+  final double commitMaximum;
+  final double author;
+  final double authorMinimum;
+  final double date;
+  final double dateMinimum;
+}
 
 class _HistoryPane extends StatefulWidget {
   const _HistoryPane({
@@ -1336,6 +1369,10 @@ class _HistoryPaneState extends State<_HistoryPane> {
   _HistoryScope _scope = _HistoryScope.currentBranch;
   bool _showRemoteRefs = true;
   bool _compactGraph = false;
+  double? _graphColumnWidth;
+  double? _commitColumnWidth;
+  double? _authorColumnWidth;
+  double? _dateColumnWidth;
 
   @override
   void initState() {
@@ -1411,66 +1448,252 @@ class _HistoryPaneState extends State<_HistoryPane> {
             icon: Icons.history,
             trailing: '${commits.length} 个提交',
           ),
-          _HistoryDisplayToolbar(
-            scope: _scope,
-            showRemoteRefs: _showRemoteRefs,
-            compactGraph: _compactGraph,
-            onScopeChanged: (value) => setState(() => _scope = value),
-            onShowRemoteRefsChanged: (value) =>
-                setState(() => _showRemoteRefs = value),
-            onCompactGraphChanged: (value) =>
-                setState(() => _compactGraph = value),
-          ),
-          if (widget.showSearch)
-            _CompactHistorySearchBar(
-              query: widget.repository.searchQuery,
-              onChanged: widget.onSearchChanged,
-            ),
-          _HistoryColumnHeader(compactGraph: _compactGraph),
           Expanded(
-            child: historyRowCount == 0
-                ? const _PaneEmptyState(
-                    icon: Icons.commit,
-                    title: '暂无提交',
-                    message: '空仓库的首次提交会显示在这里。',
-                  )
-                : ListView.builder(
-                    controller: _scrollController,
-                    itemExtent: _historyRowHeight,
-                    itemCount: historyRowCount,
-                    itemBuilder: (BuildContext context, int index) {
-                      if (showUncommittedChanges && index == 0) {
-                        return _UncommittedChangesRow(
-                          isSelected: workspaceSelected,
-                          compactGraph: _compactGraph,
-                          onTap: widget.onWorkspaceSelected,
-                        );
-                      }
-                      final commitIndex =
-                          index - (showUncommittedChanges ? 1 : 0);
-                      final CommitViewData commit = commits[commitIndex];
-                      final graph = graphs[commit.oid];
-                      final graphWithWorkspace =
-                          showUncommittedChanges && commitIndex == 0
-                          ? graph?.copyWith(hasPreviousNode: true)
-                          : graph;
-                      return _CommitRow(
-                        commit: commit.copyWith(graph: graphWithWorkspace),
-                        showRemoteRefs: _showRemoteRefs,
-                        compactGraph: _compactGraph,
-                        onTap: widget.onSelected == null
-                            ? null
-                            : () => widget.onSelected!(commit),
-                        onDoubleTap: widget.onActivated == null
-                            ? null
-                            : () => widget.onActivated!(commit),
-                      );
-                    },
-                  ),
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final widths = _historyColumnWidths(
+                  constraints.maxWidth,
+                  compact: _compactGraph,
+                );
+                return Column(
+                  children: [
+                    _HistoryDisplayToolbar(
+                      scope: _scope,
+                      showRemoteRefs: _showRemoteRefs,
+                      compactGraph: _compactGraph,
+                      onScopeChanged: (value) => setState(() => _scope = value),
+                      onShowRemoteRefsChanged: (value) =>
+                          setState(() => _showRemoteRefs = value),
+                      onCompactGraphChanged: (value) =>
+                          setState(() => _compactGraph = value),
+                    ),
+                    if (widget.showSearch)
+                      _CompactHistorySearchBar(
+                        query: widget.repository.searchQuery,
+                        onChanged: widget.onSearchChanged,
+                      ),
+                    _HistoryColumnHeader(
+                      widths: widths,
+                      onGraphDelta: (delta) =>
+                          _resizeGraphColumn(widths, delta),
+                      onDescriptionDelta: (delta) =>
+                          _resizeDescriptionColumn(widths, delta),
+                      onCommitDelta: (delta) =>
+                          _resizeCommitColumn(widths, delta),
+                      onAuthorDelta: (delta) =>
+                          _resizeAuthorColumn(widths, delta),
+                    ),
+                    Expanded(
+                      child: historyRowCount == 0
+                          ? const _PaneEmptyState(
+                              icon: Icons.commit,
+                              title: '暂无提交',
+                              message: '空仓库的首次提交会显示在这里。',
+                            )
+                          : ListView.builder(
+                              controller: _scrollController,
+                              itemExtent: _historyRowHeight,
+                              itemCount: historyRowCount,
+                              itemBuilder: (BuildContext context, int index) {
+                                if (showUncommittedChanges && index == 0) {
+                                  return _UncommittedChangesRow(
+                                    isSelected: workspaceSelected,
+                                    compactGraph: _compactGraph,
+                                    widths: widths,
+                                    onTap: widget.onWorkspaceSelected,
+                                  );
+                                }
+                                final commitIndex =
+                                    index - (showUncommittedChanges ? 1 : 0);
+                                final CommitViewData commit =
+                                    commits[commitIndex];
+                                final graph = graphs[commit.oid];
+                                final graphWithWorkspace =
+                                    showUncommittedChanges && commitIndex == 0
+                                    ? graph?.copyWith(hasPreviousNode: true)
+                                    : graph;
+                                return _CommitRow(
+                                  commit: commit.copyWith(
+                                    graph: graphWithWorkspace,
+                                  ),
+                                  showRemoteRefs: _showRemoteRefs,
+                                  compactGraph: _compactGraph,
+                                  widths: widths,
+                                  onTap: widget.onSelected == null
+                                      ? null
+                                      : () => widget.onSelected!(commit),
+                                  onDoubleTap: widget.onActivated == null
+                                      ? null
+                                      : () => widget.onActivated!(commit),
+                                );
+                              },
+                            ),
+                    ),
+                  ],
+                );
+              },
+            ),
           ),
         ],
       ),
     );
+  }
+
+  _HistoryColumnWidths _historyColumnWidths(
+    double availableWidth, {
+    required bool compact,
+  }) {
+    final graphMinimum = _historyGraphMinimumWidth;
+    final commitMinimum = _historyCommitMinimumWidth;
+    final authorMinimum = _historyAuthorMinimumWidth;
+    final dateMinimum = _historyDateMinimumWidth;
+    final graphPreferred = (_graphColumnWidth ?? (compact ? 70 : 96))
+        .clamp(graphMinimum, availableWidth)
+        .toDouble();
+    final commitPreferred = (_commitColumnWidth ?? (compact ? 82 : 108))
+        .clamp(commitMinimum, availableWidth)
+        .toDouble();
+    final authorPreferred = (_authorColumnWidth ?? (compact ? 130 : 180))
+        .clamp(authorMinimum, availableWidth)
+        .toDouble();
+    final datePreferred = (_dateColumnWidth ?? (compact ? 75 : 86))
+        .clamp(dateMinimum, availableWidth)
+        .toDouble();
+    final preferredFixedWidth =
+        graphPreferred + commitPreferred + authorPreferred + datePreferred;
+    final availableFixedWidth = math.max(
+      0,
+      availableWidth -
+          (_historyColumnHandleWidth * 4) -
+          16 -
+          _historyDescriptionMinimumWidth,
+    );
+    final minimumFixedWidth =
+        graphMinimum + commitMinimum + authorMinimum + dateMinimum;
+    final shrinkRatio = preferredFixedWidth <= minimumFixedWidth
+        ? 0.0
+        : preferredFixedWidth <= availableFixedWidth
+        ? 1.0
+        : ((availableFixedWidth - minimumFixedWidth) /
+                  (preferredFixedWidth - minimumFixedWidth))
+              .clamp(0.0, 1.0)
+              .toDouble();
+    final graph = graphMinimum + (graphPreferred - graphMinimum) * shrinkRatio;
+    final commit =
+        commitMinimum + (commitPreferred - commitMinimum) * shrinkRatio;
+    final author =
+        authorMinimum + (authorPreferred - authorMinimum) * shrinkRatio;
+    final date = dateMinimum + (datePreferred - dateMinimum) * shrinkRatio;
+    final fixedWidth =
+        graph +
+        author +
+        date +
+        (_historyColumnHandleWidth * 4) +
+        16 +
+        _historyDescriptionMinimumWidth;
+    final double commitMaximum = math
+        .max(commitMinimum, availableWidth - fixedWidth)
+        .toDouble();
+    return _HistoryColumnWidths(
+      availableWidth: availableWidth,
+      graph: graph,
+      graphMinimum: graphMinimum,
+      commit: commit,
+      commitMinimum: commitMinimum,
+      commitMaximum: commitMaximum,
+      author: author,
+      authorMinimum: authorMinimum,
+      date: date,
+      dateMinimum: dateMinimum,
+    );
+  }
+
+  void _resizeDescriptionColumn(_HistoryColumnWidths widths, double delta) {
+    // The description column fills the remaining space, so changing its
+    // trailing edge changes the adjacent commit column in the opposite
+    // direction.
+    final currentCommit = widths.commit;
+    final currentGraph = widths.graph;
+    final currentAuthor = widths.author;
+    final currentDate = widths.date;
+    final commitMaximum = _commitMaximumFor(
+      widths,
+      graph: currentGraph,
+      author: currentAuthor,
+      date: currentDate,
+    );
+    final nextCommit = (currentCommit - delta)
+        .clamp(widths.commitMinimum, commitMaximum)
+        .toDouble();
+    setState(() => _commitColumnWidth = nextCommit);
+  }
+
+  double _commitMaximumFor(
+    _HistoryColumnWidths widths, {
+    required double graph,
+    required double author,
+    required double date,
+  }) {
+    return math
+        .max(
+          widths.commitMinimum,
+          widths.availableWidth -
+              graph -
+              author -
+              date -
+              (_historyColumnHandleWidth * 4) -
+              16 -
+              _historyDescriptionMinimumWidth,
+        )
+        .toDouble();
+  }
+
+  void _resizeGraphColumn(_HistoryColumnWidths widths, double delta) {
+    final currentGraph = widths.graph;
+    final maxGraph = math.max(
+      widths.graphMinimum,
+      widths.availableWidth -
+          (widths.commit + widths.author + widths.date) -
+          (_historyColumnHandleWidth * 4) -
+          16 -
+          _historyDescriptionMinimumWidth,
+    );
+    final nextGraph = (currentGraph + delta)
+        .clamp(widths.graphMinimum, maxGraph)
+        .toDouble();
+    setState(() => _graphColumnWidth = nextGraph);
+  }
+
+  void _resizeCommitColumn(_HistoryColumnWidths widths, double delta) {
+    // Keep the divider under the pointer by resizing both adjacent columns.
+    final currentCommit = widths.commit;
+    final currentAuthor = widths.author;
+    final appliedDelta = delta
+        .clamp(
+          widths.commitMinimum - currentCommit,
+          currentAuthor - widths.authorMinimum,
+        )
+        .toDouble();
+    setState(() {
+      _commitColumnWidth = currentCommit + appliedDelta;
+      _authorColumnWidth = currentAuthor - appliedDelta;
+    });
+  }
+
+  void _resizeAuthorColumn(_HistoryColumnWidths widths, double delta) {
+    // Keep the divider under the pointer by resizing both adjacent columns.
+    final currentAuthor = widths.author;
+    final currentDate = widths.date;
+    final appliedDelta = delta
+        .clamp(
+          widths.authorMinimum - currentAuthor,
+          currentDate - widths.dateMinimum,
+        )
+        .toDouble();
+    setState(() {
+      _authorColumnWidth = currentAuthor + appliedDelta;
+      _dateColumnWidth = currentDate - appliedDelta;
+    });
   }
 
   List<CommitViewData> _visibleCommits(RepositoryViewData repository) {
@@ -1638,11 +1861,13 @@ class _UncommittedChangesRow extends StatelessWidget {
   const _UncommittedChangesRow({
     required this.isSelected,
     required this.compactGraph,
+    required this.widths,
     required this.onTap,
   });
 
   final bool isSelected;
   final bool compactGraph;
+  final _HistoryColumnWidths widths;
   final VoidCallback? onTap;
 
   /// 中文：在历史顶部展示不属于真实提交的工作区改动入口。
@@ -1675,7 +1900,7 @@ class _UncommittedChangesRow extends StatelessWidget {
             child: Row(
               children: [
                 SizedBox(
-                  width: compactGraph ? 70 : 96,
+                  width: widths.graph,
                   height: _historyRowHeight,
                   child: CustomPaint(
                     painter: _UncommittedGraphPainter(
@@ -1685,6 +1910,7 @@ class _UncommittedChangesRow extends StatelessWidget {
                     ),
                   ),
                 ),
+                const SizedBox(width: _historyColumnHandleWidth),
                 Expanded(
                   child: Text(
                     'Uncommitted changes',
@@ -1697,7 +1923,7 @@ class _UncommittedChangesRow extends StatelessWidget {
                   ),
                 ),
                 SizedBox(
-                  width: 108,
+                  width: widths.commit,
                   child: Text(
                     '*',
                     style: theme.textTheme.bodySmall?.copyWith(
@@ -1707,8 +1933,11 @@ class _UncommittedChangesRow extends StatelessWidget {
                     ),
                   ),
                 ),
+                const SizedBox(width: _historyColumnHandleWidth),
+                SizedBox(width: widths.author),
+                const SizedBox(width: _historyColumnHandleWidth),
                 SizedBox(
-                  width: 86,
+                  width: widths.date,
                   child: Text(
                     '今天',
                     textAlign: TextAlign.end,
@@ -1772,9 +2001,19 @@ class _UncommittedGraphPainter extends CustomPainter {
 }
 
 class _HistoryColumnHeader extends StatelessWidget {
-  const _HistoryColumnHeader({required this.compactGraph});
+  const _HistoryColumnHeader({
+    required this.widths,
+    required this.onGraphDelta,
+    required this.onDescriptionDelta,
+    required this.onCommitDelta,
+    required this.onAuthorDelta,
+  });
 
-  final bool compactGraph;
+  final _HistoryColumnWidths widths;
+  final ValueChanged<double> onGraphDelta;
+  final ValueChanged<double> onDescriptionDelta;
+  final ValueChanged<double> onCommitDelta;
+  final ValueChanged<double> onAuthorDelta;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -1784,6 +2023,7 @@ class _HistoryColumnHeader extends StatelessWidget {
     final ColorScheme colors = theme.colorScheme;
 
     return Container(
+      key: const ValueKey<String>('history-column-header'),
       height: 25,
       padding: const EdgeInsets.symmetric(horizontal: 8),
       decoration: BoxDecoration(
@@ -1795,14 +2035,41 @@ class _HistoryColumnHeader extends StatelessWidget {
       ),
       child: Row(
         children: [
-          SizedBox(width: compactGraph ? 70 : 96),
-          Expanded(child: Text('描述', style: theme.textTheme.labelSmall)),
           SizedBox(
-            width: 108,
-            child: Text('作者', style: theme.textTheme.labelSmall),
+            width: widths.graph,
+            child: Text('图表', style: theme.textTheme.labelSmall),
+          ),
+          _ResizeDivider(
+            axis: Axis.vertical,
+            semanticsLabel: '调整图表列宽度',
+            onDelta: onGraphDelta,
+          ),
+          Expanded(child: Text('描述', style: theme.textTheme.labelSmall)),
+          _ResizeDivider(
+            axis: Axis.vertical,
+            semanticsLabel: '调整描述列宽度',
+            onDelta: onDescriptionDelta,
           ),
           SizedBox(
-            width: 86,
+            width: widths.commit,
+            child: Text('提交', style: theme.textTheme.labelSmall),
+          ),
+          _ResizeDivider(
+            axis: Axis.vertical,
+            semanticsLabel: '调整提交列宽度',
+            onDelta: onCommitDelta,
+          ),
+          SizedBox(
+            width: widths.author,
+            child: Text('作者', style: theme.textTheme.labelSmall),
+          ),
+          _ResizeDivider(
+            axis: Axis.vertical,
+            semanticsLabel: '调整作者列宽度',
+            onDelta: onAuthorDelta,
+          ),
+          SizedBox(
+            width: widths.date,
             child: Text(
               '日期',
               textAlign: TextAlign.end,
@@ -1822,6 +2089,7 @@ class _CommitRow extends StatelessWidget {
     this.onDoubleTap,
     required this.showRemoteRefs,
     required this.compactGraph,
+    required this.widths,
   });
 
   final CommitViewData commit;
@@ -1829,6 +2097,7 @@ class _CommitRow extends StatelessWidget {
   final VoidCallback? onDoubleTap;
   final bool showRemoteRefs;
   final bool compactGraph;
+  final _HistoryColumnWidths widths;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -1861,7 +2130,7 @@ class _CommitRow extends StatelessWidget {
             child: Row(
               children: [
                 SizedBox(
-                  width: compactGraph ? 70 : 96,
+                  width: widths.graph,
                   height: _historyRowHeight,
                   child: CustomPaint(
                     key: const ValueKey<String>('commit-graph-canvas'),
@@ -1876,6 +2145,7 @@ class _CommitRow extends StatelessWidget {
                     ),
                   ),
                 ),
+                const SizedBox(width: _historyColumnHandleWidth),
                 Expanded(
                   child: Row(
                     children: [
@@ -1887,17 +2157,23 @@ class _CommitRow extends StatelessWidget {
                                     !commit.remoteRefs.contains(ref),
                               )
                               .take(3))
-                        Padding(
-                          padding: const EdgeInsets.only(right: 5),
-                          child: _RefLabel(label: ref),
+                        Flexible(
+                          fit: FlexFit.loose,
+                          child: Padding(
+                            padding: const EdgeInsets.only(right: 5),
+                            child: _RefLabel(label: ref),
+                          ),
                         ),
                       if (commit.isMerge)
-                        Padding(
-                          padding: const EdgeInsets.only(right: 5),
-                          child: Icon(
-                            Icons.merge,
-                            size: 13,
-                            color: colors.onSurfaceVariant,
+                        Flexible(
+                          fit: FlexFit.loose,
+                          child: Padding(
+                            padding: const EdgeInsets.only(right: 5),
+                            child: Icon(
+                              Icons.merge,
+                              size: 13,
+                              color: colors.onSurfaceVariant,
+                            ),
                           ),
                         ),
                       Flexible(
@@ -1913,8 +2189,21 @@ class _CommitRow extends StatelessWidget {
                     ],
                   ),
                 ),
+                const SizedBox(width: _historyColumnHandleWidth),
                 SizedBox(
-                  width: 108,
+                  width: widths.commit,
+                  child: Text(
+                    commit.shortOid,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: theme.textTheme.bodySmall?.copyWith(
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                ),
+                const SizedBox(width: _historyColumnHandleWidth),
+                SizedBox(
+                  width: widths.author,
                   child: Text(
                     commit.author,
                     maxLines: 1,
@@ -1924,8 +2213,9 @@ class _CommitRow extends StatelessWidget {
                     ),
                   ),
                 ),
+                const SizedBox(width: _historyColumnHandleWidth),
                 SizedBox(
-                  width: 86,
+                  width: widths.date,
                   child: Text(
                     commit.relativeDate,
                     textAlign: TextAlign.end,
@@ -2385,7 +2675,7 @@ class _CommitFileTile extends StatelessWidget {
   }
 }
 
-class _ChangesPane extends StatelessWidget {
+class _ChangesPane extends StatefulWidget {
   const _ChangesPane({
     required this.repository,
     required this.onSelected,
@@ -2404,10 +2694,18 @@ class _ChangesPane extends StatelessWidget {
   final RepositoryChangeFilesCallback? onRevealInFinder;
   final RepositoryChangeFilesCallback? onRemove;
 
+  @override
+  State<_ChangesPane> createState() => _ChangesPaneState();
+}
+
+class _ChangesPaneState extends State<_ChangesPane> {
+  double? _fileListWidth;
+
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
+    final repository = widget.repository;
     return Material(
       color: Theme.of(context).colorScheme.surface,
       child: Column(
@@ -2425,39 +2723,53 @@ class _ChangesPane extends StatelessWidget {
                   return repository.selectedChange == null
                       ? _ChangeList(
                           changes: repository.changes,
-                          onSelected: onSelected,
-                          onStageToggled: onStageToggled,
-                          onGroupStageToggled: onGroupStageToggled,
-                          onConflictAction: onConflictAction,
-                          onRevealInFinder: onRevealInFinder,
-                          onRemove: onRemove,
+                          onSelected: widget.onSelected,
+                          onStageToggled: widget.onStageToggled,
+                          onGroupStageToggled: widget.onGroupStageToggled,
+                          onConflictAction: widget.onConflictAction,
+                          onRevealInFinder: widget.onRevealInFinder,
+                          onRemove: widget.onRemove,
                           currentBranch: repository.currentBranch,
                         )
                       : _DiffPreview(
                           diff: repository.diff,
-                          onBack: onSelected == null
+                          onBack: widget.onSelected == null
                               ? null
-                              : () => onSelected!(null),
+                              : () => widget.onSelected!(null),
                         );
                 }
+                final defaultWidth = math.min(
+                  286.0,
+                  constraints.maxWidth * .38,
+                );
+                final maximumWidth = math.max(
+                  180.0,
+                  constraints.maxWidth - 300,
+                );
+                final fileListWidth = (_fileListWidth ?? defaultWidth)
+                    .clamp(180.0, maximumWidth)
+                    .toDouble();
                 return Row(
                   children: [
                     SizedBox(
-                      width: math.min(286, constraints.maxWidth * .38),
+                      width: fileListWidth,
                       child: _ChangeList(
                         changes: repository.changes,
-                        onSelected: onSelected,
-                        onStageToggled: onStageToggled,
-                        onGroupStageToggled: onGroupStageToggled,
-                        onConflictAction: onConflictAction,
-                        onRevealInFinder: onRevealInFinder,
-                        onRemove: onRemove,
+                        onSelected: widget.onSelected,
+                        onStageToggled: widget.onStageToggled,
+                        onGroupStageToggled: widget.onGroupStageToggled,
+                        onConflictAction: widget.onConflictAction,
+                        onRevealInFinder: widget.onRevealInFinder,
+                        onRemove: widget.onRemove,
                         currentBranch: repository.currentBranch,
                       ),
                     ),
-                    VerticalDivider(
-                      width: 1,
-                      color: Theme.of(context).colorScheme.outlineVariant,
+                    _ResizeDivider(
+                      axis: Axis.vertical,
+                      semanticsLabel: '调整文件列表宽度',
+                      onDelta: (delta) => setState(() {
+                        _fileListWidth = fileListWidth + delta;
+                      }),
                     ),
                     Expanded(child: _DiffPreview(diff: repository.diff)),
                   ],
@@ -2498,6 +2810,7 @@ class _ChangeList extends StatefulWidget {
 
 class _ChangeListState extends State<_ChangeList> {
   final Set<String> _selectedKeys = <String>{};
+  double? _stagedHeight;
 
   @override
   void initState() {
@@ -2588,42 +2901,86 @@ class _ChangeListState extends State<_ChangeList> {
     final unstaged = widget.changes
         .where((change) => !change.isStaged)
         .toList();
-    return ListView(
-      children: [
-        _ChangeGroup(
-          title: '已暂存文件',
-          isChecked: true,
-          changes: staged,
-          selectedKeys: _selectedKeys,
-          selectedChanges: () => _selectedChanges,
-          onSelected: _selectChange,
-          onContextMenuRequested: _prepareContextMenu,
-          onSelectedStageToggled: _toggleSelectedStage,
-          onStageToggled: widget.onStageToggled,
-          onGroupStageToggled: widget.onGroupStageToggled,
-          onConflictAction: widget.onConflictAction,
-          onRevealInFinder: widget.onRevealInFinder,
-          onRemove: widget.onRemove,
-          currentBranch: widget.currentBranch,
-        ),
-        _ChangeGroup(
-          title: '未暂存文件',
-          isChecked: false,
-          changes: unstaged,
-          selectedKeys: _selectedKeys,
-          selectedChanges: () => _selectedChanges,
-          onSelected: _selectChange,
-          onContextMenuRequested: _prepareContextMenu,
-          onSelectedStageToggled: _toggleSelectedStage,
-          onStageToggled: widget.onStageToggled,
-          onGroupStageToggled: widget.onGroupStageToggled,
-          onConflictAction: widget.onConflictAction,
-          onRevealInFinder: widget.onRevealInFinder,
-          onRemove: widget.onRemove,
-          currentBranch: widget.currentBranch,
-        ),
-      ],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const dividerHeight = 5.0;
+        const minimumGroupHeight = 30.0;
+        final availableHeight = constraints.maxHeight - dividerHeight;
+        final maximumStagedHeight = math.max(
+          minimumGroupHeight,
+          availableHeight - minimumGroupHeight,
+        );
+        final defaultStagedHeight = staged.isEmpty
+            ? math.min(136, maximumStagedHeight)
+            : math.min(availableHeight * .42, maximumStagedHeight);
+        final stagedHeight = (_stagedHeight ?? defaultStagedHeight)
+            .clamp(minimumGroupHeight, maximumStagedHeight)
+            .toDouble();
+        return Column(
+          children: [
+            SizedBox(
+              height: stagedHeight,
+              child: _ChangeGroupViewport(
+                child: _ChangeGroup(
+                  title: '已暂存文件',
+                  isChecked: true,
+                  changes: staged,
+                  selectedKeys: _selectedKeys,
+                  selectedChanges: () => _selectedChanges,
+                  onSelected: _selectChange,
+                  onContextMenuRequested: _prepareContextMenu,
+                  onSelectedStageToggled: _toggleSelectedStage,
+                  onStageToggled: widget.onStageToggled,
+                  onGroupStageToggled: widget.onGroupStageToggled,
+                  onConflictAction: widget.onConflictAction,
+                  onRevealInFinder: widget.onRevealInFinder,
+                  onRemove: widget.onRemove,
+                  currentBranch: widget.currentBranch,
+                ),
+              ),
+            ),
+            _ResizeDivider(
+              axis: Axis.horizontal,
+              semanticsLabel: '调整已暂存文件区域高度',
+              onDelta: (delta) => setState(() {
+                _stagedHeight = stagedHeight + delta;
+              }),
+            ),
+            Expanded(
+              child: _ChangeGroupViewport(
+                child: _ChangeGroup(
+                  title: '未暂存文件',
+                  isChecked: false,
+                  changes: unstaged,
+                  selectedKeys: _selectedKeys,
+                  selectedChanges: () => _selectedChanges,
+                  onSelected: _selectChange,
+                  onContextMenuRequested: _prepareContextMenu,
+                  onSelectedStageToggled: _toggleSelectedStage,
+                  onStageToggled: widget.onStageToggled,
+                  onGroupStageToggled: widget.onGroupStageToggled,
+                  onConflictAction: widget.onConflictAction,
+                  onRevealInFinder: widget.onRevealInFinder,
+                  onRemove: widget.onRemove,
+                  currentBranch: widget.currentBranch,
+                ),
+              ),
+            ),
+          ],
+        );
+      },
     );
+  }
+}
+
+class _ChangeGroupViewport extends StatelessWidget {
+  const _ChangeGroupViewport({required this.child});
+
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRect(child: SingleChildScrollView(primary: false, child: child));
   }
 }
 
@@ -2686,7 +3043,7 @@ class _ChangeGroup extends StatelessWidget {
           child: Row(
             children: [
               Checkbox(
-                value: isChecked,
+                value: isChecked && changes.isNotEmpty,
                 onChanged:
                     onGroupStageToggled == null ||
                         changes.isEmpty ||
