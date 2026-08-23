@@ -1,4 +1,4 @@
-import 'dart:ui' show PointerDeviceKind;
+import 'dart:ui' show PointerDeviceKind, SemanticsAction, Tristate;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart' show kSecondaryMouseButton;
@@ -1113,6 +1113,329 @@ void main() {
     },
   );
 
+  testWidgets('groups remote refs under origin and exposes remote actions', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    RepositoryRefViewData? actionReference;
+    RepositoryRefContextAction? action;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              refs: [
+                RepositoryRefViewData(
+                  id: 'remotes/origin',
+                  label: 'origin',
+                  kind: RepositoryRefKind.remote,
+                ),
+                RepositoryRefViewData(
+                  id: 'refs/remotes/origin/HEAD',
+                  label: 'origin/HEAD',
+                  kind: RepositoryRefKind.remoteBranch,
+                  isSymbolicRemote: true,
+                ),
+                RepositoryRefViewData(
+                  id: 'refs/remotes/origin/main',
+                  label: 'origin/main',
+                  kind: RepositoryRefKind.remoteBranch,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onRefContextAction: (reference, next) {
+              actionReference = reference;
+              action = next;
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('origin'), findsOneWidget);
+    expect(find.text('HEAD'), findsOneWidget);
+    expect(find.text('main'), findsWidgets);
+    expect(find.text('origin/main'), findsNothing);
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('origin')),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    for (final label in [
+      '从 origin 获取',
+      '从 origin 拉取…',
+      '推送到 origin…',
+      '移除 origin',
+    ]) {
+      expect(find.text(label), findsOneWidget);
+    }
+    expect(find.byType(PopupMenuDivider), findsNothing);
+
+    await tester.tap(find.text('从 origin 获取'));
+    await tester.pumpAndSettle();
+    expect(actionReference?.kind, RepositoryRefKind.remote);
+    expect(action, RepositoryRefContextAction.fetchOrigin);
+  });
+
+  testWidgets(
+    'selects one remote group at a time and targets the owning remote branch',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1280, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      RepositoryRefViewData? actionReference;
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RepositoryOverview(
+            data: const RepositoryOverviewViewData.ready(
+              RepositoryViewData(
+                name: 'example',
+                path: '/tmp/example',
+                currentBranch: 'main',
+                refs: [
+                  RepositoryRefViewData(
+                    id: 'remotes/origin',
+                    label: 'origin',
+                    kind: RepositoryRefKind.remote,
+                  ),
+                  RepositoryRefViewData(
+                    id: 'remotes/upstream',
+                    label: 'upstream',
+                    kind: RepositoryRefKind.remote,
+                  ),
+                  RepositoryRefViewData(
+                    id: 'refs/remotes/origin/main',
+                    label: 'origin/main',
+                    kind: RepositoryRefKind.remoteBranch,
+                  ),
+                  RepositoryRefViewData(
+                    id: 'refs/remotes/upstream/release',
+                    label: 'upstream/release',
+                    kind: RepositoryRefKind.remoteBranch,
+                  ),
+                ],
+              ),
+            ),
+            callbacks: RepositoryOverviewCallbacks(
+              onRefContextAction: (reference, _) => actionReference = reference,
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('origin'));
+      await tester.pump();
+      await tester.tap(find.text('upstream'));
+      await tester.pump();
+      // The first selection collapses the initially expanded group; expand
+      // it again before opening the nested branch menu.
+      await tester.tap(find.text('upstream'));
+      await tester.pump();
+
+      final originSemantics = find.byWidgetPredicate(
+        (widget) =>
+            widget is Semantics && widget.properties.label == '远端 origin',
+      );
+      final upstreamSemantics = find.byWidgetPredicate(
+        (widget) =>
+            widget is Semantics && widget.properties.label == '远端 upstream',
+      );
+      expect(
+        tester
+            .getSemantics(originSemantics)
+            .getSemanticsData()
+            .flagsCollection
+            .isSelected,
+        Tristate.isFalse,
+      );
+      expect(
+        tester
+            .getSemantics(upstreamSemantics)
+            .getSemanticsData()
+            .flagsCollection
+            .isSelected,
+        Tristate.isTrue,
+      );
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.text('release')),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(find.text('获取 upstream'), findsOneWidget);
+      expect(find.text('获取 origin'), findsNothing);
+      await tester.tap(find.text('获取 upstream'));
+      await tester.pumpAndSettle();
+      expect(actionReference?.label, 'upstream/release');
+    },
+  );
+
+  testWidgets('stash navigation can request creation repeatedly', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final selectedReferences = <RepositoryRefViewData>[];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              refs: [
+                RepositoryRefViewData(
+                  id: 'refs/stash',
+                  label: '已贮藏',
+                  kind: RepositoryRefKind.stash,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onRefSelected: selectedReferences.add,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('已贮藏'));
+    await tester.pump();
+    await tester.tap(find.text('已贮藏'));
+    await tester.pump();
+
+    expect(selectedReferences, hasLength(2));
+    expect(selectedReferences, everyElement(isA<RepositoryRefViewData>()));
+  });
+
+  testWidgets('stash navigation is disabled when stash is unavailable', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    var requested = false;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              refs: [
+                RepositoryRefViewData(
+                  id: 'refs/stash',
+                  label: '已贮藏',
+                  kind: RepositoryRefKind.stash,
+                ),
+              ],
+              disabledActions: {RepositoryAction.stash},
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onRefSelected: (_) => requested = true,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('已贮藏'));
+    await tester.pump();
+
+    expect(requested, isFalse);
+    expect(
+      tester
+          .widget<Opacity>(
+            find.ancestor(of: find.text('已贮藏'), matching: find.byType(Opacity)),
+          )
+          .opacity,
+      0.5,
+    );
+  });
+
+  testWidgets('renders listed stashes beneath the stashes entry', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    RepositoryRefViewData? selected;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              refs: [
+                RepositoryRefViewData(
+                  id: 'refs/stash',
+                  label: '已贮藏',
+                  kind: RepositoryRefKind.stash,
+                ),
+                RepositoryRefViewData(
+                  id: 'refs/stash/0123456',
+                  label: 'On main: test stash',
+                  kind: RepositoryRefKind.stash,
+                  stashReference: 'stash@{0}',
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onRefSelected: (reference) => selected = reference,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final semantics = tester.ensureSemantics();
+
+    expect(find.text('已贮藏'), findsOneWidget);
+    expect(find.text('On main: test stash'), findsOneWidget);
+    final stashSemantics = find.byWidgetPredicate(
+      (widget) =>
+          widget is Semantics &&
+          widget.properties.label == '贮藏 On main: test stash',
+    );
+    expect(stashSemantics, findsOneWidget);
+    expect(
+      tester
+          .getSemantics(stashSemantics)
+          .getSemanticsData()
+          .hasAction(SemanticsAction.tap),
+      isTrue,
+    );
+
+    await tester.tap(find.text('On main: test stash'));
+    await tester.pump();
+    expect(selected?.stashReference, 'stash@{0}');
+    semantics.dispose();
+  });
+
   testWidgets(
     'context menu disables remote actions while the repository loads',
     (tester) async {
@@ -1194,5 +1517,129 @@ void main() {
 
     await tester.tap(find.byTooltip('查看操作日志'));
     expect(action, RepositoryAction.showOperationLog);
+  });
+
+  testWidgets('stash preview fills the workspace beside refs', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              refs: [
+                RepositoryRefViewData(
+                  id: 'refs/stash',
+                  label: '已贮藏',
+                  kind: RepositoryRefKind.stash,
+                ),
+                RepositoryRefViewData(
+                  id: 'refs/stash/0123456',
+                  label: 'On main: test stash',
+                  kind: RepositoryRefKind.stash,
+                  stashReference: 'stash@{0}',
+                  isSelected: true,
+                ),
+              ],
+              selectedCommit: CommitDetailsViewData(
+                oid: '0123456',
+                subject: 'On main: test stash',
+                author: 'Test User',
+                authoredAt: '2026-08-23 12:00',
+              ),
+              commitChanges: [
+                CommitFileViewData(
+                  path: 'test_hello_sourcetree.py',
+                  kind: RepositoryChangeKind.added,
+                  isSelected: true,
+                ),
+              ],
+              selectedCommitFile: CommitFileViewData(
+                path: 'test_hello_sourcetree.py',
+                kind: RepositoryChangeKind.added,
+                isSelected: true,
+              ),
+              commitDiff: DiffViewData(
+                path: 'test_hello_sourcetree.py',
+                lines: [
+                  DiffLineViewData(
+                    kind: DiffLineKind.addition,
+                    text: '+print("stashed")',
+                  ),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('贮藏改动'), findsOneWidget);
+    expect(find.text('test_hello_sourcetree.py'), findsNWidgets(2));
+    expect(find.text('+print("stashed")'), findsOneWidget);
+    expect(find.text('历史'), findsNothing);
+  });
+
+  testWidgets('file status fills the workspace beside refs', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    RepositoryAction? action;
+    const change = RepositoryChangeViewData(
+      path: 'lib/example.dart',
+      kind: RepositoryChangeKind.modified,
+      isStaged: true,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              refs: const [
+                RepositoryRefViewData(
+                  id: 'workspace',
+                  label: '文件状态',
+                  kind: RepositoryRefKind.workspace,
+                  isSelected: true,
+                ),
+              ],
+              changes: const [change],
+              selectedChange: change,
+              diff: const DiffViewData(
+                path: 'lib/example.dart',
+                lines: [
+                  DiffLineViewData(
+                    kind: DiffLineKind.addition,
+                    text: '+final fileStatus = true;',
+                  ),
+                ],
+              ),
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onAction: (next) => action = next,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.text('文件状态'), findsWidgets);
+    expect(find.text('lib/example.dart'), findsOneWidget);
+    expect(find.text('+final fileStatus = true;'), findsOneWidget);
+    expect(find.text('提交信息'), findsOneWidget);
+    expect(find.text('历史'), findsNothing);
+    expect(find.text('提交详情'), findsNothing);
+
+    await tester.tap(find.byType(TextField));
+    expect(action, RepositoryAction.commit);
   });
 }

@@ -305,13 +305,46 @@ final class GitLocalBranch {
 
 /// A remote-tracking branch discovered through `git for-each-ref`.
 final class GitRemoteBranch {
-  const GitRemoteBranch({required this.name, required this.objectId});
+  const GitRemoteBranch({
+    required this.name,
+    required this.objectId,
+    this.isSymbolic = false,
+  });
 
   /// The short remote-tracking name, for example `origin/main`.
   final String name;
 
   /// The object currently referenced by this remote-tracking branch.
   final String objectId;
+
+  /// Whether this ref redirects to another remote-tracking ref.
+  /// 中文：此引用是否会重定向到另一条远端跟踪引用。
+  final bool isSymbolic;
+}
+
+/// One saved working-tree snapshot reported by `git stash list`.
+///
+/// 中文：`git stash list` 返回的一条已贮藏工作区快照。引用名始终由 Git
+/// 提供（例如 `stash@{0}`），写操作必须使用该引用而非展示文本。
+final class GitStashEntry {
+  const GitStashEntry({
+    required this.reference,
+    required this.objectId,
+    required this.createdAt,
+    required this.message,
+  });
+
+  /// Git's reflog selector, for example `stash@{0}`.
+  final String reference;
+
+  /// Object ID of the stash commit.
+  final String objectId;
+
+  /// Creation time recorded by Git, normalized to UTC.
+  final DateTime createdAt;
+
+  /// Human-readable reflog subject supplied by Git.
+  final String message;
 }
 
 /// A local branch and its selected destination on one remote.

@@ -510,6 +510,8 @@ class _RepositoryWorkspaceScreenState
         _confirmPull();
       case RepositoryAction.cancelPull:
         ref.read(repositorySessionProvider.notifier).cancelPull();
+      case RepositoryAction.cancelStash:
+        ref.read(repositorySessionProvider.notifier).cancelStash();
       case RepositoryAction.continueRebase:
         unawaited(_continueRebase());
       case RepositoryAction.abortRebase:
@@ -525,6 +527,8 @@ class _RepositoryWorkspaceScreenState
         ref.read(repositorySessionProvider.notifier).refresh();
       case RepositoryAction.commit:
         _showCommitDialog();
+      case RepositoryAction.stash:
+        unawaited(_showCreateStashDialog());
       case RepositoryAction.createBranch:
         _showBranchManagerDialog();
       case RepositoryAction.mergeBranch:
@@ -546,7 +550,7 @@ class _RepositoryWorkspaceScreenState
               width: 560,
               height: 360,
               child: operations.isEmpty
-                  ? const Center(child: Text('尚无可显示的远端操作。'))
+                  ? const Center(child: Text('尚无可显示的操作。'))
                   : ListView.separated(
                       itemCount: operations.length,
                       separatorBuilder: (BuildContext context, int index) =>
@@ -588,6 +592,7 @@ class _RepositoryWorkspaceScreenState
     RepositoryOperationKind.fetch => '获取远端更新',
     RepositoryOperationKind.pull => '拉取更新',
     RepositoryOperationKind.push => '推送当前分支',
+    RepositoryOperationKind.stash => '管理贮藏',
   };
 
   /// 中文：返回操作结果对应的简短本地化状态说明。
@@ -658,19 +663,28 @@ class _RepositoryWorkspaceScreenState
 
   /// 中文：请求并处理用户确认。
   /// English: Requests and handles user confirmation.
-  Future<void> _confirmPull() async {
+  Future<void> _confirmPull({String? preferredRemote}) async {
     final session = ref.read(repositorySessionProvider);
+    final controller = ref.read(repositorySessionProvider.notifier);
     final branch = session.status?.branch;
     final localBranch = branch?.head;
     final upstream = branch?.upstream;
-    if (localBranch == null || upstream == null) return;
-    final separator = upstream.indexOf('/');
-    if (separator <= 0 || separator == upstream.length - 1) return;
-    final upstreamRemote = upstream.substring(0, separator);
-    final upstreamBranch = upstream.substring(separator + 1);
-    final remoteNames = <String>{upstreamRemote};
+    if (localBranch == null) return;
+    final separator = upstream?.indexOf('/') ?? -1;
+    final upstreamRemote = separator > 0
+        ? upstream!.substring(0, separator)
+        : null;
+    final upstreamBranch = separator > 0 && separator < upstream!.length - 1
+        ? upstream.substring(separator + 1)
+        : null;
+    final remoteNames = <String>{...session.remoteNames, ?upstreamRemote};
+    if (remoteNames.isEmpty) return;
     final branchesByRemote = <String, List<String>>{};
+    for (final remoteName in remoteNames) {
+      branchesByRemote[remoteName] = <String>[];
+    }
     for (final remoteBranch in session.remoteBranches) {
+      if (remoteBranch.isSymbolic) continue;
       final slash = remoteBranch.name.indexOf('/');
       if (slash > 0) {
         final remote = remoteBranch.name.substring(0, slash);
@@ -680,24 +694,41 @@ class _RepositoryWorkspaceScreenState
             .add(remoteBranch.name.substring(slash + 1));
       }
     }
-    branchesByRemote.putIfAbsent(upstreamRemote, () => <String>[]);
-    if (!branchesByRemote[upstreamRemote]!.contains(upstreamBranch)) {
-      branchesByRemote[upstreamRemote]!.add(upstreamBranch);
+    if (upstreamRemote != null && upstreamBranch != null) {
+      final branches = branchesByRemote.putIfAbsent(
+        upstreamRemote,
+        () => <String>[],
+      );
+      if (!branches.contains(upstreamBranch)) branches.add(upstreamBranch);
     }
     for (final branches in branchesByRemote.values) {
       branches.sort();
     }
+    final selectedRemote = remoteNames.contains(preferredRemote)
+        ? preferredRemote!
+        : upstreamRemote ??
+              (remoteNames.contains('origin') ? 'origin' : remoteNames.first);
+    final selectedBranch =
+        selectedRemote == upstreamRemote && upstreamBranch != null
+        ? upstreamBranch
+        : branchesByRemote[selectedRemote]?.firstOrNull ?? localBranch;
+    String? initialRemoteUrl;
+    try {
+      initialRemoteUrl = await controller.readRemoteUrl(selectedRemote);
+    } on Object {
+      // The dialog retains its own recoverable URL-loading path.
+    }
+    if (!mounted) return;
     final options = await showDialog<GitPullOptions>(
       context: context,
       builder: (BuildContext context) => _PullDialog(
         remoteNames: remoteNames.toList()..sort(),
         branchesByRemote: branchesByRemote,
-        selectedRemote: upstreamRemote,
-        remoteBranch: upstreamBranch,
+        selectedRemote: selectedRemote,
+        remoteBranch: selectedBranch,
         localBranch: localBranch,
-        remoteUrl: session.originUrl,
+        remoteUrl: initialRemoteUrl,
         onRefresh: (remoteName) async {
-          final controller = ref.read(repositorySessionProvider.notifier);
           final fetched = await controller.fetchRemote(remoteName);
           if (!fetched) {
             throw const GitException('Unable to refresh the selected remote.');
@@ -705,6 +736,7 @@ class _RepositoryWorkspaceScreenState
           final latest = ref.read(repositorySessionProvider);
           final refreshed = <String, List<String>>{};
           for (final remoteBranch in latest.remoteBranches) {
+            if (remoteBranch.isSymbolic) continue;
             final slash = remoteBranch.name.indexOf('/');
             if (slash <= 0) continue;
             refreshed
@@ -786,7 +818,7 @@ class _RepositoryWorkspaceScreenState
   ///
   /// English: Shows the multi-branch push panel and performs the selected
   /// non-force push operation.
-  Future<void> _confirmPush() async {
+  Future<void> _confirmPush({String? preferredRemote}) async {
     final session = ref.read(repositorySessionProvider);
     final controller = ref.read(repositorySessionProvider.notifier);
     final remoteNames = await controller.readRemoteNames();
@@ -799,13 +831,16 @@ class _RepositoryWorkspaceScreenState
     }
     final upstream = session.status?.branch.upstream;
     final upstreamRemote = upstream?.split('/').first;
-    final selectedRemote = remoteNames.contains(upstreamRemote)
+    final selectedRemote = remoteNames.contains(preferredRemote)
+        ? preferredRemote!
+        : remoteNames.contains(upstreamRemote)
         ? upstreamRemote!
         : remoteNames.contains('origin')
         ? 'origin'
         : remoteNames.first;
     final remoteBranchesByRemote = <String, List<String>>{};
     for (final remoteBranch in session.remoteBranches) {
+      if (remoteBranch.isSymbolic) continue;
       final slash = remoteBranch.name.indexOf('/');
       if (slash <= 0 || slash == remoteBranch.name.length - 1) continue;
       remoteBranchesByRemote
@@ -873,6 +908,126 @@ class _RepositoryWorkspaceScreenState
       SnackBar(
         content: Text(created ? '已创建提交。' : '提交未完成，请查看仓库错误信息。'),
         duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  /// Opens the stash management panel and reloads its Git-backed list after
+  /// each operation so reflog indexes never become stale in the UI.
+  ///
+  /// 中文：打开贮藏管理面板；每次操作后都重新读取 Git 列表，避免 reflog 索引
+  /// 变化导致界面误操作其他贮藏。
+  Future<void> _showStashManager() async {
+    final controller = ref.read(repositorySessionProvider.notifier);
+    while (mounted) {
+      late final List<GitStashEntry> stashes;
+      try {
+        stashes = await controller.readStashes();
+      } on Object {
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('无法读取贮藏列表，请查看仓库错误信息。')));
+        return;
+      }
+      if (!mounted) return;
+      final result = await showDialog<_StashManagerResult>(
+        context: context,
+        builder: (BuildContext context) =>
+            _StashManagerDialog(stashes: stashes),
+      );
+      if (result == null || !mounted) return;
+      if (result.kind == _StashManagerAction.create) {
+        await _showCreateStashDialog();
+        continue;
+      }
+
+      final entry = result.entry!;
+      final approved = await _confirmStashAction(result.kind, entry);
+      if (approved != true || !mounted) continue;
+      final succeeded = switch (result.kind) {
+        _StashManagerAction.apply => await controller.applyStash(entry),
+        _StashManagerAction.pop => await controller.popStash(entry),
+        _StashManagerAction.drop => await controller.dropStash(entry),
+        _StashManagerAction.create => false,
+      };
+      if (!mounted) return;
+      final label = switch (result.kind) {
+        _StashManagerAction.apply => '恢复贮藏',
+        _StashManagerAction.pop => '恢复并弹出贮藏',
+        _StashManagerAction.drop => '删除贮藏',
+        _StashManagerAction.create => '创建贮藏',
+      };
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(succeeded ? '已$label。' : '$label未完成，请查看仓库状态。')),
+      );
+    }
+  }
+
+  /// 中文：显示创建贮藏对话框，并在 Git 操作后展示可恢复的结果提示。
+  /// English: Shows the create-stash dialog and reports the Git-backed result.
+  Future<void> _showCreateStashDialog() async {
+    final options = await showDialog<_CreateStashOptions>(
+      context: context,
+      builder: (BuildContext context) => const _CreateStashDialog(),
+    );
+    if (options == null || !mounted) return;
+    final created = await ref
+        .read(repositorySessionProvider.notifier)
+        .createStash(options.message, keepIndex: options.keepIndex);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(created ? '已创建贮藏。' : '未创建贮藏，请确认有可保存的改动且不存在冲突。')),
+    );
+  }
+
+  /// 中文：在执行会改变工作区或删除数据的贮藏操作前显示影响说明并请求确认。
+  /// English: Explains a work-tree-changing or destructive stash action and
+  /// requests confirmation before it is run.
+  Future<bool?> _confirmStashAction(
+    _StashManagerAction action,
+    GitStashEntry entry,
+  ) {
+    final title = switch (action) {
+      _StashManagerAction.apply => '恢复贮藏',
+      _StashManagerAction.pop => '恢复并弹出贮藏',
+      _StashManagerAction.drop => '删除贮藏',
+      _StashManagerAction.create => '创建贮藏',
+    };
+    final content = switch (action) {
+      _StashManagerAction.apply =>
+        '将 ${entry.reference} 的改动写回当前工作区，并尝试恢复原有暂存区。该贮藏会保留。\n\n'
+            '仅在工作区干净时执行；若发生冲突，Git 会保留贮藏和冲突文件。',
+      _StashManagerAction.pop =>
+        '将 ${entry.reference} 的改动写回当前工作区，并尝试恢复原有暂存区。\n\n'
+            'Git 仅在恢复成功后删除该贮藏；若发生冲突，贮藏会保留。',
+      _StashManagerAction.drop =>
+        '将永久删除 ${entry.reference}。删除后无法从本应用恢复其中的改动。\n\n'
+            '确定要删除“${entry.message}”吗？',
+      _StashManagerAction.create => '',
+    };
+    final label = action == _StashManagerAction.drop ? '删除' : '继续';
+    return showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: Text(title),
+        content: Text(content),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            style: action == _StashManagerAction.drop
+                ? FilledButton.styleFrom(
+                    backgroundColor: Theme.of(context).colorScheme.error,
+                    foregroundColor: Theme.of(context).colorScheme.onError,
+                  )
+                : null,
+            child: Text(label),
+          ),
+        ],
       ),
     );
   }
@@ -1231,11 +1386,32 @@ class _RepositoryWorkspaceScreenState
   ) {
     switch (action) {
       case RepositoryRefContextAction.fetchOrigin:
-        _handleAction(RepositoryAction.fetch);
+        final remoteName = _remoteNameForReference(reference);
+        if (remoteName != null) {
+          unawaited(_fetchRemote(remoteName));
+        } else {
+          _handleAction(RepositoryAction.fetch);
+        }
       case RepositoryRefContextAction.pullCurrentBranch:
-        unawaited(_confirmPull());
+        unawaited(
+          _confirmPull(
+            preferredRemote: reference.kind == RepositoryRefKind.remote
+                ? reference.label
+                : null,
+          ),
+        );
       case RepositoryRefContextAction.pushCurrentBranch:
-        unawaited(_confirmPush());
+        unawaited(
+          _confirmPush(
+            preferredRemote: reference.kind == RepositoryRefKind.remote
+                ? reference.label
+                : null,
+          ),
+        );
+      case RepositoryRefContextAction.removeRemote:
+        if (reference.kind == RepositoryRefKind.remote) {
+          unawaited(_confirmRemoveRemote(reference.label));
+        }
       case RepositoryRefContextAction.refresh:
         _handleAction(RepositoryAction.refresh);
       case RepositoryRefContextAction.checkout:
@@ -1266,7 +1442,83 @@ class _RepositoryWorkspaceScreenState
             !reference.isCurrent) {
           unawaited(_confirmDeleteLocalBranch(reference.label));
         }
+      case RepositoryRefContextAction.createStash:
+        unawaited(_showCreateStashDialog());
+      case RepositoryRefContextAction.manageStashes:
+        unawaited(_showStashManager());
     }
+  }
+
+  /// 中文：从引用数据解析其所属远端，供上下文菜单执行精确操作。
+  /// English: Resolves the configured remote owned by one reference for exact
+  /// context-menu operations.
+  String? _remoteNameForReference(RepositoryRefViewData reference) {
+    if (reference.kind == RepositoryRefKind.remote) return reference.label;
+    if (reference.kind != RepositoryRefKind.remoteBranch) return null;
+    final candidates =
+        ref
+            .read(repositorySessionProvider)
+            .remoteNames
+            .where((name) => reference.label.startsWith('$name/'))
+            .toList(growable: false)
+          ..sort((a, b) => b.length.compareTo(a.length));
+    return candidates.firstOrNull;
+  }
+
+  /// 中文：获取指定远端并显示该远端操作的明确反馈。
+  /// English: Fetches one named remote and reports its explicit outcome.
+  Future<void> _fetchRemote(String remoteName) async {
+    final fetched = await ref
+        .read(repositorySessionProvider.notifier)
+        .fetchRemote(remoteName);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          fetched ? '已从 $remoteName 获取更新。' : '未能从 $remoteName 获取更新，请查看仓库状态。',
+        ),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  /// 中文：确认移除本地远端配置；不会删除远端仓库或远端分支。
+  /// English: Confirms removal of a local remote configuration only.
+  Future<void> _confirmRemoveRemote(String remoteName) async {
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: Text('移除 $remoteName'),
+        content: Text(
+          '这会从本地仓库移除 $remoteName 的远端配置及其远端跟踪引用。'
+          '不会删除远端仓库或其上的分支。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(context).pop(true),
+            icon: const Icon(Icons.remove_circle_outline),
+            label: const Text('移除远端'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+    final removed = await ref
+        .read(repositorySessionProvider.notifier)
+        .removeRemote(remoteName);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          removed ? '已移除远端 $remoteName。' : '未移除远端 $remoteName，请查看仓库状态。',
+        ),
+        duration: const Duration(seconds: 3),
+      ),
+    );
   }
 
   /// 中文：确认后切换到本地分支；由 Git 判断未提交改动是否可安全保留。
@@ -1564,8 +1816,14 @@ class _RepositoryWorkspaceScreenState
               data: mapRepositoryOverview(session),
               callbacks: RepositoryOverviewCallbacks(
                 onAction: _handleAction,
-                onRefSelected: (reference) =>
-                    unawaited(controller.selectReference(reference)),
+                onRefSelected: (reference) {
+                  unawaited(controller.selectReference(reference));
+                  if (reference.kind == RepositoryRefKind.stash) {
+                    if (reference.stashReference == null) {
+                      unawaited(_showCreateStashDialog());
+                    }
+                  }
+                },
                 onRefActivated: _handleReferenceActivated,
                 onRefContextAction: _handleReferenceContextAction,
                 onSearchChanged: controller.setSearchQuery,
@@ -1670,6 +1928,256 @@ final class RepositoryTabStrip extends StatelessWidget {
               ),
             ],
           ],
+        ),
+      ),
+    );
+  }
+}
+
+enum _StashManagerAction { create, apply, pop, drop }
+
+final class _StashManagerResult {
+  const _StashManagerResult(this.kind, {this.entry});
+
+  final _StashManagerAction kind;
+  final GitStashEntry? entry;
+}
+
+final class _CreateStashOptions {
+  const _CreateStashOptions({required this.message, required this.keepIndex});
+
+  final String message;
+  final bool keepIndex;
+}
+
+class _StashManagerDialog extends StatelessWidget {
+  const _StashManagerDialog({required this.stashes});
+
+  final List<GitStashEntry> stashes;
+
+  /// 中文：使用当前界面语言格式化贮藏创建时间。
+  /// English: Formats a stash creation time with the current UI locale.
+  String _timestamp(BuildContext context, DateTime time) {
+    final local = time.toLocal();
+    final localizations = MaterialLocalizations.of(context);
+    return '${localizations.formatMediumDate(local)} '
+        '${localizations.formatTimeOfDay(TimeOfDay.fromDateTime(local))}';
+  }
+
+  /// 中文：构建贮藏管理面板。
+  /// English: Builds the stash management panel.
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return AlertDialog(
+      title: const Text('贮藏'),
+      content: SizedBox(
+        width: 680,
+        height: 360,
+        child: stashes.isEmpty
+            ? const Center(child: Text('没有已贮藏的改动。\n可创建贮藏以暂时清空当前工作区。'))
+            : ListView.separated(
+                itemCount: stashes.length,
+                separatorBuilder: (BuildContext context, int index) =>
+                    const Divider(height: 1),
+                itemBuilder: (BuildContext context, int index) {
+                  final entry = stashes[index];
+                  final message = entry.message.trim().isEmpty
+                      ? '未命名贮藏'
+                      : entry.message;
+                  return ListTile(
+                    dense: true,
+                    contentPadding: const EdgeInsets.symmetric(horizontal: 4),
+                    leading: Icon(
+                      Icons.inventory_2_outlined,
+                      color: colors.primary,
+                    ),
+                    title: Text(
+                      message,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(
+                      '${entry.reference} · ${_timestamp(context, entry.createdAt)}',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    trailing: PopupMenuButton<_StashManagerAction>(
+                      tooltip: '贮藏操作',
+                      onSelected: (action) => Navigator.of(
+                        context,
+                      ).pop(_StashManagerResult(action, entry: entry)),
+                      itemBuilder: (BuildContext context) => const [
+                        PopupMenuItem(
+                          value: _StashManagerAction.apply,
+                          child: ListTile(
+                            dense: true,
+                            leading: Icon(Icons.restore_outlined),
+                            title: Text('恢复并保留'),
+                          ),
+                        ),
+                        PopupMenuItem(
+                          value: _StashManagerAction.pop,
+                          child: ListTile(
+                            dense: true,
+                            leading: Icon(Icons.unarchive_outlined),
+                            title: Text('恢复并弹出'),
+                          ),
+                        ),
+                        PopupMenuItem(
+                          value: _StashManagerAction.drop,
+                          child: ListTile(
+                            dense: true,
+                            leading: Icon(Icons.delete_outline),
+                            title: Text('删除贮藏'),
+                          ),
+                        ),
+                      ],
+                    ),
+                  );
+                },
+              ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('关闭'),
+        ),
+        FilledButton.icon(
+          onPressed: () => Navigator.of(
+            context,
+          ).pop(const _StashManagerResult(_StashManagerAction.create)),
+          icon: const Icon(Icons.add),
+          label: const Text('创建贮藏'),
+        ),
+      ],
+    );
+  }
+}
+
+class _CreateStashDialog extends StatefulWidget {
+  const _CreateStashDialog();
+
+  /// 中文：创建关联的状态对象。
+  /// English: Creates the associated state object.
+  @override
+  State<_CreateStashDialog> createState() => _CreateStashDialogState();
+}
+
+class _CreateStashDialogState extends State<_CreateStashDialog> {
+  final _messageController = TextEditingController();
+  var _keepIndex = false;
+
+  /// 中文：释放当前对象持有的文本控制器。
+  /// English: Disposes the text controller owned by this dialog.
+  @override
+  void dispose() {
+    _messageController.dispose();
+    super.dispose();
+  }
+
+  /// 中文：提交当前创建选项并关闭对话框，不在界面层直接执行 Git。
+  /// English: Returns the selected create options without running Git in the
+  /// presentation layer.
+  void _submit() {
+    Navigator.of(context).pop(
+      _CreateStashOptions(
+        message: _messageController.text,
+        keepIndex: _keepIndex,
+      ),
+    );
+  }
+
+  /// 中文：构建创建贮藏对话框。
+  /// English: Builds the create-stash dialog.
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    return Dialog(
+      child: SizedBox(
+        width: 500,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 18),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                _keepIndex ? '将当前改动保存为贮藏，并保留暂存区内容。' : '将当前改动保存为贮藏，并恢复为干净的工作区。',
+                style: theme.textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 10),
+              Row(
+                children: [
+                  const SizedBox(width: 42, child: Text('信息：')),
+                  Expanded(
+                    child: SizedBox(
+                      height: 28,
+                      child: TextField(
+                        controller: _messageController,
+                        autofocus: true,
+                        maxLength: 240,
+                        decoration: const InputDecoration(
+                          hintText: '可选',
+                          counterText: '',
+                          isDense: true,
+                          contentPadding: EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 5,
+                          ),
+                          border: OutlineInputBorder(),
+                        ),
+                        onSubmitted: (_) => _submit(),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 10),
+              Padding(
+                padding: const EdgeInsets.only(left: 42),
+                child: InkWell(
+                  onTap: () => setState(() => _keepIndex = !_keepIndex),
+                  borderRadius: BorderRadius.circular(4),
+                  child: Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Checkbox(
+                        value: _keepIndex,
+                        onChanged: (value) =>
+                            setState(() => _keepIndex = value ?? false),
+                        visualDensity: VisualDensity.compact,
+                      ),
+                      const Text('保留暂存的变更'),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 16),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  SizedBox(
+                    width: 86,
+                    height: 28,
+                    child: OutlinedButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: const Text('取消'),
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  SizedBox(
+                    width: 86,
+                    height: 28,
+                    child: FilledButton(
+                      onPressed: _submit,
+                      child: const Text('贮藏'),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
         ),
       ),
     );

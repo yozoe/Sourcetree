@@ -251,6 +251,120 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Creating commit');
   }
 
+  /// Saves the current working tree in Git's stash reflog. Staged entries are
+  /// retained in the snapshot and restored with `--index` by apply/pop.
+  ///
+  /// 中文：将当前改动保存为贮藏；仅在 [includeUntracked] 为真时包含未跟踪
+  /// 文件，绝不默认包含被忽略文件；[keepIndex] 为真时保留暂存区内容。
+  Future<void> createStash(
+    GitRepository repository, {
+    String message = '',
+    bool includeUntracked = false,
+    bool keepIndex = false,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final normalizedMessage = message.trim();
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          'stash',
+          'push',
+          if (includeUntracked) '--include-untracked',
+          if (keepIndex) '--keep-index',
+          if (normalizedMessage.isNotEmpty) ...['--message', normalizedMessage],
+        ],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 512 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Creating stash');
+  }
+
+  /// Applies one saved working-tree snapshot and retains it in the stash list.
+  ///
+  /// 中文：恢复指定贮藏但保留该条目；`--index` 同时恢复原有暂存区语义。
+  Future<void> applyStash(
+    GitRepository repository, {
+    required String stashReference,
+    GitCancellationToken? cancellationToken,
+  }) => _runStashMutation(
+    repository,
+    operation: 'Applying stash',
+    arguments: ['apply', '--index', _requireStashReference(stashReference)],
+    cancellationToken: cancellationToken,
+  );
+
+  /// Applies one saved snapshot and removes it only if Git completed the apply.
+  ///
+  /// 中文：恢复后弹出指定贮藏；发生冲突或失败时 Git 会保留贮藏供后续恢复。
+  Future<void> popStash(
+    GitRepository repository, {
+    required String stashReference,
+    GitCancellationToken? cancellationToken,
+  }) => _runStashMutation(
+    repository,
+    operation: 'Popping stash',
+    arguments: ['pop', '--index', _requireStashReference(stashReference)],
+    cancellationToken: cancellationToken,
+  );
+
+  /// Permanently removes one saved snapshot from Git's stash reflog.
+  ///
+  /// 中文：永久删除指定贮藏；调用方必须在此之前取得用户的明确确认。
+  Future<void> dropStash(
+    GitRepository repository, {
+    required String stashReference,
+    GitCancellationToken? cancellationToken,
+  }) => _runStashMutation(
+    repository,
+    operation: 'Dropping stash',
+    arguments: ['drop', _requireStashReference(stashReference)],
+    cancellationToken: cancellationToken,
+  );
+
+  /// 中文：以受限输出执行已校验的贮藏子命令，不经由 shell。
+  /// English: Executes a validated stash subcommand with bounded output and no
+  /// shell interpolation.
+  Future<void> _runStashMutation(
+    GitRepository repository, {
+    required String operation,
+    required List<String> arguments,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final result = await runner.run(
+      GitInvocation(
+        arguments: ['--no-pager', 'stash', ...arguments],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 512 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: operation);
+  }
+
+  /// 中文：校验 Git 生成的 `stash@{N}` 引用，拒绝任意 revision 或选项文本。
+  /// English: Validates a Git-generated `stash@{N}` selector and rejects
+  /// arbitrary revisions or option-shaped input.
+  String _requireStashReference(String value) {
+    final normalized = value.trim();
+    if (!RegExp(r'^stash@\{[0-9]+\}$').hasMatch(normalized)) {
+      throw ArgumentError.value(
+        value,
+        'stashReference',
+        'A Git stash reference is required.',
+      );
+    }
+    return normalized;
+  }
+
   /// Creates a new local branch at the current HEAD without checking it out.
   ///
   /// Git validates the ref name and refuses to overwrite an existing branch.
@@ -539,6 +653,32 @@ final class GitRepositoryWriter {
       ),
     );
     result.throwIfFailed(operation: 'Deleting remote branch');
+  }
+
+  /// Removes one configured remote without deleting any remote repository data.
+  ///
+  /// 中文：移除一个本地 Git 远端配置；不会删除远端仓库或其上的分支。
+  Future<void> removeRemote(GitRepository repository, String remoteName) async {
+    final normalizedName = remoteName.trim();
+    if (normalizedName.isEmpty ||
+        normalizedName.contains(RegExp(r'[\x00\s]'))) {
+      throw ArgumentError.value(
+        remoteName,
+        'remoteName',
+        'A valid remote name is required.',
+      );
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: ['--no-pager', 'remote', 'remove', normalizedName],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Removing remote');
   }
 
   /// 中文：以 Git 的安全删除模式删除已合并的本地分支，绝不强制删除未合并提交。

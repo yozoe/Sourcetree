@@ -133,8 +133,20 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
   }
 
   /// 中文：仅更新引用列表的选中态，不触发分支切换。
-  /// English: Updates only the selected ref without switching branches.
+  /// English: Updates only the selected ref without switching branches. The
+  /// stash root requests creation, while an individual stash selects its
+  /// persistent workspace preview on every enabled activation.
   void _selectReference(RepositoryRefViewData reference) {
+    if (reference.kind == RepositoryRefKind.stash) {
+      setState(() {
+        _selectedRefId = reference.id;
+        if (reference.stashReference != null) {
+          _compactPane = _CompactPane.changes;
+        }
+      });
+      widget.callbacks.onRefSelected?.call(reference);
+      return;
+    }
     if (_selectedRefId == reference.id) return;
     setState(() => _selectedRefId = reference.id);
     widget.callbacks.onRefSelected?.call(reference);
@@ -171,6 +183,48 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
     setState(() => _layout = next);
     widget.callbacks.onLayoutChanged?.call(next);
   }
+
+  /// 中文：判断当前是否正在预览左侧选中的单条贮藏。
+  /// English: Returns whether the workspace is previewing one selected stash.
+  bool _isStashPreview(RepositoryViewData repository) => repository.refs.any(
+    (reference) => reference.stashReference != null && reference.isSelected,
+  );
+
+  /// 中文：构建占满引用导航右侧的贮藏文件与 Diff 预览。
+  /// English: Builds the stash file and Diff preview across the full workspace
+  /// area to the right of the refs navigation.
+  Widget _buildStashPreview(RepositoryViewData repository) =>
+      _CommitChangesPane(
+        repository: repository,
+        onSelected: widget.callbacks.onCommitFileSelected,
+        title: '贮藏改动',
+      );
+
+  /// 中文：构建占满引用导航右侧的工作区文件状态与提交入口。
+  /// English: Builds the working-tree file status and commit entry across the
+  /// full workspace area to the right of the refs navigation.
+  Widget _buildWorkspacePreview(RepositoryViewData repository) =>
+      _WorkspaceChangesView(
+        repository: repository,
+        onSelected: widget.callbacks.onChangeSelected,
+        onStageToggled: widget.callbacks.onChangeStageToggled,
+        onGroupStageToggled: widget.callbacks.onChangeGroupStageToggled,
+        onConflictAction: widget.callbacks.onConflictAction,
+        onRevealInFinder: widget.callbacks.onChangeRevealInFinder,
+        onRemove: widget.callbacks.onChangeRemove,
+        onCommit: widget.callbacks.onAction == null
+            ? null
+            : () => widget.callbacks.onAction!(RepositoryAction.commit),
+      );
+
+  /// 中文：判断当前是否正在查看工作区文件状态。
+  /// English: Returns whether the workspace file-status ref is selected.
+  bool _isWorkspacePreview(RepositoryViewData repository) =>
+      repository.refs.any(
+        (reference) =>
+            reference.kind == RepositoryRefKind.workspace &&
+            reference.isSelected,
+      );
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -290,62 +344,70 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
           ),
         ),
         Expanded(
-          child: Column(
-            children: [
-              Expanded(
-                child: _HistoryPane(
-                  repository: repository,
-                  onSelected: widget.callbacks.onCommitSelected,
-                  onActivated: widget.callbacks.onCommitActivated,
-                  onWorkspaceSelected: () => _selectWorkspace(repository),
-                ),
-              ),
-              _HistorySplitBar(
-                query: repository.searchQuery,
-                onSearchChanged: widget.callbacks.onSearchChanged,
-                semanticsLabel: '调整改动面板高度',
-                onDelta: (double delta) => _updateLayout(
-                  _layout.copyWith(changesHeight: changesHeight - delta),
-                ),
-              ),
-              SizedBox(
-                height: changesHeight,
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
+          child: _isStashPreview(repository)
+              ? _buildStashPreview(repository)
+              : _isWorkspacePreview(repository)
+              ? _buildWorkspacePreview(repository)
+              : Column(
                   children: [
                     Expanded(
-                      child: _SelectedChangesPane(
+                      child: _HistoryPane(
                         repository: repository,
-                        onSelected: widget.callbacks.onChangeSelected,
-                        onStageToggled: widget.callbacks.onChangeStageToggled,
-                        onGroupStageToggled:
-                            widget.callbacks.onChangeGroupStageToggled,
-                        onConflictAction: widget.callbacks.onConflictAction,
-                        onRevealInFinder:
-                            widget.callbacks.onChangeRevealInFinder,
-                        onRemove: widget.callbacks.onChangeRemove,
-                        onCommitFileSelected:
-                            widget.callbacks.onCommitFileSelected,
+                        onSelected: widget.callbacks.onCommitSelected,
+                        onActivated: widget.callbacks.onCommitActivated,
+                        onWorkspaceSelected: () => _selectWorkspace(repository),
                       ),
                     ),
-                    _ResizeDivider(
-                      axis: Axis.vertical,
-                      semanticsLabel: '调整提交详情宽度',
+                    _HistorySplitBar(
+                      query: repository.searchQuery,
+                      onSearchChanged: widget.callbacks.onSearchChanged,
+                      semanticsLabel: '调整改动面板高度',
                       onDelta: (double delta) => _updateLayout(
-                        _layout.copyWith(detailsWidth: detailsWidth - delta),
+                        _layout.copyWith(changesHeight: changesHeight - delta),
                       ),
                     ),
                     SizedBox(
-                      width: detailsWidth,
-                      child: _CommitDetailsPane(
-                        details: repository.selectedCommit,
+                      height: changesHeight,
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          Expanded(
+                            child: _SelectedChangesPane(
+                              repository: repository,
+                              onSelected: widget.callbacks.onChangeSelected,
+                              onStageToggled:
+                                  widget.callbacks.onChangeStageToggled,
+                              onGroupStageToggled:
+                                  widget.callbacks.onChangeGroupStageToggled,
+                              onConflictAction:
+                                  widget.callbacks.onConflictAction,
+                              onRevealInFinder:
+                                  widget.callbacks.onChangeRevealInFinder,
+                              onRemove: widget.callbacks.onChangeRemove,
+                              onCommitFileSelected:
+                                  widget.callbacks.onCommitFileSelected,
+                            ),
+                          ),
+                          _ResizeDivider(
+                            axis: Axis.vertical,
+                            semanticsLabel: '调整提交详情宽度',
+                            onDelta: (double delta) => _updateLayout(
+                              _layout.copyWith(
+                                detailsWidth: detailsWidth - delta,
+                              ),
+                            ),
+                          ),
+                          SizedBox(
+                            width: detailsWidth,
+                            child: _CommitDetailsPane(
+                              details: repository.selectedCommit,
+                            ),
+                          ),
+                        ],
                       ),
                     ),
                   ],
                 ),
-              ),
-            ],
-          ),
         ),
       ],
     );
@@ -389,44 +451,51 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
           ),
         ),
         Expanded(
-          child: Column(
-            children: [
-              Expanded(
-                child: _HistoryPane(
-                  repository: repository,
-                  onSelected: widget.callbacks.onCommitSelected,
-                  onActivated: widget.callbacks.onCommitActivated,
-                  onWorkspaceSelected: () => _selectWorkspace(repository),
+          child: _isStashPreview(repository)
+              ? _buildStashPreview(repository)
+              : _isWorkspacePreview(repository)
+              ? _buildWorkspacePreview(repository)
+              : Column(
+                  children: [
+                    Expanded(
+                      child: _HistoryPane(
+                        repository: repository,
+                        onSelected: widget.callbacks.onCommitSelected,
+                        onActivated: widget.callbacks.onCommitActivated,
+                        onWorkspaceSelected: () => _selectWorkspace(repository),
+                      ),
+                    ),
+                    _HistorySplitBar(
+                      query: repository.searchQuery,
+                      onSearchChanged: widget.callbacks.onSearchChanged,
+                      semanticsLabel: '调整检查器高度',
+                      onDelta: (double delta) => _updateLayout(
+                        _layout.copyWith(changesHeight: changesHeight - delta),
+                      ),
+                    ),
+                    SizedBox(
+                      height: changesHeight,
+                      child: _TabbedInspector(
+                        selectedTab: _inspectorTab,
+                        onTabChanged: (_InspectorTab tab) {
+                          setState(() => _inspectorTab = tab);
+                        },
+                        repository: repository,
+                        onChangeSelected: widget.callbacks.onChangeSelected,
+                        onChangeStageToggled:
+                            widget.callbacks.onChangeStageToggled,
+                        onChangeGroupStageToggled:
+                            widget.callbacks.onChangeGroupStageToggled,
+                        onConflictAction: widget.callbacks.onConflictAction,
+                        onRevealInFinder:
+                            widget.callbacks.onChangeRevealInFinder,
+                        onRemove: widget.callbacks.onChangeRemove,
+                        onCommitFileSelected:
+                            widget.callbacks.onCommitFileSelected,
+                      ),
+                    ),
+                  ],
                 ),
-              ),
-              _HistorySplitBar(
-                query: repository.searchQuery,
-                onSearchChanged: widget.callbacks.onSearchChanged,
-                semanticsLabel: '调整检查器高度',
-                onDelta: (double delta) => _updateLayout(
-                  _layout.copyWith(changesHeight: changesHeight - delta),
-                ),
-              ),
-              SizedBox(
-                height: changesHeight,
-                child: _TabbedInspector(
-                  selectedTab: _inspectorTab,
-                  onTabChanged: (_InspectorTab tab) {
-                    setState(() => _inspectorTab = tab);
-                  },
-                  repository: repository,
-                  onChangeSelected: widget.callbacks.onChangeSelected,
-                  onChangeStageToggled: widget.callbacks.onChangeStageToggled,
-                  onChangeGroupStageToggled:
-                      widget.callbacks.onChangeGroupStageToggled,
-                  onConflictAction: widget.callbacks.onConflictAction,
-                  onRevealInFinder: widget.callbacks.onChangeRevealInFinder,
-                  onRemove: widget.callbacks.onChangeRemove,
-                  onCommitFileSelected: widget.callbacks.onCommitFileSelected,
-                ),
-              ),
-            ],
-          ),
         ),
       ],
     );
@@ -437,6 +506,9 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
   /// English: Selects the active compact pane for narrow screens, switching
   /// among refs, history, changes, and details through bottom navigation.
   Widget _buildCompact(RepositoryViewData repository) {
+    if (_isWorkspacePreview(repository)) {
+      return _buildWorkspacePreview(repository);
+    }
     final Widget pane = switch (_compactPane) {
       _CompactPane.refs => _RefsNavigation(
         repository: repository,
@@ -577,6 +649,21 @@ class _RepositoryToolbar extends StatelessWidget {
                                     repository: repository,
                                     onAction: callbacks.onAction,
                                     badge: repository.changes.length,
+                                  ),
+                                  _ToolbarAction(
+                                    action: repository.isStashing
+                                        ? RepositoryAction.cancelStash
+                                        : RepositoryAction.stash,
+                                    icon: repository.isStashing
+                                        ? Icons.cancel_outlined
+                                        : Icons.inventory_2_outlined,
+                                    label: repository.isStashing
+                                        ? '取消贮藏'
+                                        : '贮藏',
+                                    showLabel: showLabels,
+                                    repository: repository,
+                                    onAction: callbacks.onAction,
+                                    isBusy: repository.isStashing,
                                   ),
                                   if (repository.isRebaseInProgress &&
                                       !repository.isPulling) ...[
@@ -918,7 +1005,12 @@ class _RefsNavigation extends StatelessWidget {
     };
     final Map<RepositoryRefKind, List<Widget>> sectionTiles = {
       for (final RepositoryRefKind kind in RepositoryRefKind.values)
-        kind: _buildSectionTiles(kind, sections[kind]!),
+        kind: kind == RepositoryRefKind.remote
+            ? _buildRemoteTiles(
+                sections[RepositoryRefKind.remote]!,
+                sections[RepositoryRefKind.remoteBranch]!,
+              )
+            : _buildSectionTiles(kind, sections[kind]!),
     };
 
     return Material(
@@ -929,7 +1021,9 @@ class _RefsNavigation extends StatelessWidget {
             child: _PaneHeader(title: '仓库', icon: Icons.folder_open_outlined),
           ),
           for (final RepositoryRefKind kind in RepositoryRefKind.values)
-            if (sectionTiles[kind]!.isNotEmpty) ...[
+            if (sectionTiles[kind]!.isNotEmpty &&
+                kind != RepositoryRefKind.stash &&
+                kind != RepositoryRefKind.remoteBranch) ...[
               SliverToBoxAdapter(
                 child: _SectionHeader(
                   title: _refKindLabel(kind),
@@ -943,6 +1037,12 @@ class _RefsNavigation extends StatelessWidget {
                 },
               ),
             ],
+          if (sectionTiles[RepositoryRefKind.stash]!.isNotEmpty)
+            SliverList.builder(
+              itemCount: sectionTiles[RepositoryRefKind.stash]!.length,
+              itemBuilder: (BuildContext context, int index) =>
+                  sectionTiles[RepositoryRefKind.stash]![index],
+            ),
           if (repository.refs.isEmpty)
             const SliverFillRemaining(
               hasScrollBody: false,
@@ -966,6 +1066,12 @@ class _RefsNavigation extends StatelessWidget {
     List<RepositoryRefViewData> references,
   ) {
     if (kind != RepositoryRefKind.localBranch) {
+      if (kind == RepositoryRefKind.stash) {
+        return [
+          for (final ref in references)
+            _buildRefTile(ref, indent: ref.stashReference == null ? 0 : 1),
+        ];
+      }
       return [for (final ref in references) _buildRefTile(ref)];
     }
     return [
@@ -987,18 +1093,82 @@ class _RefsNavigation extends StatelessWidget {
     ];
   }
 
+  /// 中文：按远端名称归组远端跟踪引用，并显示可展开的远端父节点。
+  /// English: Groups remote-tracking refs under expandable configured remotes.
+  List<Widget> _buildRemoteTiles(
+    List<RepositoryRefViewData> remotes,
+    List<RepositoryRefViewData> remoteBranches,
+  ) {
+    return [
+      for (final remote in remotes)
+        _RemoteDirectoryTile(
+          key: ValueKey<String>('remote-directory:${remote.id}'),
+          remote: remote,
+          isSelected:
+              _isReferenceSelected(remote) ||
+              remoteBranches.any(
+                (branch) =>
+                    branch.label.startsWith('${remote.label}/') &&
+                    _isReferenceSelected(branch),
+              ),
+          contextItems: _contextItemsFor(remote),
+          onContextAction: onContextAction == null
+              ? null
+              : (RepositoryRefContextAction action) =>
+                    onContextAction!(remote, action),
+          onSelected: onSelected == null ? null : () => onSelected!(remote),
+          children: [
+            for (final branch
+                in remoteBranches
+                    .where(
+                      (branch) => branch.label.startsWith('${remote.label}/'),
+                    )
+                    .toList(growable: false)
+                  ..sort((a, b) => a.label.compareTo(b.label)))
+              _buildRefTile(
+                branch,
+                label: branch.label.substring(remote.label.length + 1),
+                indent: 1,
+                showIcon: false,
+              ),
+          ],
+        ),
+    ];
+  }
+
   /// 中文：创建保持选择、双击和右键行为的引用行。
   ///
   /// English: Creates a reference row while preserving selection, activation,
   /// and context-menu behavior.
-  _RefTile _buildRefTile(RepositoryRefViewData ref, {String? label}) {
+  _RefTile _buildRefTile(
+    RepositoryRefViewData ref, {
+    String? label,
+    int indent = 0,
+    bool showIcon = true,
+  }) {
+    final stashActionDisabled =
+        ref.kind == RepositoryRefKind.stash &&
+        ref.stashReference == null &&
+        repository.disabledActions.contains(RepositoryAction.stash);
+    final selectionCallback = onSelected == null || stashActionDisabled
+        ? null
+        : () => onSelected!(ref);
     return _RefTile(
       ref: ref,
       label: label,
+      indent: indent,
+      showIcon: showIcon,
       graphColor: _refGraphColor(repository, ref),
       isSelected: _isReferenceSelected(ref),
-      onTap: onSelected == null ? null : () => onSelected!(ref),
-      onDoubleTap: onActivated == null ? null : () => onActivated!(ref),
+      onPointerDown: selectionCallback,
+      onTap: ref.kind == RepositoryRefKind.stash ? null : selectionCallback,
+      onDoubleTap:
+          ref.kind == RepositoryRefKind.stash ||
+              ref.isSymbolicRemote ||
+              onActivated == null ||
+              stashActionDisabled
+          ? null
+          : () => onActivated!(ref),
       contextItems: _contextItemsFor(ref),
       onContextAction: onContextAction == null
           ? null
@@ -1011,6 +1181,21 @@ class _RefsNavigation extends StatelessWidget {
   /// English: Determines whether a reference should render as selected.
   bool _isReferenceSelected(RepositoryRefViewData ref) =>
       selectedRefId == ref.id || (selectedRefId == null && ref.isSelected);
+
+  /// 中文：查找远端分支所属的已配置远端名称。
+  /// English: Finds the configured remote that owns a remote-tracking ref.
+  String? _remoteNameFor(RepositoryRefViewData ref) {
+    if (ref.kind == RepositoryRefKind.remote) return ref.label;
+    if (ref.kind != RepositoryRefKind.remoteBranch) return null;
+    final names =
+        repository.refs
+            .where((candidate) => candidate.kind == RepositoryRefKind.remote)
+            .map((candidate) => candidate.label)
+            .where((name) => ref.label.startsWith('$name/'))
+            .toList(growable: false)
+          ..sort((a, b) => b.length.compareTo(a.length));
+    return names.firstOrNull;
+  }
 
   /// 中文：根据引用类型及当前仓库状态构建右键菜单，并禁用不能安全执行的操作。
   ///
@@ -1032,7 +1217,19 @@ class _RefsNavigation extends StatelessWidget {
     final canCreate =
         !isBusy && !disabledActions.contains(RepositoryAction.createBranch);
     final canManageLocalBranch = repository.isWorkingTreeClean && !isBusy;
+    final canManageRemote = !isBusy && !repository.isRebaseInProgress;
+    final remoteName = _remoteNameFor(ref);
     if (ref.id == 'HEAD') {
+      return [
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.refresh,
+          label: '刷新仓库',
+          icon: Icons.refresh,
+          enabled: !isBusy,
+        ),
+      ];
+    }
+    if (ref.kind == RepositoryRefKind.remoteBranch && ref.isSymbolicRemote) {
       return [
         _RefContextMenuItem(
           action: RepositoryRefContextAction.refresh,
@@ -1044,6 +1241,18 @@ class _RefsNavigation extends StatelessWidget {
     }
     return switch (ref.kind) {
       RepositoryRefKind.workspace => [
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.createStash,
+          label: '贮藏当前改动',
+          icon: Icons.inventory_2_outlined,
+          enabled:
+              !isBusy &&
+              repository.changes.isNotEmpty &&
+              !repository.changes.any(
+                (change) => change.kind == RepositoryChangeKind.conflicted,
+              ),
+        ),
+        const _RefContextMenuItem.divider(),
         _RefContextMenuItem(
           action: RepositoryRefContextAction.fetchOrigin,
           label: '获取 origin',
@@ -1146,11 +1355,51 @@ class _RefsNavigation extends StatelessWidget {
         ),
         _RefContextMenuItem(
           action: RepositoryRefContextAction.fetchOrigin,
-          label: '获取 origin',
+          label: remoteName == null ? '获取远端' : '获取 $remoteName',
           icon: Icons.sync,
           enabled: canFetch,
         ),
         const _RefContextMenuItem.divider(),
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.refresh,
+          label: '刷新仓库',
+          icon: Icons.refresh,
+          enabled: !isBusy,
+        ),
+      ],
+      RepositoryRefKind.remote => [
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.fetchOrigin,
+          label: '从 ${ref.label} 获取',
+          icon: Icons.sync,
+          enabled: canFetch,
+        ),
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.pullCurrentBranch,
+          label: '从 ${ref.label} 拉取…',
+          icon: Icons.south,
+          enabled: canPull,
+        ),
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.pushCurrentBranch,
+          label: '推送到 ${ref.label}…',
+          icon: Icons.north,
+          enabled: canPush,
+        ),
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.removeRemote,
+          label: '移除 ${ref.label}',
+          icon: Icons.remove_circle_outline,
+          enabled: canManageRemote,
+        ),
+      ],
+      RepositoryRefKind.stash => [
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.manageStashes,
+          label: '管理贮藏',
+          icon: Icons.inventory_2_outlined,
+          enabled: !isBusy,
+        ),
         _RefContextMenuItem(
           action: RepositoryRefContextAction.refresh,
           label: '刷新仓库',
@@ -1199,6 +1448,7 @@ String _refKindLabel(RepositoryRefKind kind) {
   return switch (kind) {
     RepositoryRefKind.workspace => '工作区',
     RepositoryRefKind.localBranch => '分支',
+    RepositoryRefKind.remote => '远端',
     RepositoryRefKind.remoteBranch => '远端',
     RepositoryRefKind.tag => '标签',
     RepositoryRefKind.stash => '贮藏',
@@ -1212,6 +1462,7 @@ IconData _refKindIcon(RepositoryRefKind kind) {
   return switch (kind) {
     RepositoryRefKind.workspace => Icons.edit_note,
     RepositoryRefKind.localBranch => Icons.call_split,
+    RepositoryRefKind.remote => Icons.cloud_outlined,
     RepositoryRefKind.remoteBranch => Icons.cloud_outlined,
     RepositoryRefKind.tag => Icons.sell_outlined,
     RepositoryRefKind.stash => Icons.inventory_2_outlined,
@@ -1338,6 +1589,136 @@ final class _RefDirectoryTile extends StatefulWidget {
   State<_RefDirectoryTile> createState() => _RefDirectoryTileState();
 }
 
+/// Displays one configured remote and its remote-tracking refs.
+///
+/// 中文：显示一个可展开的远端及其远端跟踪引用，并为远端名称提供紧凑右键菜单。
+final class _RemoteDirectoryTile extends StatefulWidget {
+  const _RemoteDirectoryTile({
+    super.key,
+    required this.remote,
+    required this.children,
+    required this.isSelected,
+    required this.contextItems,
+    required this.onContextAction,
+    required this.onSelected,
+  });
+
+  final RepositoryRefViewData remote;
+  final List<Widget> children;
+  final bool isSelected;
+  final List<_RefContextMenuItem> contextItems;
+  final ValueChanged<RepositoryRefContextAction>? onContextAction;
+  final VoidCallback? onSelected;
+
+  @override
+  State<_RemoteDirectoryTile> createState() => _RemoteDirectoryTileState();
+}
+
+class _RemoteDirectoryTileState extends State<_RemoteDirectoryTile> {
+  var _isExpanded = true;
+
+  /// 中文：切换远端分组的展开状态，并将选择交给共享的引用状态。
+  /// English: Toggles the remote group and delegates selection to shared ref
+  /// state.
+  void _toggleExpanded() {
+    widget.onSelected?.call();
+    setState(() => _isExpanded = !_isExpanded);
+  }
+
+  /// 中文：以紧凑、无图标样式显示远端名称的右键操作。
+  /// English: Shows the compact, text-first context menu for a remote name.
+  Future<void> _showContextMenu(
+    BuildContext context,
+    Offset globalPosition,
+  ) async {
+    final handler = widget.onContextAction;
+    if (handler == null || widget.contextItems.isEmpty) return;
+    final overlay =
+        Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final selection = await showMenu<RepositoryRefContextAction>(
+      context: context,
+      position: RelativeRect.fromRect(
+        globalPosition & const Size(1, 1),
+        Offset.zero & overlay.size,
+      ),
+      items: [
+        for (final item in widget.contextItems)
+          if (item.isDivider)
+            const PopupMenuDivider()
+          else
+            PopupMenuItem<RepositoryRefContextAction>(
+              value: item.action,
+              enabled: item.enabled,
+              height: 28,
+              padding: const EdgeInsets.symmetric(horizontal: 12),
+              child: Text(item.label),
+            ),
+      ],
+    );
+    if (selection != null) handler(selection);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final isSelected = widget.isSelected;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Semantics(
+          button: true,
+          expanded: _isExpanded,
+          selected: isSelected,
+          label: '远端 ${widget.remote.label}',
+          child: GestureDetector(
+            onLongPressStart: (details) =>
+                unawaited(_showContextMenu(context, details.globalPosition)),
+            child: InkWell(
+              onTap: _toggleExpanded,
+              onSecondaryTapDown: (details) =>
+                  unawaited(_showContextMenu(context, details.globalPosition)),
+              child: Container(
+                height: 31,
+                padding: const EdgeInsets.only(left: 14, right: 8),
+                color: isSelected ? colors.secondaryContainer : null,
+                child: Row(
+                  children: [
+                    Icon(
+                      _isExpanded
+                          ? Icons.keyboard_arrow_down
+                          : Icons.keyboard_arrow_right,
+                      size: 16,
+                      color: isSelected
+                          ? colors.onSecondaryContainer
+                          : colors.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 5),
+                    Expanded(
+                      child: Text(
+                        widget.remote.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                          color: isSelected
+                              ? colors.onSecondaryContainer
+                              : null,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        if (_isExpanded) ...widget.children,
+      ],
+    );
+  }
+}
+
 class _RefDirectoryTileState extends State<_RefDirectoryTile> {
   var _isExpanded = true;
 
@@ -1411,6 +1792,9 @@ class _RefDirectoryTileState extends State<_RefDirectoryTile> {
               indent: childDepth,
               graphColor: widget.colorFor(ref),
               isSelected: widget.isSelected(ref),
+              onPointerDown: widget.onSelected == null
+                  ? null
+                  : () => widget.onSelected!(ref),
               onTap: widget.onSelected == null
                   ? null
                   : () => widget.onSelected!(ref),
@@ -1431,6 +1815,9 @@ class _RefDirectoryTileState extends State<_RefDirectoryTile> {
                 indent: childDepth,
                 graphColor: widget.colorFor(child.reference!),
                 isSelected: widget.isSelected(child.reference!),
+                onPointerDown: widget.onSelected == null
+                    ? null
+                    : () => widget.onSelected!(child.reference!),
                 onTap: widget.onSelected == null
                     ? null
                     : () => widget.onSelected!(child.reference!),
@@ -1466,8 +1853,10 @@ class _RefTile extends StatelessWidget {
     required this.ref,
     this.label,
     this.indent = 0,
+    this.showIcon = true,
     this.graphColor,
     required this.isSelected,
+    required this.onPointerDown,
     required this.onTap,
     required this.onDoubleTap,
     required this.contextItems,
@@ -1477,8 +1866,10 @@ class _RefTile extends StatelessWidget {
   final RepositoryRefViewData ref;
   final String? label;
   final int indent;
+  final bool showIcon;
   final Color? graphColor;
   final bool isSelected;
+  final VoidCallback? onPointerDown;
   final VoidCallback? onTap;
   final VoidCallback? onDoubleTap;
   final List<_RefContextMenuItem> contextItems;
@@ -1537,72 +1928,81 @@ class _RefTile extends StatelessWidget {
 
     return Semantics(
       button: true,
+      enabled: onPointerDown != null || onTap != null,
+      onTap: onTap ?? onPointerDown,
       selected: isSelected,
       label: '${_refKindLabel(ref.kind)} $displayLabel',
-      child: Tooltip(
-        message: ref.secondaryLabel ?? ref.label,
-        waitDuration: const Duration(milliseconds: 650),
-        child: GestureDetector(
-          onLongPressStart: (details) =>
-              unawaited(_showContextMenu(context, details.globalPosition)),
-          child: Listener(
-            onPointerDown: (event) {
-              if (event.buttons == kPrimaryButton) onTap?.call();
-            },
-            child: InkWell(
-              onTap: onTap,
-              onDoubleTap: onDoubleTap,
-              onSecondaryTapDown: (details) =>
-                  unawaited(_showContextMenu(context, details.globalPosition)),
-              child: Container(
-                height: 31,
-                padding: EdgeInsets.only(left: 14 + indent * 18, right: 8),
-                color: isSelected ? colors.secondaryContainer : null,
-                child: Row(
-                  children: [
-                    Icon(
-                      key: ValueKey<String>('ref-nav-icon:${ref.id}'),
-                      ref.isCurrent
-                          ? Icons.radio_button_checked
-                          : _refKindIcon(ref.kind),
-                      size: 15,
-                      color:
-                          graphColor ??
-                          (ref.isCurrent
-                              ? colors.primary
-                              : colors.onSurfaceVariant),
-                    ),
-                    const SizedBox(width: 7),
-                    Expanded(
-                      child: Text(
-                        displayLabel,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: theme.textTheme.bodySmall?.copyWith(
-                          fontWeight: ref.isCurrent ? FontWeight.w600 : null,
-                          color: isSelected
-                              ? colors.onSecondaryContainer
-                              : null,
+      child: Opacity(
+        opacity: onPointerDown == null && onTap == null ? 0.5 : 1,
+        child: Tooltip(
+          message: ref.secondaryLabel ?? ref.label,
+          waitDuration: const Duration(milliseconds: 650),
+          child: GestureDetector(
+            onLongPressStart: (details) =>
+                unawaited(_showContextMenu(context, details.globalPosition)),
+            child: Listener(
+              onPointerDown: (event) {
+                if (event.buttons == kPrimaryButton) onPointerDown?.call();
+              },
+              child: InkWell(
+                onTap: onTap,
+                onDoubleTap: onDoubleTap,
+                onSecondaryTapDown: (details) => unawaited(
+                  _showContextMenu(context, details.globalPosition),
+                ),
+                child: Container(
+                  height: 31,
+                  padding: EdgeInsets.only(left: 14 + indent * 18, right: 8),
+                  color: isSelected ? colors.secondaryContainer : null,
+                  child: Row(
+                    children: [
+                      if (showIcon)
+                        Icon(
+                          key: ValueKey<String>('ref-nav-icon:${ref.id}'),
+                          ref.isCurrent
+                              ? Icons.radio_button_checked
+                              : _refKindIcon(ref.kind),
+                          size: 15,
+                          color:
+                              graphColor ??
+                              (ref.isCurrent
+                                  ? colors.primary
+                                  : colors.onSurfaceVariant),
+                        )
+                      else
+                        const SizedBox(width: 15),
+                      const SizedBox(width: 7),
+                      Expanded(
+                        child: Text(
+                          displayLabel,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: theme.textTheme.bodySmall?.copyWith(
+                            fontWeight: ref.isCurrent ? FontWeight.w600 : null,
+                            color: isSelected
+                                ? colors.onSecondaryContainer
+                                : null,
+                          ),
                         ),
                       ),
-                    ),
-                    if (tracking.isNotEmpty)
-                      Text(
-                        tracking,
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          color: colors.onSurfaceVariant,
-                          fontFeatures: const [FontFeature.tabularFigures()],
+                      if (tracking.isNotEmpty)
+                        Text(
+                          tracking,
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: colors.onSurfaceVariant,
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
+                        )
+                      else if (ref.childCount case final int count)
+                        Text(
+                          '$count',
+                          style: theme.textTheme.labelSmall?.copyWith(
+                            color: colors.onSurfaceVariant,
+                            fontFeatures: const [FontFeature.tabularFigures()],
+                          ),
                         ),
-                      )
-                    else if (ref.childCount case final int count)
-                      Text(
-                        '$count',
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          color: colors.onSurfaceVariant,
-                          fontFeatures: const [FontFeature.tabularFigures()],
-                        ),
-                      ),
-                  ],
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -3035,10 +3435,12 @@ class _CommitChangesPane extends StatelessWidget {
   const _CommitChangesPane({
     required this.repository,
     required this.onSelected,
+    this.title = '提交改动',
   });
 
   final RepositoryViewData repository;
   final RepositoryCommitFileCallback? onSelected;
+  final String title;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -3050,7 +3452,7 @@ class _CommitChangesPane extends StatelessWidget {
       child: Column(
         children: [
           _PaneHeader(
-            title: '提交改动',
+            title: title,
             icon: Icons.difference_outlined,
             trailing: repository.isCommitLoading
                 ? '正在读取…'
@@ -3308,6 +3710,83 @@ class _ChangesPaneState extends State<_ChangesPane> {
           ),
         ],
       ),
+    );
+  }
+}
+
+/// Full workspace surface used when the file-status ref is selected.
+///
+/// 中文：文件状态选中时使用的完整工作区界面，保留文件操作与 Diff，并提供
+/// 不直接执行 Git 的提交入口。
+class _WorkspaceChangesView extends StatelessWidget {
+  const _WorkspaceChangesView({
+    required this.repository,
+    required this.onSelected,
+    required this.onStageToggled,
+    required this.onGroupStageToggled,
+    required this.onConflictAction,
+    required this.onRevealInFinder,
+    required this.onRemove,
+    required this.onCommit,
+  });
+
+  final RepositoryViewData repository;
+  final RepositoryChangeCallback? onSelected;
+  final RepositoryChangeStageCallback? onStageToggled;
+  final RepositoryChangeGroupStageCallback? onGroupStageToggled;
+  final RepositoryConflictActionCallback? onConflictAction;
+  final RepositoryChangeFilesCallback? onRevealInFinder;
+  final RepositoryChangeFilesCallback? onRemove;
+  final VoidCallback? onCommit;
+
+  /// 中文：构建工作区文件、Diff 和提交信息入口。
+  /// English: Builds the working-tree files, Diff, and commit-message entry.
+  @override
+  Widget build(BuildContext context) {
+    final canCommit =
+        onCommit != null &&
+        !repository.disabledActions.contains(RepositoryAction.commit);
+    final colors = Theme.of(context).colorScheme;
+    return Column(
+      children: [
+        Expanded(
+          child: _ChangesPane(
+            repository: repository,
+            onSelected: onSelected,
+            onStageToggled: onStageToggled,
+            onGroupStageToggled: onGroupStageToggled,
+            onConflictAction: onConflictAction,
+            onRevealInFinder: onRevealInFinder,
+            onRemove: onRemove,
+          ),
+        ),
+        Material(
+          color: colors.surfaceContainerLow,
+          child: Container(
+            height: 52,
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+            decoration: BoxDecoration(
+              border: Border(top: BorderSide(color: colors.outlineVariant)),
+            ),
+            child: Semantics(
+              button: true,
+              enabled: canCommit,
+              label: '打开提交面板',
+              child: TextField(
+                readOnly: true,
+                enabled: canCommit,
+                onTap: onCommit,
+                decoration: const InputDecoration(
+                  hintText: '提交信息',
+                  prefixIcon: Icon(Icons.person_outline, size: 19),
+                  isDense: true,
+                  border: OutlineInputBorder(),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ],
     );
   }
 }

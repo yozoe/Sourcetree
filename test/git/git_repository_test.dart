@@ -313,7 +313,7 @@ void main() {
   });
 
   test(
-    'reads remote-tracking branches and skips symbolic remote heads',
+    'reads remote-tracking branches and retains symbolic remote heads',
     () async {
       const fileName = 'README.md';
       await File(
@@ -347,11 +347,17 @@ void main() {
 
       expect(
         branches.map((branch) => branch.name),
-        containsAll(['origin/main', 'origin/feature/list-branches']),
+        containsAll([
+          'origin/HEAD',
+          'origin/main',
+          'origin/feature/list-branches',
+        ]),
       );
       expect(
-        branches.map((branch) => branch.name),
-        isNot(contains('origin/HEAD')),
+        branches
+            .singleWhere((branch) => branch.name == 'origin/HEAD')
+            .isSymbolic,
+        isTrue,
       );
       expect(branches.every((branch) => branch.objectId.isNotEmpty), isTrue);
     },

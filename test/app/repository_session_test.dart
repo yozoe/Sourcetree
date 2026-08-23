@@ -60,6 +60,181 @@ void main() {
     expect(selected.commitDiff.lines, isNotEmpty);
   });
 
+  test('always shows the stashes navigation entry below remote refs', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', '# Initial\n');
+    await repository.commit('initial');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    final refs = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.refs;
+    final stashIndex = refs.indexWhere(
+      (reference) => reference.kind == RepositoryRefKind.stash,
+    );
+    final lastRemoteIndex = refs.lastIndexWhere(
+      (reference) => reference.kind == RepositoryRefKind.remoteBranch,
+    );
+    expect(stashIndex, greaterThan(lastRemoteIndex));
+    expect(refs[stashIndex].label, '已贮藏');
+    expect(refs[stashIndex].childCount, isNull);
+
+    await repository.writeFile('README.md', '# Initial\nstashed\n');
+    await controller.refresh();
+    expect(await controller.createStash('sidebar stash'), isTrue);
+
+    final stashedRefs = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.refs;
+    final stashEntry = stashedRefs.singleWhere(
+      (reference) => reference.stashReference == 'stash@{0}',
+    );
+    expect(stashEntry.label, contains('sidebar stash'));
+    expect(stashEntry.id, startsWith('refs/stash/'));
+
+    await controller.selectReference(stashEntry);
+    final selectedState = container.read(repositorySessionProvider);
+    expect(selectedState.selectedRefId, stashEntry.id);
+    expect(selectedState.selectedCommitId, isNotNull);
+    expect(selectedState.commitChanges, isNotEmpty);
+    expect(selectedState.commitDiff?.text, contains('+stashed'));
+
+    await controller.selectReference(stashedRefs.first);
+    final returnedState = container.read(repositorySessionProvider);
+    expect(returnedState.selectedCommitId, isNull);
+    expect(
+      returnedState.commits.map((commit) => commit.objectId),
+      isNot(contains(stashEntry.id.substring('refs/stash/'.length))),
+    );
+  });
+
+  test('enables stash navigation only for tracked changes', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', '# Initial\n');
+    await repository.commit('initial');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(
+      mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!.disabledActions,
+      contains(RepositoryAction.stash),
+    );
+
+    await repository.writeFile('draft.txt', 'untracked\n');
+    await controller.refresh();
+    expect(
+      mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!.disabledActions,
+      contains(RepositoryAction.stash),
+    );
+
+    await repository.writeFile('README.md', '# Initial\nchanged\n');
+    await controller.refresh();
+    expect(
+      mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!.disabledActions,
+      isNot(contains(RepositoryAction.stash)),
+    );
+  });
+
+  test('creates and restores a stash through the repository session', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', '# Initial\n');
+    await repository.commit('initial');
+    await repository.writeFile('README.md', '# Initial\nstashed\n');
+    await repository.writeFile('draft.txt', 'untracked\n');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(
+      await controller.createStash('session stash', includeUntracked: true),
+      isTrue,
+    );
+    expect(container.read(repositorySessionProvider).status!.isClean, isTrue);
+    final stash = (await controller.readStashes()).single;
+    expect(stash.message, contains('session stash'));
+
+    expect(await controller.applyStash(stash), isTrue);
+    final restored = container.read(repositorySessionProvider).status!;
+    expect(restored.isClean, isFalse);
+    expect(
+      restored.entries.map((entry) => entry.path.display),
+      contains('draft.txt'),
+    );
+    expect(await controller.readStashes(), hasLength(1));
+  });
+
+  test('rejects a stash action when its reflog selector has shifted', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', '# Initial\n');
+    await repository.commit('initial');
+    await repository.writeFile('README.md', '# Initial\nfirst\n');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    expect(
+      await controller.createStash('first', includeUntracked: false),
+      isTrue,
+    );
+    final selected = (await controller.readStashes()).single;
+
+    await repository.writeFile('README.md', '# Initial\nsecond\n');
+    await repository.runGit(['stash', 'push', '--message', 'external']);
+
+    expect(await controller.applyStash(selected), isFalse);
+    expect(await controller.readStashes(), hasLength(2));
+    expect(
+      container.read(repositorySessionProvider).message,
+      '贮藏列表已发生变化，请重新打开管理面板后再操作。',
+    );
+  });
+
+  test(
+    'does not create an empty stash for an untracked nested repository',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', '# Initial\n');
+      await repository.commit('initial');
+      final nested = Directory(
+        '${repository.workingDirectory.path}${Platform.pathSeparator}nested',
+      );
+      await nested.create(recursive: true);
+      await repository.runGit(['init', nested.path]);
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+
+      expect(
+        await controller.createStash('nested only', includeUntracked: true),
+        isFalse,
+      );
+      expect(await controller.readStashes(), isEmpty);
+    },
+  );
+
   test('previews an untracked file as added content before staging', () async {
     final repository = await GitTestRepository.create();
     addTearDown(repository.dispose);
@@ -1024,12 +1199,47 @@ while true; do sleep 1; done
         overview.refs
             .where((ref) => ref.kind == RepositoryRefKind.remoteBranch)
             .map((ref) => ref.label),
-        containsAll(['origin/main', 'origin/feature/remote']),
+        containsAll(['origin/HEAD', 'origin/main', 'origin/feature/remote']),
       );
       expect(
-        overview.refs.map((ref) => ref.label),
-        isNot(contains('origin/HEAD')),
+        overview.refs
+            .where((ref) => ref.kind == RepositoryRefKind.remote)
+            .map((ref) => ref.label),
+        contains('origin'),
       );
+    },
+  );
+
+  test(
+    'removes a configured remote and refreshes the navigation state',
+    () async {
+      final source = await GitTestRepository.create();
+      addTearDown(source.dispose);
+      await source.writeFile('README.md', '# Git Desktop\n');
+      await source.commit('Initial commit');
+      final origin = await source.createBareOrigin();
+      await source.runGit(['push', 'origin', 'main']);
+      final directory = await Directory.systemTemp.createTemp(
+        'git-desktop-remove-remote-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+
+      expect(
+        await controller.cloneRepository(
+          remoteUrl: origin.path,
+          directoryPath: directory.path,
+        ),
+        isTrue,
+      );
+      expect(await controller.removeRemote('origin'), isTrue);
+
+      final state = container.read(repositorySessionProvider);
+      expect(state.phase, RepositorySessionPhase.ready);
+      expect(state.remoteNames, isNot(contains('origin')));
+      expect(state.remoteBranches, isEmpty);
     },
   );
 
@@ -1281,6 +1491,47 @@ while true; do sleep 1; done
 
     expect(container.read(repositorySessionProvider).hasOriginRemote, isFalse);
     expect(await controller.fetchOrigin(), isFalse);
+  });
+
+  test('supports an explicitly selected remote without origin', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', '# Initial\n');
+    await repository.commit('initial');
+    await repository.createBareOrigin();
+    await repository.runGit(['push', '--set-upstream', 'origin', 'main']);
+    await repository.runGit(['remote', 'rename', 'origin', 'upstream']);
+    await repository.runGit(['branch', '--unset-upstream']);
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    final overview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    expect(container.read(repositorySessionProvider).hasOriginRemote, isFalse);
+    expect(container.read(repositorySessionProvider).remoteNames, ['upstream']);
+    expect(overview.disabledActions, isNot(contains(RepositoryAction.fetch)));
+    expect(overview.disabledActions, isNot(contains(RepositoryAction.pull)));
+    expect(overview.disabledActions, isNot(contains(RepositoryAction.push)));
+
+    final upstreamRef = overview.refs.singleWhere(
+      (ref) => ref.kind == RepositoryRefKind.remote,
+    );
+    await controller.selectReference(upstreamRef);
+    expect(
+      container.read(repositorySessionProvider).selectedRefId,
+      'remotes/upstream',
+    );
+    expect(await controller.fetchRemote('upstream'), isTrue);
+    expect(
+      await controller.pullWithOptions(
+        const GitPullOptions(remoteName: 'upstream', remoteBranch: 'main'),
+      ),
+      isTrue,
+    );
   });
 
   test(

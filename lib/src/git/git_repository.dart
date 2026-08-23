@@ -408,6 +408,65 @@ final class GitRepositoryReader {
     return historyParser.parse(result.stdoutBytes).commits;
   }
 
+  /// Reads saved working-tree snapshots without parsing `git stash`'s
+  /// human-oriented default output.
+  ///
+  /// 中文：使用 NUL 分隔字段读取贮藏列表；展示消息不能作为后续 Git 写操作的
+  /// 输入，调用方必须保留 [GitStashEntry.reference]。
+  Future<List<GitStashEntry>> readStashes(GitRepository repository) async {
+    final result = await runner.run(
+      GitInvocation(
+        arguments: const [
+          '--no-pager',
+          '-c',
+          'color.ui=false',
+          'stash',
+          'list',
+          '--format=%gd%x00%H%x00%ct%x00%gs',
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 4 * 1024 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Reading stashes');
+    if (result.stdoutTruncated) {
+      throw const GitParseException(
+        'Stash list exceeded the configured output limit.',
+      );
+    }
+
+    final stashes = <GitStashEntry>[];
+    final output = utf8.decode(result.stdoutBytes, allowMalformed: true);
+    for (final record in output.split('\n')) {
+      if (record.isEmpty) continue;
+      final fields = record.split('\u0000');
+      if (fields.length != 4 ||
+          !_isStashReference(fields[0]) ||
+          !RegExp(r'^[0-9a-fA-F]{7,64}$').hasMatch(fields[1])) {
+        throw GitParseException('Unexpected stash record: $record');
+      }
+      final epochSeconds = int.tryParse(fields[2]);
+      if (epochSeconds == null) {
+        throw GitParseException('Unexpected stash timestamp: ${fields[2]}');
+      }
+      stashes.add(
+        GitStashEntry(
+          reference: fields[0],
+          objectId: fields[1],
+          createdAt: DateTime.fromMillisecondsSinceEpoch(
+            epochSeconds * Duration.millisecondsPerSecond,
+            isUtc: true,
+          ),
+          message: fields[3],
+        ),
+      );
+    }
+    return List<GitStashEntry>.unmodifiable(stashes);
+  }
+
   /// 中文：按对象 ID 读取单个提交，供分支尖端不在当前历史窗口时补充定位。
   /// English: Reads one commit by object ID when a branch tip is outside the
   /// current history window.
@@ -510,10 +569,10 @@ final class GitRepositoryReader {
     return match == null ? 0 : int.parse(match.group(1)!);
   }
 
-  /// 中文：读取全部远端跟踪分支，并跳过 `origin/HEAD` 等符号引用。
+  /// 中文：读取全部远端跟踪分支，并保留 `origin/HEAD` 等符号引用以供导航展示。
   ///
-  /// English: Reads all remote-tracking branches while skipping symbolic refs
-  /// such as `origin/HEAD`.
+  /// English: Reads all remote-tracking branches while retaining symbolic refs
+  /// such as `origin/HEAD` for navigation display.
   Future<List<GitRemoteBranch>> readRemoteBranches(
     GitRepository repository,
   ) async {
@@ -525,7 +584,7 @@ final class GitRepositoryReader {
           'color.ui=false',
           'for-each-ref',
           '--sort=refname',
-          '--format=%(refname:short)%00%(objectname)%00%(symref)',
+          '--format=%(refname:lstrip=2)%00%(objectname)%00%(symref)',
           'refs/remotes',
         ],
         workingDirectory: repository.commandDirectory,
@@ -550,8 +609,13 @@ final class GitRepositoryReader {
       if (fields.length != 3 || fields[0].isEmpty || fields[1].isEmpty) {
         throw GitParseException('Unexpected remote branch record: $record');
       }
-      if (fields[2].isNotEmpty) continue;
-      branches.add(GitRemoteBranch(name: fields[0], objectId: fields[1]));
+      branches.add(
+        GitRemoteBranch(
+          name: fields[0],
+          objectId: fields[1],
+          isSymbolic: fields[2].isNotEmpty,
+        ),
+      );
     }
     return List<GitRemoteBranch>.unmodifiable(branches);
   }
@@ -1146,3 +1210,9 @@ String _decodeSingleLine(List<int> bytes) {
   }
   return utf8.decode(bytes.sublist(0, end), allowMalformed: true);
 }
+
+/// 中文：识别由 Git stash reflog 输出的受限引用选择器。
+/// English: Recognizes the constrained reference selectors emitted by Git's
+/// stash reflog.
+bool _isStashReference(String value) =>
+    RegExp(r'^stash@\{[0-9]+\}$').hasMatch(value);

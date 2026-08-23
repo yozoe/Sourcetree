@@ -56,6 +56,11 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
   final commitChanges = _mapCommitChanges(state);
   final runningOperation = _runningOperation(state.operations);
   final focusedRefCommitId = _selectedRefObjectId(state);
+  final hasStashableTrackedChanges = status.displayEntries.any(
+    (entry) =>
+        entry.kind != GitFileStatusKind.untracked &&
+        (entry.hasStagedChange || entry.hasWorkTreeChange),
+  );
 
   final disabledActions = <RepositoryAction>{
     RepositoryAction.cloneRepository,
@@ -70,6 +75,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
       RepositoryAction.push,
       RepositoryAction.createBranch,
       RepositoryAction.mergeBranch,
+      RepositoryAction.stash,
       RepositoryAction.commit,
     ]);
     if (!isRebaseInProgress) {
@@ -79,19 +85,21 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
       ]);
     }
   }
-  if (!state.hasOriginRemote ||
+  if (state.remoteNames.isEmpty ||
       (state.phase == RepositorySessionPhase.loading &&
           !state.isFetchRunning)) {
     disabledActions.add(RepositoryAction.fetch);
   }
-  if (branch.upstream == null ||
+  if (branch.isUnborn ||
+      branch.isDetached ||
+      state.remoteNames.isEmpty ||
       (state.phase == RepositorySessionPhase.loading && !state.isPullRunning)) {
     disabledActions.add(RepositoryAction.pull);
   }
   final canPushCurrentBranch =
       branch.objectId != null &&
       ((!branch.isDetached &&
-              (branch.upstream != null || state.hasOriginRemote)) ||
+              (branch.upstream != null || state.remoteNames.isNotEmpty)) ||
           (branch.isDetached && detachedPushBranch != null));
   if (!canPushCurrentBranch ||
       (state.phase == RepositorySessionPhase.loading && !state.isPushRunning)) {
@@ -111,6 +119,11 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
       state.phase == RepositorySessionPhase.loading) {
     disabledActions.add(RepositoryAction.commit);
   }
+  if (state.phase == RepositorySessionPhase.loading ||
+      status.conflictedEntries.isNotEmpty ||
+      !hasStashableTrackedChanges) {
+    disabledActions.add(RepositoryAction.stash);
+  }
 
   return RepositoryViewData(
     name: path.basename(repository.workTreeRoot ?? repository.commonDirectory),
@@ -127,6 +140,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     isFetching: state.isFetchRunning,
     isPulling: state.isPullRunning,
     isPushing: state.isPushRunning,
+    isStashing: state.isStashRunning,
     isRebaseInProgress: isRebaseInProgress,
     isWorkingTreeClean: status.isClean,
     refs: [
@@ -160,20 +174,43 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
               ? branch.behind
               : localBranch.behind,
         ),
+      for (final remoteName in state.remoteNames)
+        RepositoryRefViewData(
+          id: 'remotes/$remoteName',
+          label: remoteName,
+          kind: RepositoryRefKind.remote,
+          isSelected: state.selectedRefId == 'remotes/$remoteName',
+          childCount: state.remoteBranches
+              .where(
+                (remoteBranch) => remoteBranch.name.startsWith('$remoteName/'),
+              )
+              .length,
+        ),
       for (final remoteBranch in state.remoteBranches)
         RepositoryRefViewData(
           id: 'refs/remotes/${remoteBranch.name}',
           label: remoteBranch.name,
           kind: RepositoryRefKind.remoteBranch,
+          isSymbolicRemote: remoteBranch.isSymbolic,
           isSelected:
               state.selectedRefId == 'refs/remotes/${remoteBranch.name}',
         ),
-      if (branch.stashCount > 0)
+      // Keep the Stashes entry present even before the first saved snapshot.
+      // This matches Sourcetree's stable navigation structure and provides a
+      // discoverable destination for creating and managing stashes.
+      RepositoryRefViewData(
+        id: 'refs/stash',
+        label: '已贮藏',
+        kind: RepositoryRefKind.stash,
+        isSelected: state.selectedRefId == 'refs/stash',
+      ),
+      for (final stash in state.stashes)
         RepositoryRefViewData(
-          id: 'refs/stash',
-          label: 'Stash',
+          id: 'refs/stash/${stash.objectId}',
+          label: stash.message.trim().isEmpty ? '未命名贮藏' : stash.message.trim(),
           kind: RepositoryRefKind.stash,
-          childCount: branch.stashCount,
+          stashReference: stash.reference,
+          isSelected: state.selectedRefId == 'refs/stash/${stash.objectId}',
         ),
     ],
     commits: commits,
@@ -282,15 +319,16 @@ RepositoryOperationRecord? _runningOperation(
   return null;
 }
 
-/// 中文：将远端操作类型映射为状态栏和日志中使用的本地化标签。
+/// 中文：将 Git 操作类型映射为状态栏和日志中使用的本地化标签。
 ///
-/// English: Maps a remote-operation kind to the localized label used in the
+/// English: Maps a Git-operation kind to the localized label used in the
 /// status bar and activity log.
 String _operationLabel(RepositoryOperationKind kind) => switch (kind) {
   RepositoryOperationKind.clone => '克隆仓库',
   RepositoryOperationKind.fetch => '获取远端更新',
   RepositoryOperationKind.pull => '拉取更新',
   RepositoryOperationKind.push => '推送当前分支',
+  RepositoryOperationKind.stash => '管理贮藏',
 };
 
 /// 中文：将会话操作结果映射为呈现层的状态枚举。

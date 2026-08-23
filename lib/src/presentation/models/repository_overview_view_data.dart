@@ -11,6 +11,7 @@ enum RepositoryAction {
   cancelClone,
   cancelFetch,
   cancelPull,
+  cancelStash,
   continueRebase,
   abortRebase,
   cancelPush,
@@ -21,24 +22,35 @@ enum RepositoryAction {
   showOperationLog,
   createBranch,
   mergeBranch,
+  stash,
   commit,
   refresh,
   retry,
 }
 
-enum RepositoryRefKind { workspace, localBranch, remoteBranch, tag, stash }
+enum RepositoryRefKind {
+  workspace,
+  localBranch,
+  remote,
+  remoteBranch,
+  tag,
+  stash,
+}
 
 /// Actions available from the context menu of one repository reference.
 enum RepositoryRefContextAction {
   fetchOrigin,
   pullCurrentBranch,
   pushCurrentBranch,
+  removeRemote,
   refresh,
   checkout,
   mergeIntoCurrent,
   createBranchFromReference,
   renameLocalBranch,
   deleteLocalBranch,
+  createStash,
+  manageStashes,
 }
 
 enum RepositoryChangeKind {
@@ -133,6 +145,7 @@ final class RepositoryViewData {
     this.isFetching = false,
     this.isPulling = false,
     this.isPushing = false,
+    this.isStashing = false,
     this.isRebaseInProgress = false,
     this.isWorkingTreeClean = true,
     this.refs = const [],
@@ -163,6 +176,7 @@ final class RepositoryViewData {
   final bool isFetching;
   final bool isPulling;
   final bool isPushing;
+  final bool isStashing;
   final bool isRebaseInProgress;
   final bool isWorkingTreeClean;
   final List<RepositoryRefViewData> refs;
@@ -198,6 +212,8 @@ final class RepositoryRefViewData {
     this.ahead = 0,
     this.behind = 0,
     this.childCount,
+    this.stashReference,
+    this.isSymbolicRemote = false,
   });
 
   final String id;
@@ -209,6 +225,14 @@ final class RepositoryRefViewData {
   final int ahead;
   final int behind;
   final int? childCount;
+
+  /// Git's immutable-as-displayed stash selector for a listed stash item.
+  /// 中文：左侧已贮藏列表项对应的 Git 贮藏引用；根入口没有该值。
+  final String? stashReference;
+
+  /// Whether this is a symbolic remote-tracking ref such as `origin/HEAD`.
+  /// 中文：是否为 `origin/HEAD` 这类远端符号引用。
+  final bool isSymbolicRemote;
 }
 
 /// A small topology input used to calculate graph lanes for a history view.

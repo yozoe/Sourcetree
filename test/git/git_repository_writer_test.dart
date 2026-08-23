@@ -193,6 +193,117 @@ void main() {
     );
   });
 
+  test(
+    'creates, lists, applies and pops a stash with its staged index',
+    () async {
+      await fixture.writeFile('README.md', '# Git Desktop\n');
+      await fixture.commit('Initial commit');
+      await fixture.writeFile('README.md', '# Git Desktop\nStaged change\n');
+      await fixture.writeFile('draft.txt', 'untracked draft\n');
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+      final before = await reader.readStatus(repository);
+      await writer.stagePath(
+        repository,
+        before.entries
+            .singleWhere((entry) => entry.path.display == 'README.md')
+            .path,
+      );
+
+      await writer.createStash(
+        repository,
+        message: 'save staged work',
+        includeUntracked: true,
+      );
+
+      expect((await reader.readStatus(repository)).entries, isEmpty);
+      final stashes = await reader.readStashes(repository);
+      expect(stashes, hasLength(1));
+      expect(stashes.single.reference, 'stash@{0}');
+      expect(stashes.single.message, contains('save staged work'));
+
+      await writer.applyStash(
+        repository,
+        stashReference: stashes.single.reference,
+      );
+      final applied = await reader.readStatus(repository);
+      expect(
+        applied.entries
+            .singleWhere((entry) => entry.path.display == 'README.md')
+            .hasStagedChange,
+        isTrue,
+      );
+      expect(
+        applied.entries.map((entry) => entry.path.display),
+        contains('draft.txt'),
+      );
+      expect(await reader.readStashes(repository), hasLength(1));
+
+      await writer.dropStash(
+        repository,
+        stashReference: stashes.single.reference,
+      );
+      expect(await reader.readStashes(repository), isEmpty);
+      await writer.createStash(
+        repository,
+        message: 'restore and pop',
+        includeUntracked: true,
+      );
+      final popEntry = (await reader.readStashes(repository)).single;
+      await writer.popStash(repository, stashReference: popEntry.reference);
+      expect(await reader.readStashes(repository), isEmpty);
+      expect(
+        (await reader.readStatus(repository)).entries
+            .singleWhere((entry) => entry.path.display == 'README.md')
+            .hasStagedChange,
+        isTrue,
+      );
+    },
+  );
+
+  test('drops a selected stash and rejects non-stash references', () async {
+    await fixture.writeFile('README.md', '# Git Desktop\n');
+    await fixture.commit('Initial commit');
+    await fixture.writeFile('README.md', '# Git Desktop\nSaved\n');
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+    await writer.createStash(repository, message: 'discard later');
+    final entry = (await reader.readStashes(repository)).single;
+
+    await writer.dropStash(repository, stashReference: entry.reference);
+    expect(await reader.readStashes(repository), isEmpty);
+    expect(
+      () => writer.applyStash(repository, stashReference: 'HEAD'),
+      throwsA(isA<ArgumentError>()),
+    );
+  });
+
+  test('keeps staged changes when creating a stash with keep-index', () async {
+    await fixture.writeFile('README.md', '# Git Desktop\n');
+    await fixture.commit('Initial commit');
+    await fixture.writeFile('README.md', '# Git Desktop\nStaged\n');
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+    final changed = (await reader.readStatus(repository)).entries.single;
+    await writer.stagePath(repository, changed.path);
+
+    await writer.createStash(
+      repository,
+      message: 'keep staged',
+      keepIndex: true,
+    );
+
+    final after = await reader.readStatus(repository);
+    expect(after.stagedEntries, hasLength(1));
+    expect(
+      (await reader.readStashes(repository)).single.message,
+      contains('keep staged'),
+    );
+  });
+
   test('amends the current commit from the staged index', () async {
     await fixture.writeFile('README.md', '# Git Desktop\n');
     await fixture.commit('Initial commit');
@@ -410,6 +521,23 @@ void main() {
       'refs/heads/feature/remote-delete',
     ], workingDirectory: origin.path);
     expect(remoteRef.exitCode, isNot(0));
+  });
+
+  test('removes only the local configuration for a remote', () async {
+    await fixture.writeFile('README.md', 'base\n');
+    await fixture.commit('Initial commit');
+    final origin = await fixture.createBareOrigin();
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await writer.removeRemote(repository, 'origin');
+
+    final remotes = (await fixture.runGit([
+      'remote',
+    ])).stdout.toString().split('\n').where((name) => name.isNotEmpty);
+    expect(remotes, isNot(contains('origin')));
+    expect(await Directory(origin.path).exists(), isTrue);
   });
 
   test('switches to an existing local branch without creating a ref', () async {

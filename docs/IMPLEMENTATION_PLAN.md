@@ -49,13 +49,13 @@
 | 模块 | MVP | Alpha / Beta | 1.x |
 | --- | --- | --- | --- |
 | 仓库管理 | 独立仓库首页、打开、克隆、初始化、单仓库工作区窗口、仓库清单恢复 | 收藏 | 工作区分组 |
-| 工作区 | tracked/untracked/ignored 状态、整文件暂存、分组批量暂存/取消暂存 | hunk/行级暂存、过滤、丢弃预览 | sparse checkout 增强 |
+| 工作区 | tracked/untracked/ignored 状态、整文件暂存、分组批量暂存/取消暂存、选中“文件状态”时完整展示工作区文件、Diff 和提交入口 | hunk/行级暂存、过滤、丢弃预览 | sparse checkout 增强 |
 | Diff | Unified Diff、文本/二进制识别、大文件降级 | 左右对比、语法高亮、空白选项 | 可扩展渲染器 |
 | 提交 | Commit、Amend、作者校验、hook 错误展示 | 模板、签名状态 | 提交草稿 |
 | 历史 | 分页列表、基础 DAG、提交详情、双击检出提交、detached HEAD 引用展示 | 搜索、文件历史、Blame、Reflog | 高级查询 |
 | Branch / Tag | 创建/切换/重命名本地分支、从指定本地或已获取远端分支创建分支、引用右键菜单、安全删除已合并分支 | 跟踪关系、Tag | Worktree |
-| 远端 | 已获取远端跟踪分支展示、按远端配置 Pull、Fetch、Push、进度和取消 | Remote 管理、Prune、安全 Force Push | 托管平台适配 |
-| 高级操作 | 本地分支安全合并、拉取变基、变基 Continue/Abort、冲突状态展示 | 独立 Rebase、Cherry-pick、Revert、Reset、Stash | 高级批量操作 |
+| 远端 | 按已配置远端分组展示跟踪引用和符号 HEAD、按远端配置 Pull/Fetch/Push、右键安全移除本地远端配置、进度和取消 | Prune、安全 Force Push | 托管平台适配 |
+| 高级操作 | 本地分支安全合并、拉取变基、变基 Continue/Abort、冲突状态展示、贮藏创建/恢复/弹出/删除（工具栏和左侧入口创建；左侧固定显示真实贮藏列表，选择后在引用导航右侧完整预览文件和 Diff；仅在可安全保存已跟踪改动时启用） | 独立 Rebase、Cherry-pick、Revert、Reset | 高级批量操作 |
 | 冲突 | 检测并展示进行中状态；内置文本 Diff 左右对比、选边、编辑结果并标记已解决；变基可 Continue/Abort | Skip、外部工具 | 二进制和高级三方合并器评估 |
 | Git 扩展 | — | Submodule、LFS 基础能力 | 深度增强 |
 | 桌面集成 | Finder/终端入口、快捷键、深浅主题 | 中英文、外部 Diff/Merge、自动更新 | Windows/Linux 原生集成 |
@@ -367,7 +367,7 @@ Git 进程不阻塞 UI，危险操作不静默执行。
 
 - 仓库收藏、工作区分组和首页管理操作。
 - hunk/行级暂存。
-- Tag、Stash、独立 Rebase、Cherry-pick、Revert、Reset。
+- Tag、独立 Rebase、Cherry-pick、Revert、Reset。
 - 历史搜索、左右 Diff、基础冲突处理。
 - Remote 管理、Keychain 和快捷键。
 

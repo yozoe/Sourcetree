@@ -35,7 +35,7 @@ final repositorySessionProvider =
 
 enum RepositorySessionPhase { empty, loading, ready, error }
 
-enum RepositoryOperationKind { clone, fetch, pull, push }
+enum RepositoryOperationKind { clone, fetch, pull, push, stash }
 
 enum RepositoryOperationOutcome { running, succeeded, cancelled, failed }
 
@@ -213,7 +213,9 @@ final class RepositorySessionState {
     this.originUrl,
     this.operationState = GitRepositoryOperationState.none,
     this.localBranches = const [],
+    this.remoteNames = const [],
     this.remoteBranches = const [],
+    this.stashes = const [],
     this.commits = const [],
     this.selectedRefId = 'workspace',
     this.selectedCommitId,
@@ -231,6 +233,7 @@ final class RepositorySessionState {
     this.isFetchRunning = false,
     this.isPullRunning = false,
     this.isPushRunning = false,
+    this.isStashRunning = false,
     this.operations = const [],
     this.openRepositoryTabs = const [],
     this.activeRepositoryTabPath,
@@ -251,7 +254,9 @@ final class RepositorySessionState {
   final String? originUrl;
   final GitRepositoryOperationState operationState;
   final List<GitLocalBranch> localBranches;
+  final List<String> remoteNames;
   final List<GitRemoteBranch> remoteBranches;
+  final List<GitStashEntry> stashes;
   final List<GitCommit> commits;
   final String selectedRefId;
   final String? selectedCommitId;
@@ -269,6 +274,7 @@ final class RepositorySessionState {
   final bool isFetchRunning;
   final bool isPullRunning;
   final bool isPushRunning;
+  final bool isStashRunning;
   final List<RepositoryOperationRecord> operations;
   final List<RepositoryTab> openRepositoryTabs;
   final String? activeRepositoryTabPath;
@@ -291,7 +297,9 @@ final class RepositorySessionState {
     String? originUrl,
     GitRepositoryOperationState? operationState,
     List<GitLocalBranch>? localBranches,
+    List<String>? remoteNames,
     List<GitRemoteBranch>? remoteBranches,
+    List<GitStashEntry>? stashes,
     List<GitCommit>? commits,
     String? selectedRefId,
     String? selectedCommitId,
@@ -309,6 +317,7 @@ final class RepositorySessionState {
     bool? isFetchRunning,
     bool? isPullRunning,
     bool? isPushRunning,
+    bool? isStashRunning,
     List<RepositoryOperationRecord>? operations,
     List<RepositoryTab>? openRepositoryTabs,
     String? activeRepositoryTabPath,
@@ -332,7 +341,9 @@ final class RepositorySessionState {
       originUrl: originUrl ?? this.originUrl,
       operationState: operationState ?? this.operationState,
       localBranches: localBranches ?? this.localBranches,
+      remoteNames: remoteNames ?? this.remoteNames,
       remoteBranches: remoteBranches ?? this.remoteBranches,
+      stashes: stashes ?? this.stashes,
       commits: commits ?? this.commits,
       selectedRefId: selectedRefId ?? this.selectedRefId,
       selectedCommitId: clearSelectedCommit
@@ -356,6 +367,7 @@ final class RepositorySessionState {
       isFetchRunning: isFetchRunning ?? this.isFetchRunning,
       isPullRunning: isPullRunning ?? this.isPullRunning,
       isPushRunning: isPushRunning ?? this.isPushRunning,
+      isStashRunning: isStashRunning ?? this.isStashRunning,
       operations: operations ?? this.operations,
       openRepositoryTabs: openRepositoryTabs ?? this.openRepositoryTabs,
       activeRepositoryTabPath:
@@ -413,6 +425,7 @@ final class RepositorySessionController
   GitCancellationToken? _pullCancellation;
   GitCancellationToken? _pushCancellation;
   GitCancellationToken? _pushVerificationCancellation;
+  GitCancellationToken? _stashCancellation;
   Future<void> _sessionWriteChain = Future<void>.value();
   bool _isRestoringSession = false;
   bool _sessionPersistenceEnabled = false;
@@ -426,13 +439,13 @@ final class RepositorySessionController
     _reader = ref.watch(gitRepositoryReaderProvider);
     _writer = ref.watch(gitRepositoryWriterProvider);
     _sessionStore = ref.watch(repositorySessionStoreProvider);
-    ref.onDispose(_cancelActiveRemoteOperations);
+    ref.onDispose(_cancelActiveGitOperations);
     return const RepositorySessionState.empty();
   }
 
-  /// 中文：取消当前 Engine 的远端操作，并短暂等待 Git 与 AskPass 释放原生资源。
+  /// 中文：取消当前 Engine 的 Git 操作，并短暂等待 Git 与 AskPass 释放原生资源。
   ///
-  /// English: Cancels Engine-owned remote operations and waits briefly for
+  /// English: Cancels Engine-owned Git operations and waits briefly for
   /// their Git processes and AskPass sessions to release native resources.
   Future<void> prepareForShutdown({
     Duration timeout = const Duration(seconds: 2),
@@ -441,27 +454,29 @@ final class RepositorySessionController
     _diffGeneration++;
     _commitGeneration++;
     _commitDiffGeneration++;
-    _cancelActiveRemoteOperations();
+    _cancelActiveGitOperations();
 
     final deadline = DateTime.now().add(timeout);
-    while (_hasActiveRemoteOperation && DateTime.now().isBefore(deadline)) {
+    while (_hasActiveGitOperation && DateTime.now().isBefore(deadline)) {
       await Future<void>.delayed(const Duration(milliseconds: 10));
     }
   }
 
-  bool get _hasActiveRemoteOperation =>
+  bool get _hasActiveGitOperation =>
       _cloneCancellation != null ||
       _fetchCancellation != null ||
       _pullCancellation != null ||
       _pushCancellation != null ||
-      _pushVerificationCancellation != null;
+      _pushVerificationCancellation != null ||
+      _stashCancellation != null;
 
-  void _cancelActiveRemoteOperations() {
+  void _cancelActiveGitOperations() {
     _cloneCancellation?.cancel();
     _fetchCancellation?.cancel();
     _pullCancellation?.cancel();
     _pushCancellation?.cancel();
     _pushVerificationCancellation?.cancel();
+    _stashCancellation?.cancel();
   }
 
   /// 中文：恢复上次成功打开的仓库和活动标签，不保存凭据或运行中的操作；失效路径会被丢弃。
@@ -609,7 +624,9 @@ final class RepositorySessionController
         _reader.readRemoteUrl(repository),
         _reader.readOperationState(repository),
         _reader.readLocalBranches(repository),
+        _reader.readRemoteNames(repository),
         _reader.readRemoteBranches(repository),
+        _reader.readStashes(repository),
         _reader.readRecentHistory(repository),
         _readGitVersion(),
       ]);
@@ -625,8 +642,10 @@ final class RepositorySessionController
       final hasOriginRemote = rawOriginUrl != null;
       final operationState = results[2] as GitRepositoryOperationState;
       final localBranches = results[3] as List<GitLocalBranch>;
-      final remoteBranches = results[4] as List<GitRemoteBranch>;
-      final commits = results[5] as List<GitCommit>;
+      final remoteNames = results[4] as List<String>;
+      final remoteBranches = results[5] as List<GitRemoteBranch>;
+      final stashes = results[6] as List<GitStashEntry>;
+      final commits = results[7] as List<GitCommit>;
       final tab = RepositoryTab(
         path: repository.commandDirectory,
         label: path_utils.basename(
@@ -642,7 +661,9 @@ final class RepositorySessionController
         originUrl: originUrl,
         operationState: operationState,
         localBranches: localBranches,
+        remoteNames: remoteNames,
         remoteBranches: remoteBranches,
+        stashes: stashes,
         commits: commits,
         // Keep the working-tree inspector visible until the user chooses a
         // historical commit. Selecting a commit then replaces it with that
@@ -653,7 +674,7 @@ final class RepositorySessionController
           _upsertRepositoryTab(state.openRepositoryTabs, tab),
         ),
         activeRepositoryTabPath: tab.path,
-        gitVersion: results[6] as String,
+        gitVersion: results[8] as String,
         searchQuery: state.searchQuery,
       );
       _persistRepositorySession();
@@ -682,6 +703,7 @@ final class RepositorySessionController
         state.isFetchRunning ||
         state.isPullRunning ||
         state.isPushRunning ||
+        state.isStashRunning ||
         !state.openRepositoryTabs.any((tab) => tab.path == repositoryPath)) {
       return;
     }
@@ -1012,6 +1034,36 @@ final class RepositorySessionController
     return _reader.readRemoteNames(repository);
   }
 
+  /// Removes one configured remote after verifying it still exists, then
+  /// reloads all repository state from Git.
+  ///
+  /// 中文：确认远端仍存在后移除其本地配置，并重新从 Git 读取完整仓库状态。
+  Future<bool> removeRemote(String remoteName) async {
+    final repository = state.repository;
+    final normalizedName = remoteName.trim();
+    if (repository == null ||
+        normalizedName.isEmpty ||
+        state.operationState != GitRepositoryOperationState.none ||
+        state.phase == RepositorySessionPhase.loading) {
+      return false;
+    }
+    try {
+      final remoteNames = await _reader.readRemoteNames(repository);
+      if (!remoteNames.contains(normalizedName)) return false;
+      await _writer.removeRemote(repository, normalizedName);
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      return false;
+    }
+  }
+
   /// 中文：仅在工作区和索引干净且有上游时快速前进拉取，并在失败后刷新引用状态。
   ///
   /// English: Fast-forward pulls only with a clean work tree/index and an
@@ -1088,10 +1140,23 @@ final class RepositorySessionController
     final status = state.status;
     if (repository == null ||
         status == null ||
-        status.branch.upstream == null ||
         state.phase == RepositorySessionPhase.loading) {
       return false;
     }
+    List<String> remoteNames;
+    try {
+      remoteNames = await _reader.readRemoteNames(repository);
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isPullRunning: false,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      return false;
+    }
+    if (!remoteNames.contains(options.remoteName.trim())) return false;
     final cancellation = GitCancellationToken();
     _pullCancellation = cancellation;
     final operation = _startOperation(RepositoryOperationKind.pull);
@@ -1476,6 +1541,7 @@ final class RepositorySessionController
       _commitDiffGeneration++;
       state = state.copyWith(
         selectedRefId: 'workspace',
+        commits: _commitsWithoutStashPreviews(),
         clearSelectedCommit: true,
         commitChanges: const [],
         commitAdditions: 0,
@@ -1486,6 +1552,45 @@ final class RepositorySessionController
         clearCommitDiff: true,
         clearMessage: true,
       );
+      return;
+    }
+
+    if (reference.kind == RepositoryRefKind.remote) {
+      state = state.copyWith(selectedRefId: reference.id, clearMessage: true);
+      return;
+    }
+
+    if (reference.kind == RepositoryRefKind.stash) {
+      final previewFreeCommits = _commitsWithoutStashPreviews();
+      if (reference.stashReference == null) {
+        _commitGeneration++;
+        _commitDiffGeneration++;
+        state = state.copyWith(
+          selectedRefId: reference.id,
+          commits: previewFreeCommits,
+          clearSelectedCommit: true,
+          commitChanges: const [],
+          commitAdditions: 0,
+          commitDeletions: 0,
+          isCommitLoading: false,
+          isCommitDiffLoading: false,
+          clearSelectedCommitFile: true,
+          clearCommitDiff: true,
+          clearMessage: true,
+        );
+        return;
+      }
+      state = state.copyWith(
+        selectedRefId: reference.id,
+        commits: previewFreeCommits,
+      );
+      final stashObjectId = state.stashes
+          .where((stash) => stash.reference == reference.stashReference)
+          .map((stash) => stash.objectId)
+          .firstOrNull;
+      if (stashObjectId != null) {
+        await selectCommit(stashObjectId);
+      }
       return;
     }
 
@@ -1513,7 +1618,10 @@ final class RepositorySessionController
     }
     if (objectId == null || selectedRefId == null) return;
 
-    state = state.copyWith(selectedRefId: selectedRefId);
+    state = state.copyWith(
+      selectedRefId: selectedRefId,
+      commits: _commitsWithoutStashPreviews(),
+    );
     await selectCommit(objectId);
   }
 
@@ -1659,6 +1767,19 @@ final class RepositorySessionController
       if (commit.objectId == objectId) return commit.parentIds.firstOrNull;
     }
     return null;
+  }
+
+  /// 中文：移除仅为贮藏预览临时读取的提交，避免其进入正常历史与 Graph。
+  /// English: Removes commits loaded only for stash preview so they never leak
+  /// into the normal history list or graph.
+  List<GitCommit> _commitsWithoutStashPreviews() {
+    final stashObjectIds = state.stashes.map((stash) => stash.objectId).toSet();
+    if (stashObjectIds.isEmpty) return state.commits;
+    return List<GitCommit>.unmodifiable(
+      state.commits.where(
+        (commit) => !stashObjectIds.contains(commit.objectId),
+      ),
+    );
   }
 
   /// 中文：更新当前选择。
@@ -2055,6 +2176,221 @@ final class RepositorySessionController
       return false;
     }
   }
+
+  /// Reads the current stash reflog for the management dialog. This is
+  /// read-only and deliberately does not change the active work-tree view.
+  ///
+  /// 中文：读取当前贮藏列表供管理面板展示，不改变工作区或当前提交选择。
+  Future<List<GitStashEntry>> readStashes() async {
+    final repository = state.repository;
+    if (repository == null) return const [];
+    return _reader.readStashes(repository);
+  }
+
+  /// Saves eligible working-tree changes in a new stash and refreshes all
+  /// Git-backed state after Git completes.
+  ///
+  /// 中文：将可保存的改动创建为新贮藏；可选择包含未跟踪文件或保留暂存区，
+  /// 完成后重新读取 Git 状态。
+  Future<bool> createStash(
+    String message, {
+    bool includeUntracked = false,
+    bool keepIndex = false,
+  }) async {
+    final status = state.status;
+    final hasTrackedChanges =
+        status?.displayEntries.any(
+          (entry) =>
+              entry.kind != GitFileStatusKind.untracked &&
+              (entry.hasStagedChange || entry.hasWorkTreeChange),
+        ) ??
+        false;
+    final hasUntrackedChanges =
+        status?.displayEntries.any(
+          (entry) => entry.kind == GitFileStatusKind.untracked,
+        ) ??
+        false;
+    if (!_canMutateStashes ||
+        status == null ||
+        status.conflictedEntries.isNotEmpty ||
+        (!hasTrackedChanges && !(includeUntracked && hasUntrackedChanges))) {
+      return false;
+    }
+    return _runStashMutation(
+      successMessage: '已创建贮藏。',
+      write: (repository, cancellation) => _writer.createStash(
+        repository,
+        message: message,
+        includeUntracked: includeUntracked,
+        keepIndex: keepIndex,
+        cancellationToken: cancellation,
+      ),
+    );
+  }
+
+  /// Applies one stash while retaining it in Git's stash reflog.
+  ///
+  /// 中文：恢复指定贮藏并保留该条目；为避免覆盖本地改动，仅允许在干净工作区执行。
+  Future<bool> applyStash(GitStashEntry stash) =>
+      _restoreStash(stash, pop: false);
+
+  /// Applies one stash and lets Git remove it only after a successful restore.
+  ///
+  /// 中文：恢复并弹出指定贮藏；若 Git 发生冲突，条目会保留以便用户继续恢复。
+  Future<bool> popStash(GitStashEntry stash) => _restoreStash(stash, pop: true);
+
+  /// Drops one stash after the presentation layer has obtained confirmation.
+  ///
+  /// 中文：删除指定贮藏；此方法只处理 Git 写入与状态刷新，确认由界面层负责。
+  Future<bool> dropStash(GitStashEntry stash) async {
+    if (!_canMutateStashes || !await _isCurrentStash(stash)) return false;
+    return _runStashMutation(
+      successMessage: '已删除贮藏。',
+      write: (repository, cancellation) => _writer.dropStash(
+        repository,
+        stashReference: stash.reference,
+        cancellationToken: cancellation,
+      ),
+    );
+  }
+
+  /// 中文：判断当前仓库是否允许安全开始一项贮藏写操作。
+  /// English: Returns whether the current repository can safely start a stash
+  /// mutation.
+  bool get _canMutateStashes {
+    final repository = state.repository;
+    return repository != null &&
+        repository.workTreeRoot != null &&
+        state.phase != RepositorySessionPhase.loading &&
+        state.operationState == GitRepositoryOperationState.none;
+  }
+
+  /// 中文：在干净工作区恢复或弹出指定贮藏，并把冲突状态交还给 Git 和刷新流程。
+  /// English: Restores or pops one stash only on a clean work tree, leaving
+  /// conflict state to Git and the subsequent refresh.
+  Future<bool> _restoreStash(GitStashEntry stash, {required bool pop}) async {
+    final status = state.status;
+    if (!_canMutateStashes ||
+        status == null ||
+        !status.isClean ||
+        status.conflictedEntries.isNotEmpty ||
+        !await _isCurrentStash(stash)) {
+      return false;
+    }
+    return _runStashMutation(
+      successMessage: pop ? '已恢复并弹出贮藏。' : '已恢复贮藏。',
+      conflictMessage: pop
+          ? '恢复贮藏时发生冲突；贮藏已保留，请解决冲突后继续。'
+          : '恢复贮藏时发生冲突；贮藏仍已保留，请解决冲突后继续。',
+      write: (repository, cancellation) => pop
+          ? _writer.popStash(
+              repository,
+              stashReference: stash.reference,
+              cancellationToken: cancellation,
+            )
+          : _writer.applyStash(
+              repository,
+              stashReference: stash.reference,
+              cancellationToken: cancellation,
+            ),
+    );
+  }
+
+  /// 中文：确认贮藏列表在用户确认后仍指向同一个 Git 对象，避免 reflog
+  /// 索引因外部操作变化而误作用于其他贮藏。
+  /// English: Confirms that a stash selector still resolves to the same Git
+  /// object after user confirmation, protecting against reflog index shifts.
+  Future<bool> _isCurrentStash(GitStashEntry expected) async {
+    final repository = state.repository;
+    if (repository == null) return false;
+    try {
+      final stashes = await _reader.readStashes(repository);
+      final matches = stashes.any(
+        (stash) =>
+            stash.reference == expected.reference &&
+            stash.objectId == expected.objectId,
+      );
+      if (matches) return true;
+    } on Object {
+      // Surface the same stale-list guidance below; a reader failure also
+      // means it is unsafe to operate on a positional stash reference.
+    }
+    state = state.copyWith(
+      phase: RepositorySessionPhase.error,
+      isStashRunning: false,
+      message: '贮藏列表已发生变化，请重新打开管理面板后再操作。',
+    );
+    return false;
+  }
+
+  /// 中文：串行执行一项贮藏写操作，确保完成、失败或取消后均重新读取 Git 状态。
+  /// English: Runs one stash mutation and refreshes Git-backed state after
+  /// success, failure, or cancellation.
+  Future<bool> _runStashMutation({
+    required String successMessage,
+    String? conflictMessage,
+    required Future<void> Function(GitRepository, GitCancellationToken) write,
+  }) async {
+    final repository = state.repository;
+    if (repository == null) return false;
+    final cancellation = GitCancellationToken();
+    _stashCancellation = cancellation;
+    final operation = _startOperation(RepositoryOperationKind.stash);
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isStashRunning: true,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await write(repository, cancellation);
+      await refresh();
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.failed,
+        message: succeeded ? successMessage : state.message,
+      );
+      return succeeded;
+    } on Object catch (error, stackTrace) {
+      // `stash apply` and `stash pop` can leave conflict entries even though
+      // Git returns an error. Refresh before showing the failure so the user
+      // always sees the actual Git state and a recovery path.
+      await refresh();
+      final message =
+          error is GitCommandException &&
+              error.kind == GitErrorKind.conflicts &&
+              conflictMessage != null
+          ? conflictMessage
+          : _friendlyError(error);
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isStashRunning: false,
+        isDiffLoading: false,
+        message: message,
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: message,
+      );
+      return false;
+    } finally {
+      if (identical(_stashCancellation, cancellation)) {
+        _stashCancellation = null;
+      }
+    }
+  }
+
+  /// 中文：取消当前贮藏操作；进程结束后会刷新仓库状态。
+  /// English: Cancels the active stash process; repository state is refreshed
+  /// once the process exits.
+  void cancelStash() => _stashCancellation?.cancel();
 
   /// Creates a local branch at HEAD without switching the current work tree.
   /// 中文：创建所需的对象或资源。
