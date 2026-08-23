@@ -445,6 +445,7 @@ void main() {
     final feature = commits.firstWhere(
       (commit) => commit.subject == 'feature commit',
     );
+    final base = commits.firstWhere((commit) => commit.subject == 'base');
 
     expect(commits.first.graph.hasPreviousNode, isFalse);
     expect(commits[1].graph.hasPreviousNode, isTrue);
@@ -456,7 +457,12 @@ void main() {
     expect(main.graph.activeLaneDestinations, everyElement(isNotNull));
     expect(feature.graph.activeLanes, contains(feature.graph.lane));
     expect(main.graph.lane, isNot(feature.graph.lane));
-    expect(main.graph.parentLanes, feature.graph.parentLanes);
+    expect(main.graph.parentLanes, [main.graph.lane]);
+    expect(feature.graph.parentLanes, [feature.graph.lane]);
+    expect(
+      {base.graph.lane, ...base.graph.incomingLanes},
+      {main.graph.lane, feature.graph.lane},
+    );
   });
 
   test(
@@ -606,7 +612,7 @@ void main() {
     );
   });
 
-  test('switches branches only while the repository is clean', () async {
+  test('switches branches while preserving safe untracked changes', () async {
     final repository = await GitTestRepository.create();
     addTearDown(repository.dispose);
     await repository.writeFile('README.md', '# Git Desktop\n');
@@ -629,15 +635,49 @@ void main() {
 
     await repository.writeFile('uncommitted.txt', 'do not switch\n');
     await controller.refresh();
-    expect(await controller.switchToLocalBranch('main'), isFalse);
+    expect(await controller.switchToLocalBranch('main'), isTrue);
     expect(
       (await repository.runGit([
         'branch',
         '--show-current',
       ])).stdout.toString().trim(),
-      'feature/switch-branch',
+      'main',
+    );
+    expect(
+      (await repository.runGit(['status', '--short'])).stdout.toString(),
+      contains('?? uncommitted.txt'),
     );
   });
+
+  test(
+    'refuses switching when the target branch would overwrite changes',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      await repository.commit('Initial commit');
+      await repository.runGit(['branch', 'feature/conflict']);
+      await repository.runGit(['switch', 'feature/conflict']);
+      await repository.writeFile('README.md', 'feature\n');
+      await repository.commit('Feature README');
+      await repository.runGit(['switch', 'main']);
+      await repository.writeFile('README.md', 'local change\n');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+
+      expect(await controller.switchToLocalBranch('feature/conflict'), isFalse);
+      expect(
+        (await repository.runGit([
+          'branch',
+          '--show-current',
+        ])).stdout.toString().trim(),
+        'main',
+      );
+    },
+  );
 
   test('initializes and opens an empty directory', () async {
     final directory = await Directory.systemTemp.createTemp(

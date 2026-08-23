@@ -977,6 +977,7 @@ class _RefsNavigation extends StatelessWidget {
             key: ValueKey<String>('ref-directory:${node.path}'),
             node: node,
             depth: 0,
+            colorFor: (ref) => _refGraphColor(repository, ref),
             isSelected: _isReferenceSelected,
             onSelected: onSelected,
             onActivated: onActivated,
@@ -994,6 +995,7 @@ class _RefsNavigation extends StatelessWidget {
     return _RefTile(
       ref: ref,
       label: label,
+      graphColor: _refGraphColor(repository, ref),
       isSelected: _isReferenceSelected(ref),
       onTap: onSelected == null ? null : () => onSelected!(ref),
       onDoubleTap: onActivated == null ? null : () => onActivated!(ref),
@@ -1021,7 +1023,11 @@ class _RefsNavigation extends StatelessWidget {
         !isBusy && !disabledActions.contains(RepositoryAction.fetch);
     final canPull = !isBusy && !disabledActions.contains(RepositoryAction.pull);
     final canPush = !isBusy && !disabledActions.contains(RepositoryAction.push);
-    final canSwitch = repository.isWorkingTreeClean && !isBusy;
+    final canSwitch =
+        !isBusy &&
+        !repository.changes.any(
+          (change) => change.kind == RepositoryChangeKind.conflicted,
+        );
     final canMerge = !disabledActions.contains(RepositoryAction.mergeBranch);
     final canCreate =
         !isBusy && !disabledActions.contains(RepositoryAction.createBranch);
@@ -1212,6 +1218,50 @@ IconData _refKindIcon(RepositoryRefKind kind) {
   };
 }
 
+/// 中文：返回左侧引用图标复用的提交图车道颜色；非分支引用保持主题中性色。
+///
+/// English: Returns the commit-graph lane color reused by a sidebar ref icon;
+/// non-branch refs keep the theme's neutral color.
+Color? _refGraphColor(
+  RepositoryViewData repository,
+  RepositoryRefViewData ref,
+) {
+  if (ref.id == 'HEAD' || ref.kind == RepositoryRefKind.remoteBranch) {
+    return _graphBaseOrange;
+  }
+  CommitViewData? commit;
+  for (final candidate in repository.commits) {
+    if (candidate.refs.contains(ref.label)) {
+      commit = candidate;
+      break;
+    }
+  }
+  if (commit != null) {
+    return _graphPalette[commit.graph.colorIndex.abs() % _graphPalette.length];
+  }
+  if (ref.kind == RepositoryRefKind.localBranch) {
+    final localBranches = repository.refs
+        .where(
+          (candidate) =>
+              candidate.kind == RepositoryRefKind.localBranch &&
+              candidate.id != 'HEAD',
+        )
+        .toList(growable: false);
+    final isPrimary =
+        ref.label == repository.primaryLocalBranch ||
+        (repository.primaryLocalBranch == null &&
+            ref.label == repository.currentBranch);
+    if (isPrimary) return _graphPrimaryBlue;
+    final index = localBranches.indexWhere(
+      (candidate) => candidate.id == ref.id,
+    );
+    if (index >= 0) {
+      return _graphPalette[(index + 1) % _graphPalette.length];
+    }
+  }
+  return null;
+}
+
 /// A directory node derived from slash-delimited local branch names.
 ///
 /// 中文：由带斜杠的本地分支名派生的目录节点；叶节点持有真实 Git 引用。
@@ -1264,6 +1314,7 @@ final class _RefDirectoryTile extends StatefulWidget {
     super.key,
     required this.node,
     required this.depth,
+    required this.colorFor,
     required this.isSelected,
     required this.onSelected,
     required this.onActivated,
@@ -1273,6 +1324,7 @@ final class _RefDirectoryTile extends StatefulWidget {
 
   final _RefNavigationTreeNode node;
   final int depth;
+  final Color? Function(RepositoryRefViewData ref) colorFor;
   final bool Function(RepositoryRefViewData ref) isSelected;
   final RepositoryRefCallback? onSelected;
   final RepositoryRefCallback? onActivated;
@@ -1357,6 +1409,7 @@ class _RefDirectoryTileState extends State<_RefDirectoryTile> {
               ref: ref,
               label: widget.node.label,
               indent: childDepth,
+              graphColor: widget.colorFor(ref),
               isSelected: widget.isSelected(ref),
               onTap: widget.onSelected == null
                   ? null
@@ -1376,6 +1429,7 @@ class _RefDirectoryTileState extends State<_RefDirectoryTile> {
                 ref: child.reference!,
                 label: child.label,
                 indent: childDepth,
+                graphColor: widget.colorFor(child.reference!),
                 isSelected: widget.isSelected(child.reference!),
                 onTap: widget.onSelected == null
                     ? null
@@ -1394,6 +1448,7 @@ class _RefDirectoryTileState extends State<_RefDirectoryTile> {
                 key: ValueKey<String>('ref-directory:${child.path}'),
                 node: child,
                 depth: childDepth,
+                colorFor: widget.colorFor,
                 isSelected: widget.isSelected,
                 onSelected: widget.onSelected,
                 onActivated: widget.onActivated,
@@ -1411,6 +1466,7 @@ class _RefTile extends StatelessWidget {
     required this.ref,
     this.label,
     this.indent = 0,
+    this.graphColor,
     required this.isSelected,
     required this.onTap,
     required this.onDoubleTap,
@@ -1421,6 +1477,7 @@ class _RefTile extends StatelessWidget {
   final RepositoryRefViewData ref;
   final String? label;
   final int indent;
+  final Color? graphColor;
   final bool isSelected;
   final VoidCallback? onTap;
   final VoidCallback? onDoubleTap;
@@ -1504,13 +1561,16 @@ class _RefTile extends StatelessWidget {
                 child: Row(
                   children: [
                     Icon(
+                      key: ValueKey<String>('ref-nav-icon:${ref.id}'),
                       ref.isCurrent
                           ? Icons.radio_button_checked
                           : _refKindIcon(ref.kind),
                       size: 15,
-                      color: ref.isCurrent
-                          ? colors.primary
-                          : colors.onSurfaceVariant,
+                      color:
+                          graphColor ??
+                          (ref.isCurrent
+                              ? colors.primary
+                              : colors.onSurfaceVariant),
                     ),
                     const SizedBox(width: 7),
                     Expanded(
@@ -1553,9 +1613,9 @@ class _RefTile extends StatelessWidget {
   }
 }
 
-// Sourcetree's history uses compact 20px rows: this keeps the commit graph
-// readable while allowing the topology, refs and subject to sit in one scan.
-const double _historyRowHeight = 20;
+// Sourcetree's history uses compact 24px rows: this keeps the commit graph
+// readable while giving each history entry a little more breathing room.
+const double _historyRowHeight = 24;
 const double _historyDescriptionMinimumWidth = 0;
 const double _historyGraphMinimumWidth = 0;
 const double _historyCommitMinimumWidth = 0;
@@ -1686,11 +1746,21 @@ class _HistoryPaneState extends State<_HistoryPane> {
     final colors = Theme.of(context).colorScheme;
     final showUncommittedChanges = !widget.repository.isWorkingTreeClean;
     final commits = _visibleCommits(widget.repository);
-    final graphs = _graphsFor(
-      commits,
-      headId: widget.repository.headOid,
-      isDetachedHead: widget.repository.isDetachedHead,
-    );
+    final fallbackGraphs =
+        commits.every(
+          (commit) =>
+              commit.graph.lane == 0 &&
+              commit.graph.colorIndex == 0 &&
+              commit.graph.activeLanes.length == 1 &&
+              commit.graph.activeLanes.first == 0 &&
+              commit.graph.parentLanes.length <= 1,
+        )
+        ? _fallbackGraphsFor(
+            commits,
+            headId: widget.repository.headOid,
+            isDetachedHead: widget.repository.isDetachedHead,
+          )
+        : const <String, CommitGraphViewData>{};
     final workspaceSelected =
         widget.repository.selectedCommit == null &&
         widget.repository.refs.any(
@@ -1751,9 +1821,11 @@ class _HistoryPaneState extends State<_HistoryPane> {
                                             (showUncommittedChanges ? 1 : 0);
                                         final CommitViewData commit =
                                             commits[commitIndex];
-                                        final graph = graphs[commit.oid];
+                                        final graph =
+                                            fallbackGraphs[commit.oid] ??
+                                            commit.graph;
                                         final graphWithWorkspace = graph
-                                            ?.copyWith(
+                                            .copyWith(
                                               hasWorkspaceNode:
                                                   showUncommittedChanges,
                                               hasPreviousNode:
@@ -1980,7 +2052,11 @@ class _HistoryPaneState extends State<_HistoryPane> {
   List<CommitViewData> _visibleCommits(RepositoryViewData repository) =>
       repository.commits;
 
-  Map<String, CommitGraphViewData> _graphsFor(
+  /// 中文：为旧的手工视图数据补建 Graph；映射层提供的完整 Graph 始终优先。
+  ///
+  /// English: Builds a fallback graph for hand-authored view data while
+  /// preferring the complete graph supplied by the application mapper.
+  Map<String, CommitGraphViewData> _fallbackGraphsFor(
     List<CommitViewData> commits, {
     required String? headId,
     required bool isDetachedHead,
@@ -2032,14 +2108,7 @@ class _UncommittedChangesRow extends StatelessWidget {
           child: Container(
             key: const ValueKey<String>('uncommitted-changes-row'),
             padding: const EdgeInsets.symmetric(horizontal: 8),
-            decoration: BoxDecoration(
-              color: isSelected ? colors.primary : null,
-              border: Border(
-                bottom: BorderSide(
-                  color: colors.outlineVariant.withValues(alpha: .5),
-                ),
-              ),
-            ),
+            color: isSelected ? colors.primary : null,
             child: Row(
               children: [
                 SizedBox(
@@ -2293,14 +2362,7 @@ class _CommitRow extends StatelessWidget {
           onDoubleTap: onDoubleTap,
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 8),
-            decoration: BoxDecoration(
-              color: commit.isSelected ? colors.secondaryContainer : null,
-              border: Border(
-                bottom: BorderSide(
-                  color: colors.outlineVariant.withValues(alpha: .5),
-                ),
-              ),
-            ),
+            color: commit.isSelected ? colors.secondaryContainer : null,
             child: Row(
               children: [
                 SizedBox(
@@ -2332,6 +2394,9 @@ class _CommitRow extends StatelessWidget {
                             child: _RefLabel(
                               label: ref,
                               kind: _commitRefKind(ref),
+                              graphColor:
+                                  _graphPalette[commit.graph.colorIndex.abs() %
+                                      _graphPalette.length],
                             ),
                           ),
                         ),
@@ -2465,11 +2530,11 @@ class _CommitGraphPainter extends CustomPainter {
     return lane == 0 ? workspaceRailColor : _color(lane - 1);
   }
 
-  /// 中文：将车道索引转换为图画布中的 X 坐标，并限制最大可见车道。
+  /// 中文：将车道索引转换为图画布中的 X 坐标，让可调整列宽决定可见车道数量。
   ///
-  /// English: Converts a lane index to a graph-canvas X coordinate while
-  /// capping the number of visible lanes.
-  double _laneX(int lane) => laneStart + lane.clamp(0, 4) * laneSpacing;
+  /// English: Converts a lane index to a graph-canvas X coordinate, leaving
+  /// the resizable column width to determine how many lanes remain visible.
+  double _laneX(int lane) => laneStart + math.max(0, lane) * laneSpacing;
 
   /// 中文：在给定画布上绘制当前内容。
   /// English: Paints the current content onto the canvas.
@@ -2687,21 +2752,27 @@ const Color _graphPrimaryBlue = Color(0xFF0B6FCB);
 const Color _graphBranchRed = Color(0xFFD8452A);
 const Color _graphBaseOrange = Color(0xFFF28C00);
 
-List<Color> _graphColors(ColorScheme colors) => const [
+const List<Color> _graphPalette = [
   _graphPrimaryBlue,
   _graphBranchRed,
   _graphBaseOrange,
   Color(0xFF2FA86F),
-  Color(0xFFDBA70A),
+  Color(0xFF6254B8),
+  Color(0xFF00A0BE),
+  Color(0xFFC23D7A),
+  Color(0xFF9A7800),
 ];
+
+List<Color> _graphColors(ColorScheme colors) => _graphPalette;
 
 enum _CommitRefKind { primaryLocalBranch, localBranch, remoteBranch, head }
 
 class _RefLabel extends StatelessWidget {
-  const _RefLabel({required this.label, required this.kind});
+  const _RefLabel({required this.label, required this.kind, this.graphColor});
 
   final String label;
   final _CommitRefKind kind;
+  final Color? graphColor;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -2709,6 +2780,14 @@ class _RefLabel extends StatelessWidget {
   Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;
     final bool dark = colors.brightness == Brightness.dark;
+    final localColor =
+        graphColor ??
+        (kind == _CommitRefKind.primaryLocalBranch
+            ? _graphPrimaryBlue
+            : _graphBranchRed);
+    final localForeground = dark
+        ? Color.alphaBlend(Colors.white.withValues(alpha: .42), localColor)
+        : localColor;
     final (
       Color background,
       Color foreground,
@@ -2717,20 +2796,20 @@ class _RefLabel extends StatelessWidget {
     ) = switch (kind) {
       _CommitRefKind.primaryLocalBranch => (
         Color.alphaBlend(
-          _graphPrimaryBlue.withValues(alpha: dark ? .34 : .16),
+          localColor.withValues(alpha: dark ? .34 : .16),
           colors.surface,
         ),
-        dark ? const Color(0xFF8CCBFF) : _graphPrimaryBlue,
-        _graphPrimaryBlue,
+        localForeground,
+        localColor,
         Icons.call_split,
       ),
       _CommitRefKind.localBranch => (
         Color.alphaBlend(
-          _graphBranchRed.withValues(alpha: dark ? .32 : .15),
+          localColor.withValues(alpha: dark ? .32 : .15),
           colors.surface,
         ),
-        dark ? const Color(0xFFFF9280) : _graphBranchRed,
-        _graphBranchRed,
+        localForeground,
+        localColor,
         Icons.call_split,
       ),
       _CommitRefKind.remoteBranch => (

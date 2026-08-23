@@ -322,6 +322,13 @@ void main() {
               name: 'example',
               path: '/tmp/example',
               currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: [
+                const RepositoryChangeViewData(
+                  path: 'untracked.txt',
+                  kind: RepositoryChangeKind.untracked,
+                ),
+              ],
               refs: const [
                 RepositoryRefViewData(
                   id: 'local:main',
@@ -356,6 +363,17 @@ void main() {
     expect(find.text('从此分支创建新分支'), findsOneWidget);
     expect(find.text('重命名分支'), findsOneWidget);
     expect(find.text('删除分支'), findsOneWidget);
+    expect(
+      tester
+          .widget<PopupMenuItem<RepositoryRefContextAction>>(
+            find.widgetWithText(
+              PopupMenuItem<RepositoryRefContextAction>,
+              '切换到此分支',
+            ),
+          )
+          .enabled,
+      isTrue,
+    );
 
     await tester.tap(find.text('合并到当前分支'));
     await tester.pumpAndSettle();
@@ -442,7 +460,9 @@ void main() {
             RepositoryViewData(
               name: 'example',
               path: '/tmp/example',
-              currentBranch: 'main',
+              currentBranch: 'Detached HEAD',
+              primaryLocalBranch: 'main',
+              isDetachedHead: true,
               refs: [
                 RepositoryRefViewData(
                   id: 'HEAD',
@@ -460,6 +480,11 @@ void main() {
                   label: 'main',
                   kind: RepositoryRefKind.localBranch,
                 ),
+                RepositoryRefViewData(
+                  id: 'refs/heads/release',
+                  label: 'release',
+                  kind: RepositoryRefKind.localBranch,
+                ),
               ],
             ),
           ),
@@ -473,6 +498,42 @@ void main() {
     expect(
       find.byKey(const ValueKey<String>('ref-directory:codex')),
       findsOneWidget,
+    );
+    expect(
+      tester
+          .widget<Icon>(find.byKey(const ValueKey<String>('ref-nav-icon:HEAD')))
+          .color,
+      const Color(0xFFF28C00),
+    );
+    expect(
+      tester
+          .widget<Icon>(
+            find.byKey(
+              const ValueKey<String>(
+                'ref-nav-icon:refs/heads/codex/conflict-demo',
+              ),
+            ),
+          )
+          .color,
+      const Color(0xFFD8452A),
+    );
+    expect(
+      tester
+          .widget<Icon>(
+            find.byKey(const ValueKey<String>('ref-nav-icon:refs/heads/main')),
+          )
+          .color,
+      const Color(0xFF0B6FCB),
+    );
+    expect(
+      tester
+          .widget<Icon>(
+            find.byKey(
+              const ValueKey<String>('ref-nav-icon:refs/heads/release'),
+            ),
+          )
+          .color,
+      const Color(0xFF2FA86F),
     );
 
     await tester.tap(find.text('codex'));
@@ -543,7 +604,7 @@ void main() {
   });
 
   testWidgets(
-    'keeps history rows compact while resizing columns from body handles',
+    'keeps history rows readable while resizing columns from body handles',
     (tester) async {
       await tester.binding.setSurfaceSize(const Size(1280, 800));
       addTearDown(() => tester.binding.setSurfaceSize(null));
@@ -594,7 +655,11 @@ void main() {
       final graphCanvas = find.byKey(
         const ValueKey<String>('commit-graph-canvas'),
       );
-      expect(tester.getSize(graphCanvas).height, closeTo(20, 1));
+      expect(tester.getSize(graphCanvas).height, closeTo(24, 1));
+      final historyRow = find
+          .ancestor(of: graphCanvas, matching: find.byType(Container))
+          .first;
+      expect(tester.widget<Container>(historyRow).decoration, isNull);
       expect(
         find.descendant(
           of: find.byKey(const ValueKey<String>('commit-ref-main')),
@@ -715,6 +780,132 @@ void main() {
     );
     expect(find.text('超前3个版本'), findsOneWidget);
     expect(tester.getSize(conflictRef).width, greaterThan(100));
+  });
+
+  testWidgets('matches nested branch labels to stable graph lane colors', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'graph-demo',
+              path: '/tmp/graph-demo',
+              currentBranch: 'main',
+              primaryLocalBranch: 'main',
+              headOid: 'merge-ui',
+              commits: [
+                CommitViewData(
+                  oid: 'merge-ui',
+                  shortOid: 'merge-ui',
+                  subject: 'merge UI',
+                  author: 'tester',
+                  relativeDate: '刚刚',
+                  refs: ['main'],
+                  parents: ['merge-foundation', 'ui-merge'],
+                ),
+                CommitViewData(
+                  oid: 'ui-merge',
+                  shortOid: 'ui-merge',
+                  subject: 'merge docs into UI',
+                  author: 'tester',
+                  relativeDate: '刚刚',
+                  refs: ['demo/graph-ui'],
+                  parents: ['ui', 'docs'],
+                ),
+                CommitViewData(
+                  oid: 'docs',
+                  shortOid: 'docs',
+                  subject: 'docs node',
+                  author: 'tester',
+                  relativeDate: '刚刚',
+                  refs: ['demo/graph-docs'],
+                  parents: ['foundation-base'],
+                ),
+                CommitViewData(
+                  oid: 'ui',
+                  shortOid: 'ui',
+                  subject: 'UI node',
+                  author: 'tester',
+                  relativeDate: '刚刚',
+                  parents: ['foundation-base'],
+                ),
+                CommitViewData(
+                  oid: 'merge-foundation',
+                  shortOid: 'merge-f',
+                  subject: 'merge foundation',
+                  author: 'tester',
+                  relativeDate: '刚刚',
+                  parents: ['old-main', 'foundation-merge'],
+                ),
+                CommitViewData(
+                  oid: 'foundation-merge',
+                  shortOid: 'found-m',
+                  subject: 'merge API into foundation',
+                  author: 'tester',
+                  relativeDate: '刚刚',
+                  refs: ['demo/graph-foundation'],
+                  parents: ['foundation-base', 'api-2'],
+                ),
+                CommitViewData(
+                  oid: 'api-2',
+                  shortOid: 'api-2',
+                  subject: 'API two',
+                  author: 'tester',
+                  relativeDate: '刚刚',
+                  refs: ['demo/graph-api'],
+                  parents: ['api-1'],
+                ),
+                CommitViewData(
+                  oid: 'api-1',
+                  shortOid: 'api-1',
+                  subject: 'API one',
+                  author: 'tester',
+                  relativeDate: '刚刚',
+                  parents: ['foundation-base'],
+                ),
+                CommitViewData(
+                  oid: 'foundation-base',
+                  shortOid: 'found-b',
+                  subject: 'foundation base',
+                  author: 'tester',
+                  relativeDate: '刚刚',
+                  parents: ['old-main'],
+                ),
+                CommitViewData(
+                  oid: 'old-main',
+                  shortOid: 'old-main',
+                  subject: 'old main',
+                  author: 'tester',
+                  relativeDate: '刚刚',
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    Color borderColor(String ref) {
+      final decoration =
+          tester
+                  .widget<Container>(
+                    find.byKey(ValueKey<String>('commit-ref-$ref')),
+                  )
+                  .decoration!
+              as BoxDecoration;
+      return (decoration.border! as Border).top.color;
+    }
+
+    expect(borderColor('main'), const Color(0xFF0B6FCB));
+    expect(borderColor('demo/graph-ui'), const Color(0xFFD8452A));
+    expect(borderColor('demo/graph-docs'), const Color(0xFFF28C00));
+    expect(borderColor('demo/graph-foundation'), const Color(0xFF2FA86F));
+    expect(borderColor('demo/graph-api'), const Color(0xFF6254B8));
   });
 
   testWidgets('keeps loaded history visible when the current tip is absent', (

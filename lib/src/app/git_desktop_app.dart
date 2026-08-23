@@ -1168,14 +1168,15 @@ class _RepositoryWorkspaceScreenState
     }
   }
 
-  /// 中文：请求并处理用户确认。
-  /// English: Requests and handles user confirmation.
+  /// 中文：确认后切换到本地分支；由 Git 判断未提交改动是否可安全保留。
+  /// English: Confirms a local branch switch and lets Git decide whether
+  /// uncommitted changes can be carried safely.
   Future<void> _confirmSwitchBranch(String branchName) async {
     final approved = await showDialog<bool>(
       context: context,
       builder: (BuildContext context) => AlertDialog(
         title: const Text('切换分支'),
-        content: Text('切换到 $branchName？仅当工作区和暂存区均无改动时才会执行。'),
+        content: Text('切换到 $branchName？未提交改动会保留；如果切换会覆盖改动，Git 将拒绝执行。'),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),

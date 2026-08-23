@@ -219,13 +219,13 @@ final class CommitGraphNode {
   final List<String> parents;
 }
 
-/// 中文：按拓扑顺序构建历史车道；游离 HEAD 位于分支共同基点时为它保留最左侧车道，
-/// 并让右侧分支延续到该父节点所在行后再汇入。
+/// 中文：按拓扑顺序构建稳定历史车道；普通分支保持独立车道直到共同祖先行再汇入，
+/// 游离 HEAD 位于分支共同基点时则为它保留最左侧车道。
 ///
-/// English: Builds history lanes in topology order, reserving the leftmost
-/// lane when a detached HEAD is the common base of visible branches and
-/// delaying right-side branch convergence until that parent's row. The lane
-/// reservation is enabled only when [isDetachedHead] is true.
+/// English: Builds stable history lanes in topology order. Normal branches
+/// remain separate until their shared ancestor row; when a detached HEAD is
+/// that common base, the leftmost lane is reserved for it. The reservation is
+/// enabled only when [isDetachedHead] is true.
 List<CommitGraphViewData> buildCommitGraph(
   List<CommitGraphNode> nodes, {
   required String? headId,
@@ -237,126 +237,118 @@ List<CommitGraphViewData> buildCommitGraph(
       headId != null &&
       nodes.any((node) => node.oid == headId) &&
       parentIds.contains(headId);
-  final lanes = <String>[if (nodes.isNotEmpty) nodes.first.oid];
+  return _buildStableCommitGraph(
+    nodes,
+    headId: headId,
+    reserveDetachedHeadLane: reserveDetachedHeadLane,
+  );
+}
 
-  int physicalLane(String oid, int logicalLane) {
-    if (!reserveDetachedHeadLane) return logicalLane;
-    return oid == headId ? 0 : logicalLane + 1;
-  }
+/// 中文：构建不提前压缩的稳定车道；当前 HEAD 谱系固定使用最左侧主车道，
+/// 多个分支持续到共同祖先行再汇合，游离 HEAD 可保留专用车道和颜色。
+///
+/// English: Builds stable, non-compacting lanes. The current HEAD lineage owns
+/// the primary left lane, parallel branches converge only on their shared
+/// ancestor row, and a detached HEAD can retain its reserved lane and color.
+List<CommitGraphViewData> _buildStableCommitGraph(
+  List<CommitGraphNode> nodes, {
+  required String? headId,
+  required bool reserveDetachedHeadLane,
+}) {
+  if (nodes.isEmpty) return const [];
 
-  int colorIndexFor(String oid, int lane) {
-    if (!reserveDetachedHeadLane) return lane;
-    return oid == headId ? 2 : lane - 1;
-  }
-
-  final result = <CommitGraphViewData>[];
-  final pendingReservedHeadLanes = <int>{};
+  final hasLoadedHead =
+      headId != null && nodes.any((node) => node.oid == headId);
+  final activeTargets = <int, String>{};
   var previousDestinations = <int>{};
-  var nextReservedLane = 1;
-  final reservedLaneByOid = <String, int>{};
+  final result = <CommitGraphViewData>[];
 
-  int reservedPhysicalLane(String oid, int logicalLane) {
-    if (oid == headId) return 0;
-    return reservedLaneByOid.putIfAbsent(oid, () => nextReservedLane++);
+  int firstUnusedLane(Set<int> occupied) {
+    var lane = 0;
+    while (occupied.contains(lane)) {
+      lane++;
+    }
+    return lane;
   }
 
   for (final node in nodes) {
-    var logicalLane = lanes.indexOf(node.oid);
-    if (logicalLane < 0) {
-      logicalLane = lanes.length;
-      lanes.add(node.oid);
+    var matchingLanes =
+        activeTargets.entries
+            .where((entry) => entry.value == node.oid)
+            .map((entry) => entry.key)
+            .toList(growable: false)
+          ..sort();
+    if (hasLoadedHead && node.oid == headId && !matchingLanes.contains(0)) {
+      activeTargets[0] = node.oid;
+      matchingLanes = [0, ...matchingLanes];
     }
-    if (reserveDetachedHeadLane) {
-      reservedPhysicalLane(node.oid, logicalLane);
+    if (matchingLanes.isEmpty) {
+      final occupied = {...activeTargets.keys, if (hasLoadedHead) 0};
+      final lane = firstUnusedLane(occupied);
+      activeTargets[lane] = node.oid;
+      matchingLanes = [lane];
     }
-    final activeIds = List<String>.of(lanes);
-    final active = <int>[
-      for (var index = 0; index < activeIds.length; index++)
-        reserveDetachedHeadLane
-            ? reservedPhysicalLane(activeIds[index], index)
-            : physicalLane(activeIds[index], index),
-    ];
-    final lane = reserveDetachedHeadLane
-        ? reservedPhysicalLane(node.oid, logicalLane)
-        : physicalLane(node.oid, logicalLane);
-    lanes.removeAt(logicalLane);
-    final parents = <int>[];
-    for (var index = 0; index < node.parents.length; index++) {
-      final parent = node.parents[index];
-      var parentLogicalLane = lanes.indexOf(parent);
-      if (parentLogicalLane < 0) {
-        parentLogicalLane = logicalLane + index;
-        if (parentLogicalLane > lanes.length) {
-          parentLogicalLane = lanes.length;
-        }
-        lanes.insert(parentLogicalLane, parent);
-      }
-      if (reserveDetachedHeadLane) {
-        if (parent == headId) {
-          reservedLaneByOid[parent] = 0;
-        } else if (!reservedLaneByOid.containsKey(parent) && index == 0) {
-          reservedLaneByOid[parent] = lane;
-        } else {
-          reservedPhysicalLane(parent, parentLogicalLane);
-        }
-        parents.add(reservedPhysicalLane(parent, parentLogicalLane));
-      } else {
-        parents.add(physicalLane(parent, parentLogicalLane));
-      }
+
+    final lane = matchingLanes.first;
+    final incomingLanes = matchingLanes.skip(1).toList(growable: false);
+    final activeLanes =
+        activeTargets.keys
+            .where((activeLane) => !incomingLanes.contains(activeLane))
+            .toList(growable: false)
+          ..sort();
+    final parentLanes = <int>[];
+    if (node.parents.isNotEmpty) {
+      parentLanes.add(lane);
     }
+
+    final occupied = {...activeTargets.keys, if (hasLoadedHead) 0};
+    for (final _ in node.parents.skip(1)) {
+      final parentLane = firstUnusedLane(occupied);
+      occupied.add(parentLane);
+      parentLanes.add(parentLane);
+    }
+
     final destinations = <int?>[
-      for (var index = 0; index < activeIds.length; index++)
-        if (index == logicalLane)
-          parents.isEmpty ? null : parents.first
+      for (final activeLane in activeLanes)
+        if (activeLane == lane)
+          node.parents.isEmpty ? null : lane
         else
-          switch (lanes.indexOf(activeIds[index])) {
-            final destination when destination >= 0 =>
-              reserveDetachedHeadLane
-                  ? reservedPhysicalLane(activeIds[index], destination)
-                  : physicalLane(activeIds[index], destination),
-            _ => null,
-          },
+          activeLane,
     ];
-    final incomingLanes = <int>[];
-    if (reserveDetachedHeadLane) {
-      if (node.oid == headId) {
-        incomingLanes.addAll(pendingReservedHeadLanes);
-        pendingReservedHeadLanes.clear();
-      } else {
-        for (final pendingLane in pendingReservedHeadLanes) {
-          if (!active.contains(pendingLane)) {
-            active.add(pendingLane);
-            destinations.add(pendingLane);
-          }
-        }
-        if (node.parents.contains(headId)) {
-          final nodeLaneIndex = active.indexOf(lane);
-          if (nodeLaneIndex >= 0) {
-            destinations[nodeLaneIndex] = lane;
-          }
-          pendingReservedHeadLanes.add(lane);
-        }
-      }
-    }
     final previousLanes = <int>[
-      for (final activeLane in active)
+      for (final activeLane in activeLanes)
         if (previousDestinations.contains(activeLane)) activeLane,
     ];
+
     result.add(
       CommitGraphViewData(
         lane: lane,
-        activeLanes: active,
+        activeLanes: activeLanes,
         activeLaneDestinations: destinations,
         previousLanes: previousLanes,
         incomingLanes: incomingLanes,
-        parentLanes: parents,
-        colorIndex: colorIndexFor(node.oid, lane),
+        parentLanes: parentLanes,
+        colorIndex: reserveDetachedHeadLane ? (lane == 0 ? 2 : lane - 1) : lane,
         hasPreviousNode: result.isNotEmpty,
         hasReservedHeadLane: reserveDetachedHeadLane,
       ),
     );
-    previousDestinations = destinations.whereType<int>().toSet();
+
+    for (final matchingLane in matchingLanes) {
+      activeTargets.remove(matchingLane);
+    }
+    if (node.parents.isNotEmpty) {
+      activeTargets[lane] = node.parents.first;
+      for (var index = 1; index < node.parents.length; index++) {
+        activeTargets[parentLanes[index]] = node.parents[index];
+      }
+    }
+    previousDestinations = {
+      ...destinations.whereType<int>(),
+      ...parentLanes.skip(1),
+    };
   }
+
   return result;
 }
 

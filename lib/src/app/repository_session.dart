@@ -2036,15 +2036,16 @@ final class RepositorySessionController
     }
   }
 
-  /// Switches only when the working tree and index are clean.
-  /// 中文：切换到目标状态。
-  /// English: Switches to the target state.
+  /// Switches to a local branch while preserving safe working-tree changes.
+  /// 中文：切换到本地分支；保留可安全携带的工作区改动，并拒绝冲突状态。
+  /// English: Switches to a local branch, preserving changes Git can carry
+  /// safely and rejecting repositories with unresolved conflicts.
   Future<bool> switchToLocalBranch(String name) async {
     final repository = state.repository;
     final status = state.status;
     if (repository == null ||
         status == null ||
-        !status.isClean ||
+        status.conflictedEntries.isNotEmpty ||
         state.phase == RepositorySessionPhase.loading) {
       return false;
     }
