@@ -39,6 +39,14 @@ enum RepositoryOperationKind { clone, fetch, pull, push, stash }
 
 enum RepositoryOperationOutcome { running, succeeded, cancelled, failed }
 
+/// The result of adding a directory to the repository library.
+enum RepositoryLibraryRegistrationResult {
+  added,
+  alreadyRegistered,
+  notRepository,
+  failed,
+}
+
 /// Returns the directory name Git would conventionally use for [remoteUrl].
 ///
 /// URL, SCP-style and local-path remotes are supported. The result is always
@@ -715,6 +723,68 @@ final class RepositorySessionController
       return;
     }
     await openRepository(repositoryPath);
+  }
+
+  /// 中文：检查 [directoryPath] 指向的 Git 仓库，并将其根目录加入首页清单。
+  ///
+  /// English: Inspects [directoryPath] and adds its canonical Git repository
+  /// root to the library without opening or changing the current workspace.
+  Future<RepositoryLibraryRegistrationResult> addRepositoryToLibrary(
+    String directoryPath,
+  ) async {
+    final normalizedPath = directoryPath.trim();
+    if (normalizedPath.isEmpty) {
+      return RepositoryLibraryRegistrationResult.notRepository;
+    }
+    try {
+      final repository = await _inspector.inspect(normalizedPath);
+      if (repository == null) {
+        return RepositoryLibraryRegistrationResult.notRepository;
+      }
+      final tab = RepositoryTab(
+        path: repository.commandDirectory,
+        label: path_utils.basename(
+          repository.workTreeRoot ?? repository.commonDirectory,
+        ),
+      );
+      if (state.openRepositoryTabs.any((item) => item.path == tab.path)) {
+        return RepositoryLibraryRegistrationResult.alreadyRegistered;
+      }
+      state = state.copyWith(
+        openRepositoryTabs: _disambiguateRepositoryTabLabels([
+          ...state.openRepositoryTabs,
+          tab,
+        ]),
+      );
+      _persistRepositorySession();
+      return RepositoryLibraryRegistrationResult.added;
+    } on Object {
+      return RepositoryLibraryRegistrationResult.failed;
+    }
+  }
+
+  /// 中文：按首页显示顺序重新排列已登记仓库，并持久化完整且无重复的路径序列。
+  ///
+  /// English: Reorders registered repositories using a complete, duplicate-free
+  /// library path sequence and persists the resulting display order.
+  void reorderRepositoryLibrary(List<String> repositoryPaths) {
+    if (repositoryPaths.length != state.openRepositoryTabs.length ||
+        repositoryPaths.toSet().length != repositoryPaths.length) {
+      return;
+    }
+    final existingByPath = <String, RepositoryTab>{
+      for (final tab in state.openRepositoryTabs) tab.path: tab,
+    };
+    if (!repositoryPaths.every(existingByPath.containsKey)) {
+      return;
+    }
+    state = state.copyWith(
+      openRepositoryTabs: _disambiguateRepositoryTabLabels([
+        for (final repositoryPath in repositoryPaths)
+          existingByPath[repositoryPath]!,
+      ]),
+    );
+    _persistRepositorySession();
   }
 
   /// 中文：按路径替换已有标签，或在路径首次出现时追加标签，并保持列表不可变。
@@ -2567,6 +2637,22 @@ final class RepositorySessionController
       }
       await refresh();
       return state.phase == RepositorySessionPhase.ready;
+    } on ArgumentError catch (error, stackTrace) {
+      // The tag dialog accepts free text, while Git ref names have stricter
+      // syntax. Do not present this local validation failure as a repository
+      // read error after the refresh below.
+      await refresh();
+      if (state.phase != RepositorySessionPhase.ready) {
+        return false;
+      }
+      state = state.copyWith(
+        isDiffLoading: false,
+        message:
+            '标签名称无效。请勿使用空白符、~ ^ : ? * [ \\、.. 或 //，'
+            '且不能以 -、/ 开头，也不能以 /、. 结尾。',
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      return false;
     } on Object catch (error, stackTrace) {
       // A tag can be created locally even if its subsequent remote push fails.
       // Refresh so the visible refs always reflect Git's actual state.

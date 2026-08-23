@@ -27,6 +27,28 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testDroppedDirectoryPathsIgnoreFilesAndRemoveDuplicates() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "git-desktop-drop-test-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    let directory = root.appendingPathComponent("repository", isDirectory: true)
+    let file = root.appendingPathComponent("not-a-directory.txt")
+    try FileManager.default.createDirectory(
+      at: directory,
+      withIntermediateDirectories: true
+    )
+    try Data().write(to: file)
+    defer {
+      try? FileManager.default.removeItem(at: root)
+    }
+
+    XCTAssertEqual(
+      gitDesktopDroppedDirectoryPaths([file, directory, directory]),
+      [directory.standardizedFileURL.path]
+    )
+  }
+
   func testWorkspaceEngineStartsAfterItsViewControllerIsAttached() throws {
     let controller = try WorkspaceFlutterWindowController(
       repositoryPath: nil,
@@ -93,6 +115,17 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue(history.mostRecent === third)
     history.remove(third)
     XCTAssertTrue(history.mostRecent === first)
+  }
+
+  func testWindowFocusHistoryRestoresTheLastFrontmostWindow() {
+    let history = GitDesktopWindowFocusHistory<TestWorkspace>()
+    let library = TestWorkspace()
+    let workspace = TestWorkspace()
+
+    history.markFrontmost(library)
+    XCTAssertTrue(history.frontmost === library)
+    history.markFrontmost(workspace)
+    XCTAssertTrue(history.frontmost === workspace)
   }
 
   func testRepositoryWindowShortcutRecognition() throws {

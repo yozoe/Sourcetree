@@ -148,6 +148,7 @@ class _RepositoryLibraryWindowState
     extends ConsumerState<RepositoryLibraryWindow> {
   late final Future<void> _restoreFuture;
   Future<void> _repositoryRegistrationTail = Future<void>.value();
+  bool _isDirectoryDropActive = false;
 
   /// 中文：首页窗口初始化时恢复本地仓库清单。
   /// English: Restores the local repository list when the library window
@@ -159,26 +160,84 @@ class _RepositoryLibraryWindowState
         .read(repositorySessionProvider.notifier)
         .restoreSession();
     DesktopWindowBridge.setRepositoryOpenedHandler(_recordRepositoryOpened);
+    DesktopWindowBridge.setRepositoryDirectoryDropHandlers(
+      onDirectoriesDropped: _registerDroppedDirectories,
+      onDragStateChanged: _updateDirectoryDropState,
+    );
   }
 
   @override
   void dispose() {
     DesktopWindowBridge.setRepositoryOpenedHandler(null);
+    DesktopWindowBridge.setRepositoryDirectoryDropHandlers();
     super.dispose();
+  }
+
+  /// 中文：串行执行首页仓库清单变更，避免恢复、拖放和工作区回传相互覆盖。
+  ///
+  /// English: Serializes library mutations so restoration, directory drops and
+  /// workspace reports cannot overwrite one another.
+  Future<void> _enqueueRepositoryRegistration(Future<void> Function() action) {
+    final registration = _repositoryRegistrationTail.then((_) async {
+      await _restoreFuture;
+      if (!mounted) return;
+      await action();
+    });
+    _repositoryRegistrationTail = registration.catchError((_) {});
+    return registration;
   }
 
   /// Adds a repository confirmed by a workspace to the live library and its
   /// persisted repository list.
   Future<void> _recordRepositoryOpened(String repositoryPath) {
-    final registration = _repositoryRegistrationTail.then((_) async {
-      await _restoreFuture;
-      if (!mounted) return;
+    return _enqueueRepositoryRegistration(() async {
       await ref
           .read(repositorySessionProvider.notifier)
-          .openRepository(repositoryPath);
+          .addRepositoryToLibrary(repositoryPath);
     });
-    _repositoryRegistrationTail = registration.catchError((_) {});
-    return registration;
+  }
+
+  /// 中文：处理原生窗口投递的目录，依次识别 Git 根目录后添加到首页清单。
+  ///
+  /// English: Processes native dropped directories sequentially, adding only
+  /// the Git roots recognized by the application layer to the library.
+  Future<void> _registerDroppedDirectories(List<String> directoryPaths) async {
+    var added = 0;
+    var alreadyRegistered = 0;
+    var rejected = 0;
+    await _enqueueRepositoryRegistration(() async {
+      final controller = ref.read(repositorySessionProvider.notifier);
+      for (final directoryPath in directoryPaths) {
+        switch (await controller.addRepositoryToLibrary(directoryPath)) {
+          case RepositoryLibraryRegistrationResult.added:
+            added++;
+          case RepositoryLibraryRegistrationResult.alreadyRegistered:
+            alreadyRegistered++;
+          case RepositoryLibraryRegistrationResult.notRepository:
+          case RepositoryLibraryRegistrationResult.failed:
+            rejected++;
+        }
+      }
+    });
+    if (!mounted) return;
+    final message = switch ((added, alreadyRegistered, rejected)) {
+      (0, 0, _) => '未添加目录：请拖入可读取的 Git 仓库。',
+      (0, _, 0) => '拖入的仓库已在清单中。',
+      (_, 0, 0) => '已添加 $added 个 Git 仓库。',
+      _ => '已添加 $added 个 Git 仓库；$alreadyRegistered 个已存在，$rejected 个未添加。',
+    };
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// 中文：更新目录拖入首页时的视觉反馈状态。
+  ///
+  /// English: Updates the library drop-target visual state sent by the native
+  /// macOS window.
+  void _updateDirectoryDropState(bool isActive) {
+    if (!mounted || _isDirectoryDropActive == isActive) return;
+    setState(() => _isDirectoryDropActive = isActive);
   }
 
   /// 中文：在独立工作区窗口中显示选中的仓库。
@@ -231,6 +290,10 @@ class _RepositoryLibraryWindowState
         onInitializeRepository: () => unawaited(
           _openWorkspace(null, initialAction: 'initializeRepository'),
         ),
+        onRepositoriesReordered: ref
+            .read(repositorySessionProvider.notifier)
+            .reorderRepositoryLibrary,
+        isDirectoryDropActive: _isDirectoryDropActive,
         trailing: widget.themeControl,
       ),
     );

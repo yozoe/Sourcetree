@@ -104,6 +104,7 @@ void main() {
 
   testWidgets('groups, filters and selects local repositories', (tester) async {
     String? selectedPath;
+    List<String>? reorderedPaths;
     await tester.pumpWidget(
       MaterialApp(
         home: RepositoryLibraryPage(
@@ -114,6 +115,7 @@ void main() {
           ],
           activePath: '/work/alpha/web',
           onRepositorySelected: (path) async => selectedPath = path,
+          onRepositoriesReordered: (paths) => reorderedPaths = paths,
         ),
       ),
     );
@@ -121,11 +123,19 @@ void main() {
     expect(find.text('alpha'), findsOneWidget);
     expect(find.text('beta'), findsOneWidget);
     expect(find.text('当前'), findsOneWidget);
+    final filter = tester.widget<TextField>(find.byType(TextField));
+    expect(filter.textAlignVertical, TextAlignVertical.center);
+    expect(
+      filter.decoration!.prefixIconConstraints,
+      const BoxConstraints.tightFor(width: 38, height: 36),
+    );
+    expect(find.byTooltip('拖动以排序'), findsNWidgets(3));
 
     await tester.enterText(find.byType(TextField), 'web');
     await tester.pumpAndSettle();
     expect(find.text('api'), findsNothing);
     expect(find.text('web'), findsAtLeastNWidgets(1));
+    expect(find.byTooltip('拖动以排序'), findsNothing);
 
     await tester.tap(
       find.byKey(
@@ -134,6 +144,7 @@ void main() {
     );
     await tester.pump();
     expect(selectedPath, '/work/alpha/web');
+    expect(reorderedPaths, isNull);
   });
 
   testWidgets('routes a one-time AskPass request through the controlled UI', (
@@ -772,6 +783,105 @@ void main() {
       );
     },
   );
+
+  testWidgets('renders commit tags with the tag icon instead of branch icon', (
+    tester,
+  ) async {
+    const commit = CommitViewData(
+      oid: '4f5e6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6',
+      shortOid: '4f5e6b7c',
+      subject: '测试标签图标',
+      author: 'tester',
+      relativeDate: '今天',
+      references: [
+        CommitReferenceViewData(
+          label: 'testtag',
+          kind: CommitReferenceKind.tag,
+        ),
+      ],
+    );
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              commits: [commit],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final tagLabel = find.byKey(const ValueKey<String>('commit-ref-testtag'));
+    expect(tagLabel, findsOneWidget);
+    expect(
+      find.descendant(of: tagLabel, matching: find.byIcon(Icons.sell_outlined)),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(of: tagLabel, matching: find.byIcon(Icons.call_split)),
+      findsNothing,
+    );
+  });
+
+  testWidgets('keeps same-named commit branches and tags distinct', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    const commit = CommitViewData(
+      oid: '4f5e6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6',
+      shortOid: '4f5e6b7c',
+      subject: '同名引用',
+      author: 'tester',
+      relativeDate: '今天',
+      references: [
+        CommitReferenceViewData(
+          label: 'v1.0.0',
+          kind: CommitReferenceKind.localBranch,
+        ),
+        CommitReferenceViewData(label: 'v1.0.0', kind: CommitReferenceKind.tag),
+      ],
+    );
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              commits: [commit],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final sameNamedReferences = find.byKey(
+      const ValueKey<String>('commit-ref-v1.0.0'),
+    );
+    expect(sameNamedReferences, findsNWidgets(2));
+    expect(
+      find.descendant(
+        of: sameNamedReferences,
+        matching: find.byIcon(Icons.call_split),
+      ),
+      findsOneWidget,
+    );
+    expect(
+      find.descendant(
+        of: sameNamedReferences,
+        matching: find.byIcon(Icons.sell_outlined),
+      ),
+      findsOneWidget,
+    );
+  });
 
   testWidgets('shows side-branch commits after removing the scope toolbar', (
     tester,

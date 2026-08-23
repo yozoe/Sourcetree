@@ -26,6 +26,8 @@ class RepositoryLibraryPage extends StatefulWidget {
     this.onOpenRepository,
     this.onCloneRepository,
     this.onInitializeRepository,
+    this.onRepositoriesReordered,
+    this.isDirectoryDropActive = false,
     this.trailing,
   });
 
@@ -35,6 +37,8 @@ class RepositoryLibraryPage extends StatefulWidget {
   final VoidCallback? onOpenRepository;
   final VoidCallback? onCloneRepository;
   final VoidCallback? onInitializeRepository;
+  final ValueChanged<List<String>>? onRepositoriesReordered;
+  final bool isDirectoryDropActive;
   final Widget? trailing;
 
   /// 中文：创建关联的状态对象。
@@ -64,110 +68,242 @@ class _RepositoryLibraryPageState extends State<RepositoryLibraryPage> {
       visibleRepositories,
     );
 
-    return Material(
-      color: colors.surface,
-      child: SafeArea(
-        top: false,
-        child: Column(
-          children: [
-            Container(
-              height: 52,
-              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-              decoration: BoxDecoration(
-                color: colors.surfaceContainerLow,
-                border: Border(
-                  bottom: BorderSide(color: colors.outlineVariant),
-                ),
-              ),
-              child: Row(
-                children: [
-                  if (widget.repositories.isNotEmpty)
-                    Expanded(
-                      child: Semantics(
-                        textField: true,
-                        label: '筛选本地仓库',
-                        child: TextField(
-                          onChanged: _updateQuery,
-                          decoration: InputDecoration(
-                            isDense: true,
-                            hintText: '筛选仓库',
-                            prefixIcon: const Icon(Icons.search, size: 19),
-                            border: const OutlineInputBorder(),
-                          ),
-                        ),
-                      ),
-                    )
-                  else
-                    Expanded(
-                      child: Text(
-                        '本地仓库',
-                        style: theme.textTheme.titleSmall?.copyWith(
-                          fontWeight: FontWeight.w600,
-                        ),
-                      ),
-                    ),
-                  const SizedBox(width: 10),
-                  Tooltip(
-                    message: '打开本地仓库',
-                    child: IconButton(
-                      onPressed: widget.onOpenRepository,
-                      icon: const Icon(Icons.folder_open_outlined),
+    return Stack(
+      children: [
+        Material(
+          color: colors.surface,
+          child: SafeArea(
+            top: false,
+            child: Column(
+              children: [
+                Container(
+                  height: 52,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 8,
+                  ),
+                  decoration: BoxDecoration(
+                    color: colors.surfaceContainerLow,
+                    border: Border(
+                      bottom: BorderSide(color: colors.outlineVariant),
                     ),
                   ),
-                  Tooltip(
-                    message: '克隆远端仓库',
-                    child: IconButton(
-                      onPressed: widget.onCloneRepository,
-                      icon: const Icon(Icons.download_outlined),
-                    ),
-                  ),
-                  Tooltip(
-                    message: '初始化新仓库',
-                    child: IconButton(
-                      onPressed: widget.onInitializeRepository,
-                      icon: const Icon(Icons.create_new_folder_outlined),
-                    ),
-                  ),
-                  if (widget.trailing != null) ...[
-                    const SizedBox(width: 4),
-                    widget.trailing!,
-                  ],
-                ],
-              ),
-            ),
-            Expanded(
-              child: visibleRepositories.isEmpty
-                  ? _RepositoryLibraryEmptyState(
-                      hasQuery: _query.trim().isNotEmpty,
-                      onOpenRepository: widget.onOpenRepository,
-                      onCloneRepository: widget.onCloneRepository,
-                      onInitializeRepository: widget.onInitializeRepository,
-                    )
-                  : ListView(
-                      padding: const EdgeInsets.fromLTRB(10, 14, 10, 28),
-                      children: [
-                        for (final MapEntry<String, List<RepositoryLibraryItem>>
-                            group
-                            in groups.entries) ...[
-                          _RepositoryLibraryGroupHeader(
-                            title: group.key,
-                            count: group.value.length,
-                          ),
-                          for (final RepositoryLibraryItem repository
-                              in group.value)
-                            _RepositoryLibraryTile(
-                              repository: repository,
-                              selected: repository.path == widget.activePath,
-                              onPressed: () =>
-                                  widget.onRepositorySelected(repository.path),
+                  child: Row(
+                    children: [
+                      if (widget.repositories.isNotEmpty)
+                        Expanded(
+                          child: Semantics(
+                            textField: true,
+                            label: '筛选本地仓库',
+                            child: TextField(
+                              onChanged: _updateQuery,
+                              textAlignVertical: TextAlignVertical.center,
+                              decoration: InputDecoration(
+                                isDense: true,
+                                hintText: '筛选仓库',
+                                contentPadding: const EdgeInsets.symmetric(
+                                  horizontal: 12,
+                                ),
+                                prefixIconConstraints:
+                                    const BoxConstraints.tightFor(
+                                      width: 38,
+                                      height: 36,
+                                    ),
+                                prefixIcon: const Center(
+                                  child: Icon(Icons.search, size: 19),
+                                ),
+                                border: const OutlineInputBorder(),
+                              ),
                             ),
-                        ],
+                          ),
+                        )
+                      else
+                        Expanded(
+                          child: Text(
+                            '本地仓库',
+                            style: theme.textTheme.titleSmall?.copyWith(
+                              fontWeight: FontWeight.w600,
+                            ),
+                          ),
+                        ),
+                      const SizedBox(width: 10),
+                      Tooltip(
+                        message: '打开本地仓库',
+                        child: IconButton(
+                          onPressed: widget.onOpenRepository,
+                          icon: const Icon(Icons.folder_open_outlined),
+                        ),
+                      ),
+                      Tooltip(
+                        message: '克隆远端仓库',
+                        child: IconButton(
+                          onPressed: widget.onCloneRepository,
+                          icon: const Icon(Icons.download_outlined),
+                        ),
+                      ),
+                      Tooltip(
+                        message: '初始化新仓库',
+                        child: IconButton(
+                          onPressed: widget.onInitializeRepository,
+                          icon: const Icon(Icons.create_new_folder_outlined),
+                        ),
+                      ),
+                      if (widget.trailing != null) ...[
+                        const SizedBox(width: 4),
+                        widget.trailing!,
                       ],
-                    ),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: visibleRepositories.isEmpty
+                      ? _RepositoryLibraryEmptyState(
+                          hasQuery: _query.trim().isNotEmpty,
+                          onOpenRepository: widget.onOpenRepository,
+                          onCloneRepository: widget.onCloneRepository,
+                          onInitializeRepository: widget.onInitializeRepository,
+                        )
+                      : _RepositoryLibraryList(
+                          groups: groups,
+                          activePath: widget.activePath,
+                          onRepositorySelected: widget.onRepositorySelected,
+                          reorderEnabled:
+                              _query.trim().isEmpty &&
+                              widget.onRepositoriesReordered != null,
+                          onRepositoriesReordered:
+                              widget.onRepositoriesReordered,
+                        ),
+                ),
+              ],
             ),
-          ],
+          ),
         ),
-      ),
+        if (widget.isDirectoryDropActive)
+          const Positioned.fill(child: _RepositoryDirectoryDropOverlay()),
+      ],
+    );
+  }
+}
+
+class _RepositoryLibraryList extends StatelessWidget {
+  const _RepositoryLibraryList({
+    required this.groups,
+    required this.activePath,
+    required this.onRepositorySelected,
+    required this.reorderEnabled,
+    this.onRepositoriesReordered,
+  });
+
+  final Map<String, List<RepositoryLibraryItem>> groups;
+  final String? activePath;
+  final Future<void> Function(String path) onRepositorySelected;
+  final bool reorderEnabled;
+  final ValueChanged<List<String>>? onRepositoriesReordered;
+
+  /// 中文：构建可按目录分组且可在组内拖动排序的仓库列表。
+  ///
+  /// English: Builds the directory-grouped repository list with optional
+  /// within-group drag reordering.
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      padding: const EdgeInsets.fromLTRB(10, 14, 10, 28),
+      children: [
+        for (final MapEntry<String, List<RepositoryLibraryItem>> group
+            in groups.entries) ...[
+          _RepositoryLibraryGroupHeader(
+            title: group.key,
+            count: group.value.length,
+          ),
+          _RepositoryLibraryGroup(
+            repositories: group.value,
+            activePath: activePath,
+            onRepositorySelected: onRepositorySelected,
+            reorderEnabled: reorderEnabled,
+            onReordered: (reorderedGroup) {
+              final paths = <String>[];
+              for (final candidate in groups.entries) {
+                paths.addAll(
+                  (candidate.key == group.key
+                          ? reorderedGroup
+                          : candidate.value)
+                      .map((item) => item.path),
+                );
+              }
+              onRepositoriesReordered?.call(paths);
+            },
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+class _RepositoryLibraryGroup extends StatelessWidget {
+  const _RepositoryLibraryGroup({
+    required this.repositories,
+    required this.activePath,
+    required this.onRepositorySelected,
+    required this.reorderEnabled,
+    required this.onReordered,
+  });
+
+  final List<RepositoryLibraryItem> repositories;
+  final String? activePath;
+  final Future<void> Function(String path) onRepositorySelected;
+  final bool reorderEnabled;
+  final ValueChanged<List<RepositoryLibraryItem>> onReordered;
+
+  /// 中文：构建单个目录组，并只允许在组内调整仓库顺序。
+  ///
+  /// English: Builds one directory group and limits dragging to its repository
+  /// entries so directory grouping remains stable.
+  @override
+  Widget build(BuildContext context) {
+    if (!reorderEnabled) {
+      return Column(
+        children: [
+          for (final repository in repositories)
+            _RepositoryLibraryTile(
+              repository: repository,
+              selected: repository.path == activePath,
+              onPressed: () => onRepositorySelected(repository.path),
+            ),
+        ],
+      );
+    }
+    return ReorderableListView.builder(
+      shrinkWrap: true,
+      physics: const NeverScrollableScrollPhysics(),
+      buildDefaultDragHandles: false,
+      itemCount: repositories.length,
+      onReorderItem: (oldIndex, newIndex) {
+        final reordered = [...repositories];
+        final item = reordered.removeAt(oldIndex);
+        reordered.insert(newIndex, item);
+        onReordered(reordered);
+      },
+      itemBuilder: (context, index) {
+        final repository = repositories[index];
+        return _RepositoryLibraryTile(
+          key: ValueKey<String>(
+            'repository-library-reorder:${repository.path}',
+          ),
+          repository: repository,
+          selected: repository.path == activePath,
+          onPressed: () => onRepositorySelected(repository.path),
+          dragHandle: ReorderableDragStartListener(
+            index: index,
+            child: const Tooltip(
+              message: '拖动以排序',
+              child: Padding(
+                padding: EdgeInsets.all(8),
+                child: Icon(Icons.drag_indicator_outlined, size: 18),
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -178,13 +314,10 @@ List<RepositoryLibraryItem> _filteredRepositories(
   String query,
 ) {
   final String normalizedQuery = query.trim().toLowerCase();
-  final List<RepositoryLibraryItem> sorted = [...repositories]
-    ..sort(
-      (RepositoryLibraryItem left, RepositoryLibraryItem right) =>
-          left.path.toLowerCase().compareTo(right.path.toLowerCase()),
-    );
-  if (normalizedQuery.isEmpty) return sorted;
-  return sorted
+  if (normalizedQuery.isEmpty) {
+    return List<RepositoryLibraryItem>.unmodifiable(repositories);
+  }
+  return repositories
       .where(
         (RepositoryLibraryItem repository) =>
             repository.label.toLowerCase().contains(normalizedQuery) ||
@@ -253,14 +386,17 @@ class _RepositoryLibraryGroupHeader extends StatelessWidget {
 
 class _RepositoryLibraryTile extends StatelessWidget {
   const _RepositoryLibraryTile({
+    super.key,
     required this.repository,
     required this.selected,
     required this.onPressed,
+    this.dragHandle,
   });
 
   final RepositoryLibraryItem repository;
   final bool selected;
   final VoidCallback onPressed;
+  final Widget? dragHandle;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -356,8 +492,59 @@ class _RepositoryLibraryTile extends StatelessWidget {
                       ),
                     ),
                   ],
+                  ...(dragHandle == null
+                      ? const <Widget>[]
+                      : <Widget>[dragHandle!]),
                 ],
               ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _RepositoryDirectoryDropOverlay extends StatelessWidget {
+  const _RepositoryDirectoryDropOverlay();
+
+  /// 中文：构建目录拖入时覆盖首页内容的接收提示。
+  ///
+  /// English: Builds the drop target hint over the repository library while
+  /// macOS is dragging directories above it.
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return IgnorePointer(
+      child: ColoredBox(
+        color: colors.scrim.withValues(alpha: .24),
+        child: Center(
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 28, vertical: 22),
+            decoration: BoxDecoration(
+              color: colors.surface,
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(color: colors.primary, width: 2),
+            ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.folder_open_outlined,
+                  color: colors.primary,
+                  size: 32,
+                ),
+                const SizedBox(height: 10),
+                Text(
+                  '松开以添加 Git 仓库',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '将自动识别仓库根目录。',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ],
             ),
           ),
         ),

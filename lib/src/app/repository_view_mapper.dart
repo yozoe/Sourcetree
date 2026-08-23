@@ -247,8 +247,10 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
                 ? null
                 : selectedCommit.body.trim(),
             parents: selectedCommit.parentIds,
-            refs: _refsForCommit(state, selectedCommit.objectId),
+            refs: _refLabelsForCommit(state, selectedCommit.objectId),
             remoteRefs: _remoteRefsForCommit(state, selectedCommit.objectId),
+            tagRefs: _tagRefsForCommit(state, selectedCommit.objectId),
+            references: _referencesForCommit(state, selectedCommit.objectId),
             currentBranch: branch.head,
             primaryLocalBranch: branch.isDetached
                 ? selectDetachedPushBranch(state)?.name
@@ -392,8 +394,13 @@ List<CommitViewData> _mapCommits(
               : state.commits[index].subject,
           author: state.commits[index].author.name,
           relativeDate: _relativeDate(state.commits[index].author.when),
-          refs: _refsForCommit(state, state.commits[index].objectId),
+          refs: _refLabelsForCommit(state, state.commits[index].objectId),
           remoteRefs: _remoteRefsForCommit(
+            state,
+            state.commits[index].objectId,
+          ),
+          tagRefs: _tagRefsForCommit(state, state.commits[index].objectId),
+          references: _referencesForCommit(
             state,
             state.commits[index].objectId,
           ),
@@ -430,18 +437,44 @@ String? _selectedRefObjectId(RepositorySessionState state) {
   return null;
 }
 
-/// 中文：收集指向同一提交的本地和远端分支标签。
-/// English: Collects local and remote branch labels pointing to a commit.
-List<String> _refsForCommit(RepositorySessionState state, String objectId) => [
+/// 中文：收集指向同一提交的带来源类型引用，保留 Git 命名空间差异。
+/// English: Collects typed refs targeting one commit without losing Git
+/// namespace differences between equal display names.
+List<CommitReferenceViewData> _referencesForCommit(
+  RepositorySessionState state,
+  String objectId,
+) => [
   if (state.status?.branch.isDetached == true &&
       state.status?.branch.objectId == objectId)
-    'HEAD',
+    const CommitReferenceViewData(
+      label: 'HEAD',
+      kind: CommitReferenceKind.head,
+    ),
   for (final branch in state.localBranches)
-    if (branch.objectId == objectId) branch.name,
+    if (branch.objectId == objectId)
+      CommitReferenceViewData(
+        label: branch.name,
+        kind: CommitReferenceKind.localBranch,
+      ),
   for (final branch in state.remoteBranches)
-    if (branch.objectId == objectId) branch.name,
+    if (branch.objectId == objectId)
+      CommitReferenceViewData(
+        label: branch.name,
+        kind: CommitReferenceKind.remoteBranch,
+      ),
   for (final tag in state.tags)
-    if (tag.targetObjectId == objectId) tag.name,
+    if (tag.targetObjectId == objectId)
+      CommitReferenceViewData(label: tag.name, kind: CommitReferenceKind.tag),
+];
+
+/// 中文：返回提交引用的展示标签，供左侧导航定位同名提交。
+/// English: Returns commit ref labels for sidebar-to-history lookup.
+List<String> _refLabelsForCommit(
+  RepositorySessionState state,
+  String objectId,
+) => [
+  for (final reference in _referencesForCommit(state, objectId))
+    reference.label,
 ];
 
 List<String> _remoteRefsForCommit(
@@ -451,6 +484,14 @@ List<String> _remoteRefsForCommit(
   for (final branch in state.remoteBranches)
     if (branch.objectId == objectId) branch.name,
 ];
+
+/// 中文：收集指向同一提交的标签，供视图以标签语义独立渲染。
+/// English: Collects tag refs targeting one commit for distinct tag rendering.
+List<String> _tagRefsForCommit(RepositorySessionState state, String objectId) =>
+    [
+      for (final tag in state.tags)
+        if (tag.targetObjectId == objectId) tag.name,
+    ];
 
 /// 中文：判断是否与目标匹配。
 /// English: Determines whether this matches the target.

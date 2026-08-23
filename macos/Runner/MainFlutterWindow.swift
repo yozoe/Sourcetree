@@ -9,6 +9,24 @@ enum GitDesktopWindowRole {
 private let gitDesktopWorkspaceTabbingIdentifier =
   "com.yeknom.git_desktop.workspace"
 
+/// Returns canonical, readable directory paths from dropped Finder URLs.
+func gitDesktopDroppedDirectoryPaths(_ urls: [URL]) -> [String] {
+  var paths: [String] = []
+  var seen: Set<String> = []
+  for url in urls {
+    let resolvedURL = url.resolvingSymlinksInPath().standardizedFileURL
+    guard (try? resolvedURL.resourceValues(forKeys: [.isDirectoryKey]))?
+      .isDirectory == true else {
+      continue
+    }
+    let path = resolvedURL.path
+    if seen.insert(path).inserted {
+      paths.append(path)
+    }
+  }
+  return paths
+}
+
 private final class DockIconView: NSView {
   private let imageView: NSImageView
 
@@ -43,8 +61,120 @@ private final class DockIconView: NSView {
   }
 }
 
+/// Receives Finder directory drops without taking normal pointer events away
+/// from Flutter's child view.
+private final class RepositoryDirectoryDropView: NSView {
+  var acceptsDirectoryDrops = false
+  var directoryDragStateHandler: ((Bool) -> Void)?
+  var directoriesDroppedHandler: (([String]) -> Void)?
+
+  override init(frame frameRect: NSRect) {
+    super.init(frame: frameRect)
+    registerForDraggedTypes([.fileURL])
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+    guard acceptsDirectoryDrops,
+      !droppedDirectoryPaths(from: sender).isEmpty else {
+      return []
+    }
+    directoryDragStateHandler?(true)
+    return .copy
+  }
+
+  override func draggingExited(_ sender: NSDraggingInfo?) {
+    directoryDragStateHandler?(false)
+  }
+
+  override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    acceptsDirectoryDrops && !droppedDirectoryPaths(from: sender).isEmpty
+  }
+
+  override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    let paths = droppedDirectoryPaths(from: sender)
+    directoryDragStateHandler?(false)
+    guard !paths.isEmpty else {
+      return false
+    }
+    directoriesDroppedHandler?(paths)
+    return true
+  }
+
+  private func droppedDirectoryPaths(from sender: NSDraggingInfo) -> [String] {
+    let options: [NSPasteboard.ReadingOptionKey: Any] = [
+      .urlReadingFileURLsOnly: true,
+    ]
+    let urls = sender.draggingPasteboard.readObjects(
+      forClasses: [NSURL.self],
+      options: options
+    ) as? [URL] ?? []
+    return gitDesktopDroppedDirectoryPaths(urls)
+  }
+}
+
+/// Hosts Flutter below a native drop destination so ordinary mouse events keep
+/// reaching Flutter while AppKit can resolve Finder drag targets through the
+/// view hierarchy.
+private final class RepositoryDirectoryDropContainerViewController:
+  NSViewController {
+  private let flutterViewController: FlutterViewController
+  private var dropView: RepositoryDirectoryDropView {
+    view as! RepositoryDirectoryDropView
+  }
+
+  var acceptsDirectoryDrops: Bool {
+    get { dropView.acceptsDirectoryDrops }
+    set { dropView.acceptsDirectoryDrops = newValue }
+  }
+  var directoryDragStateHandler: ((Bool) -> Void)? {
+    get { dropView.directoryDragStateHandler }
+    set { dropView.directoryDragStateHandler = newValue }
+  }
+  var directoriesDroppedHandler: (([String]) -> Void)? {
+    get { dropView.directoriesDroppedHandler }
+    set { dropView.directoriesDroppedHandler = newValue }
+  }
+
+  init(flutterViewController: FlutterViewController) {
+    self.flutterViewController = flutterViewController
+    super.init(nibName: nil, bundle: nil)
+    addChild(flutterViewController)
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  override func loadView() {
+    let dropView = RepositoryDirectoryDropView(frame: .zero)
+    let flutterView = flutterViewController.view
+    flutterView.frame = dropView.bounds
+    flutterView.autoresizingMask = [.width, .height]
+    dropView.addSubview(flutterView)
+    view = dropView
+  }
+}
+
 class MainFlutterWindow: NSWindow {
   private(set) var role = GitDesktopWindowRole.repositoryLibrary
+  private var directoryDropContainer:
+    RepositoryDirectoryDropContainerViewController?
+  var directoryDragStateHandler: ((Bool) -> Void)? {
+    didSet {
+      directoryDropContainer?.directoryDragStateHandler =
+        directoryDragStateHandler
+    }
+  }
+  var directoriesDroppedHandler: (([String]) -> Void)? {
+    didSet {
+      directoryDropContainer?.directoriesDroppedHandler =
+        directoriesDroppedHandler
+    }
+  }
 
   func configure(role: GitDesktopWindowRole) {
     self.role = role
@@ -55,6 +185,20 @@ class MainFlutterWindow: NSWindow {
     // Workspaces remain separate until the user explicitly chooses the Window
     // menu action. The coordinator enables tabbing only for that merge.
     tabbingMode = .disallowed
+    directoryDropContainer?.acceptsDirectoryDrops =
+      role == .repositoryLibrary
+  }
+
+  /// Installs the Flutter view below an AppKit drag destination container.
+  func installFlutterViewController(_ flutterViewController: FlutterViewController) {
+    let container = RepositoryDirectoryDropContainerViewController(
+      flutterViewController: flutterViewController
+    )
+    container.acceptsDirectoryDrops = role == .repositoryLibrary
+    container.directoryDragStateHandler = directoryDragStateHandler
+    container.directoriesDroppedHandler = directoriesDroppedHandler
+    directoryDropContainer = container
+    contentViewController = container
   }
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {
@@ -73,7 +217,7 @@ class MainFlutterWindow: NSWindow {
   override func awakeFromNib() {
     configure(role: .repositoryLibrary)
     let flutterViewController = FlutterViewController()
-    contentViewController = flutterViewController
+    installFlutterViewController(flutterViewController)
     setContentSize(NSSize(width: 1280, height: 800))
     minSize = NSSize(width: 900, height: 600)
     center()

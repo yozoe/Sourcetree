@@ -2859,8 +2859,11 @@ class _CommitRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
-    final visibleRefs = commit.refs
-        .where((ref) => showRemoteRefs || !commit.remoteRefs.contains(ref))
+    final visibleRefs = _commitReferences()
+        .where(
+          (ref) =>
+              showRemoteRefs || ref.kind != CommitReferenceKind.remoteBranch,
+        )
         .take(3)
         .toList(growable: false);
 
@@ -2904,13 +2907,14 @@ class _CommitRow extends StatelessWidget {
                 Expanded(
                   child: Row(
                     children: [
-                      for (final String ref in visibleRefs) ...[
+                      for (final CommitReferenceViewData ref
+                          in visibleRefs) ...[
                         Flexible(
                           fit: FlexFit.loose,
                           child: Padding(
                             padding: const EdgeInsets.only(right: 5),
                             child: _RefLabel(
-                              label: ref,
+                              label: ref.label,
                               kind: _commitRefKind(ref),
                               graphColor:
                                   _graphPalette[commit.graph.colorIndex.abs() %
@@ -3086,17 +3090,39 @@ class _CommitRow extends StatelessWidget {
     if (action != null) handler(action);
   }
 
-  /// 中文：按真实引用来源区分 HEAD、远端、主本地分支和其他本地分支标签。
+  /// 中文：按真实引用来源区分 HEAD、远端、标签、主本地分支和其他本地分支标签。
   ///
-  /// English: Classifies a ref label as HEAD, remote, primary local, or other
-  /// local using repository metadata rather than its display name.
-  _CommitRefKind _commitRefKind(String ref) {
-    if (ref == 'HEAD') return _CommitRefKind.head;
-    if (commit.remoteRefs.contains(ref)) return _CommitRefKind.remoteBranch;
-    if (ref == primaryLocalBranch || ref == currentBranch) {
+  /// English: Classifies a ref label as HEAD, remote, tag, primary local, or
+  /// other local using repository metadata rather than its display name.
+  _CommitRefKind _commitRefKind(CommitReferenceViewData ref) {
+    if (ref.kind == CommitReferenceKind.head) return _CommitRefKind.head;
+    if (ref.kind == CommitReferenceKind.remoteBranch) {
+      return _CommitRefKind.remoteBranch;
+    }
+    if (ref.kind == CommitReferenceKind.tag) return _CommitRefKind.tag;
+    if (ref.label == primaryLocalBranch || ref.label == currentBranch) {
       return _CommitRefKind.primaryLocalBranch;
     }
     return _CommitRefKind.localBranch;
+  }
+
+  /// Builds typed commit references, including compatibility for presentation
+  /// callers created before typed ref metadata was introduced.
+  List<CommitReferenceViewData> _commitReferences() {
+    if (commit.references.isNotEmpty) return commit.references;
+    return [
+      for (final ref in commit.refs)
+        CommitReferenceViewData(
+          label: ref,
+          kind: ref == 'HEAD'
+              ? CommitReferenceKind.head
+              : commit.remoteRefs.contains(ref)
+              ? CommitReferenceKind.remoteBranch
+              : commit.tagRefs.contains(ref)
+              ? CommitReferenceKind.tag
+              : CommitReferenceKind.localBranch,
+        ),
+    ];
   }
 }
 
@@ -3370,7 +3396,7 @@ const List<Color> _graphPalette = [
 
 List<Color> _graphColors(ColorScheme colors) => _graphPalette;
 
-enum _CommitRefKind { primaryLocalBranch, localBranch, remoteBranch, head }
+enum _CommitRefKind { primaryLocalBranch, localBranch, remoteBranch, tag, head }
 
 class _RefLabel extends StatelessWidget {
   const _RefLabel({required this.label, required this.kind, this.graphColor});
@@ -3425,6 +3451,15 @@ class _RefLabel extends StatelessWidget {
         dark ? const Color(0xFFFFC26E) : const Color(0xFF9A5700),
         _graphBaseOrange,
         Icons.cloud_outlined,
+      ),
+      _CommitRefKind.tag => (
+        Color.alphaBlend(
+          _graphBaseOrange.withValues(alpha: dark ? .20 : .10),
+          colors.surface,
+        ),
+        dark ? const Color(0xFFFFC26E) : const Color(0xFF9A5700),
+        _graphBaseOrange,
+        Icons.sell_outlined,
       ),
       _CommitRefKind.head => (
         Color.alphaBlend(
@@ -4749,14 +4784,16 @@ class _CommitDetailsContent extends StatelessWidget {
               height: 1.35,
             ),
           ),
-          if (details.refs.isNotEmpty) ...[
+          if (details.references.isNotEmpty || details.refs.isNotEmpty) ...[
             const SizedBox(height: 9),
             Wrap(
               spacing: 5,
               runSpacing: 5,
               children: [
-                for (final String ref in details.refs)
-                  _RefLabel(label: ref, kind: _detailsRefKind(details, ref)),
+                for (final CommitReferenceViewData ref in _detailReferences(
+                  details,
+                ))
+                  _RefLabel(label: ref.label, kind: _detailsRefKind(ref)),
               ],
             ),
           ],
@@ -4813,16 +4850,39 @@ class _CommitDetailsContent extends StatelessWidget {
     );
   }
 
-  /// 中文：按提交详情携带的引用来源复用历史行的颜色语义。
-  /// English: Reuses history-row ref colors from the source metadata carried
-  /// by commit details.
-  _CommitRefKind _detailsRefKind(CommitDetailsViewData details, String ref) {
-    if (ref == 'HEAD') return _CommitRefKind.head;
-    if (details.remoteRefs.contains(ref)) return _CommitRefKind.remoteBranch;
-    if (ref == details.primaryLocalBranch || ref == details.currentBranch) {
+  /// 中文：按提交详情引用的真实来源复用历史行颜色语义。
+  /// English: Reuses history-row colors from the typed commit-detail ref.
+  _CommitRefKind _detailsRefKind(CommitReferenceViewData ref) {
+    if (ref.kind == CommitReferenceKind.head) return _CommitRefKind.head;
+    if (ref.kind == CommitReferenceKind.remoteBranch) {
+      return _CommitRefKind.remoteBranch;
+    }
+    if (ref.kind == CommitReferenceKind.tag) return _CommitRefKind.tag;
+    if (ref.label == details.primaryLocalBranch ||
+        ref.label == details.currentBranch) {
       return _CommitRefKind.primaryLocalBranch;
     }
     return _CommitRefKind.localBranch;
+  }
+
+  /// Builds typed detail refs and supports legacy callers with string labels.
+  List<CommitReferenceViewData> _detailReferences(
+    CommitDetailsViewData details,
+  ) {
+    if (details.references.isNotEmpty) return details.references;
+    return [
+      for (final ref in details.refs)
+        CommitReferenceViewData(
+          label: ref,
+          kind: ref == 'HEAD'
+              ? CommitReferenceKind.head
+              : details.remoteRefs.contains(ref)
+              ? CommitReferenceKind.remoteBranch
+              : details.tagRefs.contains(ref)
+              ? CommitReferenceKind.tag
+              : CommitReferenceKind.localBranch,
+        ),
+    ];
   }
 }
 

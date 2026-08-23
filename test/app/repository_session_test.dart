@@ -537,6 +537,63 @@ void main() {
     expect(restoredState.repository!.commandDirectory, firstPath);
   });
 
+  test('adds inspected roots and persists repository library ordering', () async {
+    final firstRepository = await GitTestRepository.create();
+    addTearDown(firstRepository.dispose);
+    final secondRepository = await GitTestRepository.create();
+    addTearDown(secondRepository.dispose);
+    final store = _MemoryRepositorySessionStore();
+    final container = ProviderContainer(
+      overrides: [repositorySessionStoreProvider.overrideWithValue(store)],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+
+    await controller.restoreSession();
+    expect(
+      await controller.addRepositoryToLibrary(
+        firstRepository.workingDirectory.path,
+      ),
+      RepositoryLibraryRegistrationResult.added,
+    );
+    final nestedDirectory = Directory(
+      '${firstRepository.workingDirectory.path}${Platform.pathSeparator}nested',
+    );
+    await nestedDirectory.create();
+    expect(
+      await controller.addRepositoryToLibrary(nestedDirectory.path),
+      RepositoryLibraryRegistrationResult.alreadyRegistered,
+    );
+    expect(
+      await controller.addRepositoryToLibrary(
+        secondRepository.workingDirectory.path,
+      ),
+      RepositoryLibraryRegistrationResult.added,
+    );
+
+    final firstPath = container
+        .read(repositorySessionProvider)
+        .openRepositoryTabs
+        .first
+        .path;
+    final secondPath = container
+        .read(repositorySessionProvider)
+        .openRepositoryTabs
+        .last
+        .path;
+    controller.reorderRepositoryLibrary([secondPath, firstPath]);
+    expect(
+      container
+          .read(repositorySessionProvider)
+          .openRepositoryTabs
+          .map((tab) => tab.path),
+      [secondPath, firstPath],
+    );
+
+    await Future<void>.delayed(Duration.zero);
+    expect(store.snapshot.openRepositoryPaths, [secondPath, firstPath]);
+  });
+
   test(
     'refresh retries the last requested path after a failed repository switch',
     () async {
@@ -1377,6 +1434,75 @@ while true; do sleep 1; done
       expect(state.phase, RepositorySessionPhase.ready);
       expect(state.selectedRefId, 'refs/tags/tree-snapshot');
       expect(state.selectedCommitId, isNull);
+    },
+  );
+
+  test('creates a tag and refreshes the repository session', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    final commit = await repository.commit('Initial commit');
+    await repository.runGit([
+      'update-ref',
+      'refs/remotes/origin/v1.0.0',
+      commit,
+    ]);
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(
+      await controller.createTag(
+        GitCreateTagOptions(name: 'origin/v1.0.0', objectId: commit),
+      ),
+      isTrue,
+    );
+
+    final state = container.read(repositorySessionProvider);
+    expect(state.phase, RepositorySessionPhase.ready);
+    expect(state.tags.map((tag) => tag.name), contains('origin/v1.0.0'));
+    expect(
+      mapRepositoryOverview(state).repository!.commits
+          .singleWhere((entry) => entry.oid == commit)
+          .references,
+      isA<List<CommitReferenceViewData>>(),
+    );
+    expect(
+      mapRepositoryOverview(state).repository!.commits
+          .singleWhere((entry) => entry.oid == commit)
+          .references
+          .map((reference) => '${reference.kind}:${reference.label}'),
+      containsAll([
+        'CommitReferenceKind.tag:origin/v1.0.0',
+        'CommitReferenceKind.remoteBranch:origin/v1.0.0',
+      ]),
+    );
+  });
+
+  test(
+    'reports an invalid tag name without disguising it as a read error',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      final commit = await repository.commit('Initial commit');
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+
+      expect(
+        await controller.createTag(
+          GitCreateTagOptions(name: 'release candidate', objectId: commit),
+        ),
+        isFalse,
+      );
+
+      final state = container.read(repositorySessionProvider);
+      expect(state.phase, RepositorySessionPhase.ready);
+      expect(state.message, startsWith('标签名称无效。'));
+      expect(state.tags, isEmpty);
     },
   );
 

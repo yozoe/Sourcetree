@@ -461,6 +461,20 @@ final class CommitGraphViewData {
   );
 }
 
+/// The Git reference namespace associated with a commit label.
+///
+/// Names are intentionally not unique across Git namespaces: for example,
+/// `refs/heads/v1.0` and `refs/tags/v1.0` may coexist.
+enum CommitReferenceKind { head, localBranch, remoteBranch, tag }
+
+/// One typed reference label attached to a commit.
+final class CommitReferenceViewData {
+  const CommitReferenceViewData({required this.label, required this.kind});
+
+  final String label;
+  final CommitReferenceKind kind;
+}
+
 final class CommitViewData {
   const CommitViewData({
     required this.oid,
@@ -470,6 +484,8 @@ final class CommitViewData {
     required this.relativeDate,
     this.refs = const [],
     this.remoteRefs = const [],
+    this.tagRefs = const [],
+    this.references = const [],
     this.graph = const CommitGraphViewData(),
     this.isHead = false,
     this.isSelected = false,
@@ -484,6 +500,14 @@ final class CommitViewData {
   final String relativeDate;
   final List<String> refs;
   final List<String> remoteRefs;
+
+  /// Tag names in [refs], retained separately so tags keep their own visual
+  /// identity instead of inheriting a local-branch icon.
+  final List<String> tagRefs;
+
+  /// Typed commit labels used by current repository data. [refs] remains for
+  /// legacy presentation callers that only provide display text.
+  final List<CommitReferenceViewData> references;
   final CommitGraphViewData graph;
   final bool isHead;
   final bool isSelected;
@@ -498,6 +522,8 @@ final class CommitViewData {
     relativeDate: relativeDate,
     refs: refs,
     remoteRefs: remoteRefs,
+    tagRefs: tagRefs,
+    references: references,
     graph: graph ?? this.graph,
     isHead: isHead,
     isSelected: isSelected,
@@ -517,6 +543,8 @@ final class CommitDetailsViewData {
     this.parents = const [],
     this.refs = const [],
     this.remoteRefs = const [],
+    this.tagRefs = const [],
+    this.references = const [],
     this.currentBranch,
     this.primaryLocalBranch,
     this.changedFiles = 0,
@@ -533,6 +561,12 @@ final class CommitDetailsViewData {
   final List<String> parents;
   final List<String> refs;
   final List<String> remoteRefs;
+
+  /// Tag names in [refs], used to render tag badges distinctly from branches.
+  final List<String> tagRefs;
+
+  /// Typed commit labels, preserving distinct Git namespaces for equal names.
+  final List<CommitReferenceViewData> references;
   final String? currentBranch;
   final String? primaryLocalBranch;
   final int changedFiles;

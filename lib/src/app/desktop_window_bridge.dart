@@ -14,6 +14,9 @@ final class DesktopWindowBridge {
   );
   static FutureOr<void> Function(String repositoryPath)?
   _repositoryOpenedHandler;
+  static FutureOr<void> Function(List<String> directoryPaths)?
+  _repositoryDirectoriesDroppedHandler;
+  static void Function(bool isActive)? _repositoryDirectoryDragStateHandler;
   static FutureOr<void> Function()? _prepareToCloseHandler;
 
   /// Opens a dedicated repository workspace window.
@@ -45,6 +48,19 @@ final class DesktopWindowBridge {
     _updateMethodCallHandler();
   }
 
+  /// 中文：注册首页接收原生目录拖放后的回调。
+  ///
+  /// English: Registers the library callback for directories dropped by the
+  /// native macOS window host.
+  static void setRepositoryDirectoryDropHandlers({
+    FutureOr<void> Function(List<String> directoryPaths)? onDirectoriesDropped,
+    void Function(bool isActive)? onDragStateChanged,
+  }) {
+    _repositoryDirectoriesDroppedHandler = onDirectoriesDropped;
+    _repositoryDirectoryDragStateHandler = onDragStateChanged;
+    _updateMethodCallHandler();
+  }
+
   /// 中文：注册原生宿主销毁 Engine 前执行的清理；回调必须停止 Git 并释放 Dart 所有者。
   ///
   /// English: Registers cleanup before the native host destroys an Engine. The
@@ -57,7 +73,10 @@ final class DesktopWindowBridge {
   /// 中文：根据当前回调集合安装或移除原生调用处理器。
   /// English: Installs or removes the native call handler for active callbacks.
   static void _updateMethodCallHandler() {
-    if (_repositoryOpenedHandler == null && _prepareToCloseHandler == null) {
+    if (_repositoryOpenedHandler == null &&
+        _repositoryDirectoriesDroppedHandler == null &&
+        _repositoryDirectoryDragStateHandler == null &&
+        _prepareToCloseHandler == null) {
       _channel.setMethodCallHandler(null);
       return;
     }
@@ -84,6 +103,25 @@ final class DesktopWindowBridge {
       case 'prepareToClose':
         final handler = _prepareToCloseHandler;
         if (handler != null) await handler();
+        return;
+      case 'repositoryDirectoriesDropped':
+        final arguments = call.arguments;
+        final paths = arguments is Map ? arguments['paths'] : null;
+        final directoryPaths = paths is List
+            ? paths
+                  .whereType<String>()
+                  .where((path) => path.trim().isNotEmpty)
+                  .toList(growable: false)
+            : const <String>[];
+        final handler = _repositoryDirectoriesDroppedHandler;
+        if (handler != null && directoryPaths.isNotEmpty) {
+          await handler(directoryPaths);
+        }
+        return;
+      case 'repositoryDirectoryDragState':
+        final arguments = call.arguments;
+        final isActive = arguments is Map && arguments['isActive'] == true;
+        _repositoryDirectoryDragStateHandler?.call(isActive);
         return;
       default:
         throw MissingPluginException('Unknown window method: ${call.method}');

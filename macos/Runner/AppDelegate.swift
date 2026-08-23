@@ -78,6 +78,23 @@ final class GitDesktopWorkspaceHistory<Host: AnyObject> {
   }
 }
 
+/// Tracks the application window that was most recently placed in front.
+///
+/// This deliberately includes the repository library and workspaces: Dock
+/// reactivation should restore the user's current context, not always the
+/// startup window.
+final class GitDesktopWindowFocusHistory<Host: AnyObject> {
+  private weak var frontmostHost: Host?
+
+  var frontmost: Host? {
+    frontmostHost
+  }
+
+  func markFrontmost(_ host: Host) {
+    frontmostHost = host
+  }
+}
+
 private enum GitDesktopWindowHostError: LocalizedError {
   case engineStartFailed
   case invalidRepositoryRegistration
@@ -143,7 +160,7 @@ final class WorkspaceFlutterWindowController: NSWindowController,
       defer: false
     )
     window.configure(role: .workspace)
-    window.contentViewController = flutterViewController
+    window.installFlutterViewController(flutterViewController)
     window.minSize = NSSize(width: 900, height: 600)
     window.setContentSize(NSSize(width: 1280, height: 800))
     window.center()
@@ -314,6 +331,7 @@ final class WindowCoordinator {
     GitDesktopWorkspaceIndex<WorkspaceFlutterWindowController>()
   private let workspaceHistory =
     GitDesktopWorkspaceHistory<WorkspaceFlutterWindowController>()
+  private let windowFocusHistory = GitDesktopWindowFocusHistory<MainFlutterWindow>()
   private var unregisteredWorkspaces: [
     ObjectIdentifier: WorkspaceFlutterWindowController
   ] = [:]
@@ -331,6 +349,18 @@ final class WindowCoordinator {
       name: "com.yeknom.git_desktop/window",
       binaryMessenger: flutterViewController.engine.binaryMessenger
     )
+    window.directoryDragStateHandler = { isActive in
+      channel.invokeMethod(
+        "repositoryDirectoryDragState",
+        arguments: ["isActive": isActive]
+      )
+    }
+    window.directoriesDroppedHandler = { paths in
+      channel.invokeMethod(
+        "repositoryDirectoriesDropped",
+        arguments: ["paths": paths]
+      )
+    }
     channel.setMethodCallHandler { [weak self] call, result in
       guard let self else {
         result(
@@ -500,6 +530,7 @@ final class WindowCoordinator {
   }
 
   func windowDidBecomeKey(_ window: MainFlutterWindow) {
+    windowFocusHistory.markFrontmost(window)
     guard window.role == .workspace else {
       return
     }
@@ -529,6 +560,23 @@ final class WindowCoordinator {
       return
     }
     repositoryLibraryWindow.bringToFront()
+  }
+
+  /// Restores the window that was last key before the app was hidden.
+  ///
+  /// Falls back to the workspace MRU list when that window has been closed,
+  /// then to the repository library when no workspace remains.
+  func restoreMostRecentlyActiveWindow() {
+    if let frontmostWindow = windowFocusHistory.frontmost {
+      frontmostWindow.bringToFront()
+      return
+    }
+    if let lastWorkspace = workspaceHistory.mostRecent,
+       lastWorkspace.window != nil {
+      lastWorkspace.showAndActivate()
+      return
+    }
+    showRepositoryLibrary()
   }
 
   func prepareForApplicationTermination(completion: @escaping () -> Void) {
@@ -716,7 +764,7 @@ class AppDelegate: FlutterAppDelegate {
     _ sender: NSApplication,
     hasVisibleWindows flag: Bool
   ) -> Bool {
-    windowCoordinator.showRepositoryLibrary()
+    windowCoordinator.restoreMostRecentlyActiveWindow()
     return true
   }
 
