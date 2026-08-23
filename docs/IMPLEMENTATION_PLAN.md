@@ -309,7 +309,7 @@ detached HEAD、SHA-1/SHA-256 等边界。
   工作区 `Command + N` 显示首页，`Command + ~` 在首页与最近使用的工作区之间切换。
 - 共享主题偏好：系统/浅色/深色模式及多套 Workbench 主题色写入原子偏好文件，并通过文件
   监听同步到所有已打开窗口。
-- 工作区状态、整文件 stage/unstage、Unified Diff、基础历史 DAG 和提交详情；提交图采用
+- 工作区状态、未跟踪目录文件展开、整文件 stage/unstage、Command 多选、批量切换和安全移除未跟踪文件、Unified Diff、基础历史 DAG 和提交详情；提交图采用
   96px 宽的连续深灰图栏、实心节点与直角分叉连线，主线和分支以蓝/橙等高对比色区分；历史
   读取覆盖所有本地分支，以呈现真实分叉与合并拓扑。
 - 安全 Commit（stdin 传递信息且不跳过 hooks）。工作区存在任意改动时提交入口可用；提交面板
@@ -361,7 +361,7 @@ Git 进程不阻塞 UI，危险操作不静默执行。
 ### P2：Alpha
 
 - 仓库收藏、工作区分组和首页管理操作。
-- hunk/行级暂存、Amend。
+- hunk/行级暂存。
 - Tag、Stash、独立 Rebase、Cherry-pick、Revert、Reset。
 - 历史搜索、左右 Diff、基础冲突处理。
 - Remote 管理、Keychain 和快捷键。

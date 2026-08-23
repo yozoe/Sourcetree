@@ -411,4 +411,49 @@ void main() {
       containsAll(<String>['one.py', 'two.py']),
     );
   });
+
+  testWidgets('working-tree context menu removes selected untracked files', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    List<RepositoryChangeViewData>? removed;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: [
+                RepositoryChangeViewData(
+                  path: 'scratch.txt',
+                  kind: RepositoryChangeKind.untracked,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onChangeRemove: (changes) => removed = changes,
+          ),
+        ),
+      ),
+    );
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('scratch.txt')),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('移除'));
+    await tester.pumpAndSettle();
+
+    expect(removed?.map((change) => change.path), ['scratch.txt']);
+  });
 }

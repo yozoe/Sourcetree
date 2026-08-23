@@ -1308,8 +1308,13 @@ class _RepositoryWorkspaceScreenState
       if (path != null) paths.add(path);
     }
     if (paths.isEmpty) return;
-    final result = await Process.run('/usr/bin/open', ['-R', ...paths]);
-    if (!mounted || result.exitCode == 0) return;
+    try {
+      final result = await Process.run('/usr/bin/open', ['-R', ...paths]);
+      if (!mounted || result.exitCode == 0) return;
+    } on Object {
+      if (!mounted) return;
+    }
+    if (!mounted) return;
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('无法在 Finder 中显示所选文件。')));
@@ -1346,6 +1351,32 @@ class _RepositoryWorkspaceScreenState
       ),
     );
     if (approved != true || !mounted) return;
+
+    // Re-read Git status after the confirmation. The list may have become
+    // stale while the dialog was open; never delete a path whose current
+    // status is no longer untracked.
+    await ref.read(repositorySessionProvider.notifier).refresh();
+    if (!mounted) return;
+    final refreshed = ref.read(repositorySessionProvider);
+    final refreshedRoot = refreshed.repository?.workTreeRoot;
+    final status = refreshed.status;
+    if (refreshedRoot != root || status == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('仓库状态已变化，请刷新后重试。')));
+      return;
+    }
+    final currentUntrackedPaths = <String>{
+      for (final entry in status.entries)
+        if (entry.kind == GitFileStatusKind.untracked && entry.path.isValidUtf8)
+          entry.path.display,
+    };
+    if (changes.any((change) => !currentUntrackedPaths.contains(change.path))) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('选中的文件状态已变化，请刷新后重试。')));
+      return;
+    }
 
     var removed = 0;
     var failed = 0;
