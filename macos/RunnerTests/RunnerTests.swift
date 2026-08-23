@@ -42,6 +42,24 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(contentSize.height, 800, accuracy: 1)
   }
 
+  func testWorkspaceWindowsUseOneNativeTabbingIdentifier() throws {
+    let controller = try WorkspaceFlutterWindowController(
+      repositoryPath: nil,
+      initialAction: nil,
+      coordinator: WindowCoordinator()
+    )
+    defer {
+      controller.close()
+    }
+
+    let window = try XCTUnwrap(controller.window)
+    XCTAssertEqual(window.tabbingMode, .disallowed)
+    XCTAssertEqual(
+      window.tabbingIdentifier,
+      "com.yeknom.git_desktop.workspace"
+    )
+  }
+
   func testWorkspaceIndexReplacesAndRemovesOnlyTheOwnedHost() {
     let index = GitDesktopWorkspaceIndex<TestWorkspace>()
     let first = TestWorkspace()

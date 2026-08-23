@@ -6,6 +6,9 @@ enum GitDesktopWindowRole {
   case workspace
 }
 
+private let gitDesktopWorkspaceTabbingIdentifier =
+  "com.yeknom.git_desktop.workspace"
+
 private final class DockIconView: NSView {
   private let imageView: NSImageView
 
@@ -46,6 +49,12 @@ class MainFlutterWindow: NSWindow {
   func configure(role: GitDesktopWindowRole) {
     self.role = role
     title = role == .workspace ? "Git Desktop — Workspace" : "Git Desktop"
+    tabbingIdentifier = role == .workspace
+      ? gitDesktopWorkspaceTabbingIdentifier
+      : ""
+    // Workspaces remain separate until the user explicitly chooses the Window
+    // menu action. The coordinator enables tabbing only for that merge.
+    tabbingMode = .disallowed
   }
 
   override func performKeyEquivalent(with event: NSEvent) -> Bool {

@@ -420,14 +420,83 @@ final class WindowCoordinator {
     workspaceIndex.remove(controller)
     unregisteredWorkspaces.removeValue(forKey: ObjectIdentifier(controller))
     controller.repositoryPath = repositoryPath
+    controller.window?.title = "\(URL(fileURLWithPath: repositoryPath).lastPathComponent) (Git)"
     workspaceIndex.register(controller, for: repositoryPath)
     notifyRepositoryLibrary(repositoryPath: repositoryPath)
+  }
+
+  /// Merges all live repository workspaces into the current native tab group.
+  /// Each tab retains its own Flutter Engine and close lifecycle.
+  func mergeAllWorkspaceWindows() {
+    let controllers = workspaceControllers()
+    guard controllers.count > 1,
+          let primary = activeWorkspaceWindow(from: controllers) else {
+      return
+    }
+    for controller in controllers {
+      guard let candidate = controller.window, candidate !== primary else {
+        continue
+      }
+      let existingTabs = primary.tabbedWindows ?? [primary]
+      if !existingTabs.contains(where: { $0 === candidate }) {
+        primary.tabbingMode = .preferred
+        candidate.tabbingMode = .preferred
+        primary.addTabbedWindow(candidate, ordered: .above)
+      }
+    }
+    primary.bringToFront()
+  }
+
+  /// Returns whether at least two live workspaces still need to be merged.
+  var canMergeAllWorkspaceWindows: Bool {
+    let controllers = workspaceControllers()
+    let windows = controllers.compactMap(\.window)
+    guard windows.count > 1,
+          let primary = activeWorkspaceWindow(from: controllers) else {
+      return false
+    }
+    let primaryTabs = primary.tabbedWindows ?? [primary]
+    return windows.contains { candidate in
+      !primaryTabs.contains(where: { $0 === candidate })
+    }
   }
 
   func workspaceWillClose(_ controller: WorkspaceFlutterWindowController) {
     workspaceIndex.remove(controller)
     unregisteredWorkspaces.removeValue(forKey: ObjectIdentifier(controller))
     workspaceHistory.remove(controller)
+  }
+
+  /// Collects every live workspace once, including workspaces not yet bound to
+  /// a repository path.
+  private func workspaceControllers() -> [WorkspaceFlutterWindowController] {
+    let candidates = workspaceIndex.allHosts
+      + Array(unregisteredWorkspaces.values)
+    var controllers: [WorkspaceFlutterWindowController] = []
+    var seen: Set<ObjectIdentifier> = []
+    for controller in candidates {
+      if seen.insert(ObjectIdentifier(controller)).inserted {
+        controllers.append(controller)
+      }
+    }
+    return controllers
+  }
+
+  /// Selects the current workspace as tab host, falling back to the most
+  /// recently used live workspace.
+  private func activeWorkspaceWindow(
+    from controllers: [WorkspaceFlutterWindowController]
+  ) -> MainFlutterWindow? {
+    if let keyWindow = NSApp.keyWindow as? MainFlutterWindow,
+       keyWindow.role == .workspace,
+       controllers.contains(where: { $0.window === keyWindow }) {
+      return keyWindow
+    }
+    if let mostRecent = workspaceHistory.mostRecent?.window as? MainFlutterWindow,
+       controllers.contains(where: { $0.window === mostRecent }) {
+      return mostRecent
+    }
+    return controllers.first?.window as? MainFlutterWindow
   }
 
   func windowDidBecomeKey(_ window: MainFlutterWindow) {
@@ -594,6 +663,21 @@ class AppDelegate: FlutterAppDelegate {
       return true
     }
     return false
+  }
+
+  /// 中文：将全部仓库工作区合并为当前原生窗口的标签页。
+  ///
+  /// English: Merges all live repository workspaces into one native macOS tab
+  /// group without sharing their Flutter Engine lifecycles.
+  @IBAction func mergeAllRepositoryWindows(_ sender: Any?) {
+    windowCoordinator.mergeAllWorkspaceWindows()
+  }
+
+  func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
+    if menuItem.action == #selector(mergeAllRepositoryWindows(_:)) {
+      return windowCoordinator.canMergeAllWorkspaceWindows
+    }
+    return true
   }
 
   override func applicationWillTerminate(_ notification: Notification) {
