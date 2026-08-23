@@ -276,6 +276,47 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Creating local branch');
   }
 
+  /// 中文：以指定提交为起点创建本地分支，不切换工作区也不覆盖已有引用。
+  ///
+  /// English: Creates a local branch at the specified commit without checking
+  /// it out or overwriting an existing ref.
+  Future<void> createLocalBranchFromCommit(
+    GitRepository repository, {
+    required String name,
+    required String objectId,
+  }) async {
+    final normalizedName = name.trim();
+    final normalizedObjectId = objectId.trim();
+    if (normalizedName.isEmpty) {
+      throw ArgumentError.value(name, 'name', 'Branch name is empty.');
+    }
+    if (normalizedObjectId.isEmpty ||
+        !RegExp(r'^[0-9a-fA-F]{7,64}$').hasMatch(normalizedObjectId)) {
+      throw ArgumentError.value(
+        objectId,
+        'objectId',
+        'A valid commit id is required.',
+      );
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          'branch',
+          '--',
+          normalizedName,
+          normalizedObjectId,
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Creating local branch from commit');
+  }
+
   /// Switches to an existing local branch without creating or overwriting refs.
   /// 中文：切换到目标状态。
   /// English: Switches to the target state.
@@ -437,13 +478,14 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Renaming local branch');
   }
 
-  /// 中文：以 Git 的安全删除模式删除已合并的本地分支，绝不强制删除未合并提交。
+  /// 中文：删除本地分支；默认仅删除已合并分支，只有用户已明确确认时才允许强制删除。
   ///
-  /// English: Deletes a merged local branch with Git's safe deletion mode and
-  /// never force-deletes unmerged commits.
-  Future<void> deleteMergedLocalBranch(
+  /// English: Deletes a local branch. It uses Git's safe merged-only mode by
+  /// default and permits force deletion only after explicit user confirmation.
+  Future<void> deleteLocalBranch(
     GitRepository repository, {
     required String name,
+    required bool force,
   }) async {
     final normalizedName = name.trim();
     if (normalizedName.isEmpty) {
@@ -451,7 +493,13 @@ final class GitRepositoryWriter {
     }
     final result = await runner.run(
       GitInvocation(
-        arguments: ['--no-pager', 'branch', '-d', '--', normalizedName],
+        arguments: [
+          '--no-pager',
+          'branch',
+          force ? '-D' : '-d',
+          '--',
+          normalizedName,
+        ],
         workingDirectory: repository.commandDirectory,
         outputLimit: const GitOutputLimit(
           stdoutBytes: 256 * 1024,
@@ -459,8 +507,48 @@ final class GitRepositoryWriter {
         ),
       ),
     );
-    result.throwIfFailed(operation: 'Deleting merged local branch');
+    result.throwIfFailed(operation: 'Deleting local branch');
   }
+
+  /// 中文：删除已获取远端上的分支；remoteName 必须来自已读取的远端引用。
+  ///
+  /// English: Deletes a branch from an already fetched remote. [remoteName]
+  /// must originate from a loaded remote-tracking reference.
+  Future<void> deleteRemoteBranch(
+    GitRepository repository, {
+    required String remoteName,
+  }) async {
+    final separator = remoteName.indexOf('/');
+    if (separator <= 0 || separator == remoteName.length - 1) {
+      throw ArgumentError.value(
+        remoteName,
+        'remoteName',
+        'A remote-tracking branch name is required.',
+      );
+    }
+    final remote = remoteName.substring(0, separator);
+    final branch = remoteName.substring(separator + 1);
+    final result = await runner.run(
+      GitInvocation(
+        arguments: ['--no-pager', 'push', remote, '--delete', '--', branch],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Deleting remote branch');
+  }
+
+  /// 中文：以 Git 的安全删除模式删除已合并的本地分支，绝不强制删除未合并提交。
+  ///
+  /// English: Deletes a merged local branch with Git's safe deletion mode and
+  /// never force-deletes unmerged commits.
+  Future<void> deleteMergedLocalBranch(
+    GitRepository repository, {
+    required String name,
+  }) => deleteLocalBranch(repository, name: name, force: false);
 
   /// 中文：将指定本地分支合并到当前分支；有新增提交时使用 `--no-ff` 保留显式合并记录，
   /// 并允许 Git hooks 运行。
@@ -584,9 +672,9 @@ final class GitRepositoryWriter {
     GitCancellationToken? cancellationToken,
     Map<String, String> environment = const {},
   }) async {
-    await fetchRemote(
+    await fetch(
       repository,
-      remoteName: 'origin',
+      options: const GitFetchOptions(fetchAllRemotes: false),
       cancellationToken: cancellationToken,
       environment: environment,
     );
@@ -599,14 +687,31 @@ final class GitRepositoryWriter {
     required String remoteName,
     GitCancellationToken? cancellationToken,
     Map<String, String> environment = const {},
+  }) => fetch(
+    repository,
+    options: GitFetchOptions(fetchAllRemotes: false, remoteName: remoteName),
+    cancellationToken: cancellationToken,
+    environment: environment,
+  );
+
+  /// 中文：按用户明确选择的范围抓取远端，可选清理失效跟踪分支和同步所有标签。
+  ///
+  /// English: Fetches the explicitly selected remote scope, optionally
+  /// pruning stale tracking refs and fetching all tags.
+  Future<void> fetch(
+    GitRepository repository, {
+    required GitFetchOptions options,
+    GitCancellationToken? cancellationToken,
+    Map<String, String> environment = const {},
   }) async {
-    final normalizedName = remoteName.trim();
-    if (normalizedName.isEmpty ||
-        normalizedName.startsWith('-') ||
-        normalizedName.contains(RegExp(r'[\x00\s]'))) {
+    final normalizedName = options.remoteName.trim();
+    if (!options.fetchAllRemotes &&
+        (normalizedName.isEmpty ||
+            normalizedName.startsWith('-') ||
+            normalizedName.contains(RegExp(r'[\x00\s]')))) {
       throw ArgumentError.value(
-        remoteName,
-        'remoteName',
+        options.remoteName,
+        'options.remoteName',
         'A valid remote name is required.',
       );
     }
@@ -616,7 +721,9 @@ final class GitRepositoryWriter {
           '--no-pager',
           'fetch',
           '--no-recurse-submodules',
-          normalizedName,
+          if (options.pruneDeletedTrackingBranches) '--prune',
+          if (options.fetchAllTags) '--tags',
+          if (options.fetchAllRemotes) '--all' else normalizedName,
         ],
         workingDirectory: repository.commandDirectory,
         cancellationToken: cancellationToken,
@@ -815,6 +922,146 @@ final class GitRepositoryWriter {
     );
     result.throwIfFailed(operation: 'Pushing current branch');
   }
+
+  /// 中文：将用户明确勾选的本地分支推送到一个已配置远端，可选同时推送全部标签；从不使用强制推送。
+  ///
+  /// English: Pushes explicitly selected local branches to one configured
+  /// remote, optionally including all tags. It never supplies force push.
+  Future<void> pushBranches(
+    GitRepository repository, {
+    required GitPushOptions options,
+    GitCancellationToken? cancellationToken,
+    Map<String, String> environment = const {},
+  }) async {
+    final remoteName = options.remoteName.trim();
+    if (!_isSafeRemoteName(remoteName)) {
+      throw ArgumentError.value(
+        options.remoteName,
+        'options.remoteName',
+        'A configured remote name is required.',
+      );
+    }
+    if (options.branches.isEmpty && !options.pushTags) {
+      throw ArgumentError.value(
+        options,
+        'options',
+        'Select at least one branch or push tags.',
+      );
+    }
+    final refspecs = <String>[];
+    final seenLocalBranches = <String>{};
+    for (final branch in options.branches) {
+      final local = branch.localBranch.trim();
+      final remote = branch.remoteBranch.trim();
+      if (!_isSafeBranchName(local) || !_isSafeBranchName(remote)) {
+        throw ArgumentError.value(
+          branch,
+          'options.branches',
+          'Valid local and remote branch names are required.',
+        );
+      }
+      if (!seenLocalBranches.add(local)) {
+        throw ArgumentError.value(
+          branch,
+          'options.branches',
+          'Each local branch can be pushed only once.',
+        );
+      }
+      refspecs.add('refs/heads/$local:refs/heads/$remote');
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          'push',
+          '--porcelain',
+          if (options.pushTags) '--tags',
+          '--',
+          remoteName,
+          ...refspecs,
+        ],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        environment: environment,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 1024 * 1024,
+          stderrBytes: 1024 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Pushing selected branches');
+    for (final branch in options.branches.where(
+      (branch) => branch.trackRemote,
+    )) {
+      await _setBranchTracking(
+        repository,
+        localBranch: branch.localBranch.trim(),
+        remoteName: remoteName,
+        remoteBranch: branch.remoteBranch.trim(),
+        cancellationToken: cancellationToken,
+      );
+    }
+  }
+
+  /// 中文：为已成功推送的分支写入上游跟踪配置，不移动工作区或覆盖引用。
+  ///
+  /// English: Records upstream tracking for a successfully pushed branch
+  /// without moving the work tree or overwriting refs.
+  Future<void> _setBranchTracking(
+    GitRepository repository, {
+    required String localBranch,
+    required String remoteName,
+    required String remoteBranch,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final remoteResult = await runner.run(
+      GitInvocation(
+        arguments: ['config', 'branch.$localBranch.remote', remoteName],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 256 * 1024,
+        ),
+      ),
+    );
+    remoteResult.throwIfFailed(operation: 'Setting branch upstream remote');
+    final mergeResult = await runner.run(
+      GitInvocation(
+        arguments: [
+          'config',
+          'branch.$localBranch.merge',
+          'refs/heads/$remoteBranch',
+        ],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 256 * 1024,
+        ),
+      ),
+    );
+    mergeResult.throwIfFailed(operation: 'Setting branch upstream ref');
+  }
+
+  /// 中文：判断远端名称是否能安全作为 Git 的字面参数使用。
+  /// English: Checks whether a remote name is safe as a literal Git argument.
+  bool _isSafeRemoteName(String value) =>
+      value.isNotEmpty &&
+      !value.startsWith('-') &&
+      !value.contains(RegExp(r'[\x00\s]'));
+
+  /// 中文：判断短分支名称是否可安全转换为 heads 引用。
+  /// English: Checks whether a short branch name can safely form a heads ref.
+  bool _isSafeBranchName(String value) =>
+      value.isNotEmpty &&
+      !value.startsWith('-') &&
+      !value.startsWith('/') &&
+      !value.endsWith('/') &&
+      !value.endsWith('.') &&
+      !value.contains('..') &&
+      !value.contains('//') &&
+      !value.contains(RegExp(r'[\x00\s~^:?*\[\\]'));
 
   /// Verifies whether the configured upstream currently contains the checked
   /// out HEAD or the explicitly selected local branch tip.

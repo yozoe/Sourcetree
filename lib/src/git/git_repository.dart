@@ -564,6 +564,33 @@ final class GitRepositoryReader {
     return url != null;
   }
 
+  /// 中文：读取仓库已配置的远端名称，结果只用于显示与显式远端操作。
+  ///
+  /// English: Reads configured remote names for display and explicitly
+  /// requested remote operations.
+  Future<List<String>> readRemoteNames(GitRepository repository) async {
+    final result = await runner.run(
+      GitInvocation(
+        arguments: const ['--no-pager', 'remote'],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 256 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Reading remote names');
+    final names =
+        result.stdoutText
+            .split('\n')
+            .map((name) => name.trim())
+            .where((name) => name.isNotEmpty)
+            .toSet()
+            .toList()
+          ..sort();
+    return List<String>.unmodifiable(names);
+  }
+
   /// Reads a configured remote's fetch URL, returning null when it is absent.
   /// 中文：读取远端的拉取地址；远端不存在时返回 null。
   Future<String?> readRemoteUrl(

@@ -466,6 +466,41 @@ void main() {
   });
 
   test(
+    'creates a local branch from a selected commit without checking it out',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('branch.txt', 'base\n');
+      await repository.commit('base commit');
+      await repository.writeFile('branch.txt', 'tip\n');
+      await repository.commit('tip commit');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      final base = container
+          .read(repositorySessionProvider)
+          .commits
+          .singleWhere((commit) => commit.subject == 'base commit');
+
+      expect(
+        await controller.createLocalBranchFromCommit(
+          'feature/from-base',
+          base.objectId,
+        ),
+        isTrue,
+      );
+      final state = container.read(repositorySessionProvider);
+      expect(state.status?.branch.head, 'main');
+      expect(
+        state.localBranches.map((branch) => branch.name),
+        contains('feature/from-base'),
+      );
+    },
+  );
+
+  test(
     'keeps the previously active tab when a selected repository is unavailable',
     () async {
       final firstRepository = await GitTestRepository.create();
@@ -609,6 +644,41 @@ void main() {
           .localBranches
           .map((branch) => branch.name),
       isNot(contains('feature/renamed')),
+    );
+  });
+
+  test('refreshes refs when a multi-branch deletion partially fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', '# Git Desktop\n');
+    await repository.commit('Initial commit');
+    await repository.runGit(['branch', 'feature/merged']);
+    await repository.runGit(['branch', 'feature/unmerged']);
+    await repository.runGit(['switch', 'feature/unmerged']);
+    await repository.writeFile('unmerged.txt', 'keep this commit\n');
+    await repository.commit('Unmerged commit');
+    await repository.runGit(['switch', 'main']);
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(
+      await controller.deleteBranches(
+        localBranchNames: const ['feature/merged', 'feature/unmerged'],
+      ),
+      isFalse,
+    );
+    final state = container.read(repositorySessionProvider);
+    expect(state.phase, RepositorySessionPhase.error);
+    expect(
+      state.localBranches.map((branch) => branch.name),
+      isNot(contains('feature/merged')),
+    );
+    expect(
+      state.localBranches.map((branch) => branch.name),
+      contains('feature/unmerged'),
     );
   });
 
@@ -1124,40 +1194,82 @@ while true; do sleep 1; done
     );
   });
 
-  test('fetches origin and refreshes ahead-behind state', () async {
-    final source = await GitTestRepository.create();
-    addTearDown(source.dispose);
-    await source.writeFile('README.md', '# Git Desktop\n');
-    await source.commit('Initial commit');
-    final origin = await source.createBareOrigin();
-    await source.runGit(['push', 'origin', 'main']);
-    final directory = await Directory.systemTemp.createTemp(
-      'git-desktop-fetch-',
-    );
-    addTearDown(() => directory.delete(recursive: true));
-    final container = ProviderContainer();
-    addTearDown(container.dispose);
-    final controller = container.read(repositorySessionProvider.notifier);
-    expect(
-      await controller.cloneRepository(
-        remoteUrl: origin.path,
-        directoryPath: directory.path,
-      ),
-      isTrue,
-    );
-    await source.writeFile('CHANGELOG.md', '# Changes\n');
-    await source.commit('Add changelog');
-    await source.runGit(['push', 'origin', 'main']);
+  test(
+    'fetches all configured remotes and refreshes ahead-behind state',
+    () async {
+      final source = await GitTestRepository.create();
+      addTearDown(source.dispose);
+      await source.writeFile('README.md', '# Git Desktop\n');
+      await source.commit('Initial commit');
+      final origin = await source.createBareOrigin();
+      await source.runGit(['push', 'origin', 'main']);
+      final directory = await Directory.systemTemp.createTemp(
+        'git-desktop-fetch-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      expect(
+        await controller.cloneRepository(
+          remoteUrl: origin.path,
+          directoryPath: directory.path,
+        ),
+        isTrue,
+      );
+      await source.writeFile('CHANGELOG.md', '# Changes\n');
+      await source.commit('Add changelog');
+      await source.runGit(['push', 'origin', 'main']);
 
-    expect(await controller.fetchOrigin(), isTrue);
-    final state = container.read(repositorySessionProvider);
-    expect(state.phase, RepositorySessionPhase.ready);
-    expect(state.status!.branch.behind, 1);
-    final operation = state.operations.firstWhere(
-      (operation) => operation.kind == RepositoryOperationKind.fetch,
-    );
-    expect(operation.outcome, RepositoryOperationOutcome.succeeded);
-  });
+      expect(
+        await controller.fetchWithOptions(const GitFetchOptions()),
+        isTrue,
+      );
+      final state = container.read(repositorySessionProvider);
+      expect(state.phase, RepositorySessionPhase.ready);
+      expect(state.status!.branch.behind, 1);
+      final operation = state.operations.firstWhere(
+        (operation) => operation.kind == RepositoryOperationKind.fetch,
+      );
+      expect(operation.outcome, RepositoryOperationOutcome.succeeded);
+    },
+  );
+
+  test(
+    'refreshes refs after one remote succeeds and another fetch fails',
+    () async {
+      final source = await GitTestRepository.create();
+      addTearDown(source.dispose);
+      await source.writeFile('README.md', '# Git Desktop\n');
+      await source.commit('Initial commit');
+      final origin = await source.createBareOrigin();
+      await source.runGit(['push', 'origin', 'main']);
+      final target = await GitTestRepository.cloneFrom(origin);
+      addTearDown(target.dispose);
+      await target.runGit([
+        'remote',
+        'add',
+        'broken',
+        '${target.workingDirectory.path}${Platform.pathSeparator}missing.git',
+      ]);
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(target.workingDirectory.path);
+      await source.writeFile('CHANGELOG.md', '# Changes\n');
+      await source.commit('Add changelog');
+      await source.runGit(['push', 'origin', 'main']);
+
+      expect(
+        await controller.fetchWithOptions(const GitFetchOptions()),
+        isFalse,
+      );
+      final state = container.read(repositorySessionProvider);
+      expect(state.phase, RepositorySessionPhase.error);
+      expect(state.status!.branch.behind, 1);
+    },
+  );
 
   test('does not fetch when origin is not configured', () async {
     final repository = await GitTestRepository.create();
@@ -1337,6 +1449,62 @@ while true; do sleep 1; done
       (await target.runGit(['rev-parse', 'HEAD'])).stdout.toString().trim(),
     );
   });
+
+  test(
+    'pushes branches selected in the push dialog and records tracking',
+    () async {
+      final source = await GitTestRepository.create();
+      addTearDown(source.dispose);
+      await source.writeFile('README.md', '# Git Desktop\n');
+      await source.commit('Initial commit');
+      final origin = await source.createBareOrigin();
+      await source.runGit(['push', '--set-upstream', 'origin', 'main']);
+      final target = await GitTestRepository.cloneFrom(origin);
+      addTearDown(target.dispose);
+      await target.runGit(['branch', 'feature/dialog-push']);
+      await target.runGit(['switch', 'feature/dialog-push']);
+      await target.writeFile('dialog.txt', 'push this branch\n');
+      final featureHead = await target.commit('Prepare dialog push');
+      await target.runGit(['switch', 'main']);
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(target.workingDirectory.path);
+
+      expect(await controller.readRemoteNames(), contains('origin'));
+      expect(
+        await controller.pushWithOptions(
+          const GitPushOptions(
+            remoteName: 'origin',
+            branches: [
+              GitPushBranch(
+                localBranch: 'feature/dialog-push',
+                remoteBranch: 'review/dialog',
+                trackRemote: true,
+              ),
+            ],
+          ),
+        ),
+        isTrue,
+      );
+      final state = container.read(repositorySessionProvider);
+      expect(state.phase, RepositorySessionPhase.ready);
+      expect(
+        state.localBranches
+            .singleWhere((branch) => branch.name == 'feature/dialog-push')
+            .upstream,
+        'origin/review/dialog',
+      );
+      expect(
+        (await source.runGit([
+          'rev-parse',
+          'refs/heads/review/dialog',
+        ], workingDirectory: origin)).stdout.toString().trim(),
+        featureHead,
+      );
+    },
+  );
 
   test(
     'enables and completes first push when configured upstream is gone',

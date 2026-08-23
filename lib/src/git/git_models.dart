@@ -314,6 +314,67 @@ final class GitRemoteBranch {
   final String objectId;
 }
 
+/// A local branch and its selected destination on one remote.
+/// 中文：一个本地分支及其在指定远端上的目标分支。
+final class GitPushBranch {
+  const GitPushBranch({
+    required this.localBranch,
+    required this.remoteBranch,
+    this.trackRemote = false,
+  });
+
+  /// The loaded local branch that will be pushed.
+  final String localBranch;
+
+  /// The destination branch name without the remote prefix.
+  final String remoteBranch;
+
+  /// Whether the local branch should track this remote destination afterwards.
+  final bool trackRemote;
+}
+
+/// Options selected in the multi-branch push dialog.
+/// 中文：多分支推送弹框中选择的推送选项。
+final class GitPushOptions {
+  const GitPushOptions({
+    required this.remoteName,
+    required this.branches,
+    this.pushTags = false,
+  });
+
+  /// The configured remote receiving all selected refs.
+  final String remoteName;
+
+  /// Local-to-remote branch mappings explicitly selected by the user.
+  final List<GitPushBranch> branches;
+
+  /// Whether every local tag should also be pushed.
+  final bool pushTags;
+}
+
+/// Options selected in the fetch configuration dialog.
+/// 中文：抓取配置弹框中选择的选项。
+final class GitFetchOptions {
+  const GitFetchOptions({
+    this.fetchAllRemotes = true,
+    this.pruneDeletedTrackingBranches = false,
+    this.fetchAllTags = false,
+    this.remoteName = 'origin',
+  });
+
+  /// Fetches every configured remote instead of one named remote.
+  final bool fetchAllRemotes;
+
+  /// Removes remote-tracking refs deleted from their corresponding remote.
+  final bool pruneDeletedTrackingBranches;
+
+  /// Fetches every tag reachable from the selected remote scope.
+  final bool fetchAllTags;
+
+  /// The configured remote fetched when [fetchAllRemotes] is false.
+  final String remoteName;
+}
+
 /// Options exposed by the pull configuration dialog.
 /// 中文：拉取配置对话框暴露的选项。
 final class GitPullOptions {

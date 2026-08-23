@@ -1792,6 +1792,17 @@ class _HistoryPaneState extends State<_HistoryPane> {
                         query: widget.repository.searchQuery,
                         onChanged: widget.onSearchChanged,
                       ),
+                    _HistoryColumnHeader(
+                      widths: widths,
+                      onGraphDelta: (delta) =>
+                          _resizeGraphColumn(widths, delta),
+                      onDescriptionDelta: (delta) =>
+                          _resizeDescriptionColumn(widths, delta),
+                      onCommitDelta: (delta) =>
+                          _resizeCommitColumn(widths, delta),
+                      onAuthorDelta: (delta) =>
+                          _resizeAuthorColumn(widths, delta),
+                    ),
                     Expanded(
                       child: historyRowCount == 0
                           ? const _PaneEmptyState(
@@ -2212,10 +2223,95 @@ class _UncommittedGraphPainter extends CustomPainter {
       oldDelegate.compact != compact;
 }
 
+/// Displays the history column labels while retaining keyboard-accessible
+/// drag targets for adjusting their widths.
+///
+/// 中文：显示历史列表的列名，并保留可访问的列宽拖拽边界。
+final class _HistoryColumnHeader extends StatelessWidget {
+  const _HistoryColumnHeader({
+    required this.widths,
+    required this.onGraphDelta,
+    required this.onDescriptionDelta,
+    required this.onCommitDelta,
+    required this.onAuthorDelta,
+  });
+
+  final _HistoryColumnWidths widths;
+  final ValueChanged<double> onGraphDelta;
+  final ValueChanged<double> onDescriptionDelta;
+  final ValueChanged<double> onCommitDelta;
+  final ValueChanged<double> onAuthorDelta;
+
+  /// 中文：构建历史列表表头。
+  /// English: Builds the history list column header.
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    return Container(
+      key: const ValueKey<String>('history-column-header'),
+      height: 25,
+      padding: const EdgeInsets.symmetric(horizontal: 8),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerLow,
+        border: Border(
+          top: BorderSide(color: colors.outlineVariant),
+          bottom: BorderSide(color: colors.outlineVariant),
+        ),
+      ),
+      child: Row(
+        children: [
+          SizedBox(
+            width: widths.graph,
+            child: Text('图表', style: theme.textTheme.labelSmall),
+          ),
+          _ResizeDivider(
+            axis: Axis.vertical,
+            semanticsLabel: '表头调整图表列宽度',
+            onDelta: onGraphDelta,
+          ),
+          Expanded(child: Text('描述', style: theme.textTheme.labelSmall)),
+          _ResizeDivider(
+            axis: Axis.vertical,
+            semanticsLabel: '表头调整描述列宽度',
+            onDelta: onDescriptionDelta,
+          ),
+          SizedBox(
+            width: widths.commit,
+            child: Text('提交', style: theme.textTheme.labelSmall),
+          ),
+          _ResizeDivider(
+            axis: Axis.vertical,
+            semanticsLabel: '表头调整提交列宽度',
+            onDelta: onCommitDelta,
+          ),
+          SizedBox(
+            width: widths.author,
+            child: Text('作者', style: theme.textTheme.labelSmall),
+          ),
+          _ResizeDivider(
+            axis: Axis.vertical,
+            semanticsLabel: '表头调整作者列宽度',
+            onDelta: onAuthorDelta,
+          ),
+          SizedBox(
+            width: widths.date,
+            child: Text(
+              '日期',
+              textAlign: TextAlign.end,
+              style: theme.textTheme.labelSmall,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 /// Keeps compact history rows free of table chrome while retaining the
 /// keyboard-accessible drag targets used to adjust their columns.
 ///
-/// 中文：在不显示表格表头的前提下保留可访问的历史列拖拽边界。
+/// 中文：在不显示历史行装饰的前提下保留可访问的历史列拖拽边界。
 final class _HistoryResizeOverlay extends StatelessWidget {
   const _HistoryResizeOverlay({
     required this.widths,

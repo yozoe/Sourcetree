@@ -647,10 +647,18 @@ void main() {
 
       expect(
         find.byKey(const ValueKey<String>('history-column-header')),
-        findsNothing,
+        findsOneWidget,
       );
       expect(find.text('当前分支'), findsNothing);
-      expect(find.text('图表'), findsNothing);
+      final historyHeader = find.byKey(
+        const ValueKey<String>('history-column-header'),
+      );
+      for (final label in const ['图表', '描述', '提交', '作者', '日期']) {
+        expect(
+          find.descendant(of: historyHeader, matching: find.text(label)),
+          findsOneWidget,
+        );
+      }
 
       final graphCanvas = find.byKey(
         const ValueKey<String>('commit-graph-canvas'),

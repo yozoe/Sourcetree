@@ -360,6 +360,58 @@ void main() {
     ]);
   });
 
+  test('force deletes an unmerged local branch only when requested', () async {
+    await fixture.writeFile('README.md', 'base\n');
+    await fixture.commit('Initial commit');
+    await fixture.runGit(['branch', 'feature/force-delete']);
+    await fixture.runGit(['switch', 'feature/force-delete']);
+    await fixture.writeFile('feature.txt', 'unmerged\n');
+    await fixture.commit('Unmerged feature commit');
+    await fixture.runGit(['switch', 'main']);
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await writer.deleteLocalBranch(
+      repository,
+      name: 'feature/force-delete',
+      force: true,
+    );
+
+    final deletedRef = await fixture.runGit([
+      'show-ref',
+      '--verify',
+      '--quiet',
+      'refs/heads/feature/force-delete',
+    ], throwOnError: false);
+    expect(deletedRef.exitCode, isNot(0));
+  });
+
+  test('deletes a selected remote-tracking branch from its remote', () async {
+    await fixture.writeFile('README.md', 'base\n');
+    await fixture.commit('Initial commit');
+    final origin = await fixture.createBareOrigin();
+    await fixture.runGit(['push', 'origin', 'main']);
+    await fixture.runGit(['branch', 'feature/remote-delete']);
+    await fixture.runGit(['push', 'origin', 'feature/remote-delete']);
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await writer.deleteRemoteBranch(
+      repository,
+      remoteName: 'origin/feature/remote-delete',
+    );
+
+    final remoteRef = await Process.run('git', [
+      'show-ref',
+      '--verify',
+      '--quiet',
+      'refs/heads/feature/remote-delete',
+    ], workingDirectory: origin.path);
+    expect(remoteRef.exitCode, isNot(0));
+  });
+
   test('switches to an existing local branch without creating a ref', () async {
     await fixture.writeFile('README.md', '# Git Desktop\n');
     await fixture.commit('Initial commit');
@@ -568,6 +620,65 @@ void main() {
       'main',
     );
   });
+
+  test(
+    'fetches all remotes while pruning refs and retrieving every tag',
+    () async {
+      await fixture.writeFile('README.md', '# Git Desktop\n');
+      await fixture.commit('Initial commit');
+      final origin = await fixture.createBareOrigin();
+      await fixture.runGit(['push', 'origin', 'main']);
+      await fixture.runGit(['branch', 'feature/prune']);
+      await fixture.runGit(['push', 'origin', 'feature/prune']);
+      final directory = await Directory.systemTemp.createTemp(
+        'git-desktop-fetch-options-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      await writer.cloneRepository(
+        remoteUrl: origin.path,
+        directoryPath: directory.path,
+      );
+      await fixture.runGit(['switch', 'feature/prune']);
+      await fixture.writeFile('tag-only.txt', 'tag target\n');
+      await fixture.commit('Tag-only commit');
+      await fixture.runGit(['tag', 'v2.0.0']);
+      await fixture.runGit(['push', 'origin', 'refs/tags/v2.0.0']);
+      await fixture.runGit(['push', 'origin', '--delete', 'feature/prune']);
+      final repository = (await inspector.inspect(directory.path))!;
+
+      await writer.fetch(
+        repository,
+        options: const GitFetchOptions(
+          pruneDeletedTrackingBranches: true,
+          fetchAllTags: true,
+        ),
+      );
+
+      final prunedRef = await writer.runner.run(
+        GitInvocation(
+          arguments: const [
+            'show-ref',
+            '--verify',
+            '--quiet',
+            'refs/remotes/origin/feature/prune',
+          ],
+          workingDirectory: directory.path,
+        ),
+      );
+      expect(prunedRef.exitCode, isNot(0));
+      await writer.runner.run(
+        GitInvocation(
+          arguments: const [
+            'show-ref',
+            '--verify',
+            '--quiet',
+            'refs/tags/v2.0.0',
+          ],
+          workingDirectory: directory.path,
+        ),
+      );
+    },
+  );
 
   test('honors a cancelled fetch token before starting Git', () async {
     final repository = (await inspector.inspect(
@@ -809,6 +920,69 @@ void main() {
       'refs/heads/main',
     );
   });
+
+  test(
+    'pushes selected branch mappings, tags, and tracking without force',
+    () async {
+      await fixture.writeFile('README.md', '# Multi push\n');
+      await fixture.commit('Initial commit');
+      final origin = await fixture.createBareOrigin();
+      await fixture.runGit(['branch', 'feature/release']);
+      await fixture.runGit(['switch', 'feature/release']);
+      await fixture.writeFile('release.txt', 'release\n');
+      final featureHead = await fixture.commit('Release preparation');
+      await fixture.runGit(['tag', 'v1.0.0']);
+      await fixture.runGit(['switch', 'main']);
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+
+      await writer.pushBranches(
+        repository,
+        options: const GitPushOptions(
+          remoteName: 'origin',
+          branches: [
+            GitPushBranch(
+              localBranch: 'feature/release',
+              remoteBranch: 'releases/first',
+              trackRemote: true,
+            ),
+          ],
+          pushTags: true,
+        ),
+      );
+
+      expect(
+        (await fixture.runGit([
+          'rev-parse',
+          'refs/heads/releases/first',
+        ], workingDirectory: origin)).stdout.toString().trim(),
+        featureHead,
+      );
+      await fixture.runGit([
+        'show-ref',
+        '--verify',
+        '--quiet',
+        'refs/tags/v1.0.0',
+      ], workingDirectory: origin);
+      expect(
+        (await fixture.runGit([
+          'config',
+          '--get',
+          'branch.feature/release.remote',
+        ])).stdout.toString().trim(),
+        'origin',
+      );
+      expect(
+        (await fixture.runGit([
+          'config',
+          '--get',
+          'branch.feature/release.merge',
+        ])).stdout.toString().trim(),
+        'refs/heads/releases/first',
+      );
+    },
+  );
 
   test(
     'pushes only the current upstream when push.default is matching',

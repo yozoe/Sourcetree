@@ -503,7 +503,7 @@ class _RepositoryWorkspaceScreenState
       case RepositoryAction.cancelClone:
         ref.read(repositorySessionProvider.notifier).cancelClone();
       case RepositoryAction.fetch:
-        ref.read(repositorySessionProvider.notifier).fetchOrigin();
+        _showFetchDialog();
       case RepositoryAction.cancelFetch:
         ref.read(repositorySessionProvider.notifier).cancelFetch();
       case RepositoryAction.pull:
@@ -526,7 +526,7 @@ class _RepositoryWorkspaceScreenState
       case RepositoryAction.commit:
         _showCommitDialog();
       case RepositoryAction.createBranch:
-        _showCreateBranchDialog();
+        _showBranchManagerDialog();
       case RepositoryAction.mergeBranch:
         _showMergeBranchDialog();
     }
@@ -633,6 +633,28 @@ class _RepositoryWorkspaceScreenState
   ///
   /// English: Pads a number to two digits for hour and minute display.
   String _twoDigits(int value) => value.toString().padLeft(2, '0');
+
+  /// 中文：显示抓取配置弹框，并按用户选择更新远端引用。
+  ///
+  /// English: Shows the fetch configuration dialog and updates remote refs
+  /// using the options explicitly selected by the user.
+  Future<void> _showFetchDialog() async {
+    final options = await showDialog<GitFetchOptions>(
+      context: context,
+      builder: (context) => const _FetchDialog(),
+    );
+    if (options == null || !mounted) return;
+    final fetched = await ref
+        .read(repositorySessionProvider.notifier)
+        .fetchWithOptions(options);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(fetched ? '已抓取远端更新。' : '抓取未完成，请查看仓库状态和错误信息。'),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
 
   /// 中文：请求并处理用户确认。
   /// English: Requests and handles user confirmation.
@@ -760,58 +782,58 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
-  /// 中文：请求并处理用户确认。
-  /// English: Requests and handles user confirmation.
+  /// 中文：显示多分支推送面板，并按用户选择执行非强制推送。
+  ///
+  /// English: Shows the multi-branch push panel and performs the selected
+  /// non-force push operation.
   Future<void> _confirmPush() async {
     final session = ref.read(repositorySessionProvider);
-    final branch = session.status?.branch;
-    final isDetached = branch?.isDetached == true;
-    final detachedPushBranch = isDetached
-        ? selectDetachedPushBranch(session)
-        : null;
-    final branchName = branch?.head ?? '当前分支';
-    final upstream = branch?.upstream ?? '配置的远端分支';
-    final ahead = detachedPushBranch?.ahead ?? branch?.ahead ?? 0;
-    final isFirstPush =
-        branch != null &&
-        !branch.isDetached &&
-        (branch.upstream == null || branch.isUpstreamGone);
-    final approved = await showDialog<bool>(
+    final controller = ref.read(repositorySessionProvider.notifier);
+    final remoteNames = await controller.readRemoteNames();
+    if (!mounted) return;
+    if (remoteNames.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前仓库没有可推送的远端。')));
+      return;
+    }
+    final upstream = session.status?.branch.upstream;
+    final upstreamRemote = upstream?.split('/').first;
+    final selectedRemote = remoteNames.contains(upstreamRemote)
+        ? upstreamRemote!
+        : remoteNames.contains('origin')
+        ? 'origin'
+        : remoteNames.first;
+    final remoteBranchesByRemote = <String, List<String>>{};
+    for (final remoteBranch in session.remoteBranches) {
+      final slash = remoteBranch.name.indexOf('/');
+      if (slash <= 0 || slash == remoteBranch.name.length - 1) continue;
+      remoteBranchesByRemote
+          .putIfAbsent(remoteBranch.name.substring(0, slash), () => [])
+          .add(remoteBranch.name.substring(slash + 1));
+    }
+    for (final branches in remoteBranchesByRemote.values) {
+      branches.sort();
+    }
+    final initialRemoteUrl = await controller.readRemoteUrl(selectedRemote);
+    if (!mounted) return;
+    final options = await showDialog<GitPushOptions>(
       context: context,
-      builder: (BuildContext context) => AlertDialog(
-        title: const Text('推送提交'),
-        content: Text(
-          isDetached
-              ? ahead > 0
-                    ? '当前处于游离 HEAD，将推送 ${detachedPushBranch!.name} 的 $ahead 个提交。不会执行强制推送。'
-                    : '当前处于游离 HEAD，将检查 ${detachedPushBranch?.name ?? '可用本地分支'} 的远端配置。不会执行强制推送。'
-              : isFirstPush
-              ? '远端分支 $upstream 尚不存在。将推送 $branchName 并创建该远端分支。不会执行强制推送。'
-              : ahead > 0
-              ? '将 $branchName 的 $ahead 个本地提交推送到 $upstream。不会执行强制推送。'
-              : '当前分支没有领先提交，将检查 $upstream 是否已是最新。不会执行强制推送。',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton.icon(
-            onPressed: () => Navigator.of(context).pop(true),
-            icon: const Icon(Icons.north),
-            label: const Text('推送'),
-          ),
-        ],
+      builder: (BuildContext context) => _PushDialog(
+        localBranches: session.localBranches,
+        remoteNames: remoteNames,
+        remoteBranchesByRemote: remoteBranchesByRemote,
+        selectedRemote: selectedRemote,
+        initialRemoteUrl: initialRemoteUrl,
+        onRemoteChanged: controller.readRemoteUrl,
       ),
     );
-    if (approved != true || !mounted) return;
-    final pushed = await ref
-        .read(repositorySessionProvider.notifier)
-        .pushUpstream();
+    if (options == null || !mounted) return;
+    final pushed = await controller.pushWithOptions(options);
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(pushed ? '已推送提交。' : '推送未完成，请查看仓库状态和错误信息。'),
+        content: Text(pushed ? '已推送所选引用。' : '推送未完成，请查看仓库状态和错误信息。'),
         duration: const Duration(seconds: 3),
       ),
     );
@@ -855,29 +877,108 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
-  /// 中文：显示相应界面或信息。
-  /// English: Shows the corresponding UI or information.
-  Future<void> _showCreateBranchDialog() async {
-    final name = await showDialog<String>(
+  /// 中文：显示带动画的分支管理面板，并执行新建、检出或安全删除操作。
+  ///
+  /// English: Shows the animated branch manager and executes the requested
+  /// create, checkout, or safe-delete operation through the session layer.
+  Future<void> _showBranchManagerDialog() async {
+    final session = ref.read(repositorySessionProvider);
+    final result = await showGeneralDialog<_BranchManagerResult>(
       context: context,
-      builder: (BuildContext context) => const _CreateBranchDialog(),
+      barrierDismissible: true,
+      barrierLabel: '分支管理',
+      barrierColor: Colors.black.withValues(alpha: .24),
+      transitionDuration: const Duration(milliseconds: 240),
+      pageBuilder: (context, animation, secondaryAnimation) =>
+          _BranchManagerDialog(session: session),
+      transitionBuilder: (context, animation, secondaryAnimation, child) {
+        final curved = CurvedAnimation(
+          parent: animation,
+          curve: Curves.easeOutCubic,
+          reverseCurve: Curves.easeInCubic,
+        );
+        return FadeTransition(
+          opacity: curved,
+          child: SlideTransition(
+            position: Tween<Offset>(
+              begin: const Offset(0, .08),
+              end: Offset.zero,
+            ).animate(curved),
+            child: child,
+          ),
+        );
+      },
     );
-    if (name == null || !mounted) {
-      return;
-    }
+    if (result == null || !mounted) return;
 
-    final created = await ref
-        .read(repositorySessionProvider.notifier)
-        .createLocalBranch(name);
-    if (!mounted) {
-      return;
+    final controller = ref.read(repositorySessionProvider.notifier);
+    bool completed;
+    String message;
+    if (result.action == _BranchManagerAction.create) {
+      final branchName = result.branchName!;
+      completed = result.sourceCommitId == null
+          ? await controller.createLocalBranch(branchName)
+          : await controller.createLocalBranchFromCommit(
+              branchName,
+              result.sourceCommitId!,
+            );
+      if (completed && result.checkout) {
+        completed = await controller.switchToLocalBranch(branchName);
+      }
+      message = completed
+          ? result.checkout
+                ? '已创建并切换到分支 $branchName。'
+                : '已创建本地分支 $branchName。'
+          : '分支未创建，请查看仓库状态和错误信息。';
+    } else {
+      final approved = await _confirmBranchDeletion(result);
+      if (!approved || !mounted) return;
+      completed = await controller.deleteBranches(
+        localBranchNames: result.localBranchNames,
+        remoteBranchNames: result.remoteBranchNames,
+        forceLocal: result.forceLocalDelete,
+      );
+      message = completed ? '已删除所选分支。' : '分支未完全删除；请查看仓库状态和错误信息。';
     }
+    if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(created ? '已创建本地分支 $name。' : '分支未创建，请查看仓库错误信息。'),
-        duration: const Duration(seconds: 3),
-      ),
+      SnackBar(content: Text(message), duration: const Duration(seconds: 3)),
     );
+  }
+
+  /// 中文：确认分支删除的范围、远端影响和本地强制删除风险。
+  ///
+  /// English: Confirms deletion scope, remote impact, and local force-delete
+  /// risk before any destructive Git command is started.
+  Future<bool> _confirmBranchDeletion(_BranchManagerResult result) async {
+    final local = result.localBranchNames;
+    final remote = result.remoteBranchNames;
+    final details = <String>[
+      if (local.isNotEmpty) '本地：${local.join('、')}',
+      if (remote.isNotEmpty) '远端：${remote.join('、')}',
+      if (result.forceLocalDelete && local.isNotEmpty)
+        '将忽略合并状态强制删除所选本地分支；其中未合并提交可能无法通过分支引用找回。',
+      if (remote.isNotEmpty) '远端分支删除会推送到对应远端，受远端权限与保护规则限制。',
+    ].join('\n\n');
+    return await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('确认删除分支'),
+            content: Text(details),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('取消'),
+              ),
+              FilledButton.icon(
+                onPressed: () => Navigator.of(context).pop(true),
+                icon: const Icon(Icons.delete_outline),
+                label: const Text('删除分支'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
   }
 
   /// 中文：显示分支命名对话框，并以指定本地分支的提交创建新分支而不切换工作区。
@@ -1665,6 +1766,1143 @@ class _CloneDialogState extends State<_CloneDialog> {
       FilledButton(onPressed: _submit, child: const Text('下一步')),
     ],
   );
+}
+
+enum _BranchManagerAction { create, delete }
+
+final class _BranchManagerResult {
+  const _BranchManagerResult({
+    required this.action,
+    this.branchName,
+    this.sourceCommitId,
+    this.checkout = false,
+    this.localBranchNames = const [],
+    this.remoteBranchNames = const [],
+    this.forceLocalDelete = false,
+  });
+
+  final _BranchManagerAction action;
+  final String? branchName;
+  final String? sourceCommitId;
+  final bool checkout;
+  final List<String> localBranchNames;
+  final List<String> remoteBranchNames;
+  final bool forceLocalDelete;
+}
+
+final class _BranchDeletionTarget {
+  const _BranchDeletionTarget({
+    required this.name,
+    required this.isRemote,
+    required this.isCurrentLocal,
+  });
+
+  final String name;
+  final bool isRemote;
+  final bool isCurrentLocal;
+
+  String get key => '${isRemote ? 'remote' : 'local'}:$name';
+}
+
+class _BranchManagerDialog extends StatefulWidget {
+  const _BranchManagerDialog({required this.session});
+
+  final RepositorySessionState session;
+
+  @override
+  State<_BranchManagerDialog> createState() => _BranchManagerDialogState();
+}
+
+class _BranchManagerDialogState extends State<_BranchManagerDialog> {
+  late final TextEditingController _nameController;
+  final _selectedDeletionKeys = <String>{};
+  String? _selectedCommitId;
+  _BranchManagerAction _action = _BranchManagerAction.create;
+  bool _useSpecifiedCommit = false;
+  bool _checkout = true;
+  bool _forceLocalDelete = false;
+
+  RepositorySessionState get session => widget.session;
+
+  String get _currentBranch {
+    final branch = session.status?.branch;
+    if (branch?.isDetached == true) {
+      final objectId = branch?.objectId ?? '当前提交';
+      return 'HEAD ${objectId.length > 12 ? objectId.substring(0, 12) : objectId}';
+    }
+    return branch?.head ?? '未创建提交';
+  }
+
+  List<_BranchDeletionTarget> get _deletionTargets {
+    final current = session.status?.branch.head;
+    return [
+      for (final branch in session.localBranches)
+        _BranchDeletionTarget(
+          name: branch.name,
+          isRemote: false,
+          isCurrentLocal: branch.name == current,
+        ),
+      for (final branch in session.remoteBranches)
+        _BranchDeletionTarget(
+          name: branch.name,
+          isRemote: true,
+          isCurrentLocal: false,
+        ),
+    ];
+  }
+
+  /// 中文：初始化分支管理表单的默认分支选择。
+  /// English: Initializes the branch manager's default branch selection.
+  @override
+  void initState() {
+    super.initState();
+    _nameController = TextEditingController();
+  }
+
+  /// 中文：释放分支管理表单控制器。
+  /// English: Releases the branch manager form controller.
+  @override
+  void dispose() {
+    _nameController.dispose();
+    super.dispose();
+  }
+
+  /// 中文：打开已加载提交的选择器。
+  /// English: Opens the picker for loaded commits.
+  Future<void> _chooseCommit() async {
+    final selected = await showDialog<String>(
+      context: context,
+      builder: (context) => _CommitBasePicker(commits: session.commits),
+    );
+    if (!mounted || selected == null) return;
+    setState(() => _selectedCommitId = selected);
+  }
+
+  /// 中文：校验并返回分支管理操作结果。
+  /// English: Validates and returns the branch manager operation result.
+  void _submit() {
+    final branchName = _nameController.text.trim();
+    if (_action == _BranchManagerAction.create &&
+        _useSpecifiedCommit &&
+        _selectedCommitId == null) {
+      return;
+    }
+    if (_action == _BranchManagerAction.create && branchName.isEmpty) return;
+    final targets = _deletionTargets
+        .where((target) => _selectedDeletionKeys.contains(target.key))
+        .toList(growable: false);
+    if (_action == _BranchManagerAction.delete && targets.isEmpty) return;
+    Navigator.of(context).pop(
+      _BranchManagerResult(
+        action: _action,
+        branchName: _action == _BranchManagerAction.create ? branchName : null,
+        sourceCommitId: _useSpecifiedCommit ? _selectedCommitId : null,
+        checkout: _action == _BranchManagerAction.create && _checkout,
+        localBranchNames: [
+          for (final target in targets)
+            if (!target.isRemote) target.name,
+        ],
+        remoteBranchNames: [
+          for (final target in targets)
+            if (target.isRemote) target.name,
+        ],
+        forceLocalDelete: _forceLocalDelete,
+      ),
+    );
+  }
+
+  /// 中文：格式化提交短 ID 和标题供基点选择显示。
+  /// English: Formats a commit short ID and subject for base selection.
+  String _commitLabel(String objectId) {
+    final commit = session.commits.firstWhere(
+      (candidate) => candidate.objectId == objectId,
+      orElse: () => session.commits.first,
+    );
+    final shortId = commit.objectId.length > 8
+        ? commit.objectId.substring(0, 8)
+        : commit.objectId;
+    return '$shortId  ${commit.subject.isEmpty ? '（无提交标题）' : commit.subject}';
+  }
+
+  /// 中文：构建带动画状态切换的创建/删除模式按钮。
+  /// English: Builds an animated create/delete mode button.
+  Widget _modeButton(
+    BuildContext context, {
+    required _BranchManagerAction action,
+    required IconData icon,
+    required String label,
+    required Color accent,
+  }) {
+    final selected = _action == action;
+    return InkWell(
+      key: ValueKey<String>('branch-manager-tab-$action'),
+      onTap: () => setState(() => _action = action),
+      borderRadius: BorderRadius.circular(8),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 7),
+        decoration: BoxDecoration(
+          color: selected ? accent.withValues(alpha: .10) : Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 17, color: selected ? accent : null),
+            const SizedBox(height: 2),
+            Text(
+              label,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: selected ? accent : null,
+                fontWeight: selected ? FontWeight.w700 : null,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 中文：显示当前分支，只读且不改变 Git 状态。
+  /// English: Displays the current branch without changing Git state.
+  Widget _currentBranchField(BuildContext context) {
+    return InputDecorator(
+      decoration: const InputDecoration(
+        labelText: '当前分支',
+        border: OutlineInputBorder(),
+        isDense: true,
+      ),
+      child: Text(
+        _currentBranch,
+        style: Theme.of(context).textTheme.bodyMedium,
+      ),
+    );
+  }
+
+  /// 中文：构建提交基点单选入口。
+  /// English: Builds a commit-base radio entry.
+  Widget _sourceRadio({required bool specified}) {
+    final selected = _useSpecifiedCommit == specified;
+    return InkWell(
+      onTap: () => setState(() {
+        _useSpecifiedCommit = specified;
+        if (!specified) _selectedCommitId = null;
+      }),
+      borderRadius: BorderRadius.circular(6),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              selected
+                  ? Icons.radio_button_checked
+                  : Icons.radio_button_unchecked,
+              size: 18,
+              color: selected ? Theme.of(context).colorScheme.primary : null,
+            ),
+            const SizedBox(width: 5),
+            Text(specified ? '指定的提交' : '工作副本父节点'),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 中文：构建新建分支表单。
+  /// English: Builds the create-branch form.
+  Widget _buildCreate(BuildContext context) {
+    final selectedCommit = _selectedCommitId;
+    final canSubmit =
+        _nameController.text.trim().isNotEmpty &&
+        (!_useSpecifiedCommit || selectedCommit != null);
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 4, 20, 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _currentBranchField(context),
+          const SizedBox(height: 12),
+          TextField(
+            key: const ValueKey<String>('branch-manager-name'),
+            controller: _nameController,
+            autofocus: true,
+            onChanged: (_) => setState(() {}),
+            decoration: const InputDecoration(
+              labelText: '新分支',
+              hintText: '例如 feature/new-workflow',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text('提交基点', style: Theme.of(context).textTheme.labelLarge),
+          const SizedBox(height: 4),
+          _sourceRadio(specified: false),
+          _sourceRadio(specified: true),
+          if (_useSpecifiedCommit)
+            Padding(
+              padding: const EdgeInsets.only(left: 23, top: 3),
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: OutlinedButton.icon(
+                  onPressed: session.commits.isEmpty ? null : _chooseCommit,
+                  icon: const Icon(Icons.commit, size: 16),
+                  label: Text(
+                    selectedCommit == null
+                        ? '选择提交...'
+                        : _commitLabel(selectedCommit),
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                ),
+              ),
+            ),
+          const SizedBox(height: 8),
+          CheckboxListTile(
+            value: _checkout,
+            onChanged: (value) => setState(() => _checkout = value ?? false),
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            title: const Text('检出新分支'),
+          ),
+          Align(
+            alignment: Alignment.centerRight,
+            child: FilledButton(
+              key: const ValueKey<String>('branch-manager-create'),
+              onPressed: canSubmit ? _submit : null,
+              child: const Text('创建分支'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 中文：构建安全删除分支表单。
+  /// English: Builds the safe-delete branch form.
+  Widget _buildDelete(BuildContext context) {
+    final targets = _deletionTargets;
+    final selectedCount = _selectedDeletionKeys.length;
+    return SingleChildScrollView(
+      padding: const EdgeInsets.fromLTRB(20, 4, 20, 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Text('选择您想要删除的分支：', style: Theme.of(context).textTheme.bodyMedium),
+          const SizedBox(height: 8),
+          Container(
+            height: 198,
+            decoration: BoxDecoration(
+              border: Border.all(
+                color: Theme.of(context).colorScheme.outlineVariant,
+              ),
+              borderRadius: BorderRadius.circular(6),
+            ),
+            child: Column(
+              children: [
+                Container(
+                  height: 29,
+                  padding: const EdgeInsets.symmetric(horizontal: 8),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surfaceContainerLow,
+                    border: Border(
+                      bottom: BorderSide(
+                        color: Theme.of(context).colorScheme.outlineVariant,
+                      ),
+                    ),
+                  ),
+                  child: const Row(
+                    children: [
+                      SizedBox(width: 20),
+                      Expanded(child: Text('分支名称')),
+                      SizedBox(width: 92, child: Text('类型')),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  child: targets.isEmpty
+                      ? const Center(child: Text('没有可删除的分支。'))
+                      : ListView.builder(
+                          itemCount: targets.length,
+                          itemBuilder: (context, index) {
+                            final target = targets[index];
+                            final disabled = target.isCurrentLocal;
+                            final selected = _selectedDeletionKeys.contains(
+                              target.key,
+                            );
+                            return InkWell(
+                              onTap: disabled
+                                  ? null
+                                  : () => setState(() {
+                                      if (selected) {
+                                        _selectedDeletionKeys.remove(
+                                          target.key,
+                                        );
+                                      } else {
+                                        _selectedDeletionKeys.add(target.key);
+                                      }
+                                    }),
+                              child: SizedBox(
+                                height: 27,
+                                child: Row(
+                                  children: [
+                                    SizedBox(
+                                      width: 36,
+                                      child: Checkbox(
+                                        value: selected,
+                                        onChanged: disabled
+                                            ? null
+                                            : (value) => setState(() {
+                                                if (value ?? false) {
+                                                  _selectedDeletionKeys.add(
+                                                    target.key,
+                                                  );
+                                                } else {
+                                                  _selectedDeletionKeys.remove(
+                                                    target.key,
+                                                  );
+                                                }
+                                              }),
+                                        visualDensity: VisualDensity.compact,
+                                      ),
+                                    ),
+                                    Expanded(
+                                      child: Text(
+                                        target.name,
+                                        maxLines: 1,
+                                        overflow: TextOverflow.ellipsis,
+                                        style: disabled
+                                            ? Theme.of(
+                                                context,
+                                              ).textTheme.bodySmall?.copyWith(
+                                                color: Theme.of(
+                                                  context,
+                                                ).colorScheme.onSurfaceVariant,
+                                              )
+                                            : Theme.of(
+                                                context,
+                                              ).textTheme.bodySmall,
+                                      ),
+                                    ),
+                                    SizedBox(
+                                      width: 92,
+                                      child: Text(
+                                        target.isRemote ? 'Remote' : 'Local',
+                                        style: Theme.of(
+                                          context,
+                                        ).textTheme.bodySmall,
+                                      ),
+                                    ),
+                                  ],
+                                ),
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 12),
+          CheckboxListTile(
+            key: const ValueKey<String>('branch-manager-force-delete'),
+            value: _forceLocalDelete,
+            onChanged: (value) =>
+                setState(() => _forceLocalDelete = value ?? false),
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            title: const Text('忽略合并状态强行删除'),
+          ),
+          Text(
+            '当前检出的本地分支不能删除。远端分支会从对应远端删除。',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerRight,
+            child: FilledButton.icon(
+              key: const ValueKey<String>('branch-manager-delete'),
+              onPressed: selectedCount > 0 ? _submit : null,
+              icon: const Icon(Icons.remove_circle_outline, size: 17),
+              label: const Text('删除分支'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  /// 中文：构建带 AnimatedSwitcher 的分支管理面板。
+  /// English: Builds the branch manager with an AnimatedSwitcher.
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Dialog(
+      key: const ValueKey<String>('branch-manager-dialog'),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      clipBehavior: Clip.antiAlias,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 500, maxHeight: 540),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.fromLTRB(20, 12, 12, 8),
+              color: colors.surfaceContainerLow,
+              child: Row(
+                children: [
+                  Text(
+                    _action == _BranchManagerAction.create ? '新建分支' : '删除分支',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const Spacer(),
+                  _modeButton(
+                    context,
+                    action: _BranchManagerAction.create,
+                    icon: Icons.call_split,
+                    label: '新建分支',
+                    accent: colors.primary,
+                  ),
+                  const SizedBox(width: 3),
+                  _modeButton(
+                    context,
+                    action: _BranchManagerAction.delete,
+                    icon: Icons.remove_circle_outline,
+                    label: '删除分支',
+                    accent: colors.error,
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 180),
+                transitionBuilder: (child, animation) => FadeTransition(
+                  opacity: animation,
+                  child: SlideTransition(
+                    position: Tween<Offset>(
+                      begin: const Offset(.04, 0),
+                      end: Offset.zero,
+                    ).animate(animation),
+                    child: child,
+                  ),
+                ),
+                child: _action == _BranchManagerAction.create
+                    ? KeyedSubtree(
+                        key: const ValueKey<String>(
+                          'branch-manager-create-view',
+                        ),
+                        child: _buildCreate(context),
+                      )
+                    : KeyedSubtree(
+                        key: const ValueKey<String>(
+                          'branch-manager-delete-view',
+                        ),
+                        child: _buildDelete(context),
+                      ),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 14),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
+                  key: const ValueKey<String>('branch-manager-cancel'),
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('取消'),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _CommitBasePicker extends StatelessWidget {
+  const _CommitBasePicker({required this.commits});
+
+  final List<GitCommit> commits;
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('选择提交基点'),
+      content: SizedBox(
+        width: 520,
+        height: 380,
+        child: commits.isEmpty
+            ? const Center(child: Text('暂无可用提交。'))
+            : ListView.builder(
+                itemCount: commits.length,
+                itemBuilder: (context, index) {
+                  final commit = commits[index];
+                  final shortId = commit.objectId.length > 8
+                      ? commit.objectId.substring(0, 8)
+                      : commit.objectId;
+                  return ListTile(
+                    key: ValueKey<String>('branch-base-${commit.objectId}'),
+                    dense: true,
+                    leading: const Icon(Icons.commit, size: 18),
+                    title: Text(
+                      commit.subject.isEmpty ? '（无提交标题）' : commit.subject,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(shortId),
+                    onTap: () => Navigator.of(context).pop(commit.objectId),
+                  );
+                },
+              ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+      ],
+    );
+  }
+}
+
+class _FetchDialog extends StatefulWidget {
+  const _FetchDialog();
+
+  @override
+  State<_FetchDialog> createState() => _FetchDialogState();
+}
+
+class _FetchDialogState extends State<_FetchDialog> {
+  bool _fetchAllRemotes = true;
+  bool _pruneDeletedTrackingBranches = false;
+  bool _fetchAllTags = false;
+
+  /// 中文：返回当前抓取范围和附加选项。
+  /// English: Returns the selected fetch scope and additional options.
+  void _submit() {
+    Navigator.of(context).pop(
+      GitFetchOptions(
+        fetchAllRemotes: _fetchAllRemotes,
+        pruneDeletedTrackingBranches: _pruneDeletedTrackingBranches,
+        fetchAllTags: _fetchAllTags,
+      ),
+    );
+  }
+
+  /// 中文：构建紧凑的抓取选项行。
+  /// English: Builds one compact fetch option row.
+  Widget _optionRow({
+    required bool value,
+    required ValueChanged<bool> onChanged,
+    required String label,
+  }) {
+    return SizedBox(
+      height: 26,
+      child: InkWell(
+        onTap: () => onChanged(!value),
+        child: Row(
+          children: [
+            Checkbox(
+              value: value,
+              visualDensity: VisualDensity.compact,
+              onChanged: (next) => onChanged(next ?? false),
+            ),
+            Expanded(child: Text(label)),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 中文：构建抓取配置弹框。
+  /// English: Builds the fetch configuration dialog.
+  @override
+  Widget build(BuildContext context) {
+    return Dialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 480),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(18, 16, 18, 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _optionRow(
+                value: _fetchAllRemotes,
+                onChanged: (value) => setState(() => _fetchAllRemotes = value),
+                label: '抓取所有远端更新',
+              ),
+              _optionRow(
+                value: _pruneDeletedTrackingBranches,
+                onChanged: (value) =>
+                    setState(() => _pruneDeletedTrackingBranches = value),
+                label: '删掉在所有远端都已经不存在的跟踪（tracking）分支',
+              ),
+              _optionRow(
+                value: _fetchAllTags,
+                onChanged: (value) => setState(() => _fetchAllTags = value),
+                label: '抓取并在本地存储所有标签',
+              ),
+              const SizedBox(height: 14),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  OutlinedButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('取消'),
+                  ),
+                  const SizedBox(width: 10),
+                  FilledButton(onPressed: _submit, child: const Text('确定')),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _PushDialog extends StatefulWidget {
+  const _PushDialog({
+    required this.localBranches,
+    required this.remoteNames,
+    required this.remoteBranchesByRemote,
+    required this.selectedRemote,
+    required this.initialRemoteUrl,
+    required this.onRemoteChanged,
+  });
+
+  final List<GitLocalBranch> localBranches;
+  final List<String> remoteNames;
+  final Map<String, List<String>> remoteBranchesByRemote;
+  final String selectedRemote;
+  final String? initialRemoteUrl;
+  final Future<String?> Function(String remoteName) onRemoteChanged;
+
+  @override
+  State<_PushDialog> createState() => _PushDialogState();
+}
+
+class _PushDialogState extends State<_PushDialog> {
+  final _selectedBranches = <String>{};
+  final _remoteDestinations = <String, String>{};
+  final _destinationControllers = <String, TextEditingController>{};
+  final _trackingBranches = <String>{};
+  late String _selectedRemote;
+  String? _remoteUrl;
+  bool _isLoadingRemoteUrl = false;
+  bool _pushTags = false;
+
+  /// 中文：初始化推送表格的目标分支与远端地址。
+  /// English: Initializes destinations and the selected remote URL.
+  @override
+  void initState() {
+    super.initState();
+    _selectedRemote = widget.selectedRemote;
+    _remoteUrl = widget.initialRemoteUrl;
+    for (final branch in widget.localBranches) {
+      _remoteDestinations[branch.name] = branch.name;
+      _destinationControllers[branch.name] = TextEditingController(
+        text: branch.name,
+      );
+      if (branch.upstream == '$_selectedRemote/${branch.name}') {
+        _trackingBranches.add(branch.name);
+      }
+    }
+  }
+
+  /// 中文：释放远程目标分支输入框所持有的控制器。
+  /// English: Releases controllers owned by remote destination inputs.
+  @override
+  void dispose() {
+    for (final controller in _destinationControllers.values) {
+      controller.dispose();
+    }
+    super.dispose();
+  }
+
+  /// 中文：返回当前远端下可快速选择的目标分支，并保留本地同名新建目标。
+  /// English: Returns destination branches that can be picked quickly for the
+  /// selected remote, retaining the same-name branch as a new-target default.
+  List<String> _remoteDestinationOptions(GitLocalBranch branch) {
+    final options = <String>{
+      branch.name,
+      ...?widget.remoteBranchesByRemote[_selectedRemote],
+    }.toList()..sort();
+    return options;
+  }
+
+  /// 中文：切换推送远端并异步读取其地址，不改变用户已勾选的本地分支。
+  /// English: Changes the push remote and reads its URL asynchronously without
+  /// changing the local branches selected by the user.
+  Future<void> _changeRemote(String remoteName) async {
+    if (remoteName == _selectedRemote) return;
+    setState(() {
+      _selectedRemote = remoteName;
+      _isLoadingRemoteUrl = true;
+      _remoteUrl = null;
+      for (final branch in widget.localBranches) {
+        final options = _remoteDestinationOptions(branch);
+        if (!options.contains(_remoteDestinations[branch.name])) {
+          _remoteDestinations[branch.name] = branch.name;
+          _destinationControllers[branch.name]?.text = branch.name;
+        }
+        if (branch.upstream !=
+            '$remoteName/${_remoteDestinations[branch.name]}') {
+          _trackingBranches.remove(branch.name);
+        }
+      }
+    });
+    final remoteUrl = await widget.onRemoteChanged(remoteName);
+    if (!mounted || remoteName != _selectedRemote) return;
+    setState(() {
+      _remoteUrl = remoteUrl;
+      _isLoadingRemoteUrl = false;
+    });
+  }
+
+  /// 中文：提交当前勾选的分支映射、跟踪设置和标签选项。
+  /// English: Returns selected mappings, tracking settings, and the tag option.
+  void _submit() {
+    final branches = [
+      for (final branch in widget.localBranches)
+        if (_selectedBranches.contains(branch.name))
+          GitPushBranch(
+            localBranch: branch.name,
+            remoteBranch:
+                _destinationControllers[branch.name]?.text.trim() ??
+                branch.name,
+            trackRemote: _trackingBranches.contains(branch.name),
+          ),
+    ];
+    if (branches.isEmpty && !_pushTags) return;
+    Navigator.of(context).pop(
+      GitPushOptions(
+        remoteName: _selectedRemote,
+        branches: branches,
+        pushTags: _pushTags,
+      ),
+    );
+  }
+
+  /// 中文：构建分支推送表格的一行。
+  /// English: Builds one row of the branch push table.
+  Widget _buildBranchRow(BuildContext context, GitLocalBranch branch) {
+    final selected = _selectedBranches.contains(branch.name);
+    final destinations = _remoteDestinationOptions(branch);
+    final destinationController = _destinationControllers[branch.name]!;
+    return Container(
+      color: selected
+          ? Theme.of(context).colorScheme.primary.withValues(alpha: .055)
+          : null,
+      child: SizedBox(
+        height: 31,
+        child: Row(
+          children: [
+            SizedBox(
+              width: 42,
+              child: Checkbox(
+                value: selected,
+                visualDensity: VisualDensity.compact,
+                onChanged: (value) => setState(() {
+                  if (value ?? false) {
+                    _selectedBranches.add(branch.name);
+                  } else {
+                    _selectedBranches.remove(branch.name);
+                    _trackingBranches.remove(branch.name);
+                  }
+                }),
+              ),
+            ),
+            Expanded(
+              flex: 12,
+              child: Text(
+                branch.name,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+            ),
+            Expanded(
+              flex: 14,
+              child: Padding(
+                padding: const EdgeInsets.only(right: 4),
+                child: TextField(
+                  controller: destinationController,
+                  enabled: selected,
+                  maxLines: 1,
+                  style: Theme.of(context).textTheme.bodySmall,
+                  onChanged: (value) =>
+                      _remoteDestinations[branch.name] = value.trim(),
+                  decoration: InputDecoration(
+                    isDense: true,
+                    border: InputBorder.none,
+                    contentPadding: const EdgeInsets.symmetric(vertical: 7),
+                    suffixIconConstraints: const BoxConstraints(
+                      minWidth: 28,
+                      minHeight: 28,
+                    ),
+                    suffixIcon: PopupMenuButton<String>(
+                      tooltip: '选择已有远程分支',
+                      icon: const Icon(Icons.unfold_more, size: 17),
+                      padding: EdgeInsets.zero,
+                      onSelected: selected
+                          ? (value) {
+                              destinationController.text = value;
+                              _remoteDestinations[branch.name] = value;
+                            }
+                          : null,
+                      itemBuilder: (context) => [
+                        for (final option in destinations)
+                          PopupMenuItem(
+                            value: option,
+                            child: Text(
+                              option,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+            ),
+            SizedBox(
+              width: 54,
+              child: Tooltip(
+                message: '推送后将本地分支设为该远端分支的上游',
+                child: Checkbox(
+                  value: _trackingBranches.contains(branch.name),
+                  visualDensity: VisualDensity.compact,
+                  onChanged: selected
+                      ? (value) => setState(() {
+                          if (value ?? false) {
+                            _trackingBranches.add(branch.name);
+                          } else {
+                            _trackingBranches.remove(branch.name);
+                          }
+                        })
+                      : null,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  /// 中文：构建多分支推送配置面板。
+  /// English: Builds the multi-branch push configuration panel.
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final allSelected =
+        widget.localBranches.isNotEmpty &&
+        _selectedBranches.length == widget.localBranches.length;
+    final canSubmit = _selectedBranches.isNotEmpty || _pushTags;
+    return Dialog(
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 640, maxHeight: 500),
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 18, 20, 14),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                '推送',
+                style: Theme.of(
+                  context,
+                ).textTheme.titleMedium?.copyWith(fontWeight: FontWeight.w700),
+              ),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  const Text('推送到仓库：'),
+                  const SizedBox(width: 8),
+                  SizedBox(
+                    width: 112,
+                    child: DropdownButtonFormField<String>(
+                      key: ValueKey<String>(_selectedRemote),
+                      initialValue: _selectedRemote,
+                      isDense: true,
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        contentPadding: EdgeInsets.symmetric(
+                          horizontal: 9,
+                          vertical: 7,
+                        ),
+                      ),
+                      items: [
+                        for (final remote in widget.remoteNames)
+                          DropdownMenuItem(value: remote, child: Text(remote)),
+                      ],
+                      onChanged: (remote) {
+                        if (remote != null) unawaited(_changeRemote(remote));
+                      },
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: InputDecorator(
+                      decoration: const InputDecoration(
+                        border: OutlineInputBorder(),
+                        isDense: true,
+                        contentPadding: EdgeInsets.symmetric(
+                          horizontal: 10,
+                          vertical: 9,
+                        ),
+                      ),
+                      child: Text(
+                        _isLoadingRemoteUrl
+                            ? '正在读取远端地址…'
+                            : _remoteUrl ?? '未读取到远端地址',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              Text('要推送的分支', style: Theme.of(context).textTheme.labelLarge),
+              const SizedBox(height: 6),
+              Container(
+                height: 184,
+                decoration: BoxDecoration(
+                  border: Border.all(color: colors.outlineVariant),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: Column(
+                  children: [
+                    Container(
+                      height: 30,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      decoration: BoxDecoration(
+                        color: colors.surfaceContainerLow,
+                        border: Border(
+                          bottom: BorderSide(color: colors.outlineVariant),
+                        ),
+                      ),
+                      child: const Row(
+                        children: [
+                          SizedBox(width: 34, child: Text('推送？')),
+                          Expanded(flex: 12, child: Text('本地分支')),
+                          Expanded(flex: 14, child: Text('远程分支')),
+                          SizedBox(width: 54, child: Text('跟踪？')),
+                        ],
+                      ),
+                    ),
+                    Expanded(
+                      child: widget.localBranches.isEmpty
+                          ? const Center(child: Text('没有可推送的本地分支。'))
+                          : ListView.builder(
+                              itemCount: widget.localBranches.length,
+                              itemBuilder: (context, index) => _buildBranchRow(
+                                context,
+                                widget.localBranches[index],
+                              ),
+                            ),
+                    ),
+                  ],
+                ),
+              ),
+              SizedBox(
+                height: 28,
+                child: InkWell(
+                  onTap: widget.localBranches.isEmpty
+                      ? null
+                      : () => setState(() {
+                          if (allSelected) {
+                            _selectedBranches.clear();
+                            _trackingBranches.clear();
+                          } else {
+                            _selectedBranches.addAll(
+                              widget.localBranches.map((branch) => branch.name),
+                            );
+                          }
+                        }),
+                  child: Row(
+                    children: [
+                      Checkbox(
+                        value: allSelected,
+                        visualDensity: VisualDensity.compact,
+                        onChanged: widget.localBranches.isEmpty
+                            ? null
+                            : (value) => setState(() {
+                                if (value ?? false) {
+                                  _selectedBranches.addAll(
+                                    widget.localBranches.map(
+                                      (branch) => branch.name,
+                                    ),
+                                  );
+                                } else {
+                                  _selectedBranches.clear();
+                                  _trackingBranches.clear();
+                                }
+                              }),
+                      ),
+                      const Text('全选'),
+                    ],
+                  ),
+                ),
+              ),
+              SizedBox(
+                height: 28,
+                child: InkWell(
+                  onTap: () => setState(() => _pushTags = !_pushTags),
+                  child: Row(
+                    children: [
+                      Checkbox(
+                        value: _pushTags,
+                        visualDensity: VisualDensity.compact,
+                        onChanged: (value) =>
+                            setState(() => _pushTags = value ?? false),
+                      ),
+                      const Text('推送所有标签'),
+                    ],
+                  ),
+                ),
+              ),
+              const SizedBox(height: 4),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  OutlinedButton(
+                    onPressed: () => Navigator.of(context).pop(),
+                    child: const Text('取消'),
+                  ),
+                  const SizedBox(width: 10),
+                  FilledButton(
+                    onPressed: canSubmit ? _submit : null,
+                    child: const Text('确定'),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class _CreateBranchDialog extends StatefulWidget {

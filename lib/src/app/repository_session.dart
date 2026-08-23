@@ -896,24 +896,42 @@ final class RepositorySessionController
   ///
   /// English: Fetches `origin` for the current repository, records the
   /// outcome, and refreshes local reference state on success.
-  Future<bool> fetchOrigin() => fetchRemote('origin');
+  Future<bool> fetchOrigin() =>
+      fetchWithOptions(const GitFetchOptions(fetchAllRemotes: false));
 
   /// Fetches one configured remote and refreshes its tracking references.
   /// 中文：获取指定远端并刷新该远端的跟踪引用。
-  Future<bool> fetchRemote(String remoteName) async {
-    final normalizedRemote = remoteName.trim();
+  Future<bool> fetchRemote(String remoteName) => fetchWithOptions(
+    GitFetchOptions(fetchAllRemotes: false, remoteName: remoteName),
+  );
+
+  /// 中文：按抓取面板选项获取一个或全部远端，并在完成后刷新本地引用状态。
+  ///
+  /// English: Fetches one or every remote according to the dialog options and
+  /// refreshes local references after the operation completes.
+  Future<bool> fetchWithOptions(GitFetchOptions options) async {
+    final normalizedRemote = options.remoteName.trim();
     final repository = state.repository;
-    final hasRemote = normalizedRemote == 'origin'
-        ? state.hasOriginRemote
-        : state.remoteBranches.any(
-            (branch) => branch.name.startsWith('$normalizedRemote/'),
-          );
-    if (repository == null ||
-        normalizedRemote.isEmpty ||
-        !hasRemote ||
-        state.phase == RepositorySessionPhase.loading) {
+    if (repository == null || state.phase == RepositorySessionPhase.loading) {
       return false;
     }
+    List<String> remoteNames;
+    try {
+      remoteNames = await _reader.readRemoteNames(repository);
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isFetchRunning: false,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      return false;
+    }
+    final hasRemote = options.fetchAllRemotes
+        ? remoteNames.isNotEmpty
+        : normalizedRemote.isNotEmpty && remoteNames.contains(normalizedRemote);
+    if (!hasRemote) return false;
     final cancellation = GitCancellationToken();
     _fetchCancellation = cancellation;
     final operation = _startOperation(RepositoryOperationKind.fetch);
@@ -928,9 +946,9 @@ final class RepositorySessionController
     try {
       await _runWithAskPassSession(
         cancellation: cancellation,
-        run: (environment) => _writer.fetchRemote(
+        run: (environment) => _writer.fetch(
           repository,
-          remoteName: normalizedRemote,
+          options: options,
           cancellationToken: cancellation,
           environment: environment,
         ),
@@ -946,6 +964,9 @@ final class RepositorySessionController
       );
       return succeeded;
     } on Object catch (error, stackTrace) {
+      // `fetch --all` can update an earlier remote before a later remote
+      // fails or cancellation reaches Git. Refresh to expose completed refs.
+      await refresh();
       final message = _friendlyError(error);
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
@@ -979,6 +1000,16 @@ final class RepositorySessionController
     if (repository == null) return null;
     final url = await _reader.readRemoteUrl(repository, remoteName: remoteName);
     return url == null ? null : _redactSensitiveText(url);
+  }
+
+  /// 中文：读取当前仓库已配置的远端名称，供显式的拉取和推送面板选择。
+  ///
+  /// English: Reads configured remote names for explicit pull and push dialog
+  /// selection in the current repository.
+  Future<List<String>> readRemoteNames() async {
+    final repository = state.repository;
+    if (repository == null) return const [];
+    return _reader.readRemoteNames(repository);
   }
 
   /// 中文：仅在工作区和索引干净且有上游时快速前进拉取，并在失败后刷新引用状态。
@@ -1274,6 +1305,81 @@ final class RepositorySessionController
         outcome: remoteContainsHead
             ? RepositoryOperationOutcome.succeeded
             : _operationOutcomeForError(error),
+        message: message,
+      );
+      return false;
+    } finally {
+      if (identical(_pushCancellation, cancellation)) {
+        _pushCancellation = null;
+      }
+    }
+  }
+
+  /// 中文：推送用户在面板中明确选择的分支映射，并可同时推送所有标签；完成后刷新 Git 状态。
+  ///
+  /// English: Pushes branch mappings explicitly selected in the panel and can
+  /// include all tags; refreshes the Git-backed state after completion.
+  Future<bool> pushWithOptions(GitPushOptions options) async {
+    final repository = state.repository;
+    final selectedLocalBranches = options.branches
+        .map((branch) => branch.localBranch.trim())
+        .toSet();
+    if (repository == null ||
+        state.phase == RepositorySessionPhase.loading ||
+        (selectedLocalBranches.isEmpty && !options.pushTags) ||
+        selectedLocalBranches.any((name) => name.isEmpty) ||
+        !selectedLocalBranches.every(
+          (name) => state.localBranches.any((branch) => branch.name == name),
+        )) {
+      return false;
+    }
+    final remoteNames = await _reader.readRemoteNames(repository);
+    if (!remoteNames.contains(options.remoteName.trim())) return false;
+
+    final cancellation = GitCancellationToken();
+    _pushCancellation = cancellation;
+    final operation = _startOperation(RepositoryOperationKind.push);
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isPushRunning: true,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _runWithAskPassSession(
+        cancellation: cancellation,
+        run: (environment) => _writer.pushBranches(
+          repository,
+          options: options,
+          cancellationToken: cancellation,
+          environment: environment,
+        ),
+      );
+      await refresh();
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.failed,
+        message: succeeded ? '已推送所选引用。' : state.message,
+      );
+      return succeeded;
+    } on Object catch (error, stackTrace) {
+      await refresh();
+      final message = _friendlyError(error);
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isPushRunning: false,
+        isDiffLoading: false,
+        message: message,
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
         message: message,
       );
       return false;
@@ -1989,6 +2095,50 @@ final class RepositorySessionController
     }
   }
 
+  /// 中文：以历史中的指定提交为起点创建本地分支，可在上层随后选择检出。
+  ///
+  /// English: Creates a local branch at a loaded historical commit; callers
+  /// may switch to it after creation when the user requested checkout.
+  Future<bool> createLocalBranchFromCommit(String name, String objectId) async {
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        status.branch.isUnborn ||
+        state.phase == RepositorySessionPhase.loading ||
+        !state.commits.any((commit) => commit.objectId == objectId)) {
+      return false;
+    }
+    if (name.trim().isEmpty || objectId.trim().isEmpty) {
+      throw ArgumentError('A branch name and commit are required.');
+    }
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.createLocalBranchFromCommit(
+        repository,
+        name: name,
+        objectId: objectId,
+      );
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
   /// 中文：以已加载的本地分支为起点创建另一个本地分支，不切换当前工作区。
   ///
   /// English: Creates a local branch from an already loaded local branch
@@ -2200,19 +2350,40 @@ final class RepositorySessionController
   /// English: Deletes only a loaded, non-current local branch; Git refuses to
   /// delete a branch whose commits are not safely merged.
   Future<bool> deleteMergedLocalBranch(String name) async {
+    return deleteBranches(localBranchNames: [name]);
+  }
+
+  /// 中文：删除用户在分支面板中明确选择的本地和远端分支；本地强制删除必须已由界面确认。
+  ///
+  /// English: Deletes local and remote branches explicitly selected in the
+  /// branch panel. Local force deletion must already have user confirmation.
+  Future<bool> deleteBranches({
+    List<String> localBranchNames = const [],
+    List<String> remoteBranchNames = const [],
+    bool forceLocal = false,
+  }) async {
     final repository = state.repository;
     final status = state.status;
     final currentBranch = status?.branch.head;
+    final localNames = localBranchNames.map((name) => name.trim()).toSet();
+    final remoteNames = remoteBranchNames.map((name) => name.trim()).toSet();
     if (repository == null ||
         status == null ||
-        !status.isClean ||
         state.phase == RepositorySessionPhase.loading ||
-        name == currentBranch ||
-        !state.localBranches.any((branch) => branch.name == name)) {
+        localNames.isEmpty && remoteNames.isEmpty) {
       return false;
     }
-    if (name.trim().isEmpty) {
-      throw ArgumentError.value(name, 'name', 'Branch name is empty.');
+    if (localNames.any((name) => name.isEmpty) ||
+        remoteNames.any((name) => name.isEmpty) ||
+        localNames.contains(currentBranch) ||
+        !localNames.every(
+          (name) => state.localBranches.any((branch) => branch.name == name),
+        ) ||
+        !remoteNames.every(
+          (name) => state.remoteBranches.any((branch) => branch.name == name),
+        ) ||
+        (localNames.isNotEmpty && !status.isClean)) {
+      return false;
     }
 
     state = state.copyWith(
@@ -2223,10 +2394,23 @@ final class RepositorySessionController
       clearMessage: true,
     );
     try {
-      await _writer.deleteMergedLocalBranch(repository, name: name);
+      for (final name in localNames) {
+        await _writer.deleteLocalBranch(
+          repository,
+          name: name,
+          force: forceLocal,
+        );
+      }
+      for (final name in remoteNames) {
+        await _writer.deleteRemoteBranch(repository, remoteName: name);
+      }
       await refresh();
       return state.phase == RepositorySessionPhase.ready;
     } on Object catch (error, stackTrace) {
+      // Earlier selected branches may already have been deleted before a later
+      // local or remote deletion fails. Refresh so the UI never keeps stale
+      // refs after a partially completed batch.
+      await refresh();
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
