@@ -44,18 +44,12 @@ void main() {
     expect(action, RepositoryAction.push);
   });
 
-  testWidgets('shows uncommitted changes above history and opens workspace', (
+  testWidgets('shows uncommitted changes above history without leaving it', (
     tester,
   ) async {
     await tester.binding.setSurfaceSize(const Size(1280, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
-    RepositoryRefViewData? selectedReference;
-    const workspace = RepositoryRefViewData(
-      id: 'workspace',
-      label: '文件状态',
-      kind: RepositoryRefKind.workspace,
-      isSelected: true,
-    );
+    var uncommittedChangesSelected = false;
 
     await tester.pumpWidget(
       MaterialApp(
@@ -66,7 +60,14 @@ void main() {
               path: '/tmp/playground',
               currentBranch: 'main',
               isWorkingTreeClean: false,
-              refs: [workspace],
+              refs: [
+                RepositoryRefViewData(
+                  id: 'history',
+                  label: '历史',
+                  kind: RepositoryRefKind.workspace,
+                  isSelected: true,
+                ),
+              ],
               changes: [
                 RepositoryChangeViewData(
                   path: 'hello_sourcetree.py',
@@ -76,7 +77,8 @@ void main() {
             ),
           ),
           callbacks: RepositoryOverviewCallbacks(
-            onRefSelected: (reference) => selectedReference = reference,
+            onUncommittedChangesSelected: () =>
+                uncommittedChangesSelected = true,
           ),
         ),
       ),
@@ -92,7 +94,8 @@ void main() {
     await tester.tap(find.text('Uncommitted changes'));
     await tester.pump();
 
-    expect(selectedReference, workspace);
+    expect(uncommittedChangesSelected, isTrue);
+    expect(find.text('历史'), findsWidgets);
   });
 
   testWidgets('separates staged and unstaged files into labeled groups', (

@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as path_utils;
 import 'package:yeknom_ui_kit/yeknom_workbench.dart';
@@ -1036,7 +1037,7 @@ class _RepositoryWorkspaceScreenState
   ///
   /// English: Shows the animated branch manager and executes the requested
   /// create, checkout, or safe-delete operation through the session layer.
-  Future<void> _showBranchManagerDialog() async {
+  Future<void> _showBranchManagerDialog({String? initialCommitId}) async {
     final session = ref.read(repositorySessionProvider);
     final result = await showGeneralDialog<_BranchManagerResult>(
       context: context,
@@ -1045,7 +1046,10 @@ class _RepositoryWorkspaceScreenState
       barrierColor: Colors.black.withValues(alpha: .24),
       transitionDuration: const Duration(milliseconds: 240),
       pageBuilder: (context, animation, secondaryAnimation) =>
-          _BranchManagerDialog(session: session),
+          _BranchManagerDialog(
+            session: session,
+            initialCommitId: initialCommitId,
+          ),
       transitionBuilder: (context, animation, secondaryAnimation, child) {
         final curved = CurvedAnimation(
           parent: animation,
@@ -1270,6 +1274,55 @@ class _RepositoryWorkspaceScreenState
     await _confirmMergeBranch(currentBranch, sourceName);
   }
 
+  /// 中文：确认后将右键选中的历史提交合并到当前分支。
+  ///
+  /// English: Confirms merging the right-clicked historical commit into the
+  /// currently checked-out branch.
+  Future<void> _confirmMergeCommit(CommitViewData commit) async {
+    final currentBranch = ref
+        .read(repositorySessionProvider)
+        .status
+        ?.branch
+        .head;
+    if (currentBranch == null) return;
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('确认合并提交'),
+        content: Text(
+          '将提交 ${commit.shortOid} 合并到 $currentBranch。Git 会保留冲突状态，'
+          '不会自动继续或中止合并。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(context).pop(true),
+            icon: const Icon(Icons.merge_type),
+            label: const Text('合并'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+    final merged = await ref
+        .read(repositorySessionProvider.notifier)
+        .mergeCommit(commit.oid);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          merged
+              ? '已将提交 ${commit.shortOid} 合并到 $currentBranch。'
+              : '合并未完成；如存在冲突，请处理后使用 Git 命令行继续或中止合并，再刷新仓库。',
+        ),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
   /// 中文：确认后将来源分支合并到当前分支，并提示成功或需要人工处理的冲突。
   ///
   /// English: Confirms merging a source branch into the current branch and
@@ -1447,6 +1500,138 @@ class _RepositoryWorkspaceScreenState
       case RepositoryRefContextAction.manageStashes:
         unawaited(_showStashManager());
     }
+  }
+
+  /// 中文：将提交右键操作路由到标签面板；标签始终以右键选中的提交为默认目标。
+  ///
+  /// English: Routes commit context actions to the tag panel, using the
+  /// right-clicked commit as the default tag target.
+  Future<void> _handleCommitContextAction(
+    CommitViewData commit,
+    RepositoryCommitContextAction action,
+  ) async {
+    switch (action) {
+      case RepositoryCommitContextAction.checkout:
+        await _confirmCheckoutCommit(commit);
+        return;
+      case RepositoryCommitContextAction.merge:
+        await _confirmMergeCommit(commit);
+        return;
+      case RepositoryCommitContextAction.createBranch:
+        await _showBranchManagerDialog(initialCommitId: commit.oid);
+        return;
+      case RepositoryCommitContextAction.copyCommitHash:
+        await Clipboard.setData(ClipboardData(text: commit.oid));
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('已复制提交 SHA-1。'),
+            duration: Duration(seconds: 2),
+          ),
+        );
+        return;
+      case RepositoryCommitContextAction.tag:
+        break;
+    }
+    if (!mounted) return;
+    final session = ref.read(repositorySessionProvider);
+    final result = await showGeneralDialog<_TagDialogResult>(
+      context: context,
+      barrierDismissible: true,
+      barrierLabel: '标签',
+      barrierColor: Colors.black.withValues(alpha: .24),
+      transitionDuration: const Duration(milliseconds: 200),
+      pageBuilder: (context, animation, secondaryAnimation) =>
+          _TagDialog(session: session, defaultCommitId: commit.oid),
+      transitionBuilder: (context, animation, secondaryAnimation, child) =>
+          FadeTransition(
+            opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
+            child: ScaleTransition(
+              scale: Tween<double>(begin: .96, end: 1).animate(
+                CurvedAnimation(parent: animation, curve: Curves.easeOutCubic),
+              ),
+              child: child,
+            ),
+          ),
+    );
+    if (result == null || !mounted) return;
+
+    final controller = ref.read(repositorySessionProvider.notifier);
+    final completed = switch (result) {
+      _CreateTagDialogResult(:final options) => await controller.createTag(
+        options,
+      ),
+      _DeleteTagDialogResult(:final options) =>
+        await _confirmTagDeletion(options) && mounted
+            ? await controller.deleteTag(options)
+            : false,
+    };
+    if (!mounted) return;
+    final sessionAfterOperation = ref.read(repositorySessionProvider);
+    final operationMessage = sessionAfterOperation.message;
+    final createdLocally = switch (result) {
+      _CreateTagDialogResult(:final options)
+          when !completed &&
+              options.pushRemoteName != null &&
+              sessionAfterOperation.tags.any(
+                (tag) => tag.name == options.name.trim(),
+              ) =>
+        true,
+      _ => false,
+    };
+    final message = switch (result) {
+      _CreateTagDialogResult(:final options) =>
+        completed
+            ? options.pushRemoteName == null
+                  ? '已添加标签 ${options.name}。'
+                  : '已添加标签 ${options.name} 并推送到 ${options.pushRemoteName}。'
+            : createdLocally
+            ? '已创建本地标签 ${options.name}，但推送到 ${options.pushRemoteName} 失败：${operationMessage ?? '请检查远端和认证。'}'
+            : '标签未添加：${operationMessage ?? '请检查标签名、当前提交和仓库状态。'}',
+      _DeleteTagDialogResult(:final options) =>
+        completed
+            ? options.deleteRemoteName == null
+                  ? '已删除本地标签 ${options.name}。'
+                  : '已从本地和 ${options.deleteRemoteName} 删除标签 ${options.name}。'
+            : '标签未完全删除：${operationMessage ?? '请查看仓库状态和错误信息。'}',
+    };
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 3)),
+    );
+  }
+
+  /// 中文：在删除前明确提示本地和远端引用的不可逆影响。
+  /// English: Explicitly confirms the irreversible local and optional remote
+  /// ref removal before any Git delete command begins.
+  Future<bool> _confirmTagDeletion(GitDeleteTagOptions options) async {
+    final remote = options.deleteRemoteName;
+    return await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('确认删除标签'),
+            content: Text(
+              remote == null
+                  ? '将删除本地标签 ${options.name}。该引用将无法通过界面恢复。'
+                  : '将删除本地标签 ${options.name}，并推送删除到远端 $remote。远端协作者将不再看到该标签。',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('取消'),
+              ),
+              FilledButton.icon(
+                onPressed: () => Navigator.of(context).pop(true),
+                style: FilledButton.styleFrom(
+                  backgroundColor: Theme.of(context).colorScheme.error,
+                  foregroundColor: Theme.of(context).colorScheme.onError,
+                ),
+                icon: const Icon(Icons.delete_outline),
+                label: const Text('删除标签'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
   }
 
   /// 中文：从引用数据解析其所属远端，供上下文菜单执行精确操作。
@@ -1831,6 +2016,10 @@ class _RepositoryWorkspaceScreenState
                     unawaited(controller.selectCommit(commit.oid)),
                 onCommitActivated: (commit) =>
                     unawaited(_confirmCheckoutCommit(commit)),
+                onCommitContextAction: (commit, action) =>
+                    unawaited(_handleCommitContextAction(commit, action)),
+                onUncommittedChangesSelected:
+                    controller.selectUncommittedChanges,
                 onCommitFileSelected: (file) =>
                     unawaited(controller.selectCommitFile(file)),
                 onChangeSelected: controller.selectChange,
@@ -2313,9 +2502,10 @@ final class _BranchDeletionTarget {
 }
 
 class _BranchManagerDialog extends StatefulWidget {
-  const _BranchManagerDialog({required this.session});
+  const _BranchManagerDialog({required this.session, this.initialCommitId});
 
   final RepositorySessionState session;
+  final String? initialCommitId;
 
   @override
   State<_BranchManagerDialog> createState() => _BranchManagerDialogState();
@@ -2365,6 +2555,12 @@ class _BranchManagerDialogState extends State<_BranchManagerDialog> {
   void initState() {
     super.initState();
     _nameController = TextEditingController();
+    final initialCommitId = widget.initialCommitId;
+    if (initialCommitId != null &&
+        session.commits.any((commit) => commit.objectId == initialCommitId)) {
+      _useSpecifiedCommit = true;
+      _selectedCommitId = initialCommitId;
+    }
   }
 
   /// 中文：释放分支管理表单控制器。
@@ -2823,6 +3019,470 @@ class _BranchManagerDialogState extends State<_BranchManagerDialog> {
                 alignment: Alignment.centerRight,
                 child: TextButton(
                   key: const ValueKey<String>('branch-manager-cancel'),
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('取消'),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+enum _TagDialogMode { create, delete }
+
+sealed class _TagDialogResult {
+  const _TagDialogResult();
+}
+
+final class _CreateTagDialogResult extends _TagDialogResult {
+  const _CreateTagDialogResult(this.options);
+
+  final GitCreateTagOptions options;
+}
+
+final class _DeleteTagDialogResult extends _TagDialogResult {
+  const _DeleteTagDialogResult(this.options);
+
+  final GitDeleteTagOptions options;
+}
+
+/// Sourcetree-style tag manager opened from a historical commit context menu.
+///
+/// 中文：从历史提交右键打开的标签管理面板；创建默认指向该提交，删除始终另行确认。
+class _TagDialog extends StatefulWidget {
+  const _TagDialog({required this.session, required this.defaultCommitId});
+
+  final RepositorySessionState session;
+  final String defaultCommitId;
+
+  @override
+  State<_TagDialog> createState() => _TagDialogState();
+}
+
+class _TagDialogState extends State<_TagDialog> {
+  late final TextEditingController _nameController;
+  late final TextEditingController _annotationController;
+  late String _targetCommitId;
+  _TagDialogMode _mode = _TagDialogMode.create;
+  bool _useSpecifiedCommit = false;
+  bool _pushTag = false;
+  bool _showAdvanced = false;
+  bool _annotated = false;
+  String? _remoteName;
+  String? _deleteTagName;
+  bool _deleteRemote = false;
+  String? _deleteRemoteName;
+
+  RepositorySessionState get session => widget.session;
+
+  @override
+  void initState() {
+    super.initState();
+    _nameController = TextEditingController();
+    _annotationController = TextEditingController();
+    _targetCommitId = widget.defaultCommitId;
+    _remoteName = _defaultRemote;
+    _deleteRemoteName = _defaultRemote;
+  }
+
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _annotationController.dispose();
+    super.dispose();
+  }
+
+  String? get _defaultRemote {
+    if (session.remoteNames.contains('origin')) return 'origin';
+    return session.remoteNames.firstOrNull;
+  }
+
+  String _commitLabel(String objectId) {
+    final commit = session.commits
+        .where((item) => item.objectId == objectId)
+        .firstOrNull;
+    final shortId = objectId.length > 8 ? objectId.substring(0, 8) : objectId;
+    if (commit == null || commit.subject.trim().isEmpty) return shortId;
+    return '$shortId  ${commit.subject}';
+  }
+
+  Future<void> _chooseCommit() async {
+    final selected = await showDialog<String>(
+      context: context,
+      builder: (context) => _CommitBasePicker(commits: session.commits),
+    );
+    if (!mounted || selected == null) return;
+    setState(() => _targetCommitId = selected);
+  }
+
+  void _submitCreate() {
+    final name = _nameController.text.trim();
+    if (name.isEmpty ||
+        (_useSpecifiedCommit &&
+            !session.commits.any(
+              (commit) => commit.objectId == _targetCommitId,
+            ))) {
+      return;
+    }
+    Navigator.of(context).pop(
+      _CreateTagDialogResult(
+        GitCreateTagOptions(
+          name: name,
+          objectId: _targetCommitId,
+          annotation: _annotated ? _annotationController.text : null,
+          isAnnotated: _annotated,
+          pushRemoteName: _pushTag ? _remoteName : null,
+        ),
+      ),
+    );
+  }
+
+  void _submitDelete() {
+    final name = _deleteTagName;
+    if (name == null || (_deleteRemote && _deleteRemoteName == null)) return;
+    Navigator.of(context).pop(
+      _DeleteTagDialogResult(
+        GitDeleteTagOptions(
+          name: name,
+          deleteRemoteName: _deleteRemote ? _deleteRemoteName : null,
+        ),
+      ),
+    );
+  }
+
+  Widget _modeButton({
+    required _TagDialogMode mode,
+    required IconData icon,
+    required String label,
+    required Color color,
+  }) {
+    final selected = _mode == mode;
+    return InkWell(
+      key: ValueKey<String>('tag-dialog-tab-$mode'),
+      borderRadius: BorderRadius.circular(8),
+      onTap: () => setState(() => _mode = mode),
+      child: AnimatedContainer(
+        duration: const Duration(milliseconds: 160),
+        padding: const EdgeInsets.symmetric(horizontal: 11, vertical: 6),
+        decoration: BoxDecoration(
+          color: selected ? color.withValues(alpha: .10) : Colors.transparent,
+          borderRadius: BorderRadius.circular(8),
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(icon, size: 17, color: selected ? color : null),
+            const SizedBox(height: 2),
+            Text(
+              label,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: selected ? color : null,
+                fontWeight: selected ? FontWeight.w700 : null,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _sourceRadio({required bool specified}) {
+    final selected = _useSpecifiedCommit == specified;
+    return InkWell(
+      onTap: () => setState(() => _useSpecifiedCommit = specified),
+      borderRadius: BorderRadius.circular(6),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 2),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              selected
+                  ? Icons.radio_button_checked
+                  : Icons.radio_button_unchecked,
+              size: 18,
+              color: selected ? Theme.of(context).colorScheme.primary : null,
+            ),
+            const SizedBox(width: 5),
+            Text(specified ? '指定的提交' : '右键选择的提交'),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _remotePicker({
+    required String? value,
+    required ValueChanged<String?> onChanged,
+  }) => DropdownButtonFormField<String>(
+    initialValue: value,
+    isDense: true,
+    decoration: const InputDecoration(
+      border: OutlineInputBorder(),
+      isDense: true,
+    ),
+    items: [
+      for (final remote in session.remoteNames)
+        DropdownMenuItem(value: remote, child: Text(remote)),
+    ],
+    onChanged: onChanged,
+  );
+
+  Widget _buildCreate() {
+    final canSubmit =
+        _nameController.text.trim().isNotEmpty &&
+        (!_pushTag || _remoteName != null);
+    return SingleChildScrollView(
+      key: const ValueKey<String>('tag-dialog-create-view'),
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          TextField(
+            key: const ValueKey<String>('tag-dialog-name'),
+            controller: _nameController,
+            autofocus: true,
+            onChanged: (_) => setState(() {}),
+            decoration: const InputDecoration(
+              labelText: '标签名称',
+              hintText: '例如 v1.2.0',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+          ),
+          const SizedBox(height: 12),
+          Text('提交', style: Theme.of(context).textTheme.labelLarge),
+          const SizedBox(height: 3),
+          _sourceRadio(specified: false),
+          _sourceRadio(specified: true),
+          if (_useSpecifiedCommit)
+            Padding(
+              padding: const EdgeInsets.only(left: 23, top: 4),
+              child: OutlinedButton.icon(
+                onPressed: session.commits.isEmpty ? null : _chooseCommit,
+                icon: const Icon(Icons.commit, size: 16),
+                label: Text(
+                  _commitLabel(_targetCommitId),
+                  overflow: TextOverflow.ellipsis,
+                ),
+              ),
+            )
+          else
+            Padding(
+              padding: const EdgeInsets.only(left: 23, top: 4),
+              child: Text(
+                _commitLabel(_targetCommitId),
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ),
+          const SizedBox(height: 10),
+          CheckboxListTile(
+            value: _pushTag,
+            onChanged: session.remoteNames.isEmpty
+                ? null
+                : (value) => setState(() => _pushTag = value ?? false),
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            title: const Text('推送标签到远端'),
+            subtitle: session.remoteNames.isEmpty
+                ? const Text('当前仓库没有已配置的远端。')
+                : null,
+          ),
+          if (_pushTag)
+            Padding(
+              padding: const EdgeInsets.only(left: 32, bottom: 8),
+              child: _remotePicker(
+                value: _remoteName,
+                onChanged: (value) => setState(() => _remoteName = value),
+              ),
+            ),
+          InkWell(
+            key: const ValueKey<String>('tag-dialog-advanced'),
+            onTap: () => setState(() => _showAdvanced = !_showAdvanced),
+            child: Padding(
+              padding: const EdgeInsets.symmetric(vertical: 5),
+              child: Row(
+                children: [
+                  Icon(
+                    _showAdvanced ? Icons.expand_more : Icons.chevron_right,
+                    size: 18,
+                  ),
+                  const SizedBox(width: 4),
+                  const Text('高级选项'),
+                ],
+              ),
+            ),
+          ),
+          if (_showAdvanced) ...[
+            CheckboxListTile(
+              value: _annotated,
+              onChanged: (value) => setState(() => _annotated = value ?? false),
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              controlAffinity: ListTileControlAffinity.leading,
+              title: const Text('创建附注标签'),
+            ),
+            if (_annotated)
+              TextField(
+                key: const ValueKey<String>('tag-dialog-annotation'),
+                controller: _annotationController,
+                minLines: 2,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                  labelText: '标签说明（可选）',
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+              ),
+          ],
+          const SizedBox(height: 12),
+          Align(
+            alignment: Alignment.centerRight,
+            child: FilledButton.icon(
+              key: const ValueKey<String>('tag-dialog-create'),
+              onPressed: canSubmit ? _submitCreate : null,
+              icon: const Icon(Icons.sell_outlined, size: 17),
+              label: const Text('添加标签'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildDelete() {
+    final canSubmit =
+        _deleteTagName != null && (!_deleteRemote || _deleteRemoteName != null);
+    return SingleChildScrollView(
+      key: const ValueKey<String>('tag-dialog-delete-view'),
+      padding: const EdgeInsets.fromLTRB(20, 14, 20, 10),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          DropdownButtonFormField<String>(
+            key: const ValueKey<String>('tag-dialog-delete-name'),
+            initialValue: _deleteTagName,
+            isDense: true,
+            decoration: const InputDecoration(
+              labelText: '本地标签',
+              border: OutlineInputBorder(),
+              isDense: true,
+            ),
+            items: [
+              for (final tag in session.tags)
+                DropdownMenuItem(
+                  value: tag.name,
+                  child: Text(tag.name, overflow: TextOverflow.ellipsis),
+                ),
+            ],
+            onChanged: (value) => setState(() => _deleteTagName = value),
+          ),
+          const SizedBox(height: 12),
+          CheckboxListTile(
+            value: _deleteRemote,
+            onChanged: session.remoteNames.isEmpty
+                ? null
+                : (value) => setState(() => _deleteRemote = value ?? false),
+            dense: true,
+            contentPadding: EdgeInsets.zero,
+            controlAffinity: ListTileControlAffinity.leading,
+            title: const Text('同时删除远端标签'),
+          ),
+          if (_deleteRemote)
+            Padding(
+              padding: const EdgeInsets.only(left: 32, bottom: 8),
+              child: _remotePicker(
+                value: _deleteRemoteName,
+                onChanged: (value) => setState(() => _deleteRemoteName = value),
+              ),
+            ),
+          Text(
+            _deleteRemote
+                ? '删除会同时影响已选择远端的协作者。下一步会要求确认。'
+                : '删除本地标签不会删除远端同名标签。下一步会要求确认。',
+            style: Theme.of(context).textTheme.bodySmall?.copyWith(
+              color: Theme.of(context).colorScheme.onSurfaceVariant,
+            ),
+          ),
+          const SizedBox(height: 14),
+          Align(
+            alignment: Alignment.centerRight,
+            child: FilledButton.icon(
+              key: const ValueKey<String>('tag-dialog-delete'),
+              onPressed: canSubmit ? _submitDelete : null,
+              style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.error,
+                foregroundColor: Theme.of(context).colorScheme.onError,
+              ),
+              icon: const Icon(Icons.delete_outline, size: 17),
+              label: const Text('删除标签'),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Dialog(
+      key: const ValueKey<String>('tag-dialog'),
+      insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
+      shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
+      clipBehavior: Clip.antiAlias,
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 490, maxHeight: 545),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              padding: const EdgeInsets.fromLTRB(20, 12, 12, 8),
+              color: colors.surfaceContainerLow,
+              child: Row(
+                children: [
+                  Text(
+                    _mode == _TagDialogMode.create ? '添加标签' : '删除标签',
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  const Spacer(),
+                  _modeButton(
+                    mode: _TagDialogMode.create,
+                    icon: Icons.sell_outlined,
+                    label: '添加标签',
+                    color: colors.primary,
+                  ),
+                  const SizedBox(width: 3),
+                  _modeButton(
+                    mode: _TagDialogMode.delete,
+                    icon: Icons.delete_outline,
+                    label: '删除标签',
+                    color: colors.error,
+                  ),
+                ],
+              ),
+            ),
+            Flexible(
+              child: AnimatedSwitcher(
+                duration: const Duration(milliseconds: 180),
+                child: _mode == _TagDialogMode.create
+                    ? _buildCreate()
+                    : _buildDelete(),
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 0, 20, 12),
+              child: Align(
+                alignment: Alignment.centerRight,
+                child: TextButton(
                   onPressed: () => Navigator.of(context).pop(),
                   child: const Text('取消'),
                 ),

@@ -431,6 +431,151 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Creating local branch from commit');
   }
 
+  /// 在指定提交创建本地标签；可选创建包含说明文字的附注标签，绝不覆盖已有标签。
+  ///
+  /// English: Creates a local tag at the supplied commit. It optionally makes
+  /// an annotated tag with a message and never overwrites an existing tag.
+  Future<void> createTag(
+    GitRepository repository, {
+    required String name,
+    required String objectId,
+    String? annotation,
+    bool? annotated,
+  }) async {
+    final normalizedName = name.trim();
+    final normalizedObjectId = objectId.trim();
+    final normalizedAnnotation = annotation?.trim();
+    final makeAnnotated = annotated ?? normalizedAnnotation != null;
+    if (!_isSafeTagName(normalizedName)) {
+      throw ArgumentError.value(name, 'name', 'A valid tag name is required.');
+    }
+    if (!RegExp(r'^[0-9a-fA-F]{7,64}$').hasMatch(normalizedObjectId)) {
+      throw ArgumentError.value(
+        objectId,
+        'objectId',
+        'A valid commit id is required.',
+      );
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          'tag',
+          if (makeAnnotated) ...[
+            '--annotate',
+            '--message',
+            normalizedAnnotation ?? '',
+          ],
+          '--',
+          normalizedName,
+          normalizedObjectId,
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Creating tag');
+  }
+
+  /// 推送一个已经存在的本地标签；refspec 精确限定为用户刚创建的标签。
+  ///
+  /// English: Pushes exactly one existing local tag using an explicit refspec.
+  Future<void> pushTag(
+    GitRepository repository, {
+    required String remoteName,
+    required String tagName,
+  }) async {
+    final remote = remoteName.trim();
+    final tag = tagName.trim();
+    if (!_isSafeRemoteName(remote) || !_isSafeTagName(tag)) {
+      throw ArgumentError(
+        'A configured remote and valid tag name are required.',
+      );
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          'push',
+          '--porcelain',
+          '--',
+          remote,
+          'refs/tags/$tag:refs/tags/$tag',
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 1024 * 1024,
+          stderrBytes: 1024 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Pushing tag');
+  }
+
+  /// 删除一个本地标签。调用方必须在界面中获得明确确认。
+  ///
+  /// English: Deletes one local tag. The caller must obtain explicit UI
+  /// confirmation before invoking this irreversible local ref mutation.
+  Future<void> deleteTag(
+    GitRepository repository, {
+    required String name,
+  }) async {
+    final normalizedName = name.trim();
+    if (!_isSafeTagName(normalizedName)) {
+      throw ArgumentError.value(name, 'name', 'A valid tag name is required.');
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: ['--no-pager', 'tag', '--delete', '--', normalizedName],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Deleting tag');
+  }
+
+  /// 删除远端的同名标签。该操作不使用 force，且由调用方先向用户说明影响。
+  ///
+  /// English: Deletes the matching remote tag without force. The caller is
+  /// responsible for presenting the destructive impact before this call.
+  Future<void> deleteRemoteTag(
+    GitRepository repository, {
+    required String remoteName,
+    required String tagName,
+  }) async {
+    final remote = remoteName.trim();
+    final tag = tagName.trim();
+    if (!_isSafeRemoteName(remote) || !_isSafeTagName(tag)) {
+      throw ArgumentError(
+        'A configured remote and valid tag name are required.',
+      );
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          'push',
+          '--porcelain',
+          '--',
+          remote,
+          ':refs/tags/$tag',
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 1024 * 1024,
+          stderrBytes: 1024 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Deleting remote tag');
+  }
+
   /// Switches to an existing local branch without creating or overwriting refs.
   /// 中文：切换到目标状态。
   /// English: Switches to the target state.
@@ -724,6 +869,41 @@ final class GitRepositoryWriter {
       ),
     );
     result.throwIfFailed(operation: 'Merging local branch');
+  }
+
+  /// 中文：将指定的历史提交合并到当前分支；提交 ID 仅作为字面 Git 对象参数使用。
+  ///
+  /// English: Merges one historical commit into the current branch, passing
+  /// its validated object ID as a literal Git object argument.
+  Future<void> mergeCommit(
+    GitRepository repository, {
+    required String objectId,
+  }) async {
+    final normalizedObjectId = objectId.trim();
+    if (!RegExp(r'^[0-9a-fA-F]{7,64}$').hasMatch(normalizedObjectId)) {
+      throw ArgumentError.value(
+        objectId,
+        'objectId',
+        'A valid commit id is required.',
+      );
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          'merge',
+          '--no-edit',
+          '--no-ff',
+          normalizedObjectId,
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 512 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Merging commit');
   }
 
   /// Initializes an existing empty directory without changing Git settings.
@@ -1202,6 +1382,10 @@ final class GitRepositoryWriter {
       !value.contains('..') &&
       !value.contains('//') &&
       !value.contains(RegExp(r'[\x00\s~^:?*\[\\]'));
+
+  /// 中文：判断短标签名是否可安全转换为 tags 引用。
+  /// English: Checks whether a short tag name can safely form a tags ref.
+  bool _isSafeTagName(String value) => _isSafeBranchName(value);
 
   /// Verifies whether the configured upstream currently contains the checked
   /// out HEAD or the explicitly selected local branch tip.

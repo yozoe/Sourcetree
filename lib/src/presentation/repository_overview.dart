@@ -16,8 +16,11 @@ typedef RepositoryRefContextActionCallback =
 typedef RepositoryCommitCallback = void Function(CommitViewData commit);
 typedef RepositoryCommitActivationCallback =
     void Function(CommitViewData commit);
+typedef RepositoryCommitContextActionCallback =
+    void Function(CommitViewData commit, RepositoryCommitContextAction action);
 typedef RepositoryChangeCallback =
     void Function(RepositoryChangeViewData? change);
+typedef RepositoryUncommittedChangesCallback = FutureOr<void> Function();
 typedef RepositoryChangeStageCallback =
     void Function(RepositoryChangeViewData change);
 typedef RepositoryChangeFilesCallback =
@@ -44,6 +47,8 @@ final class RepositoryOverviewCallbacks {
     this.onRefContextAction,
     this.onCommitSelected,
     this.onCommitActivated,
+    this.onCommitContextAction,
+    this.onUncommittedChangesSelected,
     this.onChangeSelected,
     this.onChangeStageToggled,
     this.onChangeGroupStageToggled,
@@ -61,6 +66,8 @@ final class RepositoryOverviewCallbacks {
   final RepositoryRefContextActionCallback? onRefContextAction;
   final RepositoryCommitCallback? onCommitSelected;
   final RepositoryCommitActivationCallback? onCommitActivated;
+  final RepositoryCommitContextActionCallback? onCommitContextAction;
+  final RepositoryUncommittedChangesCallback? onUncommittedChangesSelected;
   final RepositoryChangeCallback? onChangeSelected;
   final RepositoryChangeStageCallback? onChangeStageToggled;
   final RepositoryChangeGroupStageCallback? onChangeGroupStageToggled;
@@ -161,18 +168,12 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
     widget.callbacks.onRefActivated?.call(reference);
   }
 
-  /// 中文：从历史列表中的未提交记录返回工作区文件状态。
-  /// English: Returns to workspace changes from the uncommitted history row.
-  void _selectWorkspace(RepositoryViewData repository) {
-    for (final reference in repository.refs) {
-      if (reference.kind == RepositoryRefKind.workspace) {
-        if (_selectedRefId != reference.id) {
-          setState(() => _selectedRefId = reference.id);
-        }
-        widget.callbacks.onRefSelected?.call(reference);
-        return;
-      }
-    }
+  /// 中文：选中历史顶部的未提交改动行，并保留提交图与下方改动面板。
+  ///
+  /// English: Selects the synthetic uncommitted row while keeping the history
+  /// graph and the lower changes pane visible.
+  void _selectUncommittedChanges() {
+    widget.callbacks.onUncommittedChangesSelected?.call();
   }
 
   /// 中文：更新可调整面板的布局并通知上层回调保存新尺寸。
@@ -219,12 +220,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
 
   /// 中文：判断当前是否正在查看工作区文件状态。
   /// English: Returns whether the workspace file-status ref is selected.
-  bool _isWorkspacePreview(RepositoryViewData repository) =>
-      repository.refs.any(
-        (reference) =>
-            reference.kind == RepositoryRefKind.workspace &&
-            reference.isSelected,
-      );
+  bool _isWorkspacePreview(RepositoryViewData repository) => repository.refs
+      .any((reference) => reference.id == 'workspace' && reference.isSelected);
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -355,7 +352,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                         repository: repository,
                         onSelected: widget.callbacks.onCommitSelected,
                         onActivated: widget.callbacks.onCommitActivated,
-                        onWorkspaceSelected: () => _selectWorkspace(repository),
+                        onContextAction: widget.callbacks.onCommitContextAction,
+                        onUncommittedChangesSelected: _selectUncommittedChanges,
                       ),
                     ),
                     _HistorySplitBar(
@@ -462,7 +460,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                         repository: repository,
                         onSelected: widget.callbacks.onCommitSelected,
                         onActivated: widget.callbacks.onCommitActivated,
-                        onWorkspaceSelected: () => _selectWorkspace(repository),
+                        onContextAction: widget.callbacks.onCommitContextAction,
+                        onUncommittedChangesSelected: _selectUncommittedChanges,
                       ),
                     ),
                     _HistorySplitBar(
@@ -521,7 +520,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         repository: repository,
         onSelected: widget.callbacks.onCommitSelected,
         onActivated: widget.callbacks.onCommitActivated,
-        onWorkspaceSelected: () => _selectWorkspace(repository),
+        onContextAction: widget.callbacks.onCommitContextAction,
+        onUncommittedChangesSelected: _selectUncommittedChanges,
         showSearch: true,
         onSearchChanged: widget.callbacks.onSearchChanged,
       ),
@@ -1219,6 +1219,16 @@ class _RefsNavigation extends StatelessWidget {
     final canManageLocalBranch = repository.isWorkingTreeClean && !isBusy;
     final canManageRemote = !isBusy && !repository.isRebaseInProgress;
     final remoteName = _remoteNameFor(ref);
+    if (ref.id == 'history') {
+      return [
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.refresh,
+          label: '刷新仓库',
+          icon: Icons.refresh,
+          enabled: !isBusy,
+        ),
+      ];
+    }
     if (ref.id == 'HEAD') {
       return [
         _RefContextMenuItem(
@@ -2065,7 +2075,8 @@ class _HistoryPane extends StatefulWidget {
     required this.repository,
     required this.onSelected,
     required this.onActivated,
-    required this.onWorkspaceSelected,
+    required this.onUncommittedChangesSelected,
+    this.onContextAction,
     this.showSearch = false,
     this.onSearchChanged,
   });
@@ -2073,7 +2084,8 @@ class _HistoryPane extends StatefulWidget {
   final RepositoryViewData repository;
   final RepositoryCommitCallback? onSelected;
   final RepositoryCommitActivationCallback? onActivated;
-  final VoidCallback? onWorkspaceSelected;
+  final RepositoryCommitContextActionCallback? onContextAction;
+  final VoidCallback? onUncommittedChangesSelected;
   final bool showSearch;
   final ValueChanged<String>? onSearchChanged;
 
@@ -2161,13 +2173,8 @@ class _HistoryPaneState extends State<_HistoryPane> {
             isDetachedHead: widget.repository.isDetachedHead,
           )
         : const <String, CommitGraphViewData>{};
-    final workspaceSelected =
-        widget.repository.selectedCommit == null &&
-        widget.repository.refs.any(
-          (reference) =>
-              reference.kind == RepositoryRefKind.workspace &&
-              reference.isSelected,
-        );
+    final uncommittedChangesSelected =
+        widget.repository.isUncommittedChangesSelected;
     final historyRowCount = commits.length + (showUncommittedChanges ? 1 : 0);
     return Material(
       color: _historyBackground(colors),
@@ -2221,10 +2228,12 @@ class _HistoryPaneState extends State<_HistoryPane> {
                                         if (showUncommittedChanges &&
                                             index == 0) {
                                           return _UncommittedChangesRow(
-                                            isSelected: workspaceSelected,
+                                            isSelected:
+                                                uncommittedChangesSelected,
                                             compactGraph: _compactGraph,
                                             widths: widths,
-                                            onTap: widget.onWorkspaceSelected,
+                                            onTap: widget
+                                                .onUncommittedChangesSelected,
                                           );
                                         }
                                         final commitIndex =
@@ -2272,6 +2281,14 @@ class _HistoryPaneState extends State<_HistoryPane> {
                                               ? null
                                               : () =>
                                                     widget.onActivated!(commit),
+                                          onContextAction:
+                                              widget.onContextAction == null
+                                              ? null
+                                              : (action) =>
+                                                    widget.onContextAction!(
+                                                      commit,
+                                                      action,
+                                                    ),
                                         );
                                       },
                                 ),
@@ -2819,6 +2836,7 @@ class _CommitRow extends StatelessWidget {
     required this.ahead,
     required this.onTap,
     this.onDoubleTap,
+    this.onContextAction,
     required this.showRemoteRefs,
     required this.compactGraph,
     required this.widths,
@@ -2830,6 +2848,7 @@ class _CommitRow extends StatelessWidget {
   final int ahead;
   final VoidCallback? onTap;
   final VoidCallback? onDoubleTap;
+  final ValueChanged<RepositoryCommitContextAction>? onContextAction;
   final bool showRemoteRefs;
   final bool compactGraph;
   final _HistoryColumnWidths widths;
@@ -2856,6 +2875,9 @@ class _CommitRow extends StatelessWidget {
         child: InkWell(
           onTap: onTap,
           onDoubleTap: onDoubleTap,
+          onSecondaryTapDown: onContextAction == null
+              ? null
+              : (details) => unawaited(_showContextMenu(context, details)),
           child: Container(
             padding: const EdgeInsets.symmetric(horizontal: 8),
             color: commit.isSelected ? colors.secondaryContainer : null,
@@ -2975,6 +2997,93 @@ class _CommitRow extends StatelessWidget {
         ),
       ),
     );
+  }
+
+  /// 中文：在指针位置显示提交操作菜单，提交写入仍交由应用层处理。
+  /// English: Shows the commit action menu at the pointer; the app layer owns
+  /// the actual Git mutation.
+  Future<void> _showContextMenu(
+    BuildContext context,
+    TapDownDetails details,
+  ) async {
+    final handler = onContextAction;
+    if (handler == null) return;
+    final overlay =
+        Overlay.of(context).context.findRenderObject()! as RenderBox;
+    final position = RelativeRect.fromRect(
+      Rect.fromLTWH(details.globalPosition.dx, details.globalPosition.dy, 0, 0),
+      Offset.zero & overlay.size,
+    );
+    final action = await showMenu<RepositoryCommitContextAction>(
+      context: context,
+      position: position,
+      items: const [
+        PopupMenuItem<RepositoryCommitContextAction>(
+          value: RepositoryCommitContextAction.checkout,
+          height: 30,
+          child: Text('检出…'),
+        ),
+        PopupMenuItem<RepositoryCommitContextAction>(
+          value: RepositoryCommitContextAction.merge,
+          height: 30,
+          child: Text('合并…'),
+        ),
+        PopupMenuDivider(),
+        PopupMenuItem<RepositoryCommitContextAction>(
+          value: RepositoryCommitContextAction.tag,
+          height: 30,
+          child: Text('标签…'),
+        ),
+        PopupMenuItem<RepositoryCommitContextAction>(
+          value: RepositoryCommitContextAction.createBranch,
+          height: 30,
+          child: Text('分支…'),
+        ),
+        PopupMenuDivider(),
+        PopupMenuItem<RepositoryCommitContextAction>(
+          value: RepositoryCommitContextAction.copyCommitHash,
+          height: 30,
+          child: Text('复制 SHA-1 到剪贴板'),
+        ),
+        PopupMenuDivider(),
+        PopupMenuItem<RepositoryCommitContextAction>(
+          enabled: false,
+          height: 30,
+          child: Text('推送修订版本…（尚未实现）'),
+        ),
+        PopupMenuItem<RepositoryCommitContextAction>(
+          enabled: false,
+          height: 30,
+          child: Text('变基…（尚未实现）'),
+        ),
+        PopupMenuItem<RepositoryCommitContextAction>(
+          enabled: false,
+          height: 30,
+          child: Text('交互式变基…（尚未实现）'),
+        ),
+        PopupMenuItem<RepositoryCommitContextAction>(
+          enabled: false,
+          height: 30,
+          child: Text('将当前分支重置到此次提交（尚未实现）'),
+        ),
+        PopupMenuItem<RepositoryCommitContextAction>(
+          enabled: false,
+          height: 30,
+          child: Text('提交回滚（尚未实现）'),
+        ),
+        PopupMenuItem<RepositoryCommitContextAction>(
+          enabled: false,
+          height: 30,
+          child: Text('创建补丁…（尚未实现）'),
+        ),
+        PopupMenuItem<RepositoryCommitContextAction>(
+          enabled: false,
+          height: 30,
+          child: Text('遴选（尚未实现）'),
+        ),
+      ],
+    );
+    if (action != null) handler(action);
   }
 
   /// 中文：按真实引用来源区分 HEAD、远端、主本地分支和其他本地分支标签。

@@ -322,6 +322,37 @@ final class GitRemoteBranch {
   final bool isSymbolic;
 }
 
+/// A local Git tag discovered through `git for-each-ref`.
+///
+/// 中文：通过 `git for-each-ref` 读取的本地标签。对于附注标签，[targetObjectId]
+/// 是 Git 解包后的实际目标对象，因此历史视图可以与提交 ID 直接匹配。
+final class GitTag {
+  const GitTag({
+    required this.name,
+    required this.targetObjectId,
+    required this.targetObjectType,
+    required this.isAnnotated,
+  });
+
+  /// The short tag name without the `refs/tags/` prefix.
+  final String name;
+
+  /// The peeled target object ID for annotated tags, or the direct target for
+  /// lightweight tags.
+  final String targetObjectId;
+
+  /// Git object type after peeling an annotated tag, such as `commit` or
+  /// `tree`.
+  final String targetObjectType;
+
+  /// Whether this tag can be opened in the commit-history inspector.
+  /// 中文：该标签是否可在提交历史详情中预览。
+  bool get hasCommitTarget => targetObjectType == 'commit';
+
+  /// Whether Git stored an annotated tag object instead of a direct ref.
+  final bool isAnnotated;
+}
+
 /// One saved working-tree snapshot reported by `git stash list`.
 ///
 /// 中文：`git stash list` 返回的一条已贮藏工作区快照。引用名始终由 Git
@@ -383,6 +414,37 @@ final class GitPushOptions {
 
   /// Whether every local tag should also be pushed.
   final bool pushTags;
+}
+
+/// Options selected when creating one tag from a historical commit.
+/// 中文：从历史提交创建单个标签时选择的选项。
+final class GitCreateTagOptions {
+  const GitCreateTagOptions({
+    required this.name,
+    required this.objectId,
+    this.annotation,
+    this.isAnnotated = false,
+    this.pushRemoteName,
+  });
+
+  final String name;
+  final String objectId;
+  final String? annotation;
+  final bool isAnnotated;
+
+  /// When supplied, push only this new tag to the configured remote.
+  final String? pushRemoteName;
+}
+
+/// Options selected when deleting one local tag and, optionally, its remote ref.
+/// 中文：删除一个本地标签及（可选）同名远端标签时选择的选项。
+final class GitDeleteTagOptions {
+  const GitDeleteTagOptions({required this.name, this.deleteRemoteName});
+
+  final String name;
+
+  /// Configured remote on which the matching tag should also be removed.
+  final String? deleteRemoteName;
 }
 
 /// Options selected in the fetch configuration dialog.

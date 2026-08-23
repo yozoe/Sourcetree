@@ -620,6 +620,64 @@ final class GitRepositoryReader {
     return List<GitRemoteBranch>.unmodifiable(branches);
   }
 
+  /// 读取全部本地标签；附注标签会解包到其实际目标对象。
+  ///
+  /// English: Reads every local tag and peels annotated tags to their actual
+  /// target object, so callers can associate commit tags without parsing
+  /// human-oriented decoration output.
+  Future<List<GitTag>> readTags(GitRepository repository) async {
+    final result = await runner.run(
+      GitInvocation(
+        arguments: const [
+          '--no-pager',
+          '-c',
+          'color.ui=false',
+          'for-each-ref',
+          '--sort=refname',
+          '--format=%(refname:lstrip=2)%00%(objecttype)%00%(objectname)%00%(*objecttype)%00%(*objectname)',
+          'refs/tags',
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 4 * 1024 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Reading tags');
+    if (result.stdoutTruncated) {
+      throw const GitParseException(
+        'Tag list exceeded the configured output limit.',
+      );
+    }
+
+    final tags = <GitTag>[];
+    final output = utf8.decode(result.stdoutBytes, allowMalformed: true);
+    for (final record in output.split('\n')) {
+      if (record.isEmpty) continue;
+      final fields = record.split('\u0000');
+      if (fields.length != 5 || fields[0].isEmpty || fields[2].isEmpty) {
+        throw GitParseException('Unexpected tag record: $record');
+      }
+      final isAnnotated = fields[1] == 'tag';
+      final targetObjectId = isAnnotated && fields[4].isNotEmpty
+          ? fields[4]
+          : fields[2];
+      final targetObjectType = isAnnotated && fields[3].isNotEmpty
+          ? fields[3]
+          : fields[1];
+      tags.add(
+        GitTag(
+          name: fields[0],
+          targetObjectId: targetObjectId,
+          targetObjectType: targetObjectType,
+          isAnnotated: isAnnotated,
+        ),
+      );
+    }
+    return List<GitTag>.unmodifiable(tags);
+  }
+
   /// Returns whether the conventional `origin` remote is configured.
   /// 中文：检查目标是否存在或可用。
   /// English: Checks whether the target exists or is available.

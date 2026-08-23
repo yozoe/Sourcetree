@@ -459,9 +459,7 @@ void main() {
       );
 
       await controller.selectReference(
-        overview.refs.singleWhere(
-          (reference) => reference.kind == RepositoryRefKind.workspace,
-        ),
+        overview.refs.singleWhere((reference) => reference.id == 'workspace'),
       );
 
       final workspace = mapRepositoryOverview(
@@ -474,9 +472,21 @@ void main() {
       );
       expect(
         workspace.refs
-            .singleWhere(
-              (reference) => reference.kind == RepositoryRefKind.workspace,
-            )
+            .singleWhere((reference) => reference.id == 'workspace')
+            .isSelected,
+        isTrue,
+      );
+
+      controller.selectUncommittedChanges();
+
+      final uncommitted = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      expect(uncommitted.isUncommittedChangesSelected, isTrue);
+      expect(uncommitted.selectedCommit, isNull);
+      expect(
+        uncommitted.refs
+            .singleWhere((reference) => reference.id == 'history')
             .isSelected,
         isTrue,
       );
@@ -1311,6 +1321,64 @@ while true; do sleep 1; done
     expect(state.status!.branch.head, 'main');
     expect(state.commits.first.parentIds, hasLength(2));
   });
+
+  test(
+    'merges the selected historical commit into the current branch',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      await repository.commit('Initial commit');
+      await repository.runGit(['switch', '-c', 'feature/commit-source']);
+      await repository.writeFile('feature.txt', 'feature\n');
+      final featureCommit = await repository.commit('Feature commit');
+      await repository.runGit(['switch', 'main']);
+      await repository.writeFile('main.txt', 'main\n');
+      await repository.commit('Main commit');
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+
+      expect(await controller.mergeCommit(featureCommit), isTrue);
+
+      final state = container.read(repositorySessionProvider);
+      expect(state.phase, RepositorySessionPhase.ready);
+      expect(state.commits.first.parentIds, contains(featureCommit));
+    },
+  );
+
+  test(
+    'selects a non-commit tag without trying to load commit details',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      await repository.commit('Initial commit');
+      final treeId = (await repository.runGit([
+        'write-tree',
+      ])).stdout.toString().trim();
+      await repository.runGit(['tag', 'tree-snapshot', treeId]);
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      final overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+
+      await controller.selectReference(
+        overview.refs.singleWhere(
+          (reference) => reference.label == 'tree-snapshot',
+        ),
+      );
+
+      final state = container.read(repositorySessionProvider);
+      expect(state.phase, RepositorySessionPhase.ready);
+      expect(state.selectedRefId, 'refs/tags/tree-snapshot');
+      expect(state.selectedCommitId, isNull);
+    },
+  );
 
   test(
     'allows merging a local branch with unrelated uncommitted changes',

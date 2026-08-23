@@ -382,6 +382,76 @@ void main() {
     expect(selectedAction, RepositoryRefContextAction.mergeIntoCurrent);
   });
 
+  testWidgets('commit context menu restores supported history actions', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    CommitViewData? selectedCommit;
+    RepositoryCommitContextAction? selectedAction;
+    const commit = CommitViewData(
+      oid: '4f5e6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6',
+      shortOid: '4f5e6b7c',
+      subject: 'Release candidate',
+      author: 'tester',
+      relativeDate: '今天',
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              isWorkingTreeClean: true,
+              commits: [commit],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onCommitContextAction: (nextCommit, action) {
+              selectedCommit = nextCommit;
+              selectedAction = action;
+            },
+          ),
+        ),
+      ),
+    );
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('Release candidate')),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(find.text('检出…'), findsOneWidget);
+    expect(find.text('合并…'), findsOneWidget);
+    expect(find.text('标签…'), findsOneWidget);
+    expect(find.text('分支…'), findsOneWidget);
+    expect(find.text('复制 SHA-1 到剪贴板'), findsOneWidget);
+    expect(find.text('变基…（尚未实现）'), findsOneWidget);
+    expect(
+      tester
+          .widget<PopupMenuItem<RepositoryCommitContextAction>>(
+            find.widgetWithText(
+              PopupMenuItem<RepositoryCommitContextAction>,
+              '变基…（尚未实现）',
+            ),
+          )
+          .enabled,
+      isFalse,
+    );
+
+    await tester.tap(find.text('标签…'));
+    await tester.pumpAndSettle();
+
+    expect(selectedCommit, commit);
+    expect(selectedAction, RepositoryCommitContextAction.tag);
+  });
+
   testWidgets('single-click selects a branch and double-click activates it', (
     tester,
   ) async {

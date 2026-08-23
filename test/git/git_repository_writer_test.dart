@@ -371,6 +371,99 @@ void main() {
     );
   });
 
+  test('creates, pushes, and deletes one explicit tag', () async {
+    await fixture.writeFile('README.md', '# Tags\n');
+    final commit = await fixture.commit('Initial commit');
+    final bare = await fixture.createBareOrigin();
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await writer.createTag(
+      repository,
+      name: 'v1.0.0',
+      objectId: commit,
+      annotation: 'First release',
+    );
+    final tags = await reader.readTags(repository);
+    expect(
+      tags.singleWhere((tag) => tag.name == 'v1.0.0'),
+      predicate<GitTag>(
+        (tag) => tag.isAnnotated && tag.targetObjectId == commit,
+      ),
+    );
+
+    await writer.pushTag(repository, remoteName: 'origin', tagName: 'v1.0.0');
+    expect(
+      (await fixture.runGit([
+        '--git-dir=${bare.path}',
+        'show-ref',
+        '--verify',
+        '--quiet',
+        'refs/tags/v1.0.0',
+      ])).exitCode,
+      0,
+    );
+
+    await writer.deleteRemoteTag(
+      repository,
+      remoteName: 'origin',
+      tagName: 'v1.0.0',
+    );
+    await writer.deleteTag(repository, name: 'v1.0.0');
+    expect(await reader.readTags(repository), isEmpty);
+    expect(
+      (await fixture.runGit([
+        '--git-dir=${bare.path}',
+        'show-ref',
+        '--verify',
+        '--quiet',
+        'refs/tags/v1.0.0',
+      ], throwOnError: false)).exitCode,
+      isNot(0),
+    );
+  });
+
+  test(
+    'creates an annotated tag with an empty message without opening an editor',
+    () async {
+      await fixture.writeFile('README.md', '# Empty annotation\n');
+      final commit = await fixture.commit('Initial commit');
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+
+      await writer.createTag(
+        repository,
+        name: 'v1.0.1',
+        objectId: commit,
+        annotation: '',
+        annotated: true,
+      );
+
+      final tag = (await reader.readTags(
+        repository,
+      )).singleWhere((candidate) => candidate.name == 'v1.0.1');
+      expect(tag.isAnnotated, isTrue);
+      expect(tag.targetObjectId, commit);
+    },
+  );
+
+  test('rejects unsafe tag names before running Git', () async {
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await expectLater(
+      writer.createTag(
+        repository,
+        name: '--invalid',
+        objectId: '0123456789abcdef',
+      ),
+      throwsA(isA<ArgumentError>()),
+    );
+  });
+
   test('creates a local branch from the selected local branch ref', () async {
     await fixture.writeFile('README.md', 'base\n');
     await fixture.commit('Initial commit');
@@ -623,6 +716,31 @@ void main() {
         await File('${fixture.workingDirectory.path}/feature.txt').exists(),
         isTrue,
       );
+    },
+  );
+
+  test(
+    'merges a historical commit without resolving an unrelated ref name',
+    () async {
+      await fixture.writeFile('README.md', 'base\n');
+      await fixture.commit('Initial commit');
+      await fixture.runGit(['switch', '-c', 'feature/commit-source']);
+      await fixture.writeFile('feature.txt', 'feature\n');
+      final featureCommit = await fixture.commit('Feature commit');
+      await fixture.runGit(['switch', 'main']);
+      await fixture.writeFile('main.txt', 'main\n');
+      await fixture.commit('Main commit');
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+
+      await writer.mergeCommit(repository, objectId: featureCommit);
+
+      final parents = (await reader.readRecentHistory(
+        repository,
+      )).first.parentIds;
+      expect(parents, contains(featureCommit));
+      expect(parents, hasLength(2));
     },
   );
 

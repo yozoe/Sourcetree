@@ -143,6 +143,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     isStashing: state.isStashRunning,
     isRebaseInProgress: isRebaseInProgress,
     isWorkingTreeClean: status.isClean,
+    isUncommittedChangesSelected: state.selectedRefId == 'uncommitted',
     refs: [
       RepositoryRefViewData(
         id: 'workspace',
@@ -150,6 +151,14 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
         kind: RepositoryRefKind.workspace,
         childCount: status.displayEntries.length,
         isSelected: state.selectedRefId == 'workspace',
+      ),
+      RepositoryRefViewData(
+        id: 'history',
+        label: '历史',
+        kind: RepositoryRefKind.workspace,
+        isSelected:
+            state.selectedRefId == 'history' ||
+            state.selectedRefId == 'uncommitted',
       ),
       if (branch.isDetached)
         RepositoryRefViewData(
@@ -194,6 +203,16 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
           isSymbolicRemote: remoteBranch.isSymbolic,
           isSelected:
               state.selectedRefId == 'refs/remotes/${remoteBranch.name}',
+        ),
+      for (final tag in state.tags)
+        RepositoryRefViewData(
+          id: 'refs/tags/${tag.name}',
+          label: tag.name,
+          kind: RepositoryRefKind.tag,
+          secondaryLabel: tag.hasCommitTarget
+              ? (tag.isAnnotated ? '附注标签' : null)
+              : '${tag.isAnnotated ? '附注标签' : '轻量标签'} · ${tag.targetObjectType}',
+          isSelected: state.selectedRefId == 'refs/tags/${tag.name}',
         ),
       // Keep the Stashes entry present even before the first saved snapshot.
       // This matches Sourcetree's stable navigation structure and provides a
@@ -403,6 +422,11 @@ String? _selectedRefObjectId(RepositorySessionState state) {
       return branch.objectId;
     }
   }
+  for (final tag in state.tags) {
+    if (state.selectedRefId == 'refs/tags/${tag.name}') {
+      return tag.targetObjectId;
+    }
+  }
   return null;
 }
 
@@ -416,6 +440,8 @@ List<String> _refsForCommit(RepositorySessionState state, String objectId) => [
     if (branch.objectId == objectId) branch.name,
   for (final branch in state.remoteBranches)
     if (branch.objectId == objectId) branch.name,
+  for (final tag in state.tags)
+    if (tag.targetObjectId == objectId) tag.name,
 ];
 
 List<String> _remoteRefsForCommit(

@@ -53,6 +53,15 @@ enum RepositoryRefContextAction {
   manageStashes,
 }
 
+/// Actions exposed from the context menu of one historical commit.
+enum RepositoryCommitContextAction {
+  checkout,
+  merge,
+  createBranch,
+  tag,
+  copyCommitHash,
+}
+
 enum RepositoryChangeKind {
   modified,
   added,
@@ -148,6 +157,7 @@ final class RepositoryViewData {
     this.isStashing = false,
     this.isRebaseInProgress = false,
     this.isWorkingTreeClean = true,
+    this.isUncommittedChangesSelected = false,
     this.refs = const [],
     this.commits = const [],
     this.focusedRefCommitId,
@@ -179,6 +189,10 @@ final class RepositoryViewData {
   final bool isStashing;
   final bool isRebaseInProgress;
   final bool isWorkingTreeClean;
+
+  /// Whether the synthetic uncommitted row is selected in the history graph.
+  /// 中文：历史图顶部的“Uncommitted changes”虚拟行是否处于选中状态。
+  final bool isUncommittedChangesSelected;
   final List<RepositoryRefViewData> refs;
   final List<CommitViewData> commits;
   final String? focusedRefCommitId;

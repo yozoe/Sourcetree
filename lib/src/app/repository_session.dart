@@ -215,9 +215,10 @@ final class RepositorySessionState {
     this.localBranches = const [],
     this.remoteNames = const [],
     this.remoteBranches = const [],
+    this.tags = const [],
     this.stashes = const [],
     this.commits = const [],
-    this.selectedRefId = 'workspace',
+    this.selectedRefId = 'history',
     this.selectedCommitId,
     this.commitChanges = const [],
     this.selectedCommitFile,
@@ -256,6 +257,7 @@ final class RepositorySessionState {
   final List<GitLocalBranch> localBranches;
   final List<String> remoteNames;
   final List<GitRemoteBranch> remoteBranches;
+  final List<GitTag> tags;
   final List<GitStashEntry> stashes;
   final List<GitCommit> commits;
   final String selectedRefId;
@@ -299,6 +301,7 @@ final class RepositorySessionState {
     List<GitLocalBranch>? localBranches,
     List<String>? remoteNames,
     List<GitRemoteBranch>? remoteBranches,
+    List<GitTag>? tags,
     List<GitStashEntry>? stashes,
     List<GitCommit>? commits,
     String? selectedRefId,
@@ -343,6 +346,7 @@ final class RepositorySessionState {
       localBranches: localBranches ?? this.localBranches,
       remoteNames: remoteNames ?? this.remoteNames,
       remoteBranches: remoteBranches ?? this.remoteBranches,
+      tags: tags ?? this.tags,
       stashes: stashes ?? this.stashes,
       commits: commits ?? this.commits,
       selectedRefId: selectedRefId ?? this.selectedRefId,
@@ -626,6 +630,7 @@ final class RepositorySessionController
         _reader.readLocalBranches(repository),
         _reader.readRemoteNames(repository),
         _reader.readRemoteBranches(repository),
+        _reader.readTags(repository),
         _reader.readStashes(repository),
         _reader.readRecentHistory(repository),
         _readGitVersion(),
@@ -644,8 +649,9 @@ final class RepositorySessionController
       final localBranches = results[3] as List<GitLocalBranch>;
       final remoteNames = results[4] as List<String>;
       final remoteBranches = results[5] as List<GitRemoteBranch>;
-      final stashes = results[6] as List<GitStashEntry>;
-      final commits = results[7] as List<GitCommit>;
+      final tags = results[6] as List<GitTag>;
+      final stashes = results[7] as List<GitStashEntry>;
+      final commits = results[8] as List<GitCommit>;
       final tab = RepositoryTab(
         path: repository.commandDirectory,
         label: path_utils.basename(
@@ -663,6 +669,7 @@ final class RepositorySessionController
         localBranches: localBranches,
         remoteNames: remoteNames,
         remoteBranches: remoteBranches,
+        tags: tags,
         stashes: stashes,
         commits: commits,
         // Keep the working-tree inspector visible until the user chooses a
@@ -674,7 +681,7 @@ final class RepositorySessionController
           _upsertRepositoryTab(state.openRepositoryTabs, tab),
         ),
         activeRepositoryTabPath: tab.path,
-        gitVersion: results[8] as String,
+        gitVersion: results[9] as String,
         searchQuery: state.searchQuery,
       );
       _persistRepositorySession();
@@ -1529,18 +1536,18 @@ final class RepositorySessionController
   }
 
   /// 中文：浏览左侧引用；选择分支会定位到分支尖端并加载该提交的文件改动，
-  /// 选择工作区则恢复未提交文件状态。该操作不会切换当前检出的分支。
+  /// “文件状态”会打开完整工作区，“历史”会恢复提交图。该操作不会切换当前检出的分支。
   ///
   /// English: Browses a sidebar ref. Branches focus their tip commit and load
-  /// its changed files, while the workspace restores uncommitted changes. This
-  /// never checks out a branch.
+  /// its changed files, while File Status opens the full workspace and History
+  /// restores the commit graph. This never checks out a branch.
   Future<void> selectReference(RepositoryRefViewData reference) async {
     if (state.repository == null) return;
     if (reference.kind == RepositoryRefKind.workspace) {
       _commitGeneration++;
       _commitDiffGeneration++;
       state = state.copyWith(
-        selectedRefId: 'workspace',
+        selectedRefId: reference.id == 'workspace' ? 'workspace' : 'history',
         commits: _commitsWithoutStashPreviews(),
         clearSelectedCommit: true,
         commitChanges: const [],
@@ -1615,6 +1622,21 @@ final class RepositorySessionController
           break;
         }
       }
+    } else if (reference.kind == RepositoryRefKind.tag) {
+      for (final tag in state.tags) {
+        if (tag.name == reference.label) {
+          if (!tag.hasCommitTarget) {
+            state = state.copyWith(
+              selectedRefId: 'refs/tags/${tag.name}',
+              clearMessage: true,
+            );
+            return;
+          }
+          objectId = tag.targetObjectId;
+          selectedRefId = 'refs/tags/${tag.name}';
+          break;
+        }
+      }
     }
     if (objectId == null || selectedRefId == null) return;
 
@@ -1625,6 +1647,29 @@ final class RepositorySessionController
     await selectCommit(objectId);
   }
 
+  /// 中文：选中历史图顶部的未提交改动，并清除提交详情以显示工作区改动。
+  ///
+  /// English: Selects the history graph's uncommitted row and clears commit
+  /// details so the lower pane displays working-tree changes.
+  void selectUncommittedChanges() {
+    if (state.repository == null) return;
+    _commitGeneration++;
+    _commitDiffGeneration++;
+    state = state.copyWith(
+      selectedRefId: 'uncommitted',
+      commits: _commitsWithoutStashPreviews(),
+      clearSelectedCommit: true,
+      commitChanges: const [],
+      commitAdditions: 0,
+      commitDeletions: 0,
+      isCommitLoading: false,
+      isCommitDiffLoading: false,
+      clearSelectedCommitFile: true,
+      clearCommitDiff: true,
+      clearMessage: true,
+    );
+  }
+
   /// 中文：更新当前选择。
   /// English: Updates the current selection.
   Future<void> selectCommit(String objectId) async {
@@ -1633,6 +1678,7 @@ final class RepositorySessionController
     final generation = ++_commitGeneration;
     _commitDiffGeneration++;
     state = state.copyWith(
+      selectedRefId: state.selectedRefId == 'uncommitted' ? 'history' : null,
       selectedCommitId: objectId,
       commitChanges: const [],
       commitAdditions: 0,
@@ -2475,6 +2521,118 @@ final class RepositorySessionController
     }
   }
 
+  /// 在当前已加载历史中的提交上创建标签，并可将这个单独标签推送到指定远端。
+  ///
+  /// English: Creates a tag at one loaded historical commit and can push only
+  /// that tag to an explicitly selected configured remote.
+  Future<bool> createTag(GitCreateTagOptions options) async {
+    final repository = state.repository;
+    final status = state.status;
+    final name = options.name.trim();
+    final objectId = options.objectId.trim();
+    final pushRemote = options.pushRemoteName?.trim();
+    if (repository == null ||
+        status == null ||
+        state.phase == RepositorySessionPhase.loading ||
+        state.operationState != GitRepositoryOperationState.none ||
+        name.isEmpty ||
+        objectId.isEmpty ||
+        !state.commits.any((commit) => commit.objectId == objectId) ||
+        state.tags.any((tag) => tag.name == name) ||
+        (pushRemote != null &&
+            (pushRemote.isEmpty || !state.remoteNames.contains(pushRemote)))) {
+      return false;
+    }
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.createTag(
+        repository,
+        name: name,
+        objectId: objectId,
+        annotation: options.annotation,
+        annotated: options.isAnnotated,
+      );
+      if (pushRemote != null) {
+        await _writer.pushTag(
+          repository,
+          remoteName: pushRemote,
+          tagName: name,
+        );
+      }
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      // A tag can be created locally even if its subsequent remote push fails.
+      // Refresh so the visible refs always reflect Git's actual state.
+      await refresh();
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
+  /// 删除一个已读取的本地标签，并可先删除指定远端上的同名标签。
+  ///
+  /// English: Deletes one loaded local tag and can first remove its matching
+  /// ref from an explicitly selected remote.
+  Future<bool> deleteTag(GitDeleteTagOptions options) async {
+    final repository = state.repository;
+    final status = state.status;
+    final name = options.name.trim();
+    final remote = options.deleteRemoteName?.trim();
+    if (repository == null ||
+        status == null ||
+        state.phase == RepositorySessionPhase.loading ||
+        state.operationState != GitRepositoryOperationState.none ||
+        !state.tags.any((tag) => tag.name == name) ||
+        (remote != null &&
+            (remote.isEmpty || !state.remoteNames.contains(remote)))) {
+      return false;
+    }
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    var remoteDeleted = false;
+    try {
+      if (remote != null) {
+        await _writer.deleteRemoteTag(
+          repository,
+          remoteName: remote,
+          tagName: name,
+        );
+        remoteDeleted = true;
+      }
+      await _writer.deleteTag(repository, name: name);
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      await refresh();
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: remoteDeleted
+            ? '远端 $remote 的标签 $name 已删除，但本地标签仍保留：${_friendlyError(error)}'
+            : _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
   /// 中文：以已加载的本地分支为起点创建另一个本地分支，不切换当前工作区。
   ///
   /// English: Creates a local branch from an already loaded local branch
@@ -2795,6 +2953,54 @@ final class RepositorySessionController
       // A failed merge can leave conflict entries and MERGE_HEAD behind. Read
       // them before showing the error so the user sees the actual recovery
       // state instead of the pre-merge snapshot.
+      await refresh();
+      final hasConflicts = state.status?.conflictedEntries.isNotEmpty ?? false;
+      final message =
+          hasConflicts ||
+              (error is GitCommandException &&
+                  error.kind == GitErrorKind.conflicts)
+          ? '合并遇到冲突。请处理冲突后使用 Git 命令行继续或中止合并，再刷新仓库。'
+          : _friendlyError(error);
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: message,
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      return false;
+    }
+  }
+
+  /// 中文：将已加载历史中的指定提交合并到当前分支，并在失败后刷新冲突状态。
+  ///
+  /// English: Merges one loaded historical commit into the current branch and
+  /// refreshes the repository before exposing any resulting conflict state.
+  Future<bool> mergeCommit(String objectId) async {
+    final repository = state.repository;
+    final status = state.status;
+    final currentBranch = status?.branch.head;
+    final normalizedObjectId = objectId.trim();
+    if (repository == null ||
+        status == null ||
+        currentBranch == null ||
+        status.conflictedEntries.isNotEmpty ||
+        state.phase == RepositorySessionPhase.loading ||
+        !state.commits.any((commit) => commit.objectId == normalizedObjectId)) {
+      return false;
+    }
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.mergeCommit(repository, objectId: normalizedObjectId);
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
       await refresh();
       final hasConflicts = state.status?.conflictedEntries.isNotEmpty ?? false;
       final message =

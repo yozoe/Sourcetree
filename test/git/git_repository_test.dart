@@ -313,6 +313,71 @@ void main() {
   });
 
   test(
+    'reads lightweight and annotated tags with their commit targets',
+    () async {
+      const fileName = 'README.md';
+      await File(
+        '${temporaryDirectory.path}${Platform.pathSeparator}$fileName',
+      ).writeAsString('# Git Desktop\n');
+      await _git(temporaryDirectory.path, ['add', '--', fileName]);
+      await _git(temporaryDirectory.path, [
+        'commit',
+        '--quiet',
+        '-m',
+        'initial',
+      ]);
+      final head = (await _git(temporaryDirectory.path, [
+        'rev-parse',
+        'HEAD',
+      ])).stdout.toString().trim();
+      await _git(temporaryDirectory.path, ['tag', 'v1.0.0']);
+      await _git(temporaryDirectory.path, [
+        'tag',
+        '--annotate',
+        '--message',
+        'Release 1.1.0',
+        'v1.1.0',
+      ]);
+      final treeId = (await _git(temporaryDirectory.path, [
+        'write-tree',
+      ])).stdout.toString().trim();
+      await _git(temporaryDirectory.path, ['tag', 'tree-snapshot', treeId]);
+
+      final repository = (await inspector.inspect(temporaryDirectory.path))!;
+      final tags = await reader.readTags(repository);
+
+      expect(
+        tags.map((tag) => tag.name),
+        containsAll(['v1.0.0', 'v1.1.0', 'tree-snapshot']),
+      );
+      expect(
+        tags.singleWhere((tag) => tag.name == 'v1.0.0'),
+        predicate<GitTag>(
+          (tag) => !tag.isAnnotated && tag.targetObjectId == head,
+        ),
+      );
+      expect(
+        tags.singleWhere((tag) => tag.name == 'v1.1.0'),
+        predicate<GitTag>(
+          (tag) =>
+              tag.isAnnotated &&
+              tag.targetObjectId == head &&
+              tag.targetObjectType == 'commit',
+        ),
+      );
+      expect(
+        tags.singleWhere((tag) => tag.name == 'tree-snapshot'),
+        predicate<GitTag>(
+          (tag) =>
+              !tag.hasCommitTarget &&
+              tag.targetObjectType == 'tree' &&
+              tag.targetObjectId == treeId,
+        ),
+      );
+    },
+  );
+
+  test(
     'reads remote-tracking branches and retains symbolic remote heads',
     () async {
       const fileName = 'README.md';
@@ -386,7 +451,10 @@ void main() {
   });
 }
 
-Future<void> _git(String workingDirectory, List<String> arguments) async {
+Future<ProcessResult> _git(
+  String workingDirectory,
+  List<String> arguments,
+) async {
   final result = await Process.run(
     'git',
     arguments,
@@ -396,4 +464,5 @@ Future<void> _git(String workingDirectory, List<String> arguments) async {
   if (result.exitCode != 0) {
     throw StateError('git ${arguments.join(' ')} failed: ${result.stderr}');
   }
+  return result;
 }
