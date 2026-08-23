@@ -44,6 +44,9 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
   if (repository == null || status == null) return null;
 
   final branch = status.branch;
+  final detachedPushBranch = branch.isDetached
+      ? selectDetachedPushBranch(state)
+      : null;
   final branchName = branch.isDetached
       ? 'Detached HEAD'
       : branch.head ?? (branch.isUnborn ? '未创建提交' : '未知分支');
@@ -87,10 +90,9 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
   }
   final canPushCurrentBranch =
       branch.objectId != null &&
-      !branch.isDetached &&
-      ((branch.upstream == null && state.hasOriginRemote) ||
-          (branch.upstream != null &&
-              (branch.ahead > 0 || branch.isUpstreamGone)));
+      ((!branch.isDetached &&
+              (branch.upstream != null || state.hasOriginRemote)) ||
+          (branch.isDetached && detachedPushBranch != null));
   if (!canPushCurrentBranch ||
       (state.phase == RepositorySessionPhase.loading && !state.isPushRunning)) {
     disabledActions.add(RepositoryAction.push);
@@ -114,9 +116,12 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     name: path.basename(repository.workTreeRoot ?? repository.commonDirectory),
     path: repository.commandDirectory,
     currentBranch: branchName,
+    primaryLocalBranch: branch.isDetached
+        ? detachedPushBranch?.name
+        : branch.head,
     headOid: branch.objectId,
-    ahead: branch.ahead,
-    behind: branch.behind,
+    ahead: detachedPushBranch?.ahead ?? branch.ahead,
+    behind: detachedPushBranch?.behind ?? branch.behind,
     isDetachedHead: branch.isDetached,
     isRefreshing: state.phase == RepositorySessionPhase.loading,
     isFetching: state.isFetchRunning,
@@ -148,8 +153,12 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
           secondaryLabel: localBranch.upstream,
           isCurrent: localBranch.name == branch.head,
           isSelected: state.selectedRefId == 'refs/heads/${localBranch.name}',
-          ahead: localBranch.name == branch.head ? branch.ahead : 0,
-          behind: localBranch.name == branch.head ? branch.behind : 0,
+          ahead: localBranch.name == branch.head
+              ? branch.ahead
+              : localBranch.ahead,
+          behind: localBranch.name == branch.head
+              ? branch.behind
+              : localBranch.behind,
         ),
       for (final remoteBranch in state.remoteBranches)
         RepositoryRefViewData(
@@ -183,6 +192,11 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
                 : selectedCommit.body.trim(),
             parents: selectedCommit.parentIds,
             refs: _refsForCommit(state, selectedCommit.objectId),
+            remoteRefs: _remoteRefsForCommit(state, selectedCommit.objectId),
+            currentBranch: branch.head,
+            primaryLocalBranch: branch.isDetached
+                ? selectDetachedPushBranch(state)?.name
+                : branch.head,
             changedFiles: state.commitChanges.length,
             additions: state.commitAdditions,
             deletions: state.commitDeletions,
@@ -299,10 +313,14 @@ List<CommitViewData> _mapCommits(
   GitBranchStatus branch,
 ) {
   final query = state.searchQuery.trim().toLowerCase();
-  final graph = buildCommitGraph([
-    for (final commit in state.commits)
-      CommitGraphNode(oid: commit.objectId, parents: commit.parentIds),
-  ], headId: branch.objectId);
+  final graph = buildCommitGraph(
+    [
+      for (final commit in state.commits)
+        CommitGraphNode(oid: commit.objectId, parents: commit.parentIds),
+    ],
+    headId: branch.objectId,
+    isDetachedHead: branch.isDetached,
+  );
   return [
     for (var index = 0; index < state.commits.length; index++)
       if (_matches(state.commits[index], query))

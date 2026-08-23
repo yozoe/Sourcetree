@@ -7,6 +7,43 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:git_desktop/src/presentation/presentation.dart';
 
 void main() {
+  testWidgets('shows ahead commit count and enables push like Sourcetree', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    RepositoryAction? action;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              ahead: 3,
+              behind: 0,
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onAction: (value) => action = value,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final pushButton = tester.widget<TextButton>(
+      find.widgetWithText(TextButton, '推送'),
+    );
+    expect(pushButton.onPressed, isNotNull);
+    expect(find.widgetWithText(Badge, '3'), findsOneWidget);
+
+    await tester.tap(find.widgetWithText(TextButton, '推送'));
+    expect(action, RepositoryAction.push);
+  });
+
   testWidgets('shows uncommitted changes above history and opens workspace', (
     tester,
   ) async {

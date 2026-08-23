@@ -899,6 +899,39 @@ void main() {
   );
 
   test(
+    'verifies the explicitly selected local branch while HEAD is detached',
+    () async {
+      await fixture.writeFile('README.md', '# Git Desktop\n');
+      await fixture.commit('Initial commit');
+      await fixture.createBareOrigin();
+      await fixture.runGit(['push', '--set-upstream', 'origin', 'main']);
+      await fixture.writeFile('CHANGELOG.md', '# Changes\n');
+      final localHead = await fixture.commit('Add changelog');
+      await fixture.runGit(['switch', '--detach', 'origin/main']);
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+
+      expect(
+        await writer.verifyUpstream(repository, localBranchName: 'main'),
+        isFalse,
+      );
+      await writer.pushUpstream(repository, localBranchName: 'main');
+      expect(
+        await writer.verifyUpstream(repository, localBranchName: 'main'),
+        isTrue,
+      );
+      expect(
+        (await fixture.runGit([
+          'rev-parse',
+          'refs/heads/main',
+        ])).stdout.toString().trim(),
+        localHead,
+      );
+    },
+  );
+
+  test(
     'honors a cancelled upstream verification token before starting Git',
     () async {
       final repository = (await inspector.inspect(

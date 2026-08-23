@@ -461,7 +461,7 @@ final class GitRepositoryReader {
           'color.ui=false',
           'for-each-ref',
           '--sort=refname',
-          '--format=%(refname:short)%00%(objectname)%00%(upstream:short)',
+          '--format=%(refname:short)%00%(objectname)%00%(upstream:short)%00%(upstream:track,nobracket)',
           'refs/heads',
         ],
         workingDirectory: repository.commandDirectory,
@@ -485,18 +485,29 @@ final class GitRepositoryReader {
         continue;
       }
       final fields = record.split('\u0000');
-      if (fields.length != 3 || fields[0].isEmpty || fields[1].isEmpty) {
+      if (fields.length != 4 || fields[0].isEmpty || fields[1].isEmpty) {
         throw GitParseException('Unexpected local branch record: $record');
       }
+      final ahead = _parseAheadBehind(fields[3], 'ahead');
+      final behind = _parseAheadBehind(fields[3], 'behind');
       branches.add(
         GitLocalBranch(
           name: fields[0],
           objectId: fields[1],
           upstream: fields[2].isEmpty ? null : fields[2],
+          ahead: ahead,
+          behind: behind,
         ),
       );
     }
     return List<GitLocalBranch>.unmodifiable(branches);
+  }
+
+  /// 中文：解析 `for-each-ref` 的 ahead/behind 跟踪摘要。
+  /// English: Parses the ahead/behind tracking summary from `for-each-ref`.
+  int _parseAheadBehind(String value, String direction) {
+    final match = RegExp('(?:^|, )$direction (\\d+)').firstMatch(value);
+    return match == null ? 0 : int.parse(match.group(1)!);
   }
 
   /// 中文：读取全部远端跟踪分支，并跳过 `origin/HEAD` 等符号引用。

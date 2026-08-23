@@ -777,17 +777,20 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: operation);
   }
 
-  /// 中文：将当前分支推送到已配置上游；首次推送时使用 origin 上的同名分支并设置上游。始终不提供 force 选项。
+  /// 中文：将当前或指定本地分支推送到已配置上游；首次推送时使用 origin 上的同名分支并设置上游。始终不提供 force 选项。
   ///
-  /// English: Pushes to the configured upstream, or sets origin's same-named
-  /// branch as upstream on first push. No force option is ever supplied.
+  /// English: Pushes the checked-out or explicitly named local branch to its
+  /// configured upstream, or sets origin's same-named branch as upstream on
+  /// first push. No force option is ever supplied.
   Future<void> pushUpstream(
     GitRepository repository, {
+    String? localBranchName,
     GitCancellationToken? cancellationToken,
     Map<String, String> environment = const {},
   }) async {
     final target = await _readPushTarget(
       repository,
+      localBranchName: localBranchName,
       cancellationToken: cancellationToken,
     );
     final result = await runner.run(
@@ -813,7 +816,8 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Pushing current branch');
   }
 
-  /// Verifies whether the configured upstream currently contains local HEAD.
+  /// Verifies whether the configured upstream currently contains the checked
+  /// out HEAD or the explicitly selected local branch tip.
   ///
   /// This is read-only and deliberately does not update remote-tracking refs;
   /// callers can use Fetch when they need the local ahead/behind snapshot to
@@ -822,15 +826,21 @@ final class GitRepositoryWriter {
   /// English: Verifies the current condition.
   Future<bool> verifyUpstream(
     GitRepository repository, {
+    String? localBranchName,
     GitCancellationToken? cancellationToken,
   }) async {
     final target = await _readPushTarget(
       repository,
+      localBranchName: localBranchName,
       cancellationToken: cancellationToken,
     );
     final headResult = await runner.run(
       GitInvocation(
-        arguments: const ['rev-parse', 'HEAD'],
+        arguments: [
+          'rev-parse',
+          '--verify',
+          localBranchName == null ? 'HEAD' : 'refs/heads/$localBranchName',
+        ],
         workingDirectory: repository.commandDirectory,
         cancellationToken: cancellationToken,
         outputLimit: const GitOutputLimit(
@@ -874,21 +884,15 @@ final class GitRepositoryWriter {
   /// English: Reads the required data.
   Future<_GitPushTarget> _readPushTarget(
     GitRepository repository, {
+    String? localBranchName,
     GitCancellationToken? cancellationToken,
   }) async {
-    final branchResult = await runner.run(
-      GitInvocation(
-        arguments: const ['symbolic-ref', '--quiet', '--short', 'HEAD'],
-        workingDirectory: repository.commandDirectory,
-        cancellationToken: cancellationToken,
-        outputLimit: const GitOutputLimit(
-          stdoutBytes: 64 * 1024,
-          stderrBytes: 64 * 1024,
-        ),
-      ),
-    );
-    branchResult.throwIfFailed(operation: 'Reading current branch');
-    final branchName = branchResult.stdoutText.trim();
+    final branchName =
+        localBranchName ??
+        await _readCheckedOutBranchName(
+          repository,
+          cancellationToken: cancellationToken,
+        );
     if (branchName.isEmpty) {
       throw const GitException('The current branch has no push target.');
     }
@@ -910,7 +914,8 @@ final class GitRepositoryWriter {
       return _GitPushTarget(
         remoteName: 'origin',
         remoteRef: remoteRef,
-        refspec: 'HEAD:$remoteRef',
+        refspec:
+            '${localBranchName == null ? 'HEAD' : 'refs/heads/$branchName'}:$remoteRef',
         setUpstream: true,
       );
     }
@@ -931,9 +936,35 @@ final class GitRepositoryWriter {
     return _GitPushTarget(
       remoteName: remoteName,
       remoteRef: remoteRef,
-      refspec: 'HEAD:$remoteRef',
+      refspec:
+          '${localBranchName == null ? 'HEAD' : 'refs/heads/$branchName'}:$remoteRef',
       setUpstream: false,
     );
+  }
+
+  /// 中文：读取当前检出的本地分支；游离 HEAD 没有可用结果。
+  /// English: Reads the checked-out local branch; detached HEAD has no result.
+  Future<String> _readCheckedOutBranchName(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final result = await runner.run(
+      GitInvocation(
+        arguments: const ['symbolic-ref', '--quiet', '--short', 'HEAD'],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 64 * 1024,
+          stderrBytes: 64 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Reading current branch');
+    final branchName = result.stdoutText.trim();
+    if (branchName.isEmpty) {
+      throw const GitException('The current branch has no push target.');
+    }
+    return branchName;
   }
 
   /// 中文：读取可选的分支配置；配置不存在时返回 null，其他 Git 错误仍向上传递。

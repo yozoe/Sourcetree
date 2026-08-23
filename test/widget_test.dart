@@ -344,7 +344,7 @@ void main() {
     );
 
     final gesture = await tester.startGesture(
-      tester.getCenter(find.text('feature/menu')),
+      tester.getCenter(find.text('menu')),
       kind: PointerDeviceKind.mouse,
       buttons: kSecondaryMouseButton,
     );
@@ -404,7 +404,7 @@ void main() {
       ),
     );
 
-    final feature = find.text('feature/select');
+    final feature = find.text('select');
     await tester.tap(feature);
     await tester.pumpAndSettle();
 
@@ -427,6 +427,58 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(activatedReference, featureBranch);
+  });
+
+  testWidgets('renders slash-delimited branches as a collapsible directory', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              refs: [
+                RepositoryRefViewData(
+                  id: 'HEAD',
+                  label: 'HEAD',
+                  kind: RepositoryRefKind.localBranch,
+                  isCurrent: true,
+                ),
+                RepositoryRefViewData(
+                  id: 'refs/heads/codex/conflict-demo',
+                  label: 'codex/conflict-demo',
+                  kind: RepositoryRefKind.localBranch,
+                ),
+                RepositoryRefViewData(
+                  id: 'refs/heads/main',
+                  label: 'main',
+                  kind: RepositoryRefKind.localBranch,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('codex'), findsOneWidget);
+    expect(find.text('conflict-demo'), findsOneWidget);
+    expect(find.text('codex/conflict-demo'), findsNothing);
+    expect(
+      find.byKey(const ValueKey<String>('ref-directory:codex')),
+      findsOneWidget,
+    );
+
+    await tester.tap(find.text('codex'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('conflict-demo'), findsNothing);
   });
 
   testWidgets('double-clicking a commit requests checkout activation', (
@@ -474,6 +526,13 @@ void main() {
     );
 
     expect(find.text('HEAD'), findsNWidgets(2));
+    expect(
+      find.descendant(
+        of: find.byKey(const ValueKey<String>('commit-ref-HEAD')),
+        matching: find.byIcon(Icons.sell_outlined),
+      ),
+      findsOneWidget,
+    );
 
     await tester.tap(find.text('测试提交'));
     await tester.pump(const Duration(milliseconds: 50));
@@ -483,23 +542,103 @@ void main() {
     expect(activatedCommit, commit);
   });
 
-  testWidgets('resizes history columns from their header dividers', (
+  testWidgets(
+    'keeps history rows compact while resizing columns from body handles',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1280, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+
+      const commit = CommitViewData(
+        oid: '4f5e6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6',
+        shortOid: '4f5e6b7c',
+        subject: '测试提交',
+        author: 'tester',
+        relativeDate: '今天',
+        refs: ['main', 'origin/main', 'feature/very-long-name'],
+        remoteRefs: ['origin/main'],
+        isHead: true,
+        isMerge: true,
+      );
+
+      await tester.pumpWidget(
+        const MaterialApp(
+          home: RepositoryOverview(
+            data: RepositoryOverviewViewData.ready(
+              RepositoryViewData(
+                name: 'example',
+                path: '/tmp/example',
+                currentBranch: 'main',
+                headOid: '4f5e6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6',
+                refs: [
+                  RepositoryRefViewData(
+                    id: 'main',
+                    label: 'main',
+                    kind: RepositoryRefKind.localBranch,
+                    isCurrent: true,
+                  ),
+                ],
+                commits: [commit],
+              ),
+            ),
+          ),
+        ),
+      );
+
+      expect(
+        find.byKey(const ValueKey<String>('history-column-header')),
+        findsNothing,
+      );
+      expect(find.text('当前分支'), findsNothing);
+      expect(find.text('图表'), findsNothing);
+
+      final graphCanvas = find.byKey(
+        const ValueKey<String>('commit-graph-canvas'),
+      );
+      expect(tester.getSize(graphCanvas).height, closeTo(20, 1));
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey<String>('commit-ref-main')),
+          matching: find.byIcon(Icons.call_split),
+        ),
+        findsOneWidget,
+      );
+      expect(
+        find.descendant(
+          of: find.byKey(const ValueKey<String>('commit-ref-origin/main')),
+          matching: find.byIcon(Icons.cloud_outlined),
+        ),
+        findsOneWidget,
+      );
+
+      for (final label in const ['调整图表列宽度', '调整描述列宽度', '调整提交列宽度', '调整作者列宽度']) {
+        final divider = find.bySemanticsLabel(label);
+        expect(divider, findsOneWidget);
+        final before = tester.getCenter(divider).dx;
+        await tester.drag(divider, const Offset(20, 0));
+        await tester.pump();
+        expect(tester.getCenter(divider).dx, greaterThan(before));
+      }
+
+      final descriptionDivider = find.bySemanticsLabel('调整描述列宽度');
+      final beforeCompression = tester.getCenter(descriptionDivider).dx;
+      await tester.drag(descriptionDivider, const Offset(-1500, 0));
+      await tester.pump();
+      expect(
+        tester.getCenter(descriptionDivider).dx,
+        lessThan(beforeCompression - 200),
+      );
+    },
+  );
+
+  testWidgets('shows side-branch commits after removing the scope toolbar', (
     tester,
   ) async {
     await tester.binding.setSurfaceSize(const Size(1280, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
 
-    const commit = CommitViewData(
-      oid: '4f5e6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6',
-      shortOid: '4f5e6b7c',
-      subject: '测试提交',
-      author: 'tester',
-      relativeDate: '今天',
-      refs: ['main', 'origin/main', 'feature/very-long-name'],
-      isHead: true,
-      isMerge: true,
-    );
-
+    const baseOid = '1111111111111111111111111111111111111111';
+    const headOid = '2222222222222222222222222222222222222222';
+    const sideOid = '3333333333333333333333333333333333333333';
     await tester.pumpWidget(
       const MaterialApp(
         home: RepositoryOverview(
@@ -507,49 +646,75 @@ void main() {
             RepositoryViewData(
               name: 'example',
               path: '/tmp/example',
-              currentBranch: 'main',
-              headOid: '4f5e6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6',
-              refs: [
-                RepositoryRefViewData(
-                  id: 'main',
-                  label: 'main',
-                  kind: RepositoryRefKind.localBranch,
-                  isCurrent: true,
+              currentBranch: 'Detached HEAD',
+              primaryLocalBranch: 'main',
+              headOid: headOid,
+              ahead: 3,
+              isDetachedHead: true,
+              commits: [
+                CommitViewData(
+                  oid: headOid,
+                  shortOid: '22222222',
+                  subject: 'main tip',
+                  author: 'tester',
+                  relativeDate: '刚刚',
+                  refs: ['main'],
+                  parents: [baseOid],
+                ),
+                CommitViewData(
+                  oid: sideOid,
+                  shortOid: '33333333',
+                  subject: 'side branch tip',
+                  author: 'tester',
+                  relativeDate: '刚刚',
+                  refs: ['codex/conflict-demo'],
+                  parents: [baseOid],
+                ),
+                CommitViewData(
+                  oid: baseOid,
+                  shortOid: '11111111',
+                  subject: 'shared base',
+                  author: 'tester',
+                  relativeDate: '昨天',
                 ),
               ],
-              commits: [commit],
             ),
           ),
         ),
       ),
     );
 
-    final header = find.byKey(const ValueKey<String>('history-column-header'));
-    expect(header, findsOneWidget);
-    for (final label in const ['图表', '描述', '提交', '作者', '日期']) {
-      expect(
-        find.descendant(of: header, matching: find.text(label)),
-        findsOneWidget,
-      );
-    }
-
-    for (final label in const ['调整图表列宽度', '调整描述列宽度', '调整提交列宽度', '调整作者列宽度']) {
-      final divider = find.bySemanticsLabel(label);
-      expect(divider, findsOneWidget);
-      final before = tester.getCenter(divider).dx;
-      await tester.drag(divider, const Offset(20, 0));
-      await tester.pump();
-      expect(tester.getCenter(divider).dx, greaterThan(before));
-    }
-
-    final descriptionDivider = find.bySemanticsLabel('调整描述列宽度');
-    final beforeCompression = tester.getCenter(descriptionDivider).dx;
-    await tester.drag(descriptionDivider, const Offset(-1500, 0));
-    await tester.pump();
+    expect(find.text('main tip'), findsOneWidget);
+    expect(find.text('side branch tip'), findsOneWidget);
+    expect(find.text('shared base'), findsOneWidget);
     expect(
-      tester.getCenter(descriptionDivider).dx,
-      lessThan(beforeCompression - 200),
+      find.byKey(const ValueKey<String>('commit-graph-canvas')),
+      findsNWidgets(3),
     );
+    final mainRef = find.byKey(const ValueKey<String>('commit-ref-main'));
+    final conflictRef = find.byKey(
+      const ValueKey<String>('commit-ref-codex/conflict-demo'),
+    );
+    final mainDecoration = tester.widget<Container>(mainRef).decoration!;
+    final conflictDecoration = tester
+        .widget<Container>(conflictRef)
+        .decoration!;
+    expect(mainDecoration, isA<BoxDecoration>());
+    expect(conflictDecoration, isA<BoxDecoration>());
+    expect(
+      (mainDecoration as BoxDecoration).color,
+      isNot((conflictDecoration as BoxDecoration).color),
+    );
+    expect(
+      ((mainDecoration.border! as Border).top).color,
+      const Color(0xFF0B6FCB),
+    );
+    expect(
+      ((conflictDecoration.border! as Border).top).color,
+      const Color(0xFFD8452A),
+    );
+    expect(find.text('超前3个版本'), findsOneWidget);
+    expect(tester.getSize(conflictRef).width, greaterThan(100));
   });
 
   testWidgets('keeps loaded history visible when the current tip is absent', (
@@ -641,13 +806,13 @@ void main() {
       ),
     );
 
-    await tester.tap(find.text('feature/refresh'));
+    await tester.tap(find.text('refresh'));
     await tester.pumpAndSettle();
     expect(selectionCount, 1);
 
     rebuild(() => selectedRefId = 'workspace');
     await tester.pumpAndSettle();
-    await tester.tap(find.text('feature/refresh'));
+    await tester.tap(find.text('refresh'));
     await tester.pumpAndSettle();
 
     expect(selectionCount, 2);

@@ -765,19 +765,31 @@ class _RepositoryWorkspaceScreenState
   Future<void> _confirmPush() async {
     final session = ref.read(repositorySessionProvider);
     final branch = session.status?.branch;
+    final isDetached = branch?.isDetached == true;
+    final detachedPushBranch = isDetached
+        ? selectDetachedPushBranch(session)
+        : null;
     final branchName = branch?.head ?? '当前分支';
-    final upstream = branch?.upstream ?? 'origin/$branchName';
-    final ahead = branch?.ahead ?? 0;
+    final upstream = branch?.upstream ?? '配置的远端分支';
+    final ahead = detachedPushBranch?.ahead ?? branch?.ahead ?? 0;
     final isFirstPush =
-        branch != null && (branch.upstream == null || branch.isUpstreamGone);
+        branch != null &&
+        !branch.isDetached &&
+        (branch.upstream == null || branch.isUpstreamGone);
     final approved = await showDialog<bool>(
       context: context,
       builder: (BuildContext context) => AlertDialog(
         title: const Text('推送提交'),
         content: Text(
-          isFirstPush
+          isDetached
+              ? ahead > 0
+                    ? '当前处于游离 HEAD，将推送 ${detachedPushBranch!.name} 的 $ahead 个提交。不会执行强制推送。'
+                    : '当前处于游离 HEAD，将检查 ${detachedPushBranch?.name ?? '可用本地分支'} 的远端配置。不会执行强制推送。'
+              : isFirstPush
               ? '远端分支 $upstream 尚不存在。将推送 $branchName 并创建该远端分支。不会执行强制推送。'
-              : '将 $branchName 的 $ahead 个本地提交推送到 $upstream。不会执行强制推送。',
+              : ahead > 0
+              ? '将 $branchName 的 $ahead 个本地提交推送到 $upstream。不会执行强制推送。'
+              : '当前分支没有领先提交，将检查 $upstream 是否已是最新。不会执行强制推送。',
         ),
         actions: [
           TextButton(

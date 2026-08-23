@@ -124,6 +124,7 @@ final class RepositoryViewData {
     required this.name,
     required this.path,
     required this.currentBranch,
+    this.primaryLocalBranch,
     this.headOid,
     this.ahead = 0,
     this.behind = 0,
@@ -153,6 +154,7 @@ final class RepositoryViewData {
   final String name;
   final String path;
   final String currentBranch;
+  final String? primaryLocalBranch;
   final String? headOid;
   final int ahead;
   final int behind;
@@ -217,65 +219,143 @@ final class CommitGraphNode {
   final List<String> parents;
 }
 
-/// Builds the graph lanes used by the history list.
+/// 中文：按拓扑顺序构建历史车道；游离 HEAD 位于分支共同基点时为它保留最左侧车道，
+/// 并让右侧分支延续到该父节点所在行后再汇入。
 ///
-/// Keeping this in the presentation model lets a filtered history (for
-/// example, the current branch view) rebuild its graph without retaining
-/// lanes from commits that are not being rendered.
+/// English: Builds history lanes in topology order, reserving the leftmost
+/// lane when a detached HEAD is the common base of visible branches and
+/// delaying right-side branch convergence until that parent's row. The lane
+/// reservation is enabled only when [isDetachedHead] is true.
 List<CommitGraphViewData> buildCommitGraph(
   List<CommitGraphNode> nodes, {
   required String? headId,
+  bool isDetachedHead = false,
 }) {
   final parentIds = <String>{for (final node in nodes) ...node.parents};
-  final tips = <String>[
-    for (final node in nodes)
-      if (!parentIds.contains(node.oid)) node.oid,
-  ];
-  final lanes = <String>[
-    if (headId != null && tips.remove(headId)) headId,
-    ...tips,
-  ];
+  final reserveDetachedHeadLane =
+      isDetachedHead &&
+      headId != null &&
+      nodes.any((node) => node.oid == headId) &&
+      parentIds.contains(headId);
+  final lanes = <String>[if (nodes.isNotEmpty) nodes.first.oid];
+
+  int physicalLane(String oid, int logicalLane) {
+    if (!reserveDetachedHeadLane) return logicalLane;
+    return oid == headId ? 0 : logicalLane + 1;
+  }
+
+  int colorIndexFor(String oid, int lane) {
+    if (!reserveDetachedHeadLane) return lane;
+    return oid == headId ? 2 : lane - 1;
+  }
+
   final result = <CommitGraphViewData>[];
+  final pendingReservedHeadLanes = <int>{};
+  var previousDestinations = <int>{};
+  var nextReservedLane = 1;
+  final reservedLaneByOid = <String, int>{};
+
+  int reservedPhysicalLane(String oid, int logicalLane) {
+    if (oid == headId) return 0;
+    return reservedLaneByOid.putIfAbsent(oid, () => nextReservedLane++);
+  }
+
   for (final node in nodes) {
-    var lane = lanes.indexOf(node.oid);
-    if (lane < 0) {
-      lane = 0;
-      lanes.insert(0, node.oid);
+    var logicalLane = lanes.indexOf(node.oid);
+    if (logicalLane < 0) {
+      logicalLane = lanes.length;
+      lanes.add(node.oid);
+    }
+    if (reserveDetachedHeadLane) {
+      reservedPhysicalLane(node.oid, logicalLane);
     }
     final activeIds = List<String>.of(lanes);
-    final active = List<int>.generate(activeIds.length, (index) => index);
-    lanes.removeAt(lane);
+    final active = <int>[
+      for (var index = 0; index < activeIds.length; index++)
+        reserveDetachedHeadLane
+            ? reservedPhysicalLane(activeIds[index], index)
+            : physicalLane(activeIds[index], index),
+    ];
+    final lane = reserveDetachedHeadLane
+        ? reservedPhysicalLane(node.oid, logicalLane)
+        : physicalLane(node.oid, logicalLane);
+    lanes.removeAt(logicalLane);
     final parents = <int>[];
     for (var index = 0; index < node.parents.length; index++) {
       final parent = node.parents[index];
-      var parentLane = lanes.indexOf(parent);
-      if (parentLane < 0) {
-        parentLane = lane + index;
-        if (parentLane > lanes.length) parentLane = lanes.length;
-        lanes.insert(parentLane, parent);
+      var parentLogicalLane = lanes.indexOf(parent);
+      if (parentLogicalLane < 0) {
+        parentLogicalLane = logicalLane + index;
+        if (parentLogicalLane > lanes.length) {
+          parentLogicalLane = lanes.length;
+        }
+        lanes.insert(parentLogicalLane, parent);
       }
-      parents.add(parentLane);
+      if (reserveDetachedHeadLane) {
+        if (parent == headId) {
+          reservedLaneByOid[parent] = 0;
+        } else if (!reservedLaneByOid.containsKey(parent) && index == 0) {
+          reservedLaneByOid[parent] = lane;
+        } else {
+          reservedPhysicalLane(parent, parentLogicalLane);
+        }
+        parents.add(reservedPhysicalLane(parent, parentLogicalLane));
+      } else {
+        parents.add(physicalLane(parent, parentLogicalLane));
+      }
     }
     final destinations = <int?>[
       for (var index = 0; index < activeIds.length; index++)
-        if (index == lane)
+        if (index == logicalLane)
           parents.isEmpty ? null : parents.first
         else
           switch (lanes.indexOf(activeIds[index])) {
-            final destination when destination >= 0 => destination,
+            final destination when destination >= 0 =>
+              reserveDetachedHeadLane
+                  ? reservedPhysicalLane(activeIds[index], destination)
+                  : physicalLane(activeIds[index], destination),
             _ => null,
           },
+    ];
+    final incomingLanes = <int>[];
+    if (reserveDetachedHeadLane) {
+      if (node.oid == headId) {
+        incomingLanes.addAll(pendingReservedHeadLanes);
+        pendingReservedHeadLanes.clear();
+      } else {
+        for (final pendingLane in pendingReservedHeadLanes) {
+          if (!active.contains(pendingLane)) {
+            active.add(pendingLane);
+            destinations.add(pendingLane);
+          }
+        }
+        if (node.parents.contains(headId)) {
+          final nodeLaneIndex = active.indexOf(lane);
+          if (nodeLaneIndex >= 0) {
+            destinations[nodeLaneIndex] = lane;
+          }
+          pendingReservedHeadLanes.add(lane);
+        }
+      }
+    }
+    final previousLanes = <int>[
+      for (final activeLane in active)
+        if (previousDestinations.contains(activeLane)) activeLane,
     ];
     result.add(
       CommitGraphViewData(
         lane: lane,
         activeLanes: active,
         activeLaneDestinations: destinations,
+        previousLanes: previousLanes,
+        incomingLanes: incomingLanes,
         parentLanes: parents,
-        colorIndex: lane,
+        colorIndex: colorIndexFor(node.oid, lane),
         hasPreviousNode: result.isNotEmpty,
+        hasReservedHeadLane: reserveDetachedHeadLane,
       ),
     );
+    previousDestinations = destinations.whereType<int>().toSet();
   }
   return result;
 }
@@ -290,14 +370,32 @@ final class CommitGraphViewData {
     this.lane = 0,
     this.activeLanes = const [0],
     this.activeLaneDestinations = const [0],
+    this.previousLanes = const [],
+    this.incomingLanes = const [],
+    this.hasWorkspaceNode = false,
     this.parentLanes = const [0],
     this.colorIndex = 0,
     this.hasPreviousNode = false,
+    this.hasReservedHeadLane = false,
   });
 
   final int lane;
   final List<int> activeLanes;
   final List<int?> activeLaneDestinations;
+
+  /// 中文：上一行确实延续到当前行顶部的活动车道。
+  /// English: Active lanes that genuinely continue from the preceding row
+  /// into the top of this row.
+  final List<int> previousLanes;
+
+  /// 中文：从上方延续到当前节点、并在当前行汇入其车道的连接来源。
+  /// English: Source lanes that continue from above and converge into the
+  /// current node on this row.
+  final List<int> incomingLanes;
+
+  /// 中文：当前历史列表是否包含顶部的工作区虚拟节点。
+  /// English: Whether the history list contains the virtual workspace row.
+  final bool hasWorkspaceNode;
   final List<int> parentLanes;
   final int colorIndex;
 
@@ -306,13 +404,30 @@ final class CommitGraphViewData {
   /// continue active rails into the current row.
   final bool hasPreviousNode;
 
-  CommitGraphViewData copyWith({bool? hasPreviousNode}) => CommitGraphViewData(
+  /// 中文：是否为位于历史内部的游离 HEAD 基点预留最左侧车道。
+  /// English: Whether the leftmost lane is reserved for a detached HEAD that
+  /// appears inside the loaded history rather than at a branch tip.
+  final bool hasReservedHeadLane;
+
+  /// 中文：复制图行，并可补充来自工作区等虚拟上一行的连接车道。
+  ///
+  /// English: Copies the graph row and can add lanes connected from a virtual
+  /// preceding row such as the working-tree row.
+  CommitGraphViewData copyWith({
+    bool? hasPreviousNode,
+    Set<int> additionalPreviousLanes = const {},
+    bool? hasWorkspaceNode,
+  }) => CommitGraphViewData(
     lane: lane,
     activeLanes: activeLanes,
     activeLaneDestinations: activeLaneDestinations,
+    previousLanes: {...previousLanes, ...additionalPreviousLanes}.toList(),
+    incomingLanes: incomingLanes,
+    hasWorkspaceNode: hasWorkspaceNode ?? this.hasWorkspaceNode,
     parentLanes: parentLanes,
     colorIndex: colorIndex,
     hasPreviousNode: hasPreviousNode ?? this.hasPreviousNode,
+    hasReservedHeadLane: hasReservedHeadLane,
   );
 }
 
@@ -371,6 +486,9 @@ final class CommitDetailsViewData {
     this.body,
     this.parents = const [],
     this.refs = const [],
+    this.remoteRefs = const [],
+    this.currentBranch,
+    this.primaryLocalBranch,
     this.changedFiles = 0,
     this.additions = 0,
     this.deletions = 0,
@@ -384,6 +502,9 @@ final class CommitDetailsViewData {
   final String? body;
   final List<String> parents;
   final List<String> refs;
+  final List<String> remoteRefs;
+  final String? currentBranch;
+  final String? primaryLocalBranch;
   final int changedFiles;
   final int additions;
   final int deletions;

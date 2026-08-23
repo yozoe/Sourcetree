@@ -370,6 +370,32 @@ final class RepositorySessionState {
   }
 }
 
+/// 中文：为游离 HEAD 选择唯一的可推送本地分支，保证界面、确认框和 Git 写操作一致。
+///
+/// English: Selects the single pushable local branch for detached HEAD so the
+/// mapper, confirmation dialog, and Git writer use the same target.
+GitLocalBranch? selectDetachedPushBranch(RepositorySessionState state) {
+  final candidates = state.localBranches
+      .where((branch) => branch.upstream != null || state.hasOriginRemote)
+      .toList(growable: false);
+  if (candidates.isEmpty) return null;
+  for (final candidate in candidates) {
+    if (candidate.ahead > 0) return candidate;
+  }
+  for (final candidate in candidates) {
+    final upstream = candidate.upstream;
+    final remote = upstream == null
+        ? null
+        : state.remoteBranches
+              .where((branch) => branch.name == upstream)
+              .firstOrNull;
+    if (remote == null || remote.objectId != candidate.objectId) {
+      return candidate;
+    }
+  }
+  return candidates.first;
+}
+
 final class RepositorySessionController
     extends Notifier<RepositorySessionState> {
   late GitRunner _runner;
@@ -1170,22 +1196,26 @@ final class RepositorySessionController
   /// English: Cancels the current operation.
   void cancelPull() => _pullCancellation?.cancel();
 
-  /// 中文：推送领先上游的提交，或在首次推送时创建同名远端分支；异常结束后会验证远端是否已包含 HEAD。
+  /// 中文：推送当前分支到已配置目标；首次推送时创建同名远端分支，即使没有领先提交也允许打开 Sourcetree 风格的推送流程；异常结束后会验证远端是否已包含 HEAD。
   ///
-  /// English: Pushes commits ahead of upstream or creates the matching remote
-  /// branch on first push, then verifies uncertain outcomes against remote.
+  /// English: Pushes the current branch to its configured target, creating the
+  /// matching remote branch on first push. The no-op case is allowed so the
+  /// Sourcetree-style toolbar action remains clickable; uncertain outcomes are
+  /// verified against the remote.
   Future<bool> pushUpstream() async {
     final repository = state.repository;
     final status = state.status;
     final branch = status?.branch;
+    final detachedPushBranch = branch?.isDetached == true
+        ? selectDetachedPushBranch(state)
+        : null;
     final canPush =
         repository != null &&
         branch != null &&
         branch.objectId != null &&
-        !branch.isDetached &&
-        ((branch.upstream == null && state.hasOriginRemote) ||
-            (branch.upstream != null &&
-                (branch.ahead > 0 || branch.isUpstreamGone)));
+        ((!branch.isDetached &&
+                (branch.upstream != null || state.hasOriginRemote)) ||
+            (branch.isDetached && detachedPushBranch != null));
     if (!canPush || state.phase == RepositorySessionPhase.loading) {
       return false;
     }
@@ -1205,6 +1235,7 @@ final class RepositorySessionController
         cancellation: cancellation,
         run: (environment) => _writer.pushUpstream(
           repository,
+          localBranchName: detachedPushBranch?.name,
           cancellationToken: cancellation,
           environment: environment,
         ),
@@ -1223,10 +1254,13 @@ final class RepositorySessionController
       // A push may reach the remote before the process exits or is cancelled.
       // Verify the target first, then refresh local tracking state. The
       // verification is read-only and can be cancelled through cancelPush.
-      final remoteContainsHead = await _verifyUncertainPush(repository);
+      final remoteContainsHead = await _verifyUncertainPush(
+        repository,
+        localBranchName: detachedPushBranch?.name,
+      );
       await refresh();
       final message = remoteContainsHead
-          ? '推送进程未正常完成，但远端已包含当前 HEAD。请 Fetch 刷新 ahead/behind。'
+          ? '推送进程未正常完成，但远端已包含目标分支提交。请 Fetch 刷新 ahead/behind。'
           : _friendlyError(error);
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
@@ -1293,12 +1327,16 @@ final class RepositorySessionController
 
   /// 中文：验证当前条件。
   /// English: Verifies the current condition.
-  Future<bool> _verifyUncertainPush(GitRepository repository) async {
+  Future<bool> _verifyUncertainPush(
+    GitRepository repository, {
+    String? localBranchName,
+  }) async {
     final cancellation = GitCancellationToken();
     _pushVerificationCancellation = cancellation;
     try {
       return await _writer.verifyUpstream(
         repository,
+        localBranchName: localBranchName,
         cancellationToken: cancellation,
       );
     } on Object {

@@ -623,6 +623,12 @@ class _RepositoryToolbar extends StatelessWidget {
                                     showLabel: showLabels,
                                     repository: repository,
                                     onAction: callbacks.onAction,
+                                    // Sourcetree shows the number of commits
+                                    // that are ahead of the tracked remote on
+                                    // the Push action. Keep the badge tied to
+                                    // Git's ahead count; uncommitted file
+                                    // changes belong to the Commit badge.
+                                    badge: repository.ahead,
                                     isBusy: repository.isPushing,
                                   ),
                                   _ToolbarAction(
@@ -910,6 +916,10 @@ class _RefsNavigation extends StatelessWidget {
             .where((RepositoryRefViewData ref) => ref.kind == kind)
             .toList(growable: false),
     };
+    final Map<RepositoryRefKind, List<Widget>> sectionTiles = {
+      for (final RepositoryRefKind kind in RepositoryRefKind.values)
+        kind: _buildSectionTiles(kind, sections[kind]!),
+    };
 
     return Material(
       color: Theme.of(context).colorScheme.surfaceContainerLowest,
@@ -919,7 +929,7 @@ class _RefsNavigation extends StatelessWidget {
             child: _PaneHeader(title: '仓库', icon: Icons.folder_open_outlined),
           ),
           for (final RepositoryRefKind kind in RepositoryRefKind.values)
-            if (sections[kind]!.isNotEmpty) ...[
+            if (sectionTiles[kind]!.isNotEmpty) ...[
               SliverToBoxAdapter(
                 child: _SectionHeader(
                   title: _refKindLabel(kind),
@@ -927,24 +937,9 @@ class _RefsNavigation extends StatelessWidget {
                 ),
               ),
               SliverList.builder(
-                itemCount: sections[kind]!.length,
+                itemCount: sectionTiles[kind]!.length,
                 itemBuilder: (BuildContext context, int index) {
-                  final RepositoryRefViewData ref = sections[kind]![index];
-                  return _RefTile(
-                    ref: ref,
-                    isSelected:
-                        selectedRefId == ref.id ||
-                        (selectedRefId == null && ref.isSelected),
-                    onTap: onSelected == null ? null : () => onSelected!(ref),
-                    onDoubleTap: onActivated == null
-                        ? null
-                        : () => onActivated!(ref),
-                    contextItems: _contextItemsFor(ref),
-                    onContextAction: onContextAction == null
-                        ? null
-                        : (RepositoryRefContextAction action) =>
-                              onContextAction!(ref, action),
-                  );
+                  return sectionTiles[kind]![index];
                 },
               ),
             ],
@@ -961,6 +956,59 @@ class _RefsNavigation extends StatelessWidget {
       ),
     );
   }
+
+  /// 中文：构建一个引用分区的行；本地分支按斜杠分段显示为可折叠目录。
+  ///
+  /// English: Builds rows for one reference section, displaying slash-delimited
+  /// local branches as collapsible directories.
+  List<Widget> _buildSectionTiles(
+    RepositoryRefKind kind,
+    List<RepositoryRefViewData> references,
+  ) {
+    if (kind != RepositoryRefKind.localBranch) {
+      return [for (final ref in references) _buildRefTile(ref)];
+    }
+    return [
+      for (final node in _buildLocalBranchTree(references))
+        if (node.children.isEmpty)
+          _buildRefTile(node.reference!, label: node.label)
+        else
+          _RefDirectoryTile(
+            key: ValueKey<String>('ref-directory:${node.path}'),
+            node: node,
+            depth: 0,
+            isSelected: _isReferenceSelected,
+            onSelected: onSelected,
+            onActivated: onActivated,
+            contextItemsFor: _contextItemsFor,
+            onContextAction: onContextAction,
+          ),
+    ];
+  }
+
+  /// 中文：创建保持选择、双击和右键行为的引用行。
+  ///
+  /// English: Creates a reference row while preserving selection, activation,
+  /// and context-menu behavior.
+  _RefTile _buildRefTile(RepositoryRefViewData ref, {String? label}) {
+    return _RefTile(
+      ref: ref,
+      label: label,
+      isSelected: _isReferenceSelected(ref),
+      onTap: onSelected == null ? null : () => onSelected!(ref),
+      onDoubleTap: onActivated == null ? null : () => onActivated!(ref),
+      contextItems: _contextItemsFor(ref),
+      onContextAction: onContextAction == null
+          ? null
+          : (RepositoryRefContextAction action) =>
+                onContextAction!(ref, action),
+    );
+  }
+
+  /// 中文：判断一个引用是否应以当前选中状态显示。
+  /// English: Determines whether a reference should render as selected.
+  bool _isReferenceSelected(RepositoryRefViewData ref) =>
+      selectedRefId == ref.id || (selectedRefId == null && ref.isSelected);
 
   /// 中文：根据引用类型及当前仓库状态构建右键菜单，并禁用不能安全执行的操作。
   ///
@@ -1164,9 +1212,205 @@ IconData _refKindIcon(RepositoryRefKind kind) {
   };
 }
 
+/// A directory node derived from slash-delimited local branch names.
+///
+/// 中文：由带斜杠的本地分支名派生的目录节点；叶节点持有真实 Git 引用。
+final class _RefNavigationTreeNode {
+  _RefNavigationTreeNode({required this.label, required this.path});
+
+  final String label;
+  final String path;
+  RepositoryRefViewData? reference;
+  final Map<String, _RefNavigationTreeNode> children =
+      <String, _RefNavigationTreeNode>{};
+}
+
+/// 中文：按 `/` 将本地分支构造成稳定顺序的目录树。
+///
+/// English: Builds a stable-order directory tree by splitting local branch
+/// names on `/`.
+List<_RefNavigationTreeNode> _buildLocalBranchTree(
+  List<RepositoryRefViewData> references,
+) {
+  final roots = <String, _RefNavigationTreeNode>{};
+  for (final ref in references) {
+    final segments = ref.label
+        .split('/')
+        .where((String segment) => segment.isNotEmpty)
+        .toList(growable: false);
+    if (segments.isEmpty) continue;
+
+    Map<String, _RefNavigationTreeNode> siblings = roots;
+    _RefNavigationTreeNode? node;
+    var path = '';
+    for (final segment in segments) {
+      path = path.isEmpty ? segment : '$path/$segment';
+      node = siblings.putIfAbsent(
+        segment,
+        () => _RefNavigationTreeNode(label: segment, path: path),
+      );
+      siblings = node.children;
+    }
+    node!.reference = ref;
+  }
+  return roots.values.toList(growable: false);
+}
+
+/// Displays one virtual branch directory and its nested local branch entries.
+///
+/// 中文：显示一个虚拟分支目录及其嵌套的本地分支条目。
+final class _RefDirectoryTile extends StatefulWidget {
+  const _RefDirectoryTile({
+    super.key,
+    required this.node,
+    required this.depth,
+    required this.isSelected,
+    required this.onSelected,
+    required this.onActivated,
+    required this.contextItemsFor,
+    required this.onContextAction,
+  });
+
+  final _RefNavigationTreeNode node;
+  final int depth;
+  final bool Function(RepositoryRefViewData ref) isSelected;
+  final RepositoryRefCallback? onSelected;
+  final RepositoryRefCallback? onActivated;
+  final List<_RefContextMenuItem> Function(RepositoryRefViewData ref)
+  contextItemsFor;
+  final RepositoryRefContextActionCallback? onContextAction;
+
+  /// 中文：创建目录节点的可折叠状态。
+  /// English: Creates the collapsible state for a directory node.
+  @override
+  State<_RefDirectoryTile> createState() => _RefDirectoryTileState();
+}
+
+class _RefDirectoryTileState extends State<_RefDirectoryTile> {
+  var _isExpanded = true;
+
+  /// 中文：切换目录的展开状态，不影响其子分支的选择状态。
+  /// English: Toggles directory expansion without changing child selection.
+  void _toggleExpanded() => setState(() => _isExpanded = !_isExpanded);
+
+  /// 中文：构建目录标题及其已展开的嵌套分支。
+  /// English: Builds the directory header and, when expanded, its nested
+  /// branches.
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final leftInset = 14.0 + widget.depth * 18;
+    final childDepth = widget.depth + 1;
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Semantics(
+          button: true,
+          expanded: _isExpanded,
+          label: '分支目录 ${widget.node.path}',
+          child: Tooltip(
+            message: widget.node.path,
+            waitDuration: const Duration(milliseconds: 650),
+            child: InkWell(
+              onTap: _toggleExpanded,
+              child: Container(
+                height: 31,
+                padding: EdgeInsets.only(left: leftInset, right: 8),
+                child: Row(
+                  children: [
+                    Icon(
+                      _isExpanded
+                          ? Icons.keyboard_arrow_down
+                          : Icons.keyboard_arrow_right,
+                      size: 16,
+                      color: colors.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 2),
+                    Icon(
+                      _isExpanded
+                          ? Icons.folder_open_outlined
+                          : Icons.folder_outlined,
+                      size: 15,
+                      color: colors.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 6),
+                    Expanded(
+                      child: Text(
+                        widget.node.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.bodySmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ),
+        ),
+        if (_isExpanded) ...[
+          if (widget.node.reference case final ref?)
+            _RefTile(
+              ref: ref,
+              label: widget.node.label,
+              indent: childDepth,
+              isSelected: widget.isSelected(ref),
+              onTap: widget.onSelected == null
+                  ? null
+                  : () => widget.onSelected!(ref),
+              onDoubleTap: widget.onActivated == null
+                  ? null
+                  : () => widget.onActivated!(ref),
+              contextItems: widget.contextItemsFor(ref),
+              onContextAction: widget.onContextAction == null
+                  ? null
+                  : (RepositoryRefContextAction action) =>
+                        widget.onContextAction!(ref, action),
+            ),
+          for (final child in widget.node.children.values)
+            if (child.children.isEmpty)
+              _RefTile(
+                ref: child.reference!,
+                label: child.label,
+                indent: childDepth,
+                isSelected: widget.isSelected(child.reference!),
+                onTap: widget.onSelected == null
+                    ? null
+                    : () => widget.onSelected!(child.reference!),
+                onDoubleTap: widget.onActivated == null
+                    ? null
+                    : () => widget.onActivated!(child.reference!),
+                contextItems: widget.contextItemsFor(child.reference!),
+                onContextAction: widget.onContextAction == null
+                    ? null
+                    : (RepositoryRefContextAction action) =>
+                          widget.onContextAction!(child.reference!, action),
+              )
+            else
+              _RefDirectoryTile(
+                key: ValueKey<String>('ref-directory:${child.path}'),
+                node: child,
+                depth: childDepth,
+                isSelected: widget.isSelected,
+                onSelected: widget.onSelected,
+                onActivated: widget.onActivated,
+                contextItemsFor: widget.contextItemsFor,
+                onContextAction: widget.onContextAction,
+              ),
+        ],
+      ],
+    );
+  }
+}
+
 class _RefTile extends StatelessWidget {
   const _RefTile({
     required this.ref,
+    this.label,
+    this.indent = 0,
     required this.isSelected,
     required this.onTap,
     required this.onDoubleTap,
@@ -1175,6 +1419,8 @@ class _RefTile extends StatelessWidget {
   });
 
   final RepositoryRefViewData ref;
+  final String? label;
+  final int indent;
   final bool isSelected;
   final VoidCallback? onTap;
   final VoidCallback? onDoubleTap;
@@ -1230,11 +1476,12 @@ class _RefTile extends StatelessWidget {
       if (ref.ahead > 0) '↑${ref.ahead}',
       if (ref.behind > 0) '↓${ref.behind}',
     ].join(' ');
+    final displayLabel = label ?? ref.label;
 
     return Semantics(
       button: true,
       selected: isSelected,
-      label: '${_refKindLabel(ref.kind)} ${ref.label}',
+      label: '${_refKindLabel(ref.kind)} $displayLabel',
       child: Tooltip(
         message: ref.secondaryLabel ?? ref.label,
         waitDuration: const Duration(milliseconds: 650),
@@ -1252,7 +1499,7 @@ class _RefTile extends StatelessWidget {
                   unawaited(_showContextMenu(context, details.globalPosition)),
               child: Container(
                 height: 31,
-                padding: const EdgeInsets.only(left: 14, right: 8),
+                padding: EdgeInsets.only(left: 14 + indent * 18, right: 8),
                 color: isSelected ? colors.secondaryContainer : null,
                 child: Row(
                   children: [
@@ -1268,7 +1515,7 @@ class _RefTile extends StatelessWidget {
                     const SizedBox(width: 7),
                     Expanded(
                       child: Text(
-                        ref.label,
+                        displayLabel,
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: theme.textTheme.bodySmall?.copyWith(
@@ -1306,16 +1553,26 @@ class _RefTile extends StatelessWidget {
   }
 }
 
-const double _historyRowHeight = 26;
+// Sourcetree's history uses compact 20px rows: this keeps the commit graph
+// readable while allowing the topology, refs and subject to sit in one scan.
+const double _historyRowHeight = 20;
 const double _historyDescriptionMinimumWidth = 0;
 const double _historyGraphMinimumWidth = 0;
 const double _historyCommitMinimumWidth = 0;
 const double _historyAuthorMinimumWidth = 0;
 const double _historyDateMinimumWidth = 0;
 
-enum _HistoryScope { currentBranch, allBranches }
-
 const double _historyColumnHandleWidth = 5;
+
+/// 中文：返回提交图最左侧车道中心，使工作区节点与游离 HEAD 基点严格对齐。
+///
+/// English: Returns the leftmost graph-lane center shared by the workspace
+/// marker and a detached-HEAD base node.
+double _historyGraphLaneStart(bool compact) => compact ? 6 : 8;
+
+/// 中文：返回与参照图一致的紧凑提交车道间距。
+/// English: Returns the compact commit-lane spacing used by the reference UI.
+double _historyGraphLaneSpacing(bool compact) => compact ? 9 : 11;
 
 final class _HistoryColumnWidths {
   const _HistoryColumnWidths({
@@ -1366,9 +1623,8 @@ class _HistoryPane extends StatefulWidget {
 
 class _HistoryPaneState extends State<_HistoryPane> {
   final ScrollController _scrollController = ScrollController();
-  _HistoryScope _scope = _HistoryScope.currentBranch;
-  bool _showRemoteRefs = true;
-  bool _compactGraph = false;
+  final bool _showRemoteRefs = true;
+  final bool _compactGraph = false;
   double? _graphColumnWidth;
   double? _commitColumnWidth;
   double? _authorColumnWidth;
@@ -1430,7 +1686,11 @@ class _HistoryPaneState extends State<_HistoryPane> {
     final colors = Theme.of(context).colorScheme;
     final showUncommittedChanges = !widget.repository.isWorkingTreeClean;
     final commits = _visibleCommits(widget.repository);
-    final graphs = _graphsFor(commits, headId: widget.repository.headOid);
+    final graphs = _graphsFor(
+      commits,
+      headId: widget.repository.headOid,
+      isDetachedHead: widget.repository.isDetachedHead,
+    );
     final workspaceSelected =
         widget.repository.selectedCommit == null &&
         widget.repository.refs.any(
@@ -1457,32 +1717,11 @@ class _HistoryPaneState extends State<_HistoryPane> {
                 );
                 return Column(
                   children: [
-                    _HistoryDisplayToolbar(
-                      scope: _scope,
-                      showRemoteRefs: _showRemoteRefs,
-                      compactGraph: _compactGraph,
-                      onScopeChanged: (value) => setState(() => _scope = value),
-                      onShowRemoteRefsChanged: (value) =>
-                          setState(() => _showRemoteRefs = value),
-                      onCompactGraphChanged: (value) =>
-                          setState(() => _compactGraph = value),
-                    ),
                     if (widget.showSearch)
                       _CompactHistorySearchBar(
                         query: widget.repository.searchQuery,
                         onChanged: widget.onSearchChanged,
                       ),
-                    _HistoryColumnHeader(
-                      widths: widths,
-                      onGraphDelta: (delta) =>
-                          _resizeGraphColumn(widths, delta),
-                      onDescriptionDelta: (delta) =>
-                          _resizeDescriptionColumn(widths, delta),
-                      onCommitDelta: (delta) =>
-                          _resizeCommitColumn(widths, delta),
-                      onAuthorDelta: (delta) =>
-                          _resizeAuthorColumn(widths, delta),
-                    ),
                     Expanded(
                       child: historyRowCount == 0
                           ? const _PaneEmptyState(
@@ -1490,43 +1729,81 @@ class _HistoryPaneState extends State<_HistoryPane> {
                               title: '暂无提交',
                               message: '空仓库的首次提交会显示在这里。',
                             )
-                          : ListView.builder(
-                              controller: _scrollController,
-                              itemExtent: _historyRowHeight,
-                              itemCount: historyRowCount,
-                              itemBuilder: (BuildContext context, int index) {
-                                if (showUncommittedChanges && index == 0) {
-                                  return _UncommittedChangesRow(
-                                    isSelected: workspaceSelected,
-                                    compactGraph: _compactGraph,
-                                    widths: widths,
-                                    onTap: widget.onWorkspaceSelected,
-                                  );
-                                }
-                                final commitIndex =
-                                    index - (showUncommittedChanges ? 1 : 0);
-                                final CommitViewData commit =
-                                    commits[commitIndex];
-                                final graph = graphs[commit.oid];
-                                final graphWithWorkspace =
-                                    showUncommittedChanges && commitIndex == 0
-                                    ? graph?.copyWith(hasPreviousNode: true)
-                                    : graph;
-                                return _CommitRow(
-                                  commit: commit.copyWith(
-                                    graph: graphWithWorkspace,
-                                  ),
-                                  showRemoteRefs: _showRemoteRefs,
-                                  compactGraph: _compactGraph,
+                          : Stack(
+                              children: [
+                                ListView.builder(
+                                  controller: _scrollController,
+                                  itemExtent: _historyRowHeight,
+                                  itemCount: historyRowCount,
+                                  itemBuilder:
+                                      (BuildContext context, int index) {
+                                        if (showUncommittedChanges &&
+                                            index == 0) {
+                                          return _UncommittedChangesRow(
+                                            isSelected: workspaceSelected,
+                                            compactGraph: _compactGraph,
+                                            widths: widths,
+                                            onTap: widget.onWorkspaceSelected,
+                                          );
+                                        }
+                                        final commitIndex =
+                                            index -
+                                            (showUncommittedChanges ? 1 : 0);
+                                        final CommitViewData commit =
+                                            commits[commitIndex];
+                                        final graph = graphs[commit.oid];
+                                        final graphWithWorkspace = graph
+                                            ?.copyWith(
+                                              hasWorkspaceNode:
+                                                  showUncommittedChanges,
+                                              hasPreviousNode:
+                                                  showUncommittedChanges &&
+                                                      commitIndex == 0
+                                                  ? true
+                                                  : null,
+                                              additionalPreviousLanes:
+                                                  showUncommittedChanges &&
+                                                      commitIndex == 0
+                                                  ? const {0}
+                                                  : const {},
+                                            );
+                                        return _CommitRow(
+                                          commit: commit.copyWith(
+                                            graph: graphWithWorkspace,
+                                          ),
+                                          currentBranch:
+                                              widget.repository.currentBranch,
+                                          primaryLocalBranch: widget
+                                              .repository
+                                              .primaryLocalBranch,
+                                          ahead: widget.repository.ahead,
+                                          showRemoteRefs: _showRemoteRefs,
+                                          compactGraph: _compactGraph,
+                                          widths: widths,
+                                          onTap: widget.onSelected == null
+                                              ? null
+                                              : () =>
+                                                    widget.onSelected!(commit),
+                                          onDoubleTap:
+                                              widget.onActivated == null
+                                              ? null
+                                              : () =>
+                                                    widget.onActivated!(commit),
+                                        );
+                                      },
+                                ),
+                                _HistoryResizeOverlay(
                                   widths: widths,
-                                  onTap: widget.onSelected == null
-                                      ? null
-                                      : () => widget.onSelected!(commit),
-                                  onDoubleTap: widget.onActivated == null
-                                      ? null
-                                      : () => widget.onActivated!(commit),
-                                );
-                              },
+                                  onGraphDelta: (delta) =>
+                                      _resizeGraphColumn(widths, delta),
+                                  onDescriptionDelta: (delta) =>
+                                      _resizeDescriptionColumn(widths, delta),
+                                  onCommitDelta: (delta) =>
+                                      _resizeCommitColumn(widths, delta),
+                                  onAuthorDelta: (delta) =>
+                                      _resizeAuthorColumn(widths, delta),
+                                ),
+                              ],
                             ),
                     ),
                   ],
@@ -1696,164 +1973,30 @@ class _HistoryPaneState extends State<_HistoryPane> {
     });
   }
 
-  List<CommitViewData> _visibleCommits(RepositoryViewData repository) {
-    if (_scope == _HistoryScope.allBranches || repository.headOid == null) {
-      return repository.commits;
-    }
-    // Keep hand-built view data (and older persisted snapshots) usable when
-    // no parent topology is available to determine reachability.
-    if (repository.commits.length > 1 &&
-        repository.commits.every((commit) => commit.parents.isEmpty)) {
-      return repository.commits;
-    }
-    final byId = <String, CommitViewData>{
-      for (final commit in repository.commits) commit.oid: commit,
-    };
-    final reachable = <String>{};
-    final pending = <String>[repository.headOid!];
-    while (pending.isNotEmpty) {
-      final oid = pending.removeLast();
-      if (!reachable.add(oid)) continue;
-      final commit = byId[oid];
-      if (commit != null) pending.addAll(commit.parents);
-    }
-    final visible = repository.commits
-        .where((commit) => reachable.contains(commit.oid))
-        .toList(growable: false);
-    // A partial history window may not contain HEAD or one of its parents.
-    // Do not render an apparently empty history in that case; the complete
-    // set currently loaded by the application is a safer fallback.
-    return visible.isEmpty ? repository.commits : visible;
-  }
+  /// 中文：返回 Git 已按拓扑顺序加载的全部分支提交，不再依赖已移除的范围工具条过滤。
+  ///
+  /// English: Returns every branch commit loaded in Git topology order,
+  /// without filtering through the removed scope toolbar.
+  List<CommitViewData> _visibleCommits(RepositoryViewData repository) =>
+      repository.commits;
 
   Map<String, CommitGraphViewData> _graphsFor(
     List<CommitViewData> commits, {
     required String? headId,
+    required bool isDetachedHead,
   }) {
-    final graphs = buildCommitGraph([
-      for (final commit in commits)
-        CommitGraphNode(oid: commit.oid, parents: commit.parents),
-    ], headId: headId);
+    final graphs = buildCommitGraph(
+      [
+        for (final commit in commits)
+          CommitGraphNode(oid: commit.oid, parents: commit.parents),
+      ],
+      headId: headId,
+      isDetachedHead: isDetachedHead,
+    );
     return <String, CommitGraphViewData>{
       for (var index = 0; index < commits.length; index++)
         commits[index].oid: graphs[index],
     };
-  }
-}
-
-class _HistoryDisplayToolbar extends StatelessWidget {
-  const _HistoryDisplayToolbar({
-    required this.scope,
-    required this.showRemoteRefs,
-    required this.compactGraph,
-    required this.onScopeChanged,
-    required this.onShowRemoteRefsChanged,
-    required this.onCompactGraphChanged,
-  });
-
-  final _HistoryScope scope;
-  final bool showRemoteRefs;
-  final bool compactGraph;
-  final ValueChanged<_HistoryScope> onScopeChanged;
-  final ValueChanged<bool> onShowRemoteRefsChanged;
-  final ValueChanged<bool> onCompactGraphChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    final colors = theme.colorScheme;
-    return Container(
-      height: 29,
-      padding: const EdgeInsets.symmetric(horizontal: 6),
-      decoration: BoxDecoration(
-        color: colors.surfaceContainerLowest,
-        border: Border(bottom: BorderSide(color: colors.outlineVariant)),
-      ),
-      child: Row(
-        children: [
-          _HistorySelect<_HistoryScope>(
-            value: scope,
-            items: const {
-              _HistoryScope.currentBranch: '当前分支',
-              _HistoryScope.allBranches: '所有分支',
-            },
-            onChanged: onScopeChanged,
-          ),
-          const SizedBox(width: 4),
-          Tooltip(
-            message: showRemoteRefs ? '隐藏远程分支标签' : '显示远程分支标签',
-            child: InkWell(
-              onTap: () => onShowRemoteRefsChanged(!showRemoteRefs),
-              borderRadius: BorderRadius.circular(3),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 5),
-                child: Row(
-                  children: [
-                    Icon(
-                      showRemoteRefs
-                          ? Icons.cloud_done_outlined
-                          : Icons.cloud_off_outlined,
-                      size: 14,
-                      color: showRemoteRefs
-                          ? colors.primary
-                          : colors.onSurfaceVariant,
-                    ),
-                    const SizedBox(width: 3),
-                    Text('远程分支', style: theme.textTheme.labelSmall),
-                  ],
-                ),
-              ),
-            ),
-          ),
-          const Spacer(),
-          Tooltip(
-            message: compactGraph ? '标准图表间距' : '紧凑图表间距',
-            child: IconButton(
-              onPressed: () => onCompactGraphChanged(!compactGraph),
-              icon: Icon(
-                compactGraph ? Icons.view_agenda_outlined : Icons.view_stream,
-                size: 15,
-              ),
-              padding: EdgeInsets.zero,
-              constraints: const BoxConstraints.tightFor(width: 24, height: 24),
-              visualDensity: VisualDensity.compact,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _HistorySelect<T> extends StatelessWidget {
-  const _HistorySelect({
-    required this.value,
-    required this.items,
-    required this.onChanged,
-  });
-
-  final T value;
-  final Map<T, String> items;
-  final ValueChanged<T> onChanged;
-
-  @override
-  Widget build(BuildContext context) {
-    final theme = Theme.of(context);
-    return DropdownButtonHideUnderline(
-      child: DropdownButton<T>(
-        value: value,
-        isDense: true,
-        style: theme.textTheme.labelSmall,
-        iconSize: 14,
-        items: [
-          for (final entry in items.entries)
-            DropdownMenuItem<T>(value: entry.key, child: Text(entry.value)),
-        ],
-        onChanged: (next) {
-          if (next != null) onChanged(next);
-        },
-      ),
-    );
   }
 }
 
@@ -1970,7 +2113,7 @@ class _UncommittedGraphPainter extends CustomPainter {
 
   @override
   void paint(Canvas canvas, Size size) {
-    final x = compact ? 18.0 : 22.0;
+    final x = _historyGraphLaneStart(compact);
     final y = size.height / 2;
     final rail = Paint()..color = color;
     canvas.drawRect(Rect.fromLTRB(x - 1.5, y, x + 1.5, size.height), rail);
@@ -2000,8 +2143,12 @@ class _UncommittedGraphPainter extends CustomPainter {
       oldDelegate.compact != compact;
 }
 
-class _HistoryColumnHeader extends StatelessWidget {
-  const _HistoryColumnHeader({
+/// Keeps compact history rows free of table chrome while retaining the
+/// keyboard-accessible drag targets used to adjust their columns.
+///
+/// 中文：在不显示表格表头的前提下保留可访问的历史列拖拽边界。
+final class _HistoryResizeOverlay extends StatelessWidget {
+  const _HistoryResizeOverlay({
     required this.widths,
     required this.onGraphDelta,
     required this.onDescriptionDelta,
@@ -2015,68 +2162,85 @@ class _HistoryColumnHeader extends StatelessWidget {
   final ValueChanged<double> onCommitDelta;
   final ValueChanged<double> onAuthorDelta;
 
-  /// 中文：构建当前组件的界面。
-  /// English: Builds the current component UI.
+  /// 中文：构建覆盖历史内容的四个列宽调整边界。
+  /// English: Builds the four column-resize boundaries over the history body.
   @override
   Widget build(BuildContext context) {
-    final ThemeData theme = Theme.of(context);
-    final ColorScheme colors = theme.colorScheme;
+    final descriptionWidth = math.max(
+      0,
+      widths.availableWidth -
+          widths.graph -
+          widths.commit -
+          widths.author -
+          widths.date -
+          (_historyColumnHandleWidth * 4) -
+          16,
+    );
+    final graphDivider = 8 + widths.graph;
+    final descriptionDivider =
+        graphDivider + _historyColumnHandleWidth + descriptionWidth;
+    final commitDivider =
+        descriptionDivider + _historyColumnHandleWidth + widths.commit;
+    final authorDivider =
+        commitDivider + _historyColumnHandleWidth + widths.author;
 
-    return Container(
-      key: const ValueKey<String>('history-column-header'),
-      height: 25,
-      padding: const EdgeInsets.symmetric(horizontal: 8),
-      decoration: BoxDecoration(
-        color: colors.surfaceContainerLow,
-        border: Border(
-          bottom: BorderSide(color: colors.outlineVariant),
-          top: BorderSide(color: colors.outlineVariant),
-        ),
-      ),
-      child: Row(
+    return Positioned.fill(
+      child: Stack(
         children: [
-          SizedBox(
-            width: widths.graph,
-            child: Text('图表', style: theme.textTheme.labelSmall),
-          ),
-          _ResizeDivider(
-            axis: Axis.vertical,
+          _HistoryResizeHandle(
+            left: graphDivider,
             semanticsLabel: '调整图表列宽度',
             onDelta: onGraphDelta,
           ),
-          Expanded(child: Text('描述', style: theme.textTheme.labelSmall)),
-          _ResizeDivider(
-            axis: Axis.vertical,
+          _HistoryResizeHandle(
+            left: descriptionDivider,
             semanticsLabel: '调整描述列宽度',
             onDelta: onDescriptionDelta,
           ),
-          SizedBox(
-            width: widths.commit,
-            child: Text('提交', style: theme.textTheme.labelSmall),
-          ),
-          _ResizeDivider(
-            axis: Axis.vertical,
+          _HistoryResizeHandle(
+            left: commitDivider,
             semanticsLabel: '调整提交列宽度',
             onDelta: onCommitDelta,
           ),
-          SizedBox(
-            width: widths.author,
-            child: Text('作者', style: theme.textTheme.labelSmall),
-          ),
-          _ResizeDivider(
-            axis: Axis.vertical,
+          _HistoryResizeHandle(
+            left: authorDivider,
             semanticsLabel: '调整作者列宽度',
             onDelta: onAuthorDelta,
           ),
-          SizedBox(
-            width: widths.date,
-            child: Text(
-              '日期',
-              textAlign: TextAlign.end,
-              style: theme.textTheme.labelSmall,
-            ),
-          ),
         ],
+      ),
+    );
+  }
+}
+
+/// Provides one invisible, mouse-discoverable resize target in history.
+///
+/// 中文：提供一个不干扰紧凑视觉的历史列宽拖拽目标。
+final class _HistoryResizeHandle extends StatelessWidget {
+  const _HistoryResizeHandle({
+    required this.left,
+    required this.semanticsLabel,
+    required this.onDelta,
+  });
+
+  final double left;
+  final String semanticsLabel;
+  final ValueChanged<double> onDelta;
+
+  /// 中文：构建定位的列宽拖拽目标。
+  /// English: Builds the positioned column-resize drag target.
+  @override
+  Widget build(BuildContext context) {
+    return Positioned(
+      left: left,
+      top: 0,
+      bottom: 0,
+      width: _historyColumnHandleWidth,
+      child: _ResizeDivider(
+        axis: Axis.vertical,
+        semanticsLabel: semanticsLabel,
+        onDelta: onDelta,
+        showIndicator: false,
       ),
     );
   }
@@ -2085,6 +2249,9 @@ class _HistoryColumnHeader extends StatelessWidget {
 class _CommitRow extends StatelessWidget {
   const _CommitRow({
     required this.commit,
+    required this.currentBranch,
+    required this.primaryLocalBranch,
+    required this.ahead,
     required this.onTap,
     this.onDoubleTap,
     required this.showRemoteRefs,
@@ -2093,6 +2260,9 @@ class _CommitRow extends StatelessWidget {
   });
 
   final CommitViewData commit;
+  final String currentBranch;
+  final String? primaryLocalBranch;
+  final int ahead;
   final VoidCallback? onTap;
   final VoidCallback? onDoubleTap;
   final bool showRemoteRefs;
@@ -2105,6 +2275,10 @@ class _CommitRow extends StatelessWidget {
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
+    final visibleRefs = commit.refs
+        .where((ref) => showRemoteRefs || !commit.remoteRefs.contains(ref))
+        .take(3)
+        .toList(growable: false);
 
     return Semantics(
       button: true,
@@ -2137,6 +2311,7 @@ class _CommitRow extends StatelessWidget {
                     painter: _CommitGraphPainter(
                       graph: commit.graph,
                       colors: _graphColors(colors),
+                      workspaceRailColor: colors.onSurfaceVariant,
                       backgroundColor: commit.isSelected
                           ? colors.secondaryContainer
                           : _graphBackground(colors),
@@ -2149,21 +2324,28 @@ class _CommitRow extends StatelessWidget {
                 Expanded(
                   child: Row(
                     children: [
-                      for (final String ref
-                          in commit.refs
-                              .where(
-                                (ref) =>
-                                    showRemoteRefs ||
-                                    !commit.remoteRefs.contains(ref),
-                              )
-                              .take(3))
+                      for (final String ref in visibleRefs) ...[
                         Flexible(
                           fit: FlexFit.loose,
                           child: Padding(
                             padding: const EdgeInsets.only(right: 5),
-                            child: _RefLabel(label: ref),
+                            child: _RefLabel(
+                              label: ref,
+                              kind: _commitRefKind(ref),
+                            ),
                           ),
                         ),
+                        if (ahead > 0 &&
+                            _commitRefKind(ref) ==
+                                _CommitRefKind.primaryLocalBranch)
+                          Flexible(
+                            fit: FlexFit.loose,
+                            child: Padding(
+                              padding: const EdgeInsets.only(right: 5),
+                              child: _AheadLabel(count: ahead),
+                            ),
+                          ),
+                      ],
                       if (commit.isMerge)
                         Flexible(
                           fit: FlexFit.loose,
@@ -2233,12 +2415,26 @@ class _CommitRow extends StatelessWidget {
       ),
     );
   }
+
+  /// 中文：按真实引用来源区分 HEAD、远端、主本地分支和其他本地分支标签。
+  ///
+  /// English: Classifies a ref label as HEAD, remote, primary local, or other
+  /// local using repository metadata rather than its display name.
+  _CommitRefKind _commitRefKind(String ref) {
+    if (ref == 'HEAD') return _CommitRefKind.head;
+    if (commit.remoteRefs.contains(ref)) return _CommitRefKind.remoteBranch;
+    if (ref == primaryLocalBranch || ref == currentBranch) {
+      return _CommitRefKind.primaryLocalBranch;
+    }
+    return _CommitRefKind.localBranch;
+  }
 }
 
 class _CommitGraphPainter extends CustomPainter {
   const _CommitGraphPainter({
     required this.graph,
     required this.colors,
+    required this.workspaceRailColor,
     required this.backgroundColor,
     required this.selected,
     required this.compact,
@@ -2246,18 +2442,28 @@ class _CommitGraphPainter extends CustomPainter {
 
   final CommitGraphViewData graph;
   final List<Color> colors;
+  final Color workspaceRailColor;
   final Color backgroundColor;
   final bool selected;
   final bool compact;
 
-  double get laneSpacing => compact ? 9 : 12;
-  double get laneStart => compact ? 18 : 22;
+  double get laneSpacing => _historyGraphLaneSpacing(compact);
+  double get laneStart => _historyGraphLaneStart(compact);
 
   /// 中文：按车道索引循环选择提交图颜色，支持负索引。
   ///
   /// English: Selects a commit-graph color cyclically by lane index, including
   /// negative indices.
   Color _color(int index) => colors[index.abs() % colors.length];
+
+  /// 中文：为预留的游离 HEAD 车道和右侧分支车道选择与原图一致的稳定颜色。
+  ///
+  /// English: Selects stable colors for the reserved detached-HEAD lane and
+  /// the branch lanes to its right.
+  Color _laneColor(int lane) {
+    if (!graph.hasReservedHeadLane) return _color(lane);
+    return lane == 0 ? workspaceRailColor : _color(lane - 1);
+  }
 
   /// 中文：将车道索引转换为图画布中的 X 坐标，并限制最大可见车道。
   ///
@@ -2271,6 +2477,18 @@ class _CommitGraphPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final double centerY = size.height / 2;
     canvas.drawRect(Offset.zero & size, Paint()..color = backgroundColor);
+    if (graph.hasReservedHeadLane && graph.hasWorkspaceNode) {
+      final reservedRailBottom = graph.lane == 0 && graph.parentLanes.isEmpty
+          ? centerY
+          : size.height;
+      _drawVerticalRail(
+        canvas,
+        x: _laneX(0),
+        top: 0,
+        bottom: reservedRailBottom,
+        color: workspaceRailColor,
+      );
+    }
 
     for (var index = 0; index < graph.activeLanes.length; index++) {
       final activeLane = graph.activeLanes[index];
@@ -2281,13 +2499,24 @@ class _CommitGraphPainter extends CustomPainter {
         canvas,
         fromLane: activeLane,
         toLane: destination,
-        top: graph.hasPreviousNode ? 0 : centerY,
+        top: graph.previousLanes.contains(activeLane) ? 0 : centerY,
         centerY: centerY,
         bottom: size.height,
-        color: _color(activeLane),
+        color: _laneColor(activeLane),
         targetColor: destination == null
-            ? _color(activeLane)
-            : _color(destination),
+            ? _laneColor(activeLane)
+            : _laneColor(destination),
+      );
+    }
+
+    for (final incomingLane in graph.incomingLanes) {
+      _drawIncomingLaneConnection(
+        canvas,
+        fromLane: incomingLane,
+        toLane: graph.lane,
+        top: 0,
+        centerY: centerY,
+        color: _laneColor(incomingLane),
       );
     }
 
@@ -2303,8 +2532,8 @@ class _CommitGraphPainter extends CustomPainter {
         // Keep the moving branch's color through the turn. Only the rail after
         // it reaches the parent lane adopts the target branch color, so an
         // orange branch never becomes blue while merging left.
-        color: _color(graph.lane),
-        targetColor: _color(parentLane),
+        color: _laneColor(graph.lane),
+        targetColor: _laneColor(parentLane),
       );
     }
 
@@ -2321,7 +2550,39 @@ class _CommitGraphPainter extends CustomPainter {
           ..strokeWidth = 1.2,
       );
     }
-    canvas.drawCircle(Offset(_laneX(graph.lane), centerY), 4.5, dotPaint);
+    canvas.drawCircle(Offset(_laneX(graph.lane), centerY), 4, dotPaint);
+  }
+
+  /// 中文：让从上方延续的分支在当前父节点行内汇入节点，而不是提前转向。
+  ///
+  /// English: Converges a branch arriving from above into its parent on the
+  /// current row instead of turning on the child row.
+  void _drawIncomingLaneConnection(
+    Canvas canvas, {
+    required int fromLane,
+    required int toLane,
+    required double top,
+    required double centerY,
+    required Color color,
+  }) {
+    final sourceX = _laneX(fromLane);
+    final targetX = _laneX(toLane);
+    final turnY = centerY - (centerY - top) * .32;
+    _drawVerticalRail(
+      canvas,
+      x: sourceX,
+      top: top,
+      bottom: turnY,
+      color: color,
+    );
+    canvas.drawLine(
+      Offset(sourceX, turnY),
+      Offset(targetX, centerY),
+      Paint()
+        ..color = color
+        ..strokeWidth = 3
+        ..strokeCap = StrokeCap.square,
+    );
   }
 
   /// 中文：以固定 3 像素宽度绘制车道的竖直连接线。
@@ -2402,14 +2663,15 @@ class _CommitGraphPainter extends CustomPainter {
         oldDelegate.selected != selected ||
         oldDelegate.compact != compact ||
         oldDelegate.colors != colors ||
+        oldDelegate.workspaceRailColor != workspaceRailColor ||
         oldDelegate.backgroundColor != backgroundColor;
   }
 }
 
-/// 中文：返回历史列表使用的深色背景色。
+/// 中文：返回与当前主题一致的历史列表背景色。
 ///
-/// English: Returns the dark background color used by the history list.
-Color _historyBackground(ColorScheme colors) => const Color(0xFF242D30);
+/// English: Returns the history-list background color for the active theme.
+Color _historyBackground(ColorScheme colors) => colors.surface;
 
 /// 中文：返回提交图背景色，使其与历史列表保持一致。
 ///
@@ -2421,38 +2683,130 @@ Color _graphBackground(ColorScheme colors) => _historyBackground(colors);
 ///
 /// English: Returns the fixed, high-contrast color sequence used to
 /// distinguish commit-graph lanes.
+const Color _graphPrimaryBlue = Color(0xFF0B6FCB);
+const Color _graphBranchRed = Color(0xFFD8452A);
+const Color _graphBaseOrange = Color(0xFFF28C00);
+
 List<Color> _graphColors(ColorScheme colors) => const [
-  Color(0xFF087FCD),
-  Color(0xFFFF6500),
-  Color(0xFFAE76E8),
+  _graphPrimaryBlue,
+  _graphBranchRed,
+  _graphBaseOrange,
   Color(0xFF2FA86F),
   Color(0xFFDBA70A),
 ];
 
+enum _CommitRefKind { primaryLocalBranch, localBranch, remoteBranch, head }
+
 class _RefLabel extends StatelessWidget {
-  const _RefLabel({required this.label});
+  const _RefLabel({required this.label, required this.kind});
 
   final String label;
+  final _CommitRefKind kind;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;
+    final bool dark = colors.brightness == Brightness.dark;
+    final (
+      Color background,
+      Color foreground,
+      Color border,
+      IconData icon,
+    ) = switch (kind) {
+      _CommitRefKind.primaryLocalBranch => (
+        Color.alphaBlend(
+          _graphPrimaryBlue.withValues(alpha: dark ? .34 : .16),
+          colors.surface,
+        ),
+        dark ? const Color(0xFF8CCBFF) : _graphPrimaryBlue,
+        _graphPrimaryBlue,
+        Icons.call_split,
+      ),
+      _CommitRefKind.localBranch => (
+        Color.alphaBlend(
+          _graphBranchRed.withValues(alpha: dark ? .32 : .15),
+          colors.surface,
+        ),
+        dark ? const Color(0xFFFF9280) : _graphBranchRed,
+        _graphBranchRed,
+        Icons.call_split,
+      ),
+      _CommitRefKind.remoteBranch => (
+        Color.alphaBlend(
+          _graphBaseOrange.withValues(alpha: dark ? .25 : .13),
+          colors.surface,
+        ),
+        dark ? const Color(0xFFFFC26E) : const Color(0xFF9A5700),
+        _graphBaseOrange,
+        Icons.cloud_outlined,
+      ),
+      _CommitRefKind.head => (
+        Color.alphaBlend(
+          _graphBaseOrange.withValues(alpha: dark ? .25 : .13),
+          colors.surface,
+        ),
+        dark ? const Color(0xFFFFC26E) : const Color(0xFF9A5700),
+        _graphBaseOrange,
+        Icons.sell_outlined,
+      ),
+    };
     return Container(
-      constraints: const BoxConstraints(maxWidth: 100),
-      padding: const EdgeInsets.symmetric(horizontal: 5, vertical: 1),
+      key: ValueKey<String>('commit-ref-$label'),
+      constraints: const BoxConstraints(maxWidth: 180),
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
       decoration: BoxDecoration(
-        color: colors.tertiaryContainer,
-        borderRadius: BorderRadius.circular(4),
+        color: background,
+        borderRadius: BorderRadius.circular(3),
+        border: Border.all(color: border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 10, color: foreground),
+          const SizedBox(width: 2),
+          Flexible(
+            child: Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: foreground,
+                fontSize: 10,
+                fontWeight: FontWeight.w600,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _AheadLabel extends StatelessWidget {
+  const _AheadLabel({required this.count});
+
+  final int count;
+
+  /// 中文：显示与主分支蓝色车道对应的领先提交数标签。
+  /// English: Shows the ahead count using the primary branch lane color.
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      key: const ValueKey<String>('commit-ahead-label'),
+      padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 1),
+      decoration: BoxDecoration(
+        color: _graphPrimaryBlue,
+        borderRadius: BorderRadius.circular(3),
       ),
       child: Text(
-        label,
+        '超前$count个版本',
         maxLines: 1,
-        overflow: TextOverflow.ellipsis,
         style: Theme.of(context).textTheme.labelSmall?.copyWith(
-          color: colors.onTertiaryContainer,
+          color: Colors.white,
           fontSize: 10,
+          fontWeight: FontWeight.w700,
         ),
       ),
     );
@@ -3638,7 +3992,8 @@ class _CommitDetailsContent extends StatelessWidget {
               spacing: 5,
               runSpacing: 5,
               children: [
-                for (final String ref in details.refs) _RefLabel(label: ref),
+                for (final String ref in details.refs)
+                  _RefLabel(label: ref, kind: _detailsRefKind(details, ref)),
               ],
             ),
           ],
@@ -3693,6 +4048,18 @@ class _CommitDetailsContent extends StatelessWidget {
         ],
       ),
     );
+  }
+
+  /// 中文：按提交详情携带的引用来源复用历史行的颜色语义。
+  /// English: Reuses history-row ref colors from the source metadata carried
+  /// by commit details.
+  _CommitRefKind _detailsRefKind(CommitDetailsViewData details, String ref) {
+    if (ref == 'HEAD') return _CommitRefKind.head;
+    if (details.remoteRefs.contains(ref)) return _CommitRefKind.remoteBranch;
+    if (ref == details.primaryLocalBranch || ref == details.currentBranch) {
+      return _CommitRefKind.primaryLocalBranch;
+    }
+    return _CommitRefKind.localBranch;
   }
 }
 
@@ -4214,11 +4581,13 @@ class _ResizeDivider extends StatelessWidget {
     required this.axis,
     required this.semanticsLabel,
     required this.onDelta,
+    this.showIndicator = true,
   });
 
   final Axis axis;
   final String semanticsLabel;
   final ValueChanged<double> onDelta;
+  final bool showIndicator;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -4246,11 +4615,13 @@ class _ResizeDivider extends StatelessWidget {
             width: vertical ? 5 : double.infinity,
             height: vertical ? double.infinity : 5,
             alignment: Alignment.center,
-            child: Container(
-              width: vertical ? 1 : double.infinity,
-              height: vertical ? double.infinity : 1,
-              color: dividerColor,
-            ),
+            child: showIndicator
+                ? Container(
+                    width: vertical ? 1 : double.infinity,
+                    height: vertical ? double.infinity : 1,
+                    color: dividerColor,
+                  )
+                : null,
           ),
         ),
       ),

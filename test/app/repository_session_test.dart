@@ -448,14 +448,15 @@ void main() {
 
     expect(commits.first.graph.hasPreviousNode, isFalse);
     expect(commits[1].graph.hasPreviousNode, isTrue);
-    expect(main.graph.activeLanes, containsAll([0, 1]));
+    expect(main.graph.activeLanes, contains(main.graph.lane));
     expect(
       main.graph.activeLaneDestinations,
       hasLength(main.graph.activeLanes.length),
     );
     expect(main.graph.activeLaneDestinations, everyElement(isNotNull));
-    expect(feature.graph.lane, 1);
-    expect(feature.graph.parentLanes, contains(1));
+    expect(feature.graph.activeLanes, contains(feature.graph.lane));
+    expect(main.graph.lane, isNot(feature.graph.lane));
+    expect(main.graph.parentLanes, feature.graph.parentLanes);
   });
 
   test(
@@ -1337,7 +1338,7 @@ while true; do sleep 1; done
     },
   );
 
-  test('refuses push without an upstream or ahead commits', () async {
+  test('refuses push without a configured remote target', () async {
     final repository = await GitTestRepository.create();
     addTearDown(repository.dispose);
     final container = ProviderContainer();
@@ -1351,6 +1352,70 @@ while true; do sleep 1; done
     await repository.commit('Initial commit');
     await controller.refresh();
     expect(await controller.pushUpstream(), isFalse);
+  });
+
+  test(
+    'keeps push available when the configured upstream is already current',
+    () async {
+      final source = await GitTestRepository.create();
+      addTearDown(source.dispose);
+      await source.writeFile('README.md', '# Git Desktop\n');
+      await source.commit('Initial commit');
+      final origin = await source.createBareOrigin();
+      await source.runGit(['push', '--set-upstream', 'origin', 'main']);
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(source.workingDirectory.path);
+
+      final state = container.read(repositorySessionProvider);
+      expect(state.status!.branch.ahead, 0);
+      expect(
+        mapRepositoryOverview(state).repository!.disabledActions,
+        isNot(contains(RepositoryAction.push)),
+      );
+      expect(await controller.pushUpstream(), isTrue);
+      expect(container.read(repositorySessionProvider).status!.branch.ahead, 0);
+      // Keep the bare remote alive for the duration of this no-op push test.
+      expect(await origin.exists(), isTrue);
+    },
+  );
+
+  test('pushes the configured local branch while HEAD is detached', () async {
+    final source = await GitTestRepository.create();
+    addTearDown(source.dispose);
+    await source.writeFile('README.md', '# Git Desktop\n');
+    await source.commit('Initial commit');
+    final origin = await source.createBareOrigin();
+    await source.runGit(['push', '--set-upstream', 'origin', 'main']);
+    await source.writeFile('CHANGELOG.md', '# Changes\n');
+    await source.commit('Add changelog');
+    await source.runGit(['switch', '--detach', 'origin/main']);
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(source.workingDirectory.path);
+
+    final state = container.read(repositorySessionProvider);
+    expect(state.status!.branch.isDetached, isTrue);
+    expect(mapRepositoryOverview(state).repository!.primaryLocalBranch, 'main');
+    expect(
+      mapRepositoryOverview(state).repository!.disabledActions,
+      isNot(contains(RepositoryAction.push)),
+    );
+    expect(await controller.pushUpstream(), isTrue);
+    expect(
+      (await source.runGit([
+        'rev-parse',
+        'refs/heads/main',
+      ], workingDirectory: origin)).stdout.toString().trim(),
+      (await source.runGit([
+        'rev-parse',
+        'refs/heads/main',
+      ])).stdout.toString().trim(),
+    );
   });
 
   test('completes the clone-to-push core workflow with real Git', () async {

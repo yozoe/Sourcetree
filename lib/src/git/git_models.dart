@@ -292,11 +292,15 @@ final class GitLocalBranch {
     required this.name,
     required this.objectId,
     this.upstream,
+    this.ahead = 0,
+    this.behind = 0,
   });
 
   final String name;
   final String objectId;
   final String? upstream;
+  final int ahead;
+  final int behind;
 }
 
 /// A remote-tracking branch discovered through `git for-each-ref`.
