@@ -180,4 +180,26 @@ class RunnerTests: XCTestCase {
 
     XCTAssertFalse(gitDesktopIsRepositoryLibraryShortcut(event))
   }
+
+  func testPendingWindowMenuSupportsLibraryAndWorkspaceWindows() {
+    let library = MainFlutterWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+      styleMask: [.titled, .closable, .resizable],
+      backing: .buffered,
+      defer: false
+    )
+    library.configure(role: .repositoryLibrary)
+    let workspace = MainFlutterWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 800, height: 600),
+      styleMask: [.titled, .closable, .resizable],
+      backing: .buffered,
+      defer: false
+    )
+    workspace.configure(role: .workspace)
+
+    XCTAssertTrue(gitDesktopCanPerformWindowMenuAction(library))
+    XCTAssertTrue(gitDesktopCanPerformWindowMenuAction(workspace))
+    XCTAssertFalse(gitDesktopCanPerformWindowMenuAction(nil))
+    XCTAssertFalse(gitDesktopCanPerformWindowMenuAction(NSWindow()))
+  }
 }

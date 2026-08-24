@@ -381,7 +381,7 @@ class _RepositoryWorkspaceScreenState
       case 'repositoryFeaturePending':
         ScaffoldMessenger.of(
           context,
-        ).showSnackBar(const SnackBar(content: Text('该仓库菜单功能待实现。')));
+        ).showSnackBar(const SnackBar(content: Text('该菜单功能待实现。')));
     }
   }
 

@@ -761,9 +761,34 @@ class AppDelegate: FlutterAppDelegate {
     windowCoordinator.performWorkspaceAction("repositoryFeaturePending")
   }
 
+  /// 中文：在当前应用窗口中显示尚未交付的窗口菜单提示，不依赖仓库工作区。
+  ///
+  /// English: Shows a pending window-menu notice in the current app window
+  /// without requiring a repository workspace.
+  @IBAction func windowFeaturePendingFromMenu(_ sender: Any?) {
+    guard let keyWindow = NSApp.keyWindow,
+          gitDesktopCanPerformWindowMenuAction(keyWindow) else {
+      NSSound.beep()
+      return
+    }
+    let alert = NSAlert()
+    alert.alertStyle = .informational
+    alert.messageText = "待实现"
+    alert.informativeText = "该窗口菜单功能待实现。"
+    alert.addButton(withTitle: "好")
+    alert.beginSheetModal(for: keyWindow)
+  }
+
+  @IBAction func showRepositoryLibraryFromMenu(_ sender: Any?) {
+    windowCoordinator.showRepositoryLibrary()
+  }
+
   func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
     if menuItem.action == #selector(mergeAllRepositoryWindows(_:)) {
       return windowCoordinator.canMergeAllWorkspaceWindows
+    }
+    if menuItem.action == #selector(windowFeaturePendingFromMenu(_:)) {
+      return gitDesktopCanPerformWindowMenuAction(NSApp.keyWindow)
     }
     if menuItem.action == #selector(createPatchFromMenu(_:)) ||
        menuItem.action == #selector(applyPatchFromMenu(_:)) ||

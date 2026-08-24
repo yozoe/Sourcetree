@@ -6,6 +6,17 @@ enum GitDesktopWindowRole {
   case workspace
 }
 
+/// 中文：判断窗口菜单占位动作是否能安全显示在当前应用窗口中。
+///
+/// English: Returns whether a pending Window-menu action can be presented in
+/// the current application window.
+func gitDesktopCanPerformWindowMenuAction(_ keyWindow: NSWindow?) -> Bool {
+  guard let keyWindow = keyWindow as? MainFlutterWindow else {
+    return false
+  }
+  return keyWindow.attachedSheet == nil
+}
+
 private let gitDesktopWorkspaceTabbingIdentifier =
   "com.yeknom.git_desktop.workspace"
 

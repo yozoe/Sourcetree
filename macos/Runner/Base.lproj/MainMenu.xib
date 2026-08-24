@@ -338,7 +338,7 @@
                             <menuItem title="添加子模块…（待实现）" id="GDA-repository-add-submodule"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-add-submodule-action"/></connections></menuItem>
                             <menuItem title="添加/链接子树…（待实现）" id="GDA-repository-add-subtree"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-add-subtree-action"/></connections></menuItem>
                             <menuItem title="Git LFS（待实现）" id="GDA-repository-lfs"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-lfs-action"/></connections></menuItem>
-                            <menuItem title="git-flow 或 hg flow（待实现）" id="GDA-repository-flow"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-flow-action"/></connections></menuItem>
+                            <menuItem title="Git Flow（待实现）" id="GDA-repository-flow"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-flow-action"/></connections></menuItem>
                             <menuItem title="显示远程服务器（待实现）" id="GDA-repository-show-remote"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-show-remote-action"/></connections></menuItem>
                             <menuItem title="创建拉取请求…（待实现）" id="GDA-repository-create-pr"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-create-pr-action"/></connections></menuItem>
                         </items>
@@ -348,6 +348,12 @@
                     <modifierMask key="keyEquivalentModifierMask"/>
                     <menu key="submenu" title="动作" id="GDA-ct-sub">
                         <items>
+                            <menuItem title="打开（待实现）" id="GDA-action-open"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-open-action"/></connections></menuItem>
+                            <menuItem title="在 Finder 中显示（待实现）" id="GDA-action-reveal"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-reveal-action"/></connections></menuItem>
+                            <menuItem title="在终端中打开（待实现）" id="GDA-action-terminal"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-terminal-action"/></connections></menuItem>
+                            <menuItem title="快速查看（待实现）" id="GDA-action-quick-look"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-quick-look-action"/></connections></menuItem>
+                            <menuItem isSeparatorItem="YES" id="GDA-action-separator-1"/>
+                            <menuItem title="外部差异比对（待实现）" id="GDA-action-external-diff"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-external-diff-action"/></connections></menuItem>
                             <menuItem title="创建补丁…" id="GDA-ct-create">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>
@@ -360,32 +366,71 @@
                                     <action selector="applyPatchFromMenu:" target="Voe-Tx-rLC" id="GDA-ct-apply-action"/>
                                 </connections>
                             </menuItem>
+                            <menuItem isSeparatorItem="YES" id="GDA-action-separator-2"/>
+                            <menuItem title="添加到索引（待实现）" id="GDA-action-stage"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-stage-action"/></connections></menuItem>
+                            <menuItem title="移除（待实现）" id="GDA-action-remove"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-remove-action"/></connections></menuItem>
+                            <menuItem title="从索引中取消暂存（待实现）" id="GDA-action-unstage"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-unstage-action"/></connections></menuItem>
+                            <menuItem title="添加/移除（待实现）" id="GDA-action-add-remove"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-add-remove-action"/></connections></menuItem>
+                            <menuItem title="停止追踪（待实现）" id="GDA-action-stop-tracking"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-stop-tracking-action"/></connections></menuItem>
+                            <menuItem title="忽略…（待实现）" id="GDA-action-ignore"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-ignore-action"/></connections></menuItem>
+                            <menuItem title="提交…（待实现）" id="GDA-action-commit"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-commit-action"/></connections></menuItem>
+                            <menuItem title="重置…（待实现）" id="GDA-action-reset"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-reset-action"/></connections></menuItem>
+                            <menuItem title="重置到提交…（待实现）" id="GDA-action-reset-commit"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-reset-commit-action"/></connections></menuItem>
+                            <menuItem isSeparatorItem="YES" id="GDA-action-separator-3"/>
+                            <menuItem title="继续（待实现）" id="GDA-action-continue"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-continue-action"/></connections></menuItem>
+                            <menuItem title="终止（待实现）" id="GDA-action-abort"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-abort-action"/></connections></menuItem>
+                            <menuItem title="解决冲突（待实现）" id="GDA-action-resolve-conflicts"><modifierMask key="keyEquivalentModifierMask"/><menu key="submenu" title="解决冲突（待实现）" id="GDA-action-resolve-conflicts-sub"><items><menuItem title="使用我的版本（待实现）" id="GDA-action-use-ours"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-use-ours-action"/></connections></menuItem><menuItem title="使用他们的版本（待实现）" id="GDA-action-use-theirs"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-use-theirs-action"/></connections></menuItem></items></menu></menuItem>
+                            <menuItem title="自定义操作（待实现）" id="GDA-action-custom"><modifierMask key="keyEquivalentModifierMask"/><menu key="submenu" title="自定义操作（待实现）" id="GDA-action-custom-sub"><items><menuItem title="配置自定义操作…（待实现）" id="GDA-action-custom-config"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-custom-config-action"/></connections></menuItem></items></menu></menuItem>
+                            <menuItem isSeparatorItem="YES" id="GDA-action-separator-4"/>
+                            <menuItem title="查看选中的修改日志…（待实现）" id="GDA-action-selected-log"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-selected-log-action"/></connections></menuItem>
+                            <menuItem title="审查选定项目（待实现）" id="GDA-action-review"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-review-action"/></connections></menuItem>
+                            <menuItem isSeparatorItem="YES" id="GDA-action-separator-5"/>
+                            <menuItem title="复制…（待实现）" id="GDA-action-copy"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-copy-action"/></connections></menuItem>
+                            <menuItem title="移动…（待实现）" id="GDA-action-move"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-move-action"/></connections></menuItem>
                         </items>
                     </menu>
                 </menuItem>
-                <menuItem title="Window" id="aUF-d1-5bR">
+                <menuItem title="窗口" id="aUF-d1-5bR">
                     <modifierMask key="keyEquivalentModifierMask"/>
-                    <menu key="submenu" title="Window" systemMenu="window" id="Td7-aD-5lo">
+                    <menu key="submenu" title="窗口" systemMenu="window" id="Td7-aD-5lo">
                         <items>
-                            <menuItem title="Minimize" keyEquivalent="m" id="OY7-WF-poV">
+                            <menuItem title="最小化" keyEquivalent="m" id="OY7-WF-poV">
                                 <connections>
                                     <action selector="performMiniaturize:" target="-1" id="VwT-WD-YPe"/>
                                 </connections>
                             </menuItem>
-                            <menuItem title="Zoom" id="R4o-n2-Eq4">
+                            <menuItem title="缩放" id="R4o-n2-Eq4">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>
                                     <action selector="performZoom:" target="-1" id="DIl-cC-cCs"/>
                                 </connections>
                             </menuItem>
-                            <menuItem isSeparatorItem="YES" id="eu3-7i-yIM"/>
+                            <menuItem title="填充（待实现）" id="GDA-window-fill"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="windowFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-window-fill-action"/></connections></menuItem>
+                            <menuItem title="居中（待实现）" id="GDA-window-center"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="windowFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-window-center-action"/></connections></menuItem>
+                            <menuItem isSeparatorItem="YES" id="GDA-window-separator-1"/>
+                            <menuItem title="移动与调整大小（待实现）" id="GDA-window-move-resize"><modifierMask key="keyEquivalentModifierMask"/><menu key="submenu" title="移动与调整大小（待实现）" id="GDA-window-move-resize-sub"><items><menuItem title="靠左（待实现）" id="GDA-window-tile-left"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="windowFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-window-tile-left-action"/></connections></menuItem><menuItem title="靠右（待实现）" id="GDA-window-tile-right"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="windowFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-window-tile-right-action"/></connections></menuItem></items></menu></menuItem>
+                            <menuItem title="全屏平铺（待实现）" id="GDA-window-fullscreen-tile"><modifierMask key="keyEquivalentModifierMask"/><menu key="submenu" title="全屏平铺（待实现）" id="GDA-window-fullscreen-tile-sub"><items><menuItem title="平铺到左侧（待实现）" id="GDA-window-fullscreen-left"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="windowFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-window-fullscreen-left-action"/></connections></menuItem><menuItem title="平铺到右侧（待实现）" id="GDA-window-fullscreen-right"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="windowFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-window-fullscreen-right-action"/></connections></menuItem></items></menu></menuItem>
+                            <menuItem isSeparatorItem="YES" id="GDA-window-separator-2"/>
+                            <menuItem title="从组中移除窗口（待实现）" id="GDA-window-remove-group"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="windowFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-window-remove-group-action"/></connections></menuItem>
+                            <menuItem isSeparatorItem="YES" id="GDA-window-separator-3"/>
+                            <menuItem title="移动到显示器（待实现）" id="GDA-window-move-display"><modifierMask key="keyEquivalentModifierMask"/><menu key="submenu" title="移动到显示器（待实现）" id="GDA-window-move-display-sub"><items><menuItem title="选择显示器…（待实现）" id="GDA-window-choose-display"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="windowFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-window-choose-display-action"/></connections></menuItem></items></menu></menuItem>
+                            <menuItem isSeparatorItem="YES" id="GDA-window-separator-4"/>
+                            <menuItem title="显示仓库浏览器" id="GDA-window-library"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="showRepositoryLibraryFromMenu:" target="Voe-Tx-rLC" id="GDA-window-library-action"/></connections></menuItem>
+                            <menuItem title="显示托管在远端的仓库（待实现）" id="GDA-window-hosted"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="windowFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-window-hosted-action"/></connections></menuItem>
+                            <menuItem isSeparatorItem="YES" id="GDA-window-separator-5"/>
+                            <menuItem title="显示上一个标签页（待实现）" id="GDA-window-previous-tab"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="windowFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-window-previous-tab-action"/></connections></menuItem>
+                            <menuItem title="显示下一个标签页（待实现）" id="GDA-window-next-tab"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="windowFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-window-next-tab-action"/></connections></menuItem>
+                            <menuItem title="将标签页移到新窗口（待实现）" id="GDA-window-tab-new-window"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="windowFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-window-tab-new-window-action"/></connections></menuItem>
                             <menuItem title="合并所有窗口" id="cGW-Qk-Ma1">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>
                                     <action selector="mergeAllRepositoryWindows:" target="Voe-Tx-rLC" id="pWm-Ec-qJ7"/>
                                 </connections>
                             </menuItem>
-                            <menuItem title="Bring All to Front" id="LE2-aR-0XJ">
+                            <menuItem title="显示标签页栏（待实现）" id="GDA-window-show-tab-bar"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="windowFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-window-show-tab-bar-action"/></connections></menuItem>
+                            <menuItem title="显示所有标签页（待实现）" id="GDA-window-show-all-tabs"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="windowFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-window-show-all-tabs-action"/></connections></menuItem>
+                            <menuItem isSeparatorItem="YES" id="eu3-7i-yIM"/>
+                            <menuItem title="置前全部窗口" id="LE2-aR-0XJ">
                                 <modifierMask key="keyEquivalentModifierMask"/>
                                 <connections>
                                     <action selector="arrangeInFront:" target="-1" id="DRN-fu-gQh"/>
