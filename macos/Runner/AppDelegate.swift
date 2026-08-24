@@ -2,6 +2,7 @@ import Cocoa
 import FlutterMacOS
 
 private let gitDesktopEngineCleanupTimeout: TimeInterval = 3.5
+private let gitDesktopWorkspaceRestorationTimeout: TimeInterval = 30
 
 func gitDesktopCanonicalRepositoryPath(_ path: String?) -> String? {
   guard let path, !path.isEmpty else {
@@ -99,10 +100,88 @@ final class GitDesktopWindowFocusHistory<Host: AnyObject> {
   }
 }
 
-/// Captures the restorable repository workspaces and their native tab state.
+/// Captures the restorable repository workspaces and merged-strip state.
 struct GitDesktopWorkspaceRestoreSnapshot {
   let paths: [String]
   let restoresMergedWorkspaces: Bool
+}
+
+struct GitDesktopWorkspaceRestorationCompletion: Equatable {
+  let resolvedPaths: [String]
+  let unresolvedPaths: [String]
+  let shouldMerge: Bool
+}
+
+enum GitDesktopWorkspaceRestorationResolution: Equatable {
+  case unrelated
+  case waiting
+  case finished(GitDesktopWorkspaceRestorationCompletion)
+}
+
+/// 中文：等待本次启动需要恢复的全部仓库给出成功或失败结果，再允许合并窗口。
+///
+/// English: Waits for every repository restored during this launch to resolve
+/// successfully or unsuccessfully before allowing the windows to merge.
+final class GitDesktopWorkspaceRestorationGate {
+  private var orderedPaths: [String] = []
+  private var pendingPaths: Set<String> = []
+  private var resolvedPaths: Set<String> = []
+  private var shouldMergeWhenFinished = false
+
+  var isWaiting: Bool {
+    !pendingPaths.isEmpty
+  }
+
+  /// 中文：开始跟踪一批待验证的恢复路径及其目标合并状态。
+  ///
+  /// English: Starts tracking a batch of restore paths and its intended merge
+  /// state after verification.
+  func begin(paths: [String], shouldMerge: Bool) {
+    var seen: Set<String> = []
+    orderedPaths = paths.filter { seen.insert($0).inserted }
+    pendingPaths = Set(orderedPaths)
+    resolvedPaths.removeAll()
+    shouldMergeWhenFinished = shouldMerge && pendingPaths.count > 1
+  }
+
+  /// 中文：记录一个恢复路径已完成，并在最后一个路径完成时返回合并决策。
+  ///
+  /// English: Resolves one restored path and returns the merge decision only
+  /// when the last pending path has completed.
+  func resolve(_ path: String) -> GitDesktopWorkspaceRestorationResolution {
+    guard pendingPaths.remove(path) != nil else {
+      return .unrelated
+    }
+    resolvedPaths.insert(path)
+    guard pendingPaths.isEmpty else {
+      return .waiting
+    }
+    return .finished(finish())
+  }
+
+  /// 中文：结束仍在等待的恢复批次，并分别返回已完成与超时路径。
+  ///
+  /// English: Finishes a still-pending restore batch and returns its resolved
+  /// and timed-out paths separately.
+  func finishPending() -> GitDesktopWorkspaceRestorationCompletion? {
+    guard !pendingPaths.isEmpty else {
+      return nil
+    }
+    return finish()
+  }
+
+  private func finish() -> GitDesktopWorkspaceRestorationCompletion {
+    let completion = GitDesktopWorkspaceRestorationCompletion(
+      resolvedPaths: orderedPaths.filter { resolvedPaths.contains($0) },
+      unresolvedPaths: orderedPaths.filter { pendingPaths.contains($0) },
+      shouldMerge: shouldMergeWhenFinished
+    )
+    orderedPaths.removeAll()
+    pendingPaths.removeAll()
+    resolvedPaths.removeAll()
+    shouldMergeWhenFinished = false
+    return completion
+  }
 }
 
 /// Persists only repository workspace paths that were successfully opened.
@@ -261,6 +340,18 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   func showAndActivate() {
     showWindow(nil)
     (window as? MainFlutterWindow)?.bringToFront()
+  }
+
+  /// 中文：恢复启动时显示窗口但不创建延迟置前任务，让 Flutter 先完成初始化。
+  ///
+  /// English: Shows a restored workspace without scheduling a delayed focus
+  /// retry, allowing Flutter to finish initialization before windows merge.
+  func showForRestoration() {
+    guard let window = window as? MainFlutterWindow else {
+      return
+    }
+    window.cancelPendingBringToFront()
+    window.orderFront(nil)
   }
 
   /// Delivers a native menu action to this workspace's Flutter Engine.
@@ -434,6 +525,12 @@ final class WindowCoordinator {
   private var unregisteredWorkspaces: [
     ObjectIdentifier: WorkspaceFlutterWindowController
   ] = [:]
+  private var mergedWorkspaceOrder: [ObjectIdentifier] = []
+  private weak var selectedMergedWorkspaceWindow: MainFlutterWindow?
+  private var isActivatingMergedWorkspace = false
+  private let workspaceRestorationGate =
+    GitDesktopWorkspaceRestorationGate()
+  private var workspaceRestorationTimeoutWorkItem: DispatchWorkItem?
   private var didRequestWorkspaceRestoration = false
   private var isTerminating = false
 
@@ -516,7 +613,11 @@ final class WindowCoordinator {
     if let canonicalPath,
        let existing = workspaceIndex.host(for: canonicalPath) {
       workspaceHistory.markRecent(existing)
-      existing.showAndActivate()
+      if restoresPreviouslyOpenWorkspace {
+        existing.showForRestoration()
+      } else {
+        existing.showAndActivate()
+      }
       completion(nil)
       return
     }
@@ -534,7 +635,11 @@ final class WindowCoordinator {
         unregisteredWorkspaces[ObjectIdentifier(controller)] = controller
       }
       workspaceHistory.markRecent(controller)
-      controller.showAndActivate()
+      if restoresPreviouslyOpenWorkspace {
+        controller.showForRestoration()
+      } else {
+        controller.showAndActivate()
+      }
       completion(nil)
     } catch {
       completion(error)
@@ -580,8 +685,14 @@ final class WindowCoordinator {
     unregisteredWorkspaces.removeValue(forKey: ObjectIdentifier(controller))
     controller.repositoryPath = repositoryPath
     controller.window?.title = "\(URL(fileURLWithPath: repositoryPath).lastPathComponent) (Git)"
+    if let window = controller.window as? MainFlutterWindow,
+       mergedWorkspaceOrder.contains(ObjectIdentifier(window)) {
+      refreshMergedWorkspaceTabStrips()
+    }
     workspaceIndex.register(controller, for: repositoryPath)
-    persistOpenWorkspaces()
+    if !resolveRestoredRepository(repositoryPath) {
+      persistOpenWorkspaces()
+    }
     notifyRepositoryLibrary(repositoryPath: repositoryPath)
   }
 
@@ -596,32 +707,57 @@ final class WindowCoordinator {
     }
     workspaceIndex.remove(controller)
     workspaceHistory.remove(controller)
-    persistOpenWorkspaces()
+    if !resolveRestoredRepository(repositoryPath) {
+      persistOpenWorkspaces()
+    }
     DispatchQueue.main.async {
       controller.requestClose()
     }
   }
 
-  /// Merges all live repository workspaces into the current native tab group.
-  /// Each tab retains its own Flutter Engine and close lifecycle.
+  /// 中文：把全部工作区收拢到一个可见窗口位置，并以自绘标签切换。
+  ///
+  /// English: Collects all workspaces into one visible window position and
+  /// switches them through the custom strip. Every workspace remains a real
+  /// NSWindow with its own Flutter Engine and close lifecycle.
   func mergeAllWorkspaceWindows() {
-    let controllers = workspaceControllers()
-    guard controllers.count > 1,
-          let primary = activeWorkspaceWindow(from: controllers) else {
+    mergeWorkspaceWindows(workspaceControllers())
+  }
+
+  /// 中文：只把指定工作区收拢为自绘标签组，不改变批次外的独立窗口。
+  ///
+  /// English: Collects only the specified workspaces into the custom strip,
+  /// leaving windows outside that batch independent.
+  private func mergeWorkspaceWindows(
+    _ controllers: [WorkspaceFlutterWindowController]
+  ) {
+    guard controllers.count > 1 else {
       return
     }
-    for controller in controllers {
-      guard let candidate = controller.window, candidate !== primary else {
-        continue
-      }
-      let existingTabs = primary.tabbedWindows ?? [primary]
-      if !existingTabs.contains(where: { $0 === candidate }) {
-        primary.tabbingMode = .preferred
-        candidate.tabbingMode = .preferred
-        primary.addTabbedWindow(candidate, ordered: .above)
+    let windows = controllers.compactMap { $0.window as? MainFlutterWindow }
+    guard windows.count > 1,
+          let primary = activeWorkspaceWindow(from: controllers),
+          windows.contains(where: { $0 === primary }) else {
+      return
+    }
+    let windowIdentifiers = Set(windows.map(ObjectIdentifier.init))
+    for previousWindow in mergedWorkspaceWindows
+    where !windowIdentifiers.contains(ObjectIdentifier(previousWindow)) {
+      previousWindow.removeWorkspaceTabStrip()
+      if !previousWindow.isVisible {
+        previousWindow.orderFront(nil)
       }
     }
-    primary.bringToFront()
+    mergedWorkspaceOrder = windows.map(ObjectIdentifier.init)
+    selectedMergedWorkspaceWindow = primary
+    let sharedFrame = primary.frame
+    windows.forEach { $0.cancelPendingBringToFront() }
+    for window in windows where window !== primary {
+      window.setFrame(sharedFrame, display: false)
+      window.orderOut(nil)
+    }
+    refreshMergedWorkspaceTabStrips()
+    primary.bringToFrontImmediately()
     persistOpenWorkspaces()
   }
 
@@ -629,29 +765,73 @@ final class WindowCoordinator {
   var canMergeAllWorkspaceWindows: Bool {
     let controllers = workspaceControllers()
     let windows = controllers.compactMap(\.window)
-    guard windows.count > 1,
-          let primary = activeWorkspaceWindow(from: controllers) else {
+    guard windows.count > 1 else {
       return false
     }
-    let primaryTabs = primary.tabbedWindows ?? [primary]
-    return windows.contains { candidate in
-      !primaryTabs.contains(where: { $0 === candidate })
-    }
+    let mergedIdentifiers = Set(mergedWorkspaceOrder)
+    return windows.contains { !mergedIdentifiers.contains(ObjectIdentifier($0)) }
   }
 
   func workspaceWillClose(_ controller: WorkspaceFlutterWindowController) {
+    let closingWindow = controller.window as? MainFlutterWindow
+    closingWindow?.cancelPendingBringToFront()
+    let closingFrame = closingWindow?.frame
+    let closingIdentifier = closingWindow.map(ObjectIdentifier.init)
+    let closingIndex = closingIdentifier.flatMap {
+      mergedWorkspaceOrder.firstIndex(of: $0)
+    }
+    let wasSelected = closingWindow === selectedMergedWorkspaceWindow
+    if let closingIdentifier {
+      mergedWorkspaceOrder.removeAll { $0 == closingIdentifier }
+    }
     workspaceIndex.remove(controller)
     unregisteredWorkspaces.removeValue(forKey: ObjectIdentifier(controller))
     workspaceHistory.remove(controller)
-    if !isTerminating {
-      persistOpenWorkspaces()
+    guard !isTerminating else {
+      return
     }
+    let remainingMergedWindows = mergedWorkspaceWindows
+    if remainingMergedWindows.count < 2 {
+      remainingMergedWindows.forEach { $0.removeWorkspaceTabStrip() }
+      mergedWorkspaceOrder.removeAll()
+      selectedMergedWorkspaceWindow = nil
+      if wasSelected, let remainingWindow = remainingMergedWindows.first {
+        if let closingFrame {
+          remainingWindow.setFrame(closingFrame, display: false)
+        }
+        DispatchQueue.main.async {
+          remainingWindow.bringToFrontImmediately()
+        }
+      }
+    } else if wasSelected {
+      let nextIndex = min(closingIndex ?? 0, remainingMergedWindows.count - 1)
+      let nextWindow = remainingMergedWindows[nextIndex]
+      if let closingFrame {
+        nextWindow.setFrame(closingFrame, display: false)
+      }
+      selectedMergedWorkspaceWindow = nextWindow
+      DispatchQueue.main.async { [weak self, weak nextWindow] in
+        guard let self, let nextWindow else {
+          return
+        }
+        self.activateMergedWorkspace(nextWindow)
+      }
+    } else {
+      refreshMergedWorkspaceTabStrips()
+    }
+    if let repositoryPath = controller.repositoryPath,
+       resolveRestoredRepository(repositoryPath) {
+      return
+    }
+    persistOpenWorkspaces()
   }
 
   /// Prevents normal window teardown during app termination from clearing the
   /// workspace list that must be restored by the next process.
   func beginApplicationTermination() {
     isTerminating = true
+    workspaceRestorationTimeoutWorkItem?.cancel()
+    workspaceRestorationTimeoutWorkItem = nil
   }
 
   /// Collects every live workspace once, including workspaces not yet bound to
@@ -667,6 +847,19 @@ final class WindowCoordinator {
       }
     }
     return controllers
+  }
+
+  /// 中文：按标签显示顺序解析仍存活的合并工作区窗口。
+  ///
+  /// English: Resolves the live merged workspace windows in visible tab order.
+  private var mergedWorkspaceWindows: [MainFlutterWindow] {
+    let liveWindows = workspaceControllers().compactMap {
+      $0.window as? MainFlutterWindow
+    }
+    let windowByIdentifier = Dictionary(
+      uniqueKeysWithValues: liveWindows.map { (ObjectIdentifier($0), $0) }
+    )
+    return mergedWorkspaceOrder.compactMap { windowByIdentifier[$0] }
   }
 
   /// Selects the current workspace as tab host, falling back to the most
@@ -691,10 +884,81 @@ final class WindowCoordinator {
     guard window.role == .workspace else {
       return
     }
+    if mergedWorkspaceOrder.contains(ObjectIdentifier(window)),
+       selectedMergedWorkspaceWindow !== window,
+       !isActivatingMergedWorkspace {
+      activateMergedWorkspace(window)
+    }
     let candidates = workspaceIndex.allHosts
       + Array(unregisteredWorkspaces.values)
     if let controller = candidates.first(where: { $0.window === window }) {
       workspaceHistory.markRecent(controller)
+    }
+  }
+
+  /// 中文：在自定义合并组中循环选择相邻工作区。
+  ///
+  /// English: Selects the adjacent workspace in the custom merged set,
+  /// wrapping at both ends to preserve native tab keyboard expectations.
+  func selectAdjacentMergedWorkspace(
+    from window: MainFlutterWindow,
+    offset: Int
+  ) -> Bool {
+    let windows = mergedWorkspaceWindows
+    guard windows.count > 1,
+          let currentIndex = windows.firstIndex(where: { $0 === window }) else {
+      return false
+    }
+    let targetIndex = (currentIndex + offset + windows.count) % windows.count
+    activateMergedWorkspace(windows[targetIndex])
+    return true
+  }
+
+  /// 中文：激活合并组中的一个工作区，并复用当前可见窗口的位置与尺寸。
+  ///
+  /// English: Activates one workspace in the merged set while reusing the
+  /// currently visible window's frame.
+  private func activateMergedWorkspace(_ window: MainFlutterWindow) {
+    guard mergedWorkspaceOrder.contains(ObjectIdentifier(window)) else {
+      window.bringToFront()
+      return
+    }
+    guard !isActivatingMergedWorkspace else {
+      return
+    }
+    isActivatingMergedWorkspace = true
+    let previousWindow = selectedMergedWorkspaceWindow
+    let sharedFrame = previousWindow?.frame ?? window.frame
+    if previousWindow !== window {
+      previousWindow?.cancelPendingBringToFront()
+      previousWindow?.orderOut(nil)
+      window.setFrame(sharedFrame, display: false)
+    }
+    selectedMergedWorkspaceWindow = window
+    refreshMergedWorkspaceTabStrips()
+    window.bringToFrontImmediately()
+    isActivatingMergedWorkspace = false
+  }
+
+  /// 中文：刷新合并组所有窗口顶部的单行矩形标签条。
+  ///
+  /// English: Refreshes the single rectangular strip hosted by every workspace
+  /// in the custom merged set.
+  private func refreshMergedWorkspaceTabStrips() {
+    let windows = mergedWorkspaceWindows
+    guard windows.count > 1,
+          let selectedWindow = selectedMergedWorkspaceWindow,
+          windows.contains(where: { $0 === selectedWindow }) else {
+      windows.forEach { $0.removeWorkspaceTabStrip() }
+      return
+    }
+    windows.forEach { candidate in
+      candidate.configureWorkspaceTabStrip(
+        windows: windows,
+        selectedWindow: selectedWindow
+      ) { [weak self] requestedWindow in
+        self?.activateMergedWorkspace(requestedWindow)
+      }
     }
   }
 
@@ -781,6 +1045,8 @@ final class WindowCoordinator {
     workspaceIndex.removeAll()
     unregisteredWorkspaces.removeAll()
     workspaceHistory.removeAll()
+    mergedWorkspaceOrder.removeAll()
+    selectedMergedWorkspaceWindow = nil
     repositoryLibraryChannel?.setMethodCallHandler(nil)
   }
 
@@ -809,16 +1075,97 @@ final class WindowCoordinator {
         paths: restorablePaths,
         restoresMergedWorkspaces: restoresMergedWorkspaces
       )
+      self.workspaceRestorationGate.begin(
+        paths: restorablePaths,
+        shouldMerge: restoresMergedWorkspaces
+      )
+      self.scheduleWorkspaceRestorationTimeout()
       for repositoryPath in restorablePaths {
         self.openWorkspace(
           repositoryPath: repositoryPath,
           initialAction: nil,
           restoresPreviouslyOpenWorkspace: true
-        ) { _ in }
+        ) { [weak self] error in
+          guard error != nil else {
+            return
+          }
+          _ = self?.resolveRestoredRepository(repositoryPath)
+        }
       }
-      if restoresMergedWorkspaces {
-        self.mergeAllWorkspaceWindows()
+    }
+  }
+
+  /// 中文：完成一个恢复仓库的验证；全部完成后才合并并持久化最终窗口状态。
+  ///
+  /// English: Completes verification for one restored repository, merging and
+  /// persisting the final window state only after the entire batch resolves.
+  @discardableResult
+  private func resolveRestoredRepository(_ repositoryPath: String) -> Bool {
+    switch workspaceRestorationGate.resolve(repositoryPath) {
+    case .unrelated:
+      return false
+    case .waiting:
+      return true
+    case let .finished(completion):
+      finishWorkspaceRestoration(completion)
+      return true
+    }
+  }
+
+  /// 中文：为恢复批次安排有界等待，避免卡住的 Git 读取永久阻塞窗口状态。
+  ///
+  /// English: Bounds the restore batch so a stalled Git read cannot block
+  /// window-state persistence indefinitely.
+  private func scheduleWorkspaceRestorationTimeout() {
+    workspaceRestorationTimeoutWorkItem?.cancel()
+    workspaceRestorationTimeoutWorkItem = nil
+    guard workspaceRestorationGate.isWaiting else {
+      return
+    }
+    let workItem = DispatchWorkItem { [weak self] in
+      guard let self, !self.isTerminating,
+            let completion = self.workspaceRestorationGate.finishPending()
+      else {
+        return
       }
+      self.finishWorkspaceRestoration(completion)
+    }
+    workspaceRestorationTimeoutWorkItem = workItem
+    DispatchQueue.main.asyncAfter(
+      deadline: .now() + gitDesktopWorkspaceRestorationTimeout,
+      execute: workItem
+    )
+  }
+
+  /// 中文：完成恢复批次，只合并已验证成员，并关闭超时成员。
+  ///
+  /// English: Finishes a restore batch by merging only verified members and
+  /// closing members that timed out.
+  private func finishWorkspaceRestoration(
+    _ completion: GitDesktopWorkspaceRestorationCompletion
+  ) {
+    workspaceRestorationTimeoutWorkItem?.cancel()
+    workspaceRestorationTimeoutWorkItem = nil
+
+    for repositoryPath in completion.unresolvedPaths {
+      guard let controller = workspaceIndex.host(for: repositoryPath) else {
+        continue
+      }
+      workspaceIndex.remove(controller)
+      workspaceHistory.remove(controller)
+      (controller.window as? MainFlutterWindow)?.orderOut(nil)
+      DispatchQueue.main.async {
+        controller.requestClose()
+      }
+    }
+
+    let restoredControllers = completion.resolvedPaths.compactMap {
+      workspaceIndex.host(for: $0)
+    }
+    if completion.shouldMerge, restoredControllers.count > 1 {
+      mergeWorkspaceWindows(restoredControllers)
+    } else {
+      persistOpenWorkspaces()
     }
   }
 
@@ -835,23 +1182,26 @@ final class WindowCoordinator {
   /// Empty/new workspaces are intentionally excluded until Flutter confirms a
   /// repository has opened through `repositoryOpened`.
   private func persistOpenWorkspaces() {
+    guard !workspaceRestorationGate.isWaiting else {
+      return
+    }
     workspaceRestoreStore.save(
       paths: workspaceIndex.allHosts.compactMap(\.repositoryPath),
       restoresMergedWorkspaces: areAllWorkspaceWindowsMerged
     )
   }
 
-  /// Whether every restorable repository workspace belongs to one native tab group.
+  /// Whether every restorable repository workspace belongs to one merged strip.
   private var areAllWorkspaceWindowsMerged: Bool {
     // Empty workspaces are intentionally not persisted, so they must not make
     // a persisted group of repository workspaces look unmerged.
     let windows = workspaceIndex.allHosts.compactMap(\.window)
-    guard windows.count > 1, let primary = windows.first else {
+    guard windows.count > 1 else {
       return false
     }
-    let tabGroup = primary.tabbedWindows ?? [primary]
-    return windows.allSatisfy { candidate in
-      tabGroup.contains { tab in tab === candidate }
+    let mergedIdentifiers = Set(mergedWorkspaceOrder)
+    return windows.allSatisfy {
+      mergedIdentifiers.contains(ObjectIdentifier($0))
     }
   }
 
@@ -927,6 +1277,16 @@ class AppDelegate: FlutterAppDelegate {
     windowCoordinator.windowDidBecomeKey(window)
   }
 
+  func selectAdjacentMergedWorkspace(
+    from window: MainFlutterWindow,
+    offset: Int
+  ) -> Bool {
+    windowCoordinator.selectAdjacentMergedWorkspace(
+      from: window,
+      offset: offset
+    )
+  }
+
   func handleShortcut(_ event: NSEvent) -> Bool {
     let sourceWindow = NSApp.keyWindow as? MainFlutterWindow
     if gitDesktopIsRepositoryWindowToggle(event) {
@@ -941,10 +1301,10 @@ class AppDelegate: FlutterAppDelegate {
     return false
   }
 
-  /// 中文：将全部仓库工作区合并为当前原生窗口的标签页。
+  /// 中文：将全部仓库工作区收拢为单行矩形标签组。
   ///
-  /// English: Merges all live repository workspaces into one native macOS tab
-  /// group without sharing their Flutter Engine lifecycles.
+  /// English: Collects all live repository workspaces into one rectangular
+  /// strip without sharing their Flutter Engine lifecycles.
   @IBAction func mergeAllRepositoryWindows(_ sender: Any?) {
     windowCoordinator.mergeAllWorkspaceWindows()
   }

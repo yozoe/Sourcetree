@@ -6,6 +6,12 @@ import XCTest
 class RunnerTests: XCTestCase {
   private final class TestWorkspace {}
 
+  func testRuntimeDockIconDoesNotApplyASecondSafeAreaInset() {
+    let bounds = NSRect(x: 0, y: 0, width: 128, height: 128)
+
+    XCTAssertEqual(gitDesktopDockIconFrame(for: bounds), bounds)
+  }
+
   func testWorkspaceArgumentsIdentifyTheEngineAndInitialRepository() {
     XCTAssertEqual(
       gitDesktopWorkspaceArguments(
@@ -94,6 +100,93 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testWorkspaceTabStripUsesEqualRectangularSegments() {
+    var requestedIndex: Int?
+    let strip = GitDesktopWorkspaceTabStripView(tabs: [
+      GitDesktopWorkspaceTabDefinition(
+        title: "Alpha (Git)",
+        isSelected: false,
+        action: { requestedIndex = 0 }
+      ),
+      GitDesktopWorkspaceTabDefinition(
+        title: "Beta (Git)",
+        isSelected: true,
+        action: { requestedIndex = 1 }
+      ),
+      GitDesktopWorkspaceTabDefinition(
+        title: "Gamma (Git)",
+        isSelected: false,
+        action: { requestedIndex = 2 }
+      ),
+    ])
+    strip.frame = NSRect(
+      x: 0,
+      y: 0,
+      width: 900,
+      height: gitDesktopWorkspaceTabStripHeight
+    )
+    strip.layoutSubtreeIfNeeded()
+
+    XCTAssertEqual(strip.frame.height, 29)
+    XCTAssertEqual(strip.tabButtons.map(\.title), [
+      "Alpha (Git)",
+      "Beta (Git)",
+      "Gamma (Git)",
+    ])
+    XCTAssertEqual(strip.tabButtons.map(\.isSelectedTab), [false, true, false])
+    XCTAssertEqual(strip.tabButtons[0].frame.width, 300, accuracy: 0.5)
+    XCTAssertEqual(strip.tabButtons[1].frame.width, 300, accuracy: 0.5)
+    XCTAssertEqual(strip.tabButtons[2].frame.width, 300, accuracy: 0.5)
+    XCTAssertFalse(strip.tabButtons[0].drawsLeadingDivider)
+    XCTAssertTrue(strip.tabButtons[1].drawsLeadingDivider)
+    strip.tabButtons[2].performClick(nil)
+    XCTAssertEqual(requestedIndex, 2)
+  }
+
+  func testWorkspaceWindowInstallsCustomStripWithoutReplacingNativeTitle() throws {
+    let controller = try WorkspaceFlutterWindowController(
+      repositoryPath: nil,
+      initialAction: nil,
+      coordinator: WindowCoordinator()
+    )
+    let window = try XCTUnwrap(controller.window as? MainFlutterWindow)
+    defer {
+      window.removeWorkspaceTabStrip()
+      controller.close()
+    }
+    window.title = "Alpha (Git)"
+
+    window.configureWorkspaceTabStrip(
+      windows: [window, window],
+      selectedWindow: window
+    )
+
+    XCTAssertEqual(window.tab.title, "Alpha (Git)")
+    XCTAssertEqual(window.tab.toolTip, "Alpha (Git)")
+    XCTAssertNil(window.tab.attributedTitle)
+    XCTAssertNil(window.tab.accessoryView)
+    XCTAssertNotNil(window.workspaceTabStripView)
+    XCTAssertTrue(window.titlebarAccessoryViewControllers.isEmpty)
+  }
+
+  func testCancelledDelayedWindowActivationDoesNotRun() {
+    let activation = GitDesktopDelayedWindowActivation()
+    var didRun = false
+    activation.schedule(after: 0.01) {
+      didRun = true
+    }
+    activation.cancel()
+
+    let focusExpectation = expectation(
+      description: "activation stays cancelled"
+    )
+    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
+      focusExpectation.fulfill()
+    }
+    wait(for: [focusExpectation], timeout: 1)
+    XCTAssertFalse(didRun)
+  }
+
   func testWorkspaceIndexReplacesAndRemovesOnlyTheOwnedHost() {
     let index = GitDesktopWorkspaceIndex<TestWorkspace>()
     let first = TestWorkspace()
@@ -159,6 +252,63 @@ class RunnerTests: XCTestCase {
     store.save(paths: ["/tmp/example"], restoresMergedWorkspaces: true)
 
     XCTAssertFalse(store.snapshot.restoresMergedWorkspaces)
+  }
+
+  func testRestorationGateWaitsForEveryWorkspaceBeforeMerging() {
+    let gate = GitDesktopWorkspaceRestorationGate()
+    gate.begin(paths: ["/tmp/first", "/tmp/second"], shouldMerge: true)
+
+    XCTAssertTrue(gate.isWaiting)
+    XCTAssertEqual(gate.resolve("/tmp/unknown"), .unrelated)
+    XCTAssertEqual(gate.resolve("/tmp/first"), .waiting)
+    XCTAssertTrue(gate.isWaiting)
+    XCTAssertEqual(
+      gate.resolve("/tmp/second"),
+      .finished(
+        GitDesktopWorkspaceRestorationCompletion(
+          resolvedPaths: ["/tmp/first", "/tmp/second"],
+          unresolvedPaths: [],
+          shouldMerge: true
+        )
+      )
+    )
+    XCTAssertFalse(gate.isWaiting)
+  }
+
+  func testRestorationGateTimeoutKeepsOnlyResolvedBatchMembers() throws {
+    let gate = GitDesktopWorkspaceRestorationGate()
+    gate.begin(
+      paths: ["/tmp/first", "/tmp/second", "/tmp/third"],
+      shouldMerge: true
+    )
+
+    XCTAssertEqual(gate.resolve("/tmp/second"), .waiting)
+    let completion = try XCTUnwrap(gate.finishPending())
+
+    XCTAssertEqual(completion.resolvedPaths, ["/tmp/second"])
+    XCTAssertEqual(
+      completion.unresolvedPaths,
+      ["/tmp/first", "/tmp/third"]
+    )
+    XCTAssertTrue(completion.shouldMerge)
+    XCTAssertFalse(gate.isWaiting)
+    XCTAssertEqual(gate.resolve("/tmp/first"), .unrelated)
+  }
+
+  func testRestorationGateDoesNotIncludePathsOutsideItsBatch() throws {
+    let gate = GitDesktopWorkspaceRestorationGate()
+    gate.begin(paths: ["/tmp/first", "/tmp/second"], shouldMerge: true)
+
+    XCTAssertEqual(gate.resolve("/tmp/new-workspace"), .unrelated)
+    XCTAssertEqual(gate.resolve("/tmp/first"), .waiting)
+    let resolution = gate.resolve("/tmp/second")
+    guard case let .finished(completion) = resolution else {
+      XCTFail("Expected the restore batch to finish")
+      return
+    }
+
+    XCTAssertEqual(completion.resolvedPaths, ["/tmp/first", "/tmp/second"])
+    XCTAssertFalse(completion.resolvedPaths.contains("/tmp/new-workspace"))
   }
 
   func testRepositoryWindowShortcutRecognition() throws {
