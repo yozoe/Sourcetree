@@ -102,20 +102,24 @@ class RunnerTests: XCTestCase {
 
   func testWorkspaceTabStripUsesEqualRectangularSegments() {
     var requestedIndex: Int?
+    var closedIndex: Int?
     let strip = GitDesktopWorkspaceTabStripView(tabs: [
       GitDesktopWorkspaceTabDefinition(
         title: "Alpha (Git)",
         isSelected: false,
+        closeAction: { closedIndex = 0 },
         action: { requestedIndex = 0 }
       ),
       GitDesktopWorkspaceTabDefinition(
         title: "Beta (Git)",
         isSelected: true,
+        closeAction: { closedIndex = 1 },
         action: { requestedIndex = 1 }
       ),
       GitDesktopWorkspaceTabDefinition(
         title: "Gamma (Git)",
         isSelected: false,
+        closeAction: { closedIndex = 2 },
         action: { requestedIndex = 2 }
       ),
     ])
@@ -134,13 +138,29 @@ class RunnerTests: XCTestCase {
       "Gamma (Git)",
     ])
     XCTAssertEqual(strip.tabButtons.map(\.isSelectedTab), [false, true, false])
+    strip.tabButtons[0].updateSelection(true)
+    strip.tabButtons[1].updateSelection(false)
+    XCTAssertEqual(strip.tabButtons.map(\.isSelectedTab), [true, false, false])
     XCTAssertEqual(strip.tabButtons[0].frame.width, 300, accuracy: 0.5)
     XCTAssertEqual(strip.tabButtons[1].frame.width, 300, accuracy: 0.5)
     XCTAssertEqual(strip.tabButtons[2].frame.width, 300, accuracy: 0.5)
+    XCTAssertEqual(strip.tabButtons[0].frame.minY, 0, accuracy: 0.5)
+    XCTAssertEqual(strip.tabButtons[1].frame.minY, 0, accuracy: 0.5)
+    XCTAssertEqual(strip.tabButtons[2].frame.minY, 0, accuracy: 0.5)
+    XCTAssertEqual(strip.tabButtons[0].frame.height, 29, accuracy: 0.5)
+    XCTAssertEqual(strip.tabButtons[1].frame.height, 29, accuracy: 0.5)
+    XCTAssertEqual(strip.tabButtons[2].frame.height, 29, accuracy: 0.5)
     XCTAssertFalse(strip.tabButtons[0].drawsLeadingDivider)
     XCTAssertTrue(strip.tabButtons[1].drawsLeadingDivider)
     strip.tabButtons[2].performClick(nil)
     XCTAssertEqual(requestedIndex, 2)
+    strip.tabButtons[0].closeButton.performClick(nil)
+    XCTAssertEqual(closedIndex, 0)
+    XCTAssertEqual(requestedIndex, 2)
+    XCTAssertEqual(
+      strip.tabButtons[0].closeButton.toolTip,
+      "关闭 Alpha (Git)"
+    )
   }
 
   func testWorkspaceWindowInstallsCustomStripWithoutReplacingNativeTitle() throws {
@@ -149,15 +169,26 @@ class RunnerTests: XCTestCase {
       initialAction: nil,
       coordinator: WindowCoordinator()
     )
+    let secondController = try WorkspaceFlutterWindowController(
+      repositoryPath: nil,
+      initialAction: nil,
+      coordinator: WindowCoordinator()
+    )
     let window = try XCTUnwrap(controller.window as? MainFlutterWindow)
+    let secondWindow = try XCTUnwrap(
+      secondController.window as? MainFlutterWindow
+    )
     defer {
       window.removeWorkspaceTabStrip()
       controller.close()
+      secondController.close()
     }
     window.title = "Alpha (Git)"
+    secondWindow.title = "Beta (Git)"
+    window.animationBehavior = .documentWindow
 
     window.configureWorkspaceTabStrip(
-      windows: [window, window],
+      windows: [window, secondWindow],
       selectedWindow: window
     )
 
@@ -167,6 +198,38 @@ class RunnerTests: XCTestCase {
     XCTAssertNil(window.tab.accessoryView)
     XCTAssertNotNil(window.workspaceTabStripView)
     XCTAssertTrue(window.titlebarAccessoryViewControllers.isEmpty)
+    XCTAssertEqual(window.animationBehavior, .none)
+    XCTAssertEqual(
+      window.workspaceTabStripView?.tabButtons.map(\.isSelectedTab),
+      [true, false]
+    )
+
+    let initialStrip = try XCTUnwrap(window.workspaceTabStripView)
+    secondWindow.title = "Beta Renamed (Git)"
+    window.configureWorkspaceTabStrip(
+      windows: [window, secondWindow],
+      selectedWindow: secondWindow
+    )
+    XCTAssertTrue(window.workspaceTabStripView === initialStrip)
+    XCTAssertEqual(
+      window.workspaceTabStripView?.tabButtons.map(\.isSelectedTab),
+      [false, true]
+    )
+    XCTAssertEqual(
+      window.workspaceTabStripView?.tabButtons.map(\.title),
+      ["Alpha (Git)", "Beta Renamed (Git)"]
+    )
+    XCTAssertEqual(
+      window.workspaceTabStripView?.tabButtons[1].toolTip,
+      "Beta Renamed (Git)"
+    )
+    XCTAssertEqual(
+      window.workspaceTabStripView?.tabButtons[1].closeButton.toolTip,
+      "关闭 Beta Renamed (Git)"
+    )
+
+    window.removeWorkspaceTabStrip()
+    XCTAssertEqual(window.animationBehavior, .documentWindow)
   }
 
   func testCancelledDelayedWindowActivationDoesNotRun() {

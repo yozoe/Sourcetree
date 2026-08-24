@@ -65,19 +65,68 @@ final class GitDesktopDelayedWindowActivation {
   }
 }
 
+/// 中文：绘制工作区标签内的独立关闭按钮，并把关闭动作交给对应窗口。
+///
+/// English: Draws the close control inside a workspace tab and delegates the
+/// close action to the represented window.
+final class GitDesktopWorkspaceTabCloseButton: NSButton {
+  private let actionHandler: () -> Void
+
+  init(tabTitle: String, action: @escaping () -> Void) {
+    actionHandler = action
+    super.init(frame: .zero)
+    title = ""
+    image = NSImage(
+      systemSymbolName: "xmark",
+      accessibilityDescription: nil
+    )?.withSymbolConfiguration(
+      NSImage.SymbolConfiguration(pointSize: 9, weight: .semibold)
+    )
+    imagePosition = .imageOnly
+    imageScaling = .scaleProportionallyDown
+    contentTintColor = .secondaryLabelColor
+    isBordered = false
+    focusRingType = .none
+    setButtonType(.momentaryPushIn)
+    toolTip = "关闭 \(tabTitle)"
+    target = self
+    self.action = #selector(closeTab)
+    setAccessibilityLabel("关闭 \(tabTitle)")
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  @objc private func closeTab() {
+    actionHandler()
+  }
+
+  /// 中文：仓库标题变化时同步关闭按钮的提示与辅助功能名称。
+  ///
+  /// English: Synchronizes the close button's tooltip and accessibility label
+  /// after the repository title changes.
+  func updateTabTitle(_ tabTitle: String) {
+    toolTip = "关闭 \(tabTitle)"
+    setAccessibilityLabel("关闭 \(tabTitle)")
+  }
+}
+
 /// 中文：绘制工作区标签条中的单个等宽矩形标签，并把点击交还给窗口协调器。
 ///
 /// English: Draws one equal-width rectangular workspace tab while the window
 /// coordinator preserves each workspace's independent lifecycle.
 final class GitDesktopWorkspaceTabButton: NSButton {
-  let isSelectedTab: Bool
+  private(set) var isSelectedTab: Bool
   let drawsLeadingDivider: Bool
+  private(set) var closeButton: GitDesktopWorkspaceTabCloseButton!
   private var isPointerInside = false
 
   init(
     title: String,
     isSelected: Bool,
     drawsLeadingDivider: Bool,
+    closeAction: @escaping () -> Void,
     action: @escaping () -> Void
   ) {
     isSelectedTab = isSelected
@@ -95,6 +144,20 @@ final class GitDesktopWorkspaceTabButton: NSButton {
     setAccessibilityLabel(title)
     setAccessibilityRole(.radioButton)
     setAccessibilityValue(isSelected)
+
+    let closeButton = GitDesktopWorkspaceTabCloseButton(
+      tabTitle: title,
+      action: closeAction
+    )
+    closeButton.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(closeButton)
+    NSLayoutConstraint.activate([
+      closeButton.trailingAnchor.constraint(equalTo: trailingAnchor, constant: -7),
+      closeButton.centerYAnchor.constraint(equalTo: centerYAnchor),
+      closeButton.widthAnchor.constraint(equalToConstant: 18),
+      closeButton.heightAnchor.constraint(equalToConstant: 18),
+    ])
+    self.closeButton = closeButton
   }
 
   required init?(coder: NSCoder) {
@@ -105,6 +168,34 @@ final class GitDesktopWorkspaceTabButton: NSButton {
 
   @objc private func activateTab() {
     actionHandler()
+  }
+
+  /// 中文：原位更新标签选中态，避免切换仓库时重建视图层级。
+  ///
+  /// English: Updates selection in place so repository switches do not
+  /// rebuild the tab view hierarchy.
+  func updateSelection(_ isSelected: Bool) {
+    guard isSelectedTab != isSelected else {
+      return
+    }
+    isSelectedTab = isSelected
+    setAccessibilityValue(isSelected)
+    needsDisplay = true
+  }
+
+  /// 中文：原位同步仓库标题及其提示，不重建标签和 Flutter 内容布局。
+  ///
+  /// English: Synchronizes the repository title and hints in place without
+  /// rebuilding the tab or Flutter content layout.
+  func updateTitle(_ title: String) {
+    guard self.title != title else {
+      return
+    }
+    self.title = title
+    toolTip = title
+    setAccessibilityLabel(title)
+    closeButton.updateTabTitle(title)
+    needsDisplay = true
   }
 
   override func updateTrackingAreas() {
@@ -176,9 +267,9 @@ final class GitDesktopWorkspaceTabButton: NSButton {
     }
     let textHeight = ceil(font.ascender - font.descender)
     let textRect = NSRect(
-      x: 12,
+      x: 28,
       y: floor((bounds.height - textHeight) / 2),
-      width: max(0, bounds.width - 24),
+      width: max(0, bounds.width - 56),
       height: textHeight
     )
     title.draw(
@@ -200,6 +291,7 @@ final class GitDesktopWorkspaceTabButton: NSButton {
 struct GitDesktopWorkspaceTabDefinition {
   let title: String
   let isSelected: Bool
+  let closeAction: () -> Void
   let action: () -> Void
 }
 
@@ -209,6 +301,7 @@ struct GitDesktopWorkspaceTabDefinition {
 /// Sourcetree's compact rectangular workspace strip.
 final class GitDesktopWorkspaceTabStripView: NSView {
   private(set) var tabButtons: [GitDesktopWorkspaceTabButton] = []
+  private var windowIdentifiers: [ObjectIdentifier]?
   private let stackView = NSStackView()
 
   convenience init(
@@ -221,7 +314,10 @@ final class GitDesktopWorkspaceTabStripView: NSView {
     let tabs = windows.map { window in
       GitDesktopWorkspaceTabDefinition(
         title: window.title,
-        isSelected: window === selectedWindow
+        isSelected: window === selectedWindow,
+        closeAction: { [weak window] in
+          window?.performClose(nil)
+        }
       ) { [weak window] in
         guard let window else {
           return
@@ -230,6 +326,7 @@ final class GitDesktopWorkspaceTabStripView: NSView {
       }
     }
     self.init(tabs: tabs)
+    windowIdentifiers = windows.map(ObjectIdentifier.init)
   }
 
   init(tabs: [GitDesktopWorkspaceTabDefinition]) {
@@ -261,12 +358,46 @@ final class GitDesktopWorkspaceTabStripView: NSView {
       let button = GitDesktopWorkspaceTabButton(
         title: tab.title,
         isSelected: tab.isSelected,
-        drawsLeadingDivider: index > 0
+        drawsLeadingDivider: index > 0,
+        closeAction: tab.closeAction
       ) {
         tab.action()
       }
+      button.translatesAutoresizingMaskIntoConstraints = false
       tabButtons.append(button)
       stackView.addArrangedSubview(button)
+      button.heightAnchor.constraint(equalTo: stackView.heightAnchor).isActive =
+        true
+    }
+  }
+
+  /// 中文：判断现有标签条是否仍对应相同顺序的工作区窗口。
+  ///
+  /// English: Returns whether this strip still represents the same ordered
+  /// workspace windows.
+  func represents(windows: [MainFlutterWindow]) -> Bool {
+    windowIdentifiers == windows.map(ObjectIdentifier.init)
+  }
+
+  /// 中文：原位同步全部仓库标题与目标窗口选中态，不触发布局或内容缩放。
+  ///
+  /// English: Synchronizes repository titles and the target selection state
+  /// in place without triggering layout or content scaling.
+  func updateContent(
+    windows: [MainFlutterWindow],
+    selectedWindow: MainFlutterWindow
+  ) {
+    guard let windowIdentifiers,
+          let selectedIndex = windowIdentifiers.firstIndex(
+            of: ObjectIdentifier(selectedWindow)
+          ),
+          windows.count == tabButtons.count else {
+      return
+    }
+    for (index, pair) in zip(tabButtons, windows).enumerated() {
+      let (button, window) = pair
+      button.updateTitle(window.title)
+      button.updateSelection(index == selectedIndex)
     }
   }
 
@@ -492,6 +623,7 @@ private final class RepositoryDirectoryDropContainerViewController:
 class MainFlutterWindow: NSWindow {
   private(set) var role = GitDesktopWindowRole.repositoryLibrary
   private(set) var workspaceTabStripView: GitDesktopWorkspaceTabStripView?
+  private var animationBehaviorBeforeWorkspaceMerge: AnimationBehavior?
   private let delayedBringToFrontActivation =
     GitDesktopDelayedWindowActivation()
   private var directoryDropContainer:
@@ -542,6 +674,20 @@ class MainFlutterWindow: NSWindow {
     tab.attributedTitle = nil
     tab.accessoryView = nil
 
+    if animationBehaviorBeforeWorkspaceMerge == nil {
+      animationBehaviorBeforeWorkspaceMerge = animationBehavior
+    }
+    animationBehavior = .none
+
+    if let workspaceTabStripView,
+       workspaceTabStripView.represents(windows: windows) {
+      workspaceTabStripView.updateContent(
+        windows: windows,
+        selectedWindow: selectedWindow
+      )
+      return
+    }
+
     let tabStripView = GitDesktopWorkspaceTabStripView(
       windows: windows,
       selectedWindow: selectedWindow,
@@ -561,6 +707,10 @@ class MainFlutterWindow: NSWindow {
     }
     workspaceTabStripView = nil
     directoryDropContainer?.workspaceTabStripView = nil
+    if let animationBehaviorBeforeWorkspaceMerge {
+      animationBehavior = animationBehaviorBeforeWorkspaceMerge
+      self.animationBehaviorBeforeWorkspaceMerge = nil
+    }
   }
 
   /// Installs the Flutter view below an AppKit drag destination container.
