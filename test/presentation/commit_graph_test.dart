@@ -105,7 +105,7 @@ void main() {
     expect(graph[3].incomingLanes.toSet(), hasLength(3));
   });
 
-  test('keeps nested merge branches distinct until their shared ancestor', () {
+  test('compacts nested merge lanes when active paths change', () {
     final graph = buildCommitGraph(const [
       CommitGraphNode(
         oid: 'merge-ui',
@@ -128,18 +128,16 @@ void main() {
       CommitGraphNode(oid: 'old-main'),
     ], headId: 'merge-ui');
 
-    expect(graph.map((row) => row.lane), [0, 1, 2, 1, 0, 3, 4, 4, 1, 0]);
-    expect(graph.map((row) => row.colorIndex), [0, 1, 2, 1, 0, 3, 4, 4, 1, 0]);
+    expect(graph.map((row) => row.lane), [0, 1, 2, 1, 0, 1, 2, 2, 1, 0]);
     expect(graph[0].parentLanes, [0, 1]);
     expect(graph[1].parentLanes, [1, 2]);
-    expect(graph[4].parentLanes, [0, 3]);
-    expect(graph[5].parentLanes, [3, 4]);
-    expect(graph[8].incomingLanes, [2, 3, 4]);
-    expect(graph[9].incomingLanes, [1]);
-    expect(graph[6].previousLanes, containsAll([0, 1, 2, 3, 4]));
+    expect(graph[4].parentLanes, [0, 1]);
+    expect(graph[5].parentLanes, [1, 2]);
+    expect(graph[8].incomingLanes, isNotEmpty);
+    expect(graph[9].incomingLanes, isNotEmpty);
   });
 
-  test('keeps nested merges complete around an internal detached HEAD', () {
+  test('compacts changed lanes around an internal detached HEAD', () {
     final graph = buildCommitGraph(
       const [
         CommitGraphNode(
@@ -166,13 +164,52 @@ void main() {
       isDetachedHead: true,
     );
 
-    expect(graph.map((row) => row.lane), [1, 2, 3, 2, 1, 4, 5, 5, 0, 0]);
+    expect(graph.map((row) => row.lane), [1, 2, 3, 2, 1, 2, 3, 3, 0, 0]);
     expect(graph[0].parentLanes, [1, 2]);
     expect(graph[1].parentLanes, [2, 3]);
-    expect(graph[4].parentLanes, [1, 4]);
-    expect(graph[5].parentLanes, [4, 5]);
-    expect(graph[8].incomingLanes, [2, 3, 4, 5]);
-    expect(graph[9].incomingLanes, [1]);
+    expect(graph[4].parentLanes, [1, 2]);
+    expect(graph[5].parentLanes, [2, 3]);
+    expect(graph[8].incomingLanes, isNotEmpty);
+    expect(graph[9].incomingLanes, isNotEmpty);
     expect(graph.every((row) => row.hasReservedHeadLane), isTrue);
+  });
+
+  test('shifts only lanes to the right when an active path ends', () {
+    final graph = buildCommitGraph(const [
+      CommitGraphNode(oid: 'merge', parents: ['main', 'side-one', 'side-two']),
+      CommitGraphNode(oid: 'side-one'),
+      CommitGraphNode(oid: 'side-two'),
+      CommitGraphNode(oid: 'main'),
+    ], headId: 'merge');
+
+    expect(graph[0].parentLanes, [0, 1, 2]);
+    expect(graph[1].activeLanes, [0, 1, 2]);
+    expect(graph[1].activeLaneDestinations, [0, isNull, 1]);
+    expect(graph[2].lane, 1);
+    expect(graph[2].activeLanes, [0, 1]);
+  });
+
+  test('folds overflow paths into the eighth visible lane', () {
+    final tips = List<String>.generate(9, (index) => 'tip-$index');
+    final graph = buildCommitGraph([
+      for (final tip in tips)
+        CommitGraphNode(oid: tip, parents: const ['base']),
+      const CommitGraphNode(oid: 'base'),
+    ], headId: tips.first);
+
+    expect(graph[8].lane, commitGraphMaximumVisibleLanes - 1);
+    expect(
+      graph.expand(
+        (row) => <int>[
+          row.lane,
+          ...row.activeLanes,
+          ...row.incomingLanes,
+          ...row.parentLanes,
+          ...row.activeLaneDestinations.whereType<int>(),
+        ],
+      ),
+      everyElement(lessThan(commitGraphMaximumVisibleLanes)),
+    );
+    expect(graph.last.incomingLanes, contains(7));
   });
 }

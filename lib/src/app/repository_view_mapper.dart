@@ -233,6 +233,9 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
         ),
     ],
     commits: commits,
+    hasMoreHistory: state.hasMoreHistory,
+    isHistoryLoading: state.isHistoryLoading,
+    historyLoadError: state.historyLoadError,
     focusedRefCommitId: focusedRefCommitId,
     changes: changes,
     selectedCommit: selectedCommit == null

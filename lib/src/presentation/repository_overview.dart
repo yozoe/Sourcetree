@@ -42,6 +42,7 @@ final class RepositoryOverviewCallbacks {
   const RepositoryOverviewCallbacks({
     this.onAction,
     this.onSearchChanged,
+    this.onLoadMoreHistory,
     this.onRefSelected,
     this.onRefActivated,
     this.onRefContextAction,
@@ -61,6 +62,7 @@ final class RepositoryOverviewCallbacks {
 
   final RepositoryActionCallback? onAction;
   final ValueChanged<String>? onSearchChanged;
+  final VoidCallback? onLoadMoreHistory;
   final RepositoryRefCallback? onRefSelected;
   final RepositoryRefCallback? onRefActivated;
   final RepositoryRefContextActionCallback? onRefContextAction;
@@ -350,6 +352,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                     Expanded(
                       child: _HistoryPane(
                         repository: repository,
+                        onLoadMore: widget.callbacks.onLoadMoreHistory,
                         onSelected: widget.callbacks.onCommitSelected,
                         onActivated: widget.callbacks.onCommitActivated,
                         onContextAction: widget.callbacks.onCommitContextAction,
@@ -458,6 +461,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                     Expanded(
                       child: _HistoryPane(
                         repository: repository,
+                        onLoadMore: widget.callbacks.onLoadMoreHistory,
                         onSelected: widget.callbacks.onCommitSelected,
                         onActivated: widget.callbacks.onCommitActivated,
                         onContextAction: widget.callbacks.onCommitContextAction,
@@ -518,6 +522,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
       ),
       _CompactPane.history => _HistoryPane(
         repository: repository,
+        onLoadMore: widget.callbacks.onLoadMoreHistory,
         onSelected: widget.callbacks.onCommitSelected,
         onActivated: widget.callbacks.onCommitActivated,
         onContextAction: widget.callbacks.onCommitContextAction,
@@ -2034,6 +2039,9 @@ const double _historyDateMinimumWidth = 0;
 
 const double _historyColumnHandleWidth = 5;
 
+// Sourcetree keeps the graph column bounded even when a repository has many
+// simultaneously active branches. Preserve the complete Git topology in the
+// view model, but expose at most eight physical rails in each history row.
 /// 中文：返回提交图最左侧车道中心，使工作区节点与游离 HEAD 基点严格对齐。
 ///
 /// English: Returns the leftmost graph-lane center shared by the workspace
@@ -2076,6 +2084,7 @@ class _HistoryPane extends StatefulWidget {
     required this.onSelected,
     required this.onActivated,
     required this.onUncommittedChangesSelected,
+    this.onLoadMore,
     this.onContextAction,
     this.showSearch = false,
     this.onSearchChanged,
@@ -2086,6 +2095,7 @@ class _HistoryPane extends StatefulWidget {
   final RepositoryCommitActivationCallback? onActivated;
   final RepositoryCommitContextActionCallback? onContextAction;
   final VoidCallback? onUncommittedChangesSelected;
+  final VoidCallback? onLoadMore;
   final bool showSearch;
   final ValueChanged<String>? onSearchChanged;
 
@@ -2176,6 +2186,11 @@ class _HistoryPaneState extends State<_HistoryPane> {
     final uncommittedChangesSelected =
         widget.repository.isUncommittedChangesSelected;
     final historyRowCount = commits.length + (showUncommittedChanges ? 1 : 0);
+    final showLoadMoreRow =
+        widget.repository.hasMoreHistory ||
+        widget.repository.isHistoryLoading ||
+        widget.repository.historyLoadError != null;
+    final historyListItemCount = historyRowCount + (showLoadMoreRow ? 1 : 0);
     return Material(
       color: _historyBackground(colors),
       child: Column(
@@ -2211,7 +2226,7 @@ class _HistoryPaneState extends State<_HistoryPane> {
                           _resizeAuthorColumn(widths, delta),
                     ),
                     Expanded(
-                      child: historyRowCount == 0
+                      child: historyRowCount == 0 && !showLoadMoreRow
                           ? const _PaneEmptyState(
                               icon: Icons.commit,
                               title: '暂无提交',
@@ -2219,78 +2234,106 @@ class _HistoryPaneState extends State<_HistoryPane> {
                             )
                           : Stack(
                               children: [
-                                ListView.builder(
-                                  controller: _scrollController,
-                                  itemExtent: _historyRowHeight,
-                                  itemCount: historyRowCount,
-                                  itemBuilder:
-                                      (BuildContext context, int index) {
-                                        if (showUncommittedChanges &&
-                                            index == 0) {
-                                          return _UncommittedChangesRow(
-                                            isSelected:
-                                                uncommittedChangesSelected,
+                                NotificationListener<ScrollNotification>(
+                                  onNotification: (notification) {
+                                    if (notification
+                                            is ScrollUpdateNotification &&
+                                        widget.repository.hasMoreHistory &&
+                                        !widget.repository.isHistoryLoading &&
+                                        widget.repository.historyLoadError ==
+                                            null &&
+                                        notification.metrics.extentAfter <=
+                                            _historyRowHeight * 2) {
+                                      widget.onLoadMore?.call();
+                                    }
+                                    return false;
+                                  },
+                                  child: ListView.builder(
+                                    controller: _scrollController,
+                                    itemExtent: _historyRowHeight,
+                                    itemCount: historyListItemCount,
+                                    itemBuilder:
+                                        (BuildContext context, int index) {
+                                          if (index == historyRowCount) {
+                                            return _HistoryLoadMoreRow(
+                                              isLoading: widget
+                                                  .repository
+                                                  .isHistoryLoading,
+                                              error: widget
+                                                  .repository
+                                                  .historyLoadError,
+                                              onPressed: widget.onLoadMore,
+                                            );
+                                          }
+                                          if (showUncommittedChanges &&
+                                              index == 0) {
+                                            return _UncommittedChangesRow(
+                                              isSelected:
+                                                  uncommittedChangesSelected,
+                                              compactGraph: _compactGraph,
+                                              widths: widths,
+                                              onTap: widget
+                                                  .onUncommittedChangesSelected,
+                                            );
+                                          }
+                                          final commitIndex =
+                                              index -
+                                              (showUncommittedChanges ? 1 : 0);
+                                          final CommitViewData commit =
+                                              commits[commitIndex];
+                                          final graph =
+                                              fallbackGraphs[commit.oid] ??
+                                              commit.graph;
+                                          final graphWithWorkspace = graph
+                                              .copyWith(
+                                                hasWorkspaceNode:
+                                                    showUncommittedChanges,
+                                                hasPreviousNode:
+                                                    showUncommittedChanges &&
+                                                        commitIndex == 0
+                                                    ? true
+                                                    : null,
+                                                additionalPreviousLanes:
+                                                    showUncommittedChanges &&
+                                                        commitIndex == 0
+                                                    ? const {0}
+                                                    : const {},
+                                              );
+                                          return _CommitRow(
+                                            commit: commit.copyWith(
+                                              graph: graphWithWorkspace,
+                                            ),
+                                            currentBranch:
+                                                widget.repository.currentBranch,
+                                            primaryLocalBranch: widget
+                                                .repository
+                                                .primaryLocalBranch,
+                                            ahead: widget.repository.ahead,
+                                            showRemoteRefs: _showRemoteRefs,
                                             compactGraph: _compactGraph,
                                             widths: widths,
-                                            onTap: widget
-                                                .onUncommittedChangesSelected,
+                                            onTap: widget.onSelected == null
+                                                ? null
+                                                : () => widget.onSelected!(
+                                                    commit,
+                                                  ),
+                                            onDoubleTap:
+                                                widget.onActivated == null
+                                                ? null
+                                                : () => widget.onActivated!(
+                                                    commit,
+                                                  ),
+                                            onContextAction:
+                                                widget.onContextAction == null
+                                                ? null
+                                                : (action) =>
+                                                      widget.onContextAction!(
+                                                        commit,
+                                                        action,
+                                                      ),
                                           );
-                                        }
-                                        final commitIndex =
-                                            index -
-                                            (showUncommittedChanges ? 1 : 0);
-                                        final CommitViewData commit =
-                                            commits[commitIndex];
-                                        final graph =
-                                            fallbackGraphs[commit.oid] ??
-                                            commit.graph;
-                                        final graphWithWorkspace = graph
-                                            .copyWith(
-                                              hasWorkspaceNode:
-                                                  showUncommittedChanges,
-                                              hasPreviousNode:
-                                                  showUncommittedChanges &&
-                                                      commitIndex == 0
-                                                  ? true
-                                                  : null,
-                                              additionalPreviousLanes:
-                                                  showUncommittedChanges &&
-                                                      commitIndex == 0
-                                                  ? const {0}
-                                                  : const {},
-                                            );
-                                        return _CommitRow(
-                                          commit: commit.copyWith(
-                                            graph: graphWithWorkspace,
-                                          ),
-                                          currentBranch:
-                                              widget.repository.currentBranch,
-                                          primaryLocalBranch: widget
-                                              .repository
-                                              .primaryLocalBranch,
-                                          ahead: widget.repository.ahead,
-                                          showRemoteRefs: _showRemoteRefs,
-                                          compactGraph: _compactGraph,
-                                          widths: widths,
-                                          onTap: widget.onSelected == null
-                                              ? null
-                                              : () =>
-                                                    widget.onSelected!(commit),
-                                          onDoubleTap:
-                                              widget.onActivated == null
-                                              ? null
-                                              : () =>
-                                                    widget.onActivated!(commit),
-                                          onContextAction:
-                                              widget.onContextAction == null
-                                              ? null
-                                              : (action) =>
-                                                    widget.onContextAction!(
-                                                      commit,
-                                                      action,
-                                                    ),
-                                        );
-                                      },
+                                        },
+                                  ),
                                 ),
                                 _HistoryResizeOverlay(
                                   widths: widths,
@@ -2501,6 +2544,52 @@ class _HistoryPaneState extends State<_HistoryPane> {
       for (var index = 0; index < commits.length; index++)
         commits[index].oid: graphs[index],
     };
+  }
+}
+
+class _HistoryLoadMoreRow extends StatelessWidget {
+  const _HistoryLoadMoreRow({
+    required this.isLoading,
+    required this.error,
+    required this.onPressed,
+  });
+
+  final bool isLoading;
+  final String? error;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    if (isLoading) {
+      return Center(
+        child: SizedBox(
+          width: 14,
+          height: 14,
+          child: CircularProgressIndicator(
+            strokeWidth: 1.8,
+            color: colors.primary,
+          ),
+        ),
+      );
+    }
+
+    final hasError = error != null;
+    return Semantics(
+      button: true,
+      label: hasError ? '加载更多提交失败，点击重试' : '加载更多提交',
+      child: InkWell(
+        onTap: onPressed,
+        child: Center(
+          child: Text(
+            hasError ? '加载失败，点击重试' : '加载更多提交',
+            style: Theme.of(context).textTheme.labelSmall?.copyWith(
+              color: hasError ? colors.error : colors.primary,
+            ),
+          ),
+        ),
+      ),
+    );
   }
 }
 
@@ -3152,14 +3241,27 @@ class _CommitGraphPainter extends CustomPainter {
   /// negative indices.
   Color _color(int index) => colors[index.abs() % colors.length];
 
-  /// 中文：为预留的游离 HEAD 车道和右侧分支车道选择与原图一致的稳定颜色。
-  ///
-  /// English: Selects stable colors for the reserved detached-HEAD lane and
-  /// the branch lanes to its right.
-  Color _laneColor(int lane) {
+  /// 中文：为未携带逻辑颜色的兼容图行提供车道颜色回退。
+  /// English: Falls back to a physical lane color for legacy graph rows.
+  Color _fallbackLaneColor(int lane) {
     if (!graph.hasReservedHeadLane) return _color(lane);
     return lane == 0 ? workspaceRailColor : _color(lane - 1);
   }
+
+  Color _activeLaneColor(int index, int lane) =>
+      index < graph.activeLaneColorIndices.length
+      ? _color(graph.activeLaneColorIndices[index])
+      : _fallbackLaneColor(lane);
+
+  Color _incomingLaneColor(int lane) => _color(
+    graph.incomingLaneColorIndices[lane] ??
+        (graph.hasReservedHeadLane && lane > 0 ? lane - 1 : lane),
+  );
+
+  Color _parentLaneColor(int index, int lane) =>
+      index < graph.parentLaneColorIndices.length
+      ? _color(graph.parentLaneColorIndices[index])
+      : _fallbackLaneColor(lane);
 
   /// 中文：将车道索引转换为图画布中的 X 坐标，让可调整列宽决定可见车道数量。
   ///
@@ -3173,6 +3275,16 @@ class _CommitGraphPainter extends CustomPainter {
   void paint(Canvas canvas, Size size) {
     final double centerY = size.height / 2;
     canvas.drawRect(Offset.zero & size, Paint()..color = backgroundColor);
+    // CustomPaint does not clip by default. Without this boundary, logical
+    // lanes beyond the graph budget paint over the description column. The
+    // topology remains intact for later rows; only its excess visual rails
+    // are hidden until the active lane count contracts again.
+    final graphRightEdge = math.min(
+      size.width,
+      laneStart + (laneSpacing * (commitGraphMaximumVisibleLanes - 1)) + 7,
+    );
+    canvas.save();
+    canvas.clipRect(Rect.fromLTWH(0, 0, graphRightEdge, size.height));
     if (graph.hasReservedHeadLane && graph.hasWorkspaceNode) {
       final reservedRailBottom = graph.lane == 0 && graph.parentLanes.isEmpty
           ? centerY
@@ -3198,10 +3310,7 @@ class _CommitGraphPainter extends CustomPainter {
         top: graph.previousLanes.contains(activeLane) ? 0 : centerY,
         centerY: centerY,
         bottom: size.height,
-        color: _laneColor(activeLane),
-        targetColor: destination == null
-            ? _laneColor(activeLane)
-            : _laneColor(destination),
+        color: _activeLaneColor(index, activeLane),
       );
     }
 
@@ -3212,12 +3321,17 @@ class _CommitGraphPainter extends CustomPainter {
         toLane: graph.lane,
         top: 0,
         centerY: centerY,
-        color: _laneColor(incomingLane),
+        color: _incomingLaneColor(incomingLane),
       );
     }
 
     final int colorIndex = graph.colorIndex;
-    for (final parentLane in graph.parentLanes.skip(1)) {
+    for (
+      var parentIndex = 1;
+      parentIndex < graph.parentLanes.length;
+      parentIndex++
+    ) {
+      final parentLane = graph.parentLanes[parentIndex];
       _drawLaneConnection(
         canvas,
         fromLane: graph.lane,
@@ -3225,11 +3339,7 @@ class _CommitGraphPainter extends CustomPainter {
         top: centerY,
         centerY: centerY,
         bottom: size.height,
-        // Keep the moving branch's color through the turn. Only the rail after
-        // it reaches the parent lane adopts the target branch color, so an
-        // orange branch never becomes blue while merging left.
-        color: _laneColor(graph.lane),
-        targetColor: _laneColor(parentLane),
+        color: _parentLaneColor(parentIndex, parentLane),
       );
     }
 
@@ -3247,6 +3357,7 @@ class _CommitGraphPainter extends CustomPainter {
       );
     }
     canvas.drawCircle(Offset(_laneX(graph.lane), centerY), 4, dotPaint);
+    canvas.restore();
   }
 
   /// 中文：让从上方延续的分支在当前父节点行内汇入节点，而不是提前转向。
@@ -3276,15 +3387,15 @@ class _CommitGraphPainter extends CustomPainter {
       Offset(targetX, centerY),
       Paint()
         ..color = color
-        ..strokeWidth = 3
+        ..strokeWidth = 2
         ..strokeCap = StrokeCap.square,
     );
   }
 
-  /// 中文：以固定 3 像素宽度绘制车道的竖直连接线。
+  /// 中文：以接近 Sourcetree 的固定 2 像素宽度绘制车道竖线。
   ///
-  /// English: Draws a lane's vertical connection rail at a fixed 3-pixel
-  /// width.
+  /// English: Draws a lane's vertical rail at a Sourcetree-like fixed
+  /// two-pixel width.
   void _drawVerticalRail(
     Canvas canvas, {
     required double x,
@@ -3293,15 +3404,15 @@ class _CommitGraphPainter extends CustomPainter {
     required Color color,
   }) {
     canvas.drawRect(
-      Rect.fromLTRB(x - 1.5, top, x + 1.5, bottom),
+      Rect.fromLTRB(x - 1, top, x + 1, bottom),
       Paint()..color = color,
     );
   }
 
-  /// 中文：绘制车道在当前行前后延续或转向目标父提交车道的连接路径。
+  /// 中文：绘制当前活动车道到下一行目标车道的紧凑斜向连接。
   ///
-  /// English: Draws a lane connection that continues through the row or turns
-  /// toward a target parent lane.
+  /// English: Draws a compact diagonal connection from an active lane to its
+  /// next-row target lane.
   void _drawLaneConnection(
     Canvas canvas, {
     required int fromLane,
@@ -3310,7 +3421,6 @@ class _CommitGraphPainter extends CustomPainter {
     required double centerY,
     required double bottom,
     required Color color,
-    required Color targetColor,
   }) {
     final sourceX = _laneX(fromLane);
     _drawVerticalRail(
@@ -3322,32 +3432,13 @@ class _CommitGraphPainter extends CustomPainter {
     );
     if (toLane == null) return;
     final targetX = _laneX(toLane);
-    final turnY = centerY + (bottom - centerY) * .44;
-    _drawVerticalRail(
-      canvas,
-      x: sourceX,
-      top: centerY,
-      bottom: turnY,
-      color: color,
-    );
-    canvas.drawRect(
-      Rect.fromLTRB(
-        math.min(sourceX, targetX),
-        turnY - 1.5,
-        math.max(sourceX, targetX),
-        turnY + 1.5,
-      ),
-      // The bridge belongs to the branch that turns: a right turn adopts the
-      // target branch color, while a left turn keeps the source branch color.
-      // This keeps the orange branch orange on both sides of a merge.
-      Paint()..color = targetX > sourceX ? targetColor : color,
-    );
-    _drawVerticalRail(
-      canvas,
-      x: targetX,
-      top: turnY,
-      bottom: bottom,
-      color: targetColor,
+    canvas.drawLine(
+      Offset(sourceX, centerY),
+      Offset(targetX, bottom),
+      Paint()
+        ..color = color
+        ..strokeWidth = 2
+        ..strokeCap = StrokeCap.square,
     );
   }
 
@@ -3385,12 +3476,12 @@ const Color _graphBaseOrange = Color(0xFFF28C00);
 
 const List<Color> _graphPalette = [
   _graphPrimaryBlue,
-  _graphBranchRed,
   _graphBaseOrange,
+  _graphBranchRed,
   Color(0xFF2FA86F),
   Color(0xFF6254B8),
   Color(0xFF00A0BE),
-  Color(0xFFC23D7A),
+  Color(0xFF6F7B80),
   Color(0xFF9A7800),
 ];
 

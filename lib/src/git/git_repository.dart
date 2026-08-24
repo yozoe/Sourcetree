@@ -102,8 +102,9 @@ final class GitRepositoryInspector {
     );
   }
 
-  /// 中文：读取所需的数据。
-  /// English: Reads the required data.
+  /// 中文：固定当前本地分支与 HEAD 的对象 ID，供所有历史分页共享同一拓扑快照。
+  /// English: Snapshots the current local-branch and HEAD object IDs so every
+  /// history page reads the same topology.
   Future<String> _readPath(String path, List<String> arguments) async {
     final result = await _revParse(path, arguments);
     result.throwIfFailed(operation: 'Repository path detection');
@@ -342,10 +343,52 @@ final class GitRepositoryReader {
 
   /// 中文：读取所需的数据。
   /// English: Reads the required data.
+  Future<List<String>> readHistoryRevisionSnapshot(
+    GitRepository repository,
+  ) async {
+    if (!await _hasResolvableHead(repository)) return const [];
+
+    final result = await runner.run(
+      GitInvocation(
+        arguments: const [
+          '--no-pager',
+          'rev-parse',
+          '--revs-only',
+          '--branches',
+          'HEAD',
+          '--',
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 32 * 1024 * 1024,
+          stderrBytes: 64 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Snapshotting repository history');
+    if (result.stdoutTruncated) {
+      throw const GitParseException(
+        'Repository history revision snapshot exceeded the configured output limit.',
+      );
+    }
+    final revisions = <String>{};
+    for (final line in _outputLines(result.stdoutBytes)) {
+      final revision = line.trim();
+      if (revision.isEmpty) continue;
+      _validateObjectId(revision);
+      revisions.add(revision);
+    }
+    return List<String>.unmodifiable(revisions);
+  }
+
+  /// 中文：按固定引用快照和偏移读取一页 Git 拓扑历史；未传快照时读取当前本地分支与 HEAD。
+  /// English: Reads one Git-topology history page from a fixed revision
+  /// snapshot and offset, falling back to the current local branches and HEAD.
   Future<List<GitCommit>> readRecentHistory(
     GitRepository repository, {
     int limit = 100,
     int offset = 0,
+    List<String>? revisionSnapshot,
   }) async {
     if (limit <= 0 || limit > 10000) {
       throw RangeError.range(limit, 1, 10000, 'limit');
@@ -354,26 +397,15 @@ final class GitRepositoryReader {
       throw RangeError.value(offset, 'offset', 'Must not be negative.');
     }
 
-    final head = await runner.run(
-      GitInvocation(
-        arguments: const [
-          '--no-pager',
-          'rev-parse',
-          '--verify',
-          '--quiet',
-          'HEAD',
-        ],
-        workingDirectory: repository.commandDirectory,
-        outputLimit: const GitOutputLimit(
-          stdoutBytes: 1024,
-          stderrBytes: 64 * 1024,
-        ),
-      ),
-    );
-    if (head.exitCode == 1 && head.stderrBytes.isEmpty) {
+    final revisions = revisionSnapshot;
+    if (revisions != null) {
+      for (final revision in revisions) {
+        _validateObjectId(revision);
+      }
+      if (revisions.isEmpty) return const [];
+    } else if (!await _hasResolvableHead(repository)) {
       return const [];
     }
-    head.throwIfFailed(operation: 'Resolving HEAD');
 
     final result = await runner.run(
       GitInvocation(
@@ -388,8 +420,8 @@ final class GitRepositoryReader {
           '--max-count=$limit',
           '--skip=$offset',
           '--format=$gitHistoryFormat',
-          '--branches',
-          'HEAD',
+          ...?revisions,
+          if (revisions == null) ...['--branches', 'HEAD'],
           '--',
         ],
         workingDirectory: repository.commandDirectory,
@@ -406,6 +438,31 @@ final class GitRepositoryReader {
       );
     }
     return historyParser.parse(result.stdoutBytes).commits;
+  }
+
+  /// 中文：确认仓库已经有可解析的 HEAD；未首次提交的仓库返回 `false`。
+  /// English: Returns whether the repository has a resolvable HEAD, treating an
+  /// unborn repository as an empty history rather than an error.
+  Future<bool> _hasResolvableHead(GitRepository repository) async {
+    final head = await runner.run(
+      GitInvocation(
+        arguments: const [
+          '--no-pager',
+          'rev-parse',
+          '--verify',
+          '--quiet',
+          'HEAD',
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 1024,
+          stderrBytes: 64 * 1024,
+        ),
+      ),
+    );
+    if (head.exitCode == 1 && head.stderrBytes.isEmpty) return false;
+    head.throwIfFailed(operation: 'Resolving HEAD');
+    return true;
   }
 
   /// Reads saved working-tree snapshots without parsing `git stash`'s

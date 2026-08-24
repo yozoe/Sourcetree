@@ -1,15 +1,58 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as path_utils;
 
+const double _repositoryLibraryIconSize = 36;
+
+/// 中文：按显示尺寸和屏幕像素密度计算仓库图标的最大解码边长。
+/// English: Returns the bounded decode dimension for a repository icon.
+int repositoryLibraryIconCacheDimension(double devicePixelRatio) {
+  if (!devicePixelRatio.isFinite || devicePixelRatio <= 0) {
+    return _repositoryLibraryIconSize.toInt();
+  }
+  return (_repositoryLibraryIconSize * devicePixelRatio)
+      .ceil()
+      .clamp(36, 144)
+      .toInt();
+}
+
 /// A repository displayed in the local repository library.
 final class RepositoryLibraryItem {
-  const RepositoryLibraryItem({required this.path, required this.label});
+  const RepositoryLibraryItem({
+    required this.path,
+    required this.label,
+    this.branchName,
+    this.changedFileCount = 0,
+    this.isDetached = false,
+    this.isUnborn = false,
+    this.hasStatus = false,
+  });
 
   /// Absolute path used to re-open this repository.
   final String path;
 
   /// Human-readable repository name.
   final String label;
+
+  /// Branch name reported by the latest Git status read.
+  final String? branchName;
+
+  /// Number of files with staged, unstaged, or untracked changes.
+  final int changedFileCount;
+
+  /// Whether Git reported a detached HEAD instead of a local branch.
+  final bool isDetached;
+
+  /// Whether the current branch has not received its first commit.
+  final bool isUnborn;
+
+  /// Whether the branch and change summary was successfully read from Git.
+  final bool hasStatus;
+
+  /// 中文：返回仓库根目录中约定的自定义图标路径。
+  /// English: Returns the conventional custom icon path at the repository root.
+  String get iconPath => path_utils.join(path, 'icon.png');
 }
 
 /// A searchable, directory-grouped overview of locally known repositories.
@@ -422,22 +465,10 @@ class _RepositoryLibraryTile extends StatelessWidget {
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
               child: Row(
                 children: [
-                  Container(
-                    width: 36,
-                    height: 36,
-                    decoration: BoxDecoration(
-                      color: selected
-                          ? colors.primary
-                          : colors.primaryContainer,
-                      shape: BoxShape.circle,
-                    ),
-                    child: Icon(
-                      Icons.account_tree_outlined,
-                      size: 20,
-                      color: selected
-                          ? colors.onPrimary
-                          : colors.onPrimaryContainer,
-                    ),
+                  _RepositoryLibraryIcon(
+                    iconPath: repository.iconPath,
+                    repositoryPath: repository.path,
+                    selected: selected,
                   ),
                   const SizedBox(width: 12),
                   Expanded(
@@ -472,6 +503,10 @@ class _RepositoryLibraryTile extends StatelessWidget {
                       ],
                     ),
                   ),
+                  if (repository.hasStatus) ...[
+                    const SizedBox(width: 12),
+                    _RepositoryLibraryBranchStatus(repository: repository),
+                  ],
                   if (selected) ...[
                     const SizedBox(width: 10),
                     Container(
@@ -501,6 +536,204 @@ class _RepositoryLibraryTile extends StatelessWidget {
           ),
         ),
       ),
+    );
+  }
+}
+
+/// Shows the current branch and changed-file count for one library entry.
+class _RepositoryLibraryBranchStatus extends StatelessWidget {
+  const _RepositoryLibraryBranchStatus({required this.repository});
+
+  final RepositoryLibraryItem repository;
+
+  /// 中文：根据 Git 分支状态生成首页可读的分支标签。
+  /// English: Creates a readable branch label for the library from Git status.
+  String get _branchLabel {
+    final branchName = repository.branchName;
+    if (branchName != null && branchName.isNotEmpty) return branchName;
+    if (repository.isDetached) return 'HEAD';
+    if (repository.isUnborn) return '未提交';
+    return '未知分支';
+  }
+
+  /// 中文：构建仓库当前分支和未提交改动数的紧凑状态徽标。
+  /// English: Builds compact badges for the repository branch and dirty-file
+  /// count.
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    final Color badgeColor = colors.surfaceContainerHighest;
+    final Color foregroundColor = colors.onSurfaceVariant;
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        if (repository.changedFileCount > 0) ...[
+          Tooltip(
+            message: '${repository.changedFileCount} 项未提交改动',
+            child: Semantics(
+              label: '${repository.changedFileCount} 项未提交改动',
+              child: Container(
+                key: ValueKey<String>(
+                  'repository-library-change-count:${repository.path}',
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: badgeColor,
+                  borderRadius: BorderRadius.circular(9),
+                ),
+                child: Text(
+                  '${repository.changedFileCount}',
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                    color: foregroundColor,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          const SizedBox(width: 6),
+        ],
+        Tooltip(
+          message: '当前分支 $_branchLabel',
+          child: Container(
+            key: ValueKey<String>(
+              'repository-library-branch:${repository.path}',
+            ),
+            constraints: const BoxConstraints(maxWidth: 180),
+            padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 4),
+            decoration: BoxDecoration(
+              color: badgeColor,
+              borderRadius: BorderRadius.circular(3),
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  repository.isDetached
+                      ? Icons.account_tree_outlined
+                      : Icons.call_split_outlined,
+                  size: 14,
+                  color: foregroundColor,
+                ),
+                const SizedBox(width: 4),
+                Flexible(
+                  child: Text(
+                    _branchLabel,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: foregroundColor,
+                      fontWeight: FontWeight.w600,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// Displays a repository-provided root icon when it can be read safely.
+class _RepositoryLibraryIcon extends StatefulWidget {
+  const _RepositoryLibraryIcon({
+    required this.iconPath,
+    required this.repositoryPath,
+    required this.selected,
+  });
+
+  final String iconPath;
+  final String repositoryPath;
+  final bool selected;
+
+  /// 中文：创建仓库图标的状态对象。
+  /// English: Creates the state object for the repository icon.
+  @override
+  State<_RepositoryLibraryIcon> createState() => _RepositoryLibraryIconState();
+}
+
+class _RepositoryLibraryIconState extends State<_RepositoryLibraryIcon> {
+  late Future<bool> _hasCustomIcon;
+
+  /// 中文：初始化仓库根目录图标的异步可用性检查。
+  /// English: Starts the asynchronous availability check for the repository
+  /// root icon.
+  @override
+  void initState() {
+    super.initState();
+    _hasCustomIcon = _findCustomIcon();
+  }
+
+  /// 中文：仓库路径变化时重新检查新的根目录，避免复用旧条目的图片结果。
+  /// English: Rechecks the new root path when the repository changes so a
+  /// reused tile cannot retain the previous item's image result.
+  @override
+  void didUpdateWidget(covariant _RepositoryLibraryIcon oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.iconPath != widget.iconPath) {
+      _hasCustomIcon = _findCustomIcon();
+    }
+  }
+
+  /// 中文：异步确认仓库根目录的 `icon.png` 可读取；文件系统异常按无图标处理。
+  /// English: Asynchronously checks whether the root `icon.png` is readable;
+  /// file-system failures are treated as no custom icon.
+  Future<bool> _findCustomIcon() async {
+    try {
+      return await File(widget.iconPath).exists();
+    } on FileSystemException {
+      return false;
+    }
+  }
+
+  /// 中文：构建图片图标或默认 Git 图标，并在图片失效时安全回退。
+  /// English: Builds the image or default Git icon and safely falls back when
+  /// the image becomes unavailable.
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    final int cacheDimension = repositoryLibraryIconCacheDimension(
+      MediaQuery.devicePixelRatioOf(context),
+    );
+    final Color backgroundColor = widget.selected
+        ? colors.primary
+        : colors.primaryContainer;
+    final Color foregroundColor = widget.selected
+        ? colors.onPrimary
+        : colors.onPrimaryContainer;
+
+    Widget fallbackIcon() =>
+        Icon(Icons.account_tree_outlined, size: 20, color: foregroundColor);
+
+    return FutureBuilder<bool>(
+      future: _hasCustomIcon,
+      builder: (context, snapshot) {
+        final bool hasCustomIcon = snapshot.data == true;
+        return Container(
+          key: ValueKey<String>(
+            'repository-library-icon:${widget.repositoryPath}',
+          ),
+          width: _repositoryLibraryIconSize,
+          height: _repositoryLibraryIconSize,
+          decoration: BoxDecoration(
+            color: backgroundColor,
+            shape: BoxShape.circle,
+          ),
+          clipBehavior: Clip.antiAlias,
+          child: hasCustomIcon
+              ? Image.file(
+                  File(widget.iconPath),
+                  fit: BoxFit.cover,
+                  cacheWidth: cacheDimension,
+                  cacheHeight: cacheDimension,
+                  excludeFromSemantics: true,
+                  errorBuilder: (context, error, stackTrace) => fallbackIcon(),
+                )
+              : fallbackIcon(),
+        );
+      },
     );
   }
 }

@@ -147,6 +147,54 @@ void main() {
     expect(reorderedPaths, isNull);
   });
 
+  test('uses icon.png at the repository root as the custom icon path', () {
+    const RepositoryLibraryItem repository = RepositoryLibraryItem(
+      path: '/work/alpha/sample',
+      label: 'sample',
+    );
+
+    expect(repository.iconPath, '/work/alpha/sample/icon.png');
+  });
+
+  test('bounds the custom repository icon decode dimensions', () {
+    expect(repositoryLibraryIconCacheDimension(1), 36);
+    expect(repositoryLibraryIconCacheDimension(2), 72);
+    expect(repositoryLibraryIconCacheDimension(8), 144);
+  });
+
+  testWidgets('shows branch and changed-file status in the library row', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryLibraryPage(
+          repositories: const [
+            RepositoryLibraryItem(
+              path: '/work/alpha/sample',
+              label: 'sample',
+              branchName: 'feature/library-status',
+              changedFileCount: 3,
+              hasStatus: true,
+            ),
+          ],
+          activePath: null,
+          onRepositorySelected: (path) async {},
+        ),
+      ),
+    );
+
+    expect(find.text('feature/library-status'), findsOneWidget);
+    expect(
+      find.byKey(
+        const ValueKey<String>(
+          'repository-library-change-count:/work/alpha/sample',
+        ),
+      ),
+      findsOneWidget,
+    );
+    expect(find.byTooltip('当前分支 feature/library-status'), findsOneWidget);
+  });
+
   testWidgets('routes a one-time AskPass request through the controlled UI', (
     tester,
   ) async {
@@ -310,6 +358,69 @@ void main() {
       tester.widget<EditableText>(find.byType(EditableText)).controller.text,
       'initial',
     );
+  });
+
+  testWidgets('loads more history from the list footer', (tester) async {
+    var loadMoreCalls = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              hasMoreHistory: true,
+              commits: const [
+                CommitViewData(
+                  oid: '0123456789abcdef',
+                  shortOid: '01234567',
+                  subject: 'Initial commit',
+                  author: 'Test',
+                  relativeDate: '刚刚',
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onLoadMoreHistory: () => loadMoreCalls++,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('加载更多提交'), findsOneWidget);
+    await tester.tap(find.text('加载更多提交'));
+    expect(loadMoreCalls, 1);
+  });
+
+  testWidgets('keeps load more available when filtered commits are empty', (
+    tester,
+  ) async {
+    var loadMoreCalls = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              searchQuery: 'older matching commit',
+              hasMoreHistory: true,
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onLoadMoreHistory: () => loadMoreCalls++,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('加载更多提交'), findsOneWidget);
+    expect(find.text('暂无提交'), findsNothing);
+    await tester.tap(find.text('加载更多提交'));
+    expect(loadMoreCalls, 1);
   });
 
   testWidgets('branch context menu exposes checkout and merge actions', (
@@ -596,7 +707,7 @@ void main() {
             ),
           )
           .color,
-      const Color(0xFFD8452A),
+      const Color(0xFFF28C00),
     );
     expect(
       tester
@@ -964,7 +1075,7 @@ void main() {
     );
     expect(
       ((conflictDecoration.border! as Border).top).color,
-      const Color(0xFFD8452A),
+      const Color(0xFFF28C00),
     );
     expect(find.text('超前3个版本'), findsOneWidget);
     expect(tester.getSize(conflictRef).width, greaterThan(100));
@@ -1090,8 +1201,8 @@ void main() {
     }
 
     expect(borderColor('main'), const Color(0xFF0B6FCB));
-    expect(borderColor('demo/graph-ui'), const Color(0xFFD8452A));
-    expect(borderColor('demo/graph-docs'), const Color(0xFFF28C00));
+    expect(borderColor('demo/graph-ui'), const Color(0xFFF28C00));
+    expect(borderColor('demo/graph-docs'), const Color(0xFFD8452A));
     expect(borderColor('demo/graph-foundation'), const Color(0xFF2FA86F));
     expect(borderColor('demo/graph-api'), const Color(0xFF6254B8));
   });

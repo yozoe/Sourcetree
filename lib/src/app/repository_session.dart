@@ -100,6 +100,11 @@ final class RepositoryTab {
     required this.path,
     required this.label,
     String? baseLabel,
+    this.branchName,
+    this.changedFileCount = 0,
+    this.isDetached = false,
+    this.isUnborn = false,
+    this.hasStatus = false,
   }) : baseLabel = baseLabel ?? label;
 
   final String path;
@@ -109,6 +114,21 @@ final class RepositoryTab {
 
   /// The repository directory name before duplicate-name disambiguation.
   final String baseLabel;
+
+  /// Current local branch name reported by Git, when status is available.
+  final String? branchName;
+
+  /// Number of changed files reported by the latest Git status read.
+  final int changedFileCount;
+
+  /// Whether the repository is currently checked out at a detached HEAD.
+  final bool isDetached;
+
+  /// Whether the current branch has no commits yet.
+  final bool isUnborn;
+
+  /// Whether the branch and change summary was read successfully from Git.
+  final bool hasStatus;
 }
 
 final class RepositoryOperationRecord {
@@ -226,6 +246,12 @@ final class RepositorySessionState {
     this.tags = const [],
     this.stashes = const [],
     this.commits = const [],
+    this.historyCommits = const [],
+    this.historyRevisionSnapshot = const [],
+    this.historyOffset = 0,
+    this.hasMoreHistory = false,
+    this.isHistoryLoading = false,
+    this.historyLoadError,
     this.selectedRefId = 'history',
     this.selectedCommitId,
     this.commitChanges = const [],
@@ -268,6 +294,20 @@ final class RepositorySessionState {
   final List<GitTag> tags;
   final List<GitStashEntry> stashes;
   final List<GitCommit> commits;
+
+  /// 中文：按 Git topo order 读取的规范历史页，不包含引用或贮藏预览临时插入的提交。
+  /// English: Canonical Git-topo-order history pages, excluding commits
+  /// temporarily inserted for reference or stash previews.
+  final List<GitCommit> historyCommits;
+
+  /// 中文：首屏读取时固定的本地分支与 HEAD 对象 ID，后续分页不得改用变化后的引用。
+  /// English: Local-branch and HEAD object IDs fixed at the first page so later
+  /// pages cannot drift with changing refs.
+  final List<String> historyRevisionSnapshot;
+  final int historyOffset;
+  final bool hasMoreHistory;
+  final bool isHistoryLoading;
+  final String? historyLoadError;
   final String selectedRefId;
   final String? selectedCommitId;
   final List<GitCommitFileChange> commitChanges;
@@ -312,6 +352,12 @@ final class RepositorySessionState {
     List<GitTag>? tags,
     List<GitStashEntry>? stashes,
     List<GitCommit>? commits,
+    List<GitCommit>? historyCommits,
+    List<String>? historyRevisionSnapshot,
+    int? historyOffset,
+    bool? hasMoreHistory,
+    bool? isHistoryLoading,
+    String? historyLoadError,
     String? selectedRefId,
     String? selectedCommitId,
     List<GitCommitFileChange>? commitChanges,
@@ -341,6 +387,7 @@ final class RepositorySessionState {
     bool clearSelectedCommit = false,
     bool clearSelectedCommitFile = false,
     bool clearCommitDiff = false,
+    bool clearHistoryLoadError = false,
     bool clearMessage = false,
   }) {
     return RepositorySessionState(
@@ -357,6 +404,15 @@ final class RepositorySessionState {
       tags: tags ?? this.tags,
       stashes: stashes ?? this.stashes,
       commits: commits ?? this.commits,
+      historyCommits: historyCommits ?? this.historyCommits,
+      historyRevisionSnapshot:
+          historyRevisionSnapshot ?? this.historyRevisionSnapshot,
+      historyOffset: historyOffset ?? this.historyOffset,
+      hasMoreHistory: hasMoreHistory ?? this.hasMoreHistory,
+      isHistoryLoading: isHistoryLoading ?? this.isHistoryLoading,
+      historyLoadError: clearHistoryLoadError
+          ? null
+          : historyLoadError ?? this.historyLoadError,
       selectedRefId: selectedRefId ?? this.selectedRefId,
       selectedCommitId: clearSelectedCommit
           ? null
@@ -422,12 +478,16 @@ GitLocalBranch? selectDetachedPushBranch(RepositorySessionState state) {
 
 final class RepositorySessionController
     extends Notifier<RepositorySessionState> {
+  static const int _historyPageSize = 100;
+  static const int _historyPageReadLimit = _historyPageSize + 1;
+
   late GitRunner _runner;
   late GitRepositoryInspector _inspector;
   late GitRepositoryReader _reader;
   late GitRepositoryWriter _writer;
   late RepositorySessionStore _sessionStore;
   int _repositoryGeneration = 0;
+  int _historyGeneration = 0;
   int _diffGeneration = 0;
   int _commitGeneration = 0;
   int _commitDiffGeneration = 0;
@@ -463,6 +523,7 @@ final class RepositorySessionController
     Duration timeout = const Duration(seconds: 2),
   }) async {
     _repositoryGeneration++;
+    _historyGeneration++;
     _diffGeneration++;
     _commitGeneration++;
     _commitDiffGeneration++;
@@ -613,6 +674,7 @@ final class RepositorySessionController
     }
 
     final generation = ++_repositoryGeneration;
+    _historyGeneration++;
     _diffGeneration++;
     _commitGeneration++;
     _commitDiffGeneration++;
@@ -620,9 +682,14 @@ final class RepositorySessionController
       phase: RepositorySessionPhase.loading,
       requestedPath: normalizedPath,
       isDiffLoading: false,
+      isHistoryLoading: false,
+      historyOffset: 0,
+      historyRevisionSnapshot: const [],
+      hasMoreHistory: false,
       clearDiff: true,
       clearSelectedChange: true,
       clearMessage: true,
+      clearHistoryLoadError: true,
     );
 
     try {
@@ -630,6 +697,11 @@ final class RepositorySessionController
       if (repository == null) {
         throw const GitException('所选目录不在 Git 仓库中。');
       }
+
+      final historyRevisionSnapshot = await _reader.readHistoryRevisionSnapshot(
+        repository,
+      );
+      if (generation != _repositoryGeneration) return;
 
       final results = await Future.wait<Object?>([
         _reader.readStatus(repository),
@@ -640,7 +712,11 @@ final class RepositorySessionController
         _reader.readRemoteBranches(repository),
         _reader.readTags(repository),
         _reader.readStashes(repository),
-        _reader.readRecentHistory(repository),
+        _reader.readRecentHistory(
+          repository,
+          limit: _historyPageReadLimit,
+          revisionSnapshot: historyRevisionSnapshot,
+        ),
         _readGitVersion(),
       ]);
       if (generation != _repositoryGeneration) {
@@ -659,13 +735,9 @@ final class RepositorySessionController
       final remoteBranches = results[5] as List<GitRemoteBranch>;
       final tags = results[6] as List<GitTag>;
       final stashes = results[7] as List<GitStashEntry>;
-      final commits = results[8] as List<GitCommit>;
-      final tab = RepositoryTab(
-        path: repository.commandDirectory,
-        label: path_utils.basename(
-          repository.workTreeRoot ?? repository.commonDirectory,
-        ),
-      );
+      final loadedHistory = results[8] as List<GitCommit>;
+      final commits = loadedHistory.take(_historyPageSize).toList();
+      final tab = _repositoryTab(repository, status: status);
       state = RepositorySessionState(
         phase: RepositorySessionPhase.ready,
         requestedPath: normalizedPath,
@@ -680,6 +752,10 @@ final class RepositorySessionController
         tags: tags,
         stashes: stashes,
         commits: commits,
+        historyCommits: commits,
+        historyRevisionSnapshot: historyRevisionSnapshot,
+        historyOffset: commits.length,
+        hasMoreHistory: loadedHistory.length > _historyPageSize,
         // Keep the working-tree inspector visible until the user chooses a
         // historical commit. Selecting a commit then replaces it with that
         // commit's file list and Diff.
@@ -741,13 +817,22 @@ final class RepositorySessionController
       if (repository == null) {
         return RepositoryLibraryRegistrationResult.notRepository;
       }
-      final tab = RepositoryTab(
-        path: repository.commandDirectory,
-        label: path_utils.basename(
-          repository.workTreeRoot ?? repository.commonDirectory,
-        ),
+      final tab = _repositoryTab(
+        repository,
+        status: await _tryReadRepositoryStatus(repository),
       );
-      if (state.openRepositoryTabs.any((item) => item.path == tab.path)) {
+      final existingTab = state.openRepositoryTabs
+          .where((item) => item.path == tab.path)
+          .firstOrNull;
+      if (existingTab != null) {
+        if (tab.hasStatus) {
+          state = state.copyWith(
+            openRepositoryTabs: _disambiguateRepositoryTabLabels([
+              for (final item in state.openRepositoryTabs)
+                if (item.path == tab.path) tab else item,
+            ]),
+          );
+        }
         return RepositoryLibraryRegistrationResult.alreadyRegistered;
       }
       state = state.copyWith(
@@ -811,6 +896,40 @@ final class RepositorySessionController
     return List<RepositoryTab>.unmodifiable(result);
   }
 
+  /// 中文：将 Git 仓库和最近读取的状态转换为首页可持久化的仓库条目。
+  /// English: Converts a Git repository and its latest status into a library
+  /// entry that can be persisted with the repository list.
+  RepositoryTab _repositoryTab(
+    GitRepository repository, {
+    GitStatusSnapshot? status,
+  }) {
+    final branch = status?.branch;
+    return RepositoryTab(
+      path: repository.commandDirectory,
+      label: path_utils.basename(
+        repository.workTreeRoot ?? repository.commonDirectory,
+      ),
+      branchName: branch?.head,
+      changedFileCount: status?.entries.length ?? 0,
+      isDetached: branch?.isDetached ?? false,
+      isUnborn: branch?.isUnborn ?? false,
+      hasStatus: status != null,
+    );
+  }
+
+  /// 中文：尽力读取仓库状态；首页仍可登记状态读取失败的有效 Git 仓库。
+  /// English: Tries to read repository status while still allowing a valid Git
+  /// repository to be added to the library when its status cannot be read.
+  Future<GitStatusSnapshot?> _tryReadRepositoryStatus(
+    GitRepository repository,
+  ) async {
+    try {
+      return await _reader.readStatus(repository);
+    } on Object {
+      return null;
+    }
+  }
+
   /// 中文：为重名仓库标签添加父目录前缀，避免标签栏中出现无法区分的名称。
   ///
   /// English: Prefixes duplicate repository labels with their parent directory
@@ -834,6 +953,11 @@ final class RepositorySessionController
           label: labelCounts[tab.baseLabel] == 1
               ? tab.baseLabel
               : '${path_utils.basename(path_utils.dirname(tab.path))}/${tab.baseLabel}',
+          branchName: tab.branchName,
+          changedFileCount: tab.changedFileCount,
+          isDetached: tab.isDetached,
+          isUnborn: tab.isUnborn,
+          hasStatus: tab.hasStatus,
         ),
     ]);
   }
@@ -1602,6 +1726,73 @@ final class RepositorySessionController
     final path = state.requestedPath ?? state.repository?.commandDirectory;
     if (path != null) {
       await openRepository(path);
+    }
+  }
+
+  /// 中文：继续读取下一页提交历史，并安全追加到当前提交图。
+  ///
+  /// English: Reads and appends the next history page without replacing the
+  /// current graph, ignoring results that belong to an old repository view.
+  Future<void> loadMoreHistory() async {
+    final repository = state.repository;
+    if (repository == null || state.isHistoryLoading || !state.hasMoreHistory) {
+      return;
+    }
+
+    final existingCommits = state.historyCommits;
+    final historyRevisionSnapshot = state.historyRevisionSnapshot;
+    final historyOffset = state.historyOffset;
+    final generation = ++_historyGeneration;
+    state = state.copyWith(
+      commits: existingCommits,
+      historyCommits: existingCommits,
+      isHistoryLoading: true,
+      clearHistoryLoadError: true,
+    );
+
+    try {
+      final loadedHistory = await _reader.readRecentHistory(
+        repository,
+        limit: _historyPageReadLimit,
+        offset: historyOffset,
+        revisionSnapshot: historyRevisionSnapshot,
+      );
+      if (!ref.mounted ||
+          generation != _historyGeneration ||
+          state.repository?.id != repository.id) {
+        return;
+      }
+
+      final existingObjectIds = existingCommits
+          .map((commit) => commit.objectId)
+          .toSet();
+      final nextCommits = loadedHistory
+          .take(_historyPageSize)
+          .where((commit) => existingObjectIds.add(commit.objectId))
+          .toList();
+      final mergedHistory = List<GitCommit>.unmodifiable([
+        ...existingCommits,
+        ...nextCommits,
+      ]);
+      state = state.copyWith(
+        commits: mergedHistory,
+        historyCommits: mergedHistory,
+        historyOffset:
+            historyOffset +
+            (loadedHistory.length < _historyPageSize
+                ? loadedHistory.length
+                : _historyPageSize),
+        hasMoreHistory:
+            loadedHistory.length > _historyPageSize && nextCommits.isNotEmpty,
+        isHistoryLoading: false,
+        clearHistoryLoadError: true,
+      );
+    } on Object catch (error) {
+      if (!ref.mounted || generation != _historyGeneration) return;
+      state = state.copyWith(
+        isHistoryLoading: false,
+        historyLoadError: _friendlyError(error),
+      );
     }
   }
 

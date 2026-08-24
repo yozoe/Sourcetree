@@ -278,8 +278,15 @@ class _RepositoryLibraryWindowState
       body: RepositoryLibraryPage(
         repositories: session.openRepositoryTabs
             .map(
-              (RepositoryTab tab) =>
-                  RepositoryLibraryItem(path: tab.path, label: tab.label),
+              (RepositoryTab tab) => RepositoryLibraryItem(
+                path: tab.path,
+                label: tab.label,
+                branchName: tab.branchName,
+                changedFileCount: tab.changedFileCount,
+                isDetached: tab.isDetached,
+                isUnborn: tab.isUnborn,
+                hasStatus: tab.hasStatus,
+              ),
             )
             .toList(growable: false),
         activePath: null,
@@ -401,8 +408,10 @@ class _RepositoryWorkspaceScreenState
     }
   }
 
-  /// Tells the repository library which repository this workspace now owns.
-  void _reportOpenedRepository(
+  /// 中文：向首页上报当前工作区的仓库和最新 Git 状态快照。
+  /// English: Reports the workspace repository and its newest Git status
+  /// snapshot to the library window.
+  void _reportRepositoryStatus(
     RepositorySessionState? previous,
     RepositorySessionState next,
   ) {
@@ -411,7 +420,8 @@ class _RepositoryWorkspaceScreenState
       return;
     }
     if (previous?.phase == RepositorySessionPhase.ready &&
-        previous?.repository?.id == repository.id) {
+        previous?.repository?.id == repository.id &&
+        identical(previous?.status, next.status)) {
       return;
     }
     unawaited(
@@ -427,7 +437,7 @@ class _RepositoryWorkspaceScreenState
     RepositorySessionState? previous,
     RepositorySessionState next,
   ) {
-    _reportOpenedRepository(previous, next);
+    _reportRepositoryStatus(previous, next);
     final enteredRebase =
         next.operationState == GitRepositoryOperationState.rebase &&
         previous?.operationState != GitRepositoryOperationState.rebase;
@@ -2075,6 +2085,8 @@ class _RepositoryWorkspaceScreenState
                 onRefActivated: _handleReferenceActivated,
                 onRefContextAction: _handleReferenceContextAction,
                 onSearchChanged: controller.setSearchQuery,
+                onLoadMoreHistory: () =>
+                    unawaited(controller.loadMoreHistory()),
                 onCommitSelected: (commit) =>
                     unawaited(controller.selectCommit(commit.oid)),
                 onCommitActivated: (commit) =>

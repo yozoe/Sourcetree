@@ -5,6 +5,9 @@
 /// widgets.
 enum RepositoryOverviewState { noRepository, loading, ready, error }
 
+/// Maximum number of physical commit-graph lanes shown at once.
+const int commitGraphMaximumVisibleLanes = 8;
+
 enum RepositoryAction {
   openRepository,
   cloneRepository,
@@ -160,6 +163,9 @@ final class RepositoryViewData {
     this.isUncommittedChangesSelected = false,
     this.refs = const [],
     this.commits = const [],
+    this.hasMoreHistory = false,
+    this.isHistoryLoading = false,
+    this.historyLoadError,
     this.focusedRefCommitId,
     this.changes = const [],
     this.selectedCommit,
@@ -195,6 +201,9 @@ final class RepositoryViewData {
   final bool isUncommittedChangesSelected;
   final List<RepositoryRefViewData> refs;
   final List<CommitViewData> commits;
+  final bool hasMoreHistory;
+  final bool isHistoryLoading;
+  final String? historyLoadError;
   final String? focusedRefCommitId;
   final List<RepositoryChangeViewData> changes;
   final CommitDetailsViewData? selectedCommit;
@@ -275,20 +284,20 @@ List<CommitGraphViewData> buildCommitGraph(
       headId != null &&
       nodes.any((node) => node.oid == headId) &&
       parentIds.contains(headId);
-  return _buildStableCommitGraph(
+  return _buildSourcetreeCommitGraph(
     nodes,
     headId: headId,
     reserveDetachedHeadLane: reserveDetachedHeadLane,
   );
 }
 
-/// 中文：构建不提前压缩的稳定车道；当前 HEAD 谱系固定使用最左侧主车道，
-/// 多个分支持续到共同祖先行再汇合，游离 HEAD 可保留专用车道和颜色。
+/// 中文：构建 Sourcetree 式连续活动车道：未变化的路径保持垂直；只有分叉新增
+/// 车道或路径结束时，受影响位置右侧的活动车道才同步补位。
 ///
-/// English: Builds stable, non-compacting lanes. The current HEAD lineage owns
-/// the primary left lane, parallel branches converge only on their shared
-/// ancestor row, and a detached HEAD can retain its reserved lane and color.
-List<CommitGraphViewData> _buildStableCommitGraph(
+/// English: Builds Sourcetree-style contiguous active lanes. Unchanged paths
+/// stay vertical; lanes to the right shift only when a fork inserts a path or
+/// an ended path releases its slot.
+List<CommitGraphViewData> _buildSourcetreeCommitGraph(
   List<CommitGraphNode> nodes, {
   required String? headId,
   required bool reserveDetachedHeadLane,
@@ -298,16 +307,18 @@ List<CommitGraphViewData> _buildStableCommitGraph(
   final hasLoadedHead =
       headId != null && nodes.any((node) => node.oid == headId);
   final activeTargets = <int, String>{};
+  final activeColorIndices = <int, int>{};
   var previousDestinations = <int>{};
+  var hasSeenHead = false;
+  var nextColorIndex = reserveDetachedHeadLane ? 0 : (hasLoadedHead ? 1 : 0);
   final result = <CommitGraphViewData>[];
 
-  int firstUnusedLane(Set<int> occupied) {
-    var lane = 0;
-    while (occupied.contains(lane)) {
-      lane++;
-    }
-    return lane;
-  }
+  int firstFreeLane() => activeTargets.isEmpty
+      ? (hasLoadedHead && !hasSeenHead ? 1 : 0)
+      : activeTargets.keys.reduce(
+              (highest, lane) => lane > highest ? lane : highest,
+            ) +
+            1;
 
   for (final node in nodes) {
     var matchingLanes =
@@ -318,12 +329,16 @@ List<CommitGraphViewData> _buildStableCommitGraph(
           ..sort();
     if (hasLoadedHead && node.oid == headId && !matchingLanes.contains(0)) {
       activeTargets[0] = node.oid;
+      activeColorIndices[0] = reserveDetachedHeadLane ? nextColorIndex++ : 0;
       matchingLanes = [0, ...matchingLanes];
     }
+    if (node.oid == headId) {
+      hasSeenHead = true;
+    }
     if (matchingLanes.isEmpty) {
-      final occupied = {...activeTargets.keys, if (hasLoadedHead) 0};
-      final lane = firstUnusedLane(occupied);
+      final lane = firstFreeLane();
       activeTargets[lane] = node.oid;
+      activeColorIndices[lane] = node.oid == headId ? 0 : nextColorIndex++;
       matchingLanes = [lane];
     }
 
@@ -334,60 +349,125 @@ List<CommitGraphViewData> _buildStableCommitGraph(
             .where((activeLane) => !incomingLanes.contains(activeLane))
             .toList(growable: false)
           ..sort();
+    final nextTargets = <int, String>{};
+    final nextColorIndices = <int, int>{};
+    final destinationByLane = <int, int?>{};
     final parentLanes = <int>[];
-    if (node.parents.isNotEmpty) {
-      parentLanes.add(lane);
+    final parentLaneColorIndices = <int>[];
+    var nextLane = hasLoadedHead && !hasSeenHead ? 1 : 0;
+    for (final activeLane in activeLanes) {
+      final targets = activeLane == lane
+          ? node.parents
+          : [activeTargets[activeLane]!];
+      if (targets.isEmpty) {
+        destinationByLane[activeLane] = null;
+        continue;
+      }
+      for (var targetIndex = 0; targetIndex < targets.length; targetIndex++) {
+        final target = targets[targetIndex];
+        final targetColorIndex = activeLane == lane && targetIndex > 0
+            ? nextColorIndex++
+            : activeColorIndices[activeLane]!;
+        nextTargets[nextLane] = target;
+        nextColorIndices[nextLane] = targetColorIndex;
+        if (activeLane == lane) {
+          parentLanes.add(nextLane);
+          parentLaneColorIndices.add(targetColorIndex);
+          destinationByLane.putIfAbsent(activeLane, () => nextLane);
+        } else {
+          destinationByLane[activeLane] = nextLane;
+        }
+        nextLane++;
+      }
     }
-
-    final occupied = {...activeTargets.keys, if (hasLoadedHead) 0};
-    for (final _ in node.parents.skip(1)) {
-      final parentLane = firstUnusedLane(occupied);
-      occupied.add(parentLane);
-      parentLanes.add(parentLane);
-    }
-
-    final destinations = <int?>[
-      for (final activeLane in activeLanes)
-        if (activeLane == lane)
-          node.parents.isEmpty ? null : lane
-        else
-          activeLane,
+    final destinations = [
+      for (final activeLane in activeLanes) destinationByLane[activeLane],
     ];
+    final activeLaneColorIndices = [
+      for (final activeLane in activeLanes) activeColorIndices[activeLane]!,
+    ];
+    final activeLaneDestinationColorIndices = [
+      for (var index = 0; index < activeLanes.length; index++)
+        destinations[index] == null
+            ? activeLaneColorIndices[index]
+            : nextColorIndices[destinations[index]!]!,
+    ];
+    final incomingLaneColorIndices = <int, int>{
+      for (final incomingLane in incomingLanes)
+        incomingLane: activeColorIndices[incomingLane]!,
+    };
     final previousLanes = <int>[
       for (final activeLane in activeLanes)
         if (previousDestinations.contains(activeLane)) activeLane,
     ];
 
     result.add(
-      CommitGraphViewData(
-        lane: lane,
-        activeLanes: activeLanes,
-        activeLaneDestinations: destinations,
-        previousLanes: previousLanes,
-        incomingLanes: incomingLanes,
-        parentLanes: parentLanes,
-        colorIndex: reserveDetachedHeadLane ? (lane == 0 ? 2 : lane - 1) : lane,
-        hasPreviousNode: result.isNotEmpty,
-        hasReservedHeadLane: reserveDetachedHeadLane,
+      _foldCommitGraphOverflow(
+        CommitGraphViewData(
+          lane: lane,
+          activeLanes: activeLanes,
+          activeLaneDestinations: destinations,
+          activeLaneColorIndices: activeLaneColorIndices,
+          activeLaneDestinationColorIndices: activeLaneDestinationColorIndices,
+          previousLanes: previousLanes,
+          incomingLanes: incomingLanes,
+          incomingLaneColorIndices: incomingLaneColorIndices,
+          parentLanes: parentLanes,
+          parentLaneColorIndices: parentLaneColorIndices,
+          colorIndex: activeColorIndices[lane]!,
+          hasPreviousNode: result.isNotEmpty,
+          hasReservedHeadLane: reserveDetachedHeadLane,
+        ),
       ),
     );
 
-    for (final matchingLane in matchingLanes) {
-      activeTargets.remove(matchingLane);
-    }
-    if (node.parents.isNotEmpty) {
-      activeTargets[lane] = node.parents.first;
-      for (var index = 1; index < node.parents.length; index++) {
-        activeTargets[parentLanes[index]] = node.parents[index];
-      }
-    }
-    previousDestinations = {
-      ...destinations.whereType<int>(),
-      ...parentLanes.skip(1),
-    };
+    activeTargets
+      ..clear()
+      ..addAll(nextTargets);
+    activeColorIndices
+      ..clear()
+      ..addAll(nextColorIndices);
+    previousDestinations = nextTargets.keys.toSet();
   }
 
   return result;
+}
+
+/// 中文：把第九条及更右侧的逻辑路径折叠进最右可见车道，提交节点始终保持可见。
+/// English: Folds the ninth and later logical paths into the rightmost visible
+/// lane so every commit node remains represented.
+CommitGraphViewData _foldCommitGraphOverflow(CommitGraphViewData graph) {
+  int visibleLane(int lane) =>
+      lane.clamp(0, commitGraphMaximumVisibleLanes - 1).toInt();
+
+  final incomingLaneColorIndices = <int, int>{};
+  for (final incomingLane in graph.incomingLanes) {
+    incomingLaneColorIndices.putIfAbsent(
+      visibleLane(incomingLane),
+      () => graph.incomingLaneColorIndices[incomingLane] ?? incomingLane,
+    );
+  }
+  return CommitGraphViewData(
+    lane: visibleLane(graph.lane),
+    activeLanes: [for (final lane in graph.activeLanes) visibleLane(lane)],
+    activeLaneDestinations: [
+      for (final lane in graph.activeLaneDestinations)
+        lane == null ? null : visibleLane(lane),
+    ],
+    activeLaneColorIndices: graph.activeLaneColorIndices,
+    activeLaneDestinationColorIndices: graph.activeLaneDestinationColorIndices,
+    previousLanes: {
+      for (final lane in graph.previousLanes) visibleLane(lane),
+    }.toList(),
+    incomingLanes: [for (final lane in graph.incomingLanes) visibleLane(lane)],
+    incomingLaneColorIndices: incomingLaneColorIndices,
+    hasWorkspaceNode: graph.hasWorkspaceNode,
+    parentLanes: [for (final lane in graph.parentLanes) visibleLane(lane)],
+    parentLaneColorIndices: graph.parentLaneColorIndices,
+    colorIndex: graph.colorIndex,
+    hasPreviousNode: graph.hasPreviousNode,
+    hasReservedHeadLane: graph.hasReservedHeadLane,
+  );
 }
 
 /// A graph cell can be rendered without the presentation knowing Git topology.
@@ -400,10 +480,14 @@ final class CommitGraphViewData {
     this.lane = 0,
     this.activeLanes = const [0],
     this.activeLaneDestinations = const [0],
+    this.activeLaneColorIndices = const [],
+    this.activeLaneDestinationColorIndices = const [],
     this.previousLanes = const [],
     this.incomingLanes = const [],
+    this.incomingLaneColorIndices = const {},
     this.hasWorkspaceNode = false,
     this.parentLanes = const [0],
+    this.parentLaneColorIndices = const [],
     this.colorIndex = 0,
     this.hasPreviousNode = false,
     this.hasReservedHeadLane = false,
@@ -412,6 +496,8 @@ final class CommitGraphViewData {
   final int lane;
   final List<int> activeLanes;
   final List<int?> activeLaneDestinations;
+  final List<int> activeLaneColorIndices;
+  final List<int> activeLaneDestinationColorIndices;
 
   /// 中文：上一行确实延续到当前行顶部的活动车道。
   /// English: Active lanes that genuinely continue from the preceding row
@@ -422,11 +508,13 @@ final class CommitGraphViewData {
   /// English: Source lanes that continue from above and converge into the
   /// current node on this row.
   final List<int> incomingLanes;
+  final Map<int, int> incomingLaneColorIndices;
 
   /// 中文：当前历史列表是否包含顶部的工作区虚拟节点。
   /// English: Whether the history list contains the virtual workspace row.
   final bool hasWorkspaceNode;
   final List<int> parentLanes;
+  final List<int> parentLaneColorIndices;
   final int colorIndex;
 
   /// 中文：上方是否存在可将活动车道延续到当前行的提交节点。
@@ -451,10 +539,14 @@ final class CommitGraphViewData {
     lane: lane,
     activeLanes: activeLanes,
     activeLaneDestinations: activeLaneDestinations,
+    activeLaneColorIndices: activeLaneColorIndices,
+    activeLaneDestinationColorIndices: activeLaneDestinationColorIndices,
     previousLanes: {...previousLanes, ...additionalPreviousLanes}.toList(),
     incomingLanes: incomingLanes,
+    incomingLaneColorIndices: incomingLaneColorIndices,
     hasWorkspaceNode: hasWorkspaceNode ?? this.hasWorkspaceNode,
     parentLanes: parentLanes,
+    parentLaneColorIndices: parentLaneColorIndices,
     colorIndex: colorIndex,
     hasPreviousNode: hasPreviousNode ?? this.hasPreviousNode,
     hasReservedHeadLane: hasReservedHeadLane,

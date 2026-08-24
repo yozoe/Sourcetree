@@ -60,6 +60,70 @@ void main() {
     expect(selected.commitDiff.lines, isNotEmpty);
   });
 
+  test('loads older history pages and stops at the oldest commit', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    for (var index = 0; index < 102; index++) {
+      await repository.writeFile('README.md', 'revision $index\n');
+      await repository.commit('commit $index');
+    }
+    final oldestCommit = (await repository.runGit([
+      'rev-parse',
+      'HEAD~101',
+    ])).stdout.toString().trim();
+    await repository.runGit([
+      'update-ref',
+      'refs/remotes/origin/archive',
+      oldestCommit,
+    ]);
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    final firstPage = container.read(repositorySessionProvider);
+    expect(firstPage.commits, hasLength(100));
+    expect(firstPage.hasMoreHistory, isTrue);
+    expect(firstPage.commits.first.subject, 'commit 101');
+
+    await controller.selectReference(
+      const RepositoryRefViewData(
+        id: 'refs/remotes/origin/archive',
+        label: 'origin/archive',
+        kind: RepositoryRefKind.remoteBranch,
+      ),
+    );
+    expect(
+      container.read(repositorySessionProvider).commits.first.objectId,
+      oldestCommit,
+    );
+
+    // Move the live branch after page one. Pagination must continue from the
+    // original revision snapshot rather than skipping the now-unreachable tail.
+    await repository.runGit([
+      'update-ref',
+      'refs/heads/${repository.initialBranch}',
+      'HEAD~2',
+    ]);
+
+    await controller.loadMoreHistory();
+
+    final completedHistory = container.read(repositorySessionProvider);
+    expect(completedHistory.commits, hasLength(102));
+    expect(completedHistory.hasMoreHistory, isFalse);
+    expect(completedHistory.isHistoryLoading, isFalse);
+    expect(completedHistory.historyOffset, 102);
+    expect(
+      completedHistory.commits.map((commit) => commit.subject),
+      List<String>.generate(102, (index) => 'commit ${101 - index}'),
+    );
+    expect(
+      completedHistory.commits.map((commit) => commit.objectId).toSet(),
+      hasLength(102),
+    );
+  });
+
   test('always shows the stashes navigation entry below remote refs', () async {
     final repository = await GitTestRepository.create();
     addTearDown(repository.dispose);
@@ -540,6 +604,7 @@ void main() {
   test('adds inspected roots and persists repository library ordering', () async {
     final firstRepository = await GitTestRepository.create();
     addTearDown(firstRepository.dispose);
+    await firstRepository.writeFile('uncommitted.txt', 'pending\n');
     final secondRepository = await GitTestRepository.create();
     addTearDown(secondRepository.dispose);
     final store = _MemoryRepositorySessionStore();
@@ -581,6 +646,14 @@ void main() {
         .openRepositoryTabs
         .last
         .path;
+    final firstTab = container
+        .read(repositorySessionProvider)
+        .openRepositoryTabs
+        .first;
+    expect(firstTab.hasStatus, isTrue);
+    expect(firstTab.branchName, firstRepository.initialBranch);
+    expect(firstTab.changedFileCount, 1);
+    expect(firstTab.isUnborn, isTrue);
     controller.reorderRepositoryLibrary([secondPath, firstPath]);
     expect(
       container
@@ -593,6 +666,45 @@ void main() {
     await Future<void>.delayed(Duration.zero);
     expect(store.snapshot.openRepositoryPaths, [secondPath, firstPath]);
   });
+
+  test(
+    'refreshes an existing library entry when it is reported again',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('uncommitted.txt', 'pending\n');
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+
+      expect(
+        await controller.addRepositoryToLibrary(
+          repository.workingDirectory.path,
+        ),
+        RepositoryLibraryRegistrationResult.added,
+      );
+      expect(
+        container.read(repositorySessionProvider).openRepositoryTabs.single,
+        isA<RepositoryTab>()
+            .having((tab) => tab.changedFileCount, 'changedFileCount', 1)
+            .having((tab) => tab.isUnborn, 'isUnborn', isTrue),
+      );
+
+      await repository.commit('initial');
+      expect(
+        await controller.addRepositoryToLibrary(
+          repository.workingDirectory.path,
+        ),
+        RepositoryLibraryRegistrationResult.alreadyRegistered,
+      );
+      expect(
+        container.read(repositorySessionProvider).openRepositoryTabs.single,
+        isA<RepositoryTab>()
+            .having((tab) => tab.changedFileCount, 'changedFileCount', 0)
+            .having((tab) => tab.isUnborn, 'isUnborn', isFalse),
+      );
+    },
+  );
 
   test(
     'refresh retries the last requested path after a failed repository switch',
