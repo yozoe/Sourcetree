@@ -350,6 +350,7 @@ class _RepositoryWorkspaceScreenState
     extends ConsumerState<RepositoryWorkspaceScreen> {
   bool _isAskPassDialogVisible = false;
   bool _isRebasePromptVisible = false;
+  bool _isSequencerPromptVisible = false;
   bool _hasHandledInitialAction = false;
 
   /// 中文：在窗口首次绘制后执行首页请求的仓库操作。
@@ -358,7 +359,52 @@ class _RepositoryWorkspaceScreenState
   @override
   void initState() {
     super.initState();
+    DesktopWindowBridge.setWorkspaceActionHandler(_handleWorkspaceMenuAction);
     WidgetsBinding.instance.addPostFrameCallback((_) => _prepareWorkspace());
+  }
+
+  @override
+  void dispose() {
+    DesktopWindowBridge.setWorkspaceActionHandler(null);
+    super.dispose();
+  }
+
+  Future<void> _handleWorkspaceMenuAction(String action) async {
+    if (!mounted) return;
+    switch (action) {
+      case 'createPatch':
+        await _showCreatePatchDialog();
+      case 'applyPatch':
+        await _showApplyPatchDialog();
+      case 'repositoryDetails':
+        await _showRepositoryDetailsDialog();
+      case 'repositoryFeaturePending':
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('该仓库菜单功能待实现。')));
+    }
+  }
+
+  /// 中文：从 macOS“仓库”菜单显示当前仓库的真实 Git 详情。
+  /// English: Opens the current repository's Git-backed details window from
+  /// the native Repository menu.
+  Future<void> _showRepositoryDetailsDialog() async {
+    final repository = ref.read(repositorySessionProvider).repository;
+    if (repository == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请先打开一个仓库。')));
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => _RepositoryDetailsDialog(
+        repositoryName: path_utils.basename(
+          repository.workTreeRoot ?? repository.commonDirectory,
+        ),
+      ),
+    );
   }
 
   /// 中文：执行首页请求的单仓库打开或新建操作。
@@ -445,6 +491,14 @@ class _RepositoryWorkspaceScreenState
       _isRebasePromptVisible = true;
       unawaited(_showRebasePrompt());
     }
+    final enteredSequencer =
+        (next.operationState == GitRepositoryOperationState.cherryPick ||
+            next.operationState == GitRepositoryOperationState.revert) &&
+        previous?.operationState != next.operationState;
+    if (enteredSequencer && !_isSequencerPromptVisible && mounted) {
+      _isSequencerPromptVisible = true;
+      unawaited(_showSequencerPrompt(next.operationState));
+    }
   }
 
   Future<void> _showRebasePrompt() async {
@@ -484,6 +538,66 @@ class _RepositoryWorkspaceScreenState
     } else {
       await _abortRebase();
     }
+  }
+
+  Future<void> _showSequencerPrompt(
+    GitRepositoryOperationState operationState,
+  ) async {
+    final isCherryPick =
+        operationState == GitRepositoryOperationState.cherryPick;
+    final operationName = isCherryPick ? '遴选' : '回滚';
+    final action = await showDialog<_RebasePromptAction>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => AlertDialog(
+        title: Text('$operationName进行中'),
+        content: Text(
+          'Git 因冲突暂停了$operationName。请解决冲突并暂存后继续，或放弃本次$operationName。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () =>
+                Navigator.of(context).pop(_RebasePromptAction.cancel),
+            child: const Text('取消'),
+          ),
+          OutlinedButton(
+            onPressed: () =>
+                Navigator.of(context).pop(_RebasePromptAction.abort),
+            child: Text('放弃$operationName'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.of(context).pop(_RebasePromptAction.continueRebase),
+            child: Text('继续$operationName'),
+          ),
+        ],
+      ),
+    );
+    _isSequencerPromptVisible = false;
+    if (!mounted || action == null || action == _RebasePromptAction.cancel) {
+      return;
+    }
+    final controller = ref.read(repositorySessionProvider.notifier);
+    final completed = switch ((isCherryPick, action)) {
+      (true, _RebasePromptAction.continueRebase) =>
+        await controller.continueCherryPick(),
+      (true, _) => await controller.abortCherryPick(),
+      (false, _RebasePromptAction.continueRebase) =>
+        await controller.continueRevert(),
+      (false, _) => await controller.abortRevert(),
+    };
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          completed
+              ? action == _RebasePromptAction.continueRebase
+                    ? '已继续$operationName。'
+                    : '已中止$operationName。'
+              : '$operationName未完成，请查看仓库状态。',
+        ),
+      ),
+    );
   }
 
   /// 中文：初始化当前功能。
@@ -590,6 +704,10 @@ class _RepositoryWorkspaceScreenState
         unawaited(_continueRebase());
       case RepositoryAction.abortRebase:
         unawaited(_confirmAbortRebase());
+      case RepositoryAction.continueSequencer:
+        unawaited(_continueSequencer());
+      case RepositoryAction.abortSequencer:
+        unawaited(_confirmAbortSequencer());
       case RepositoryAction.push:
         _confirmPush();
       case RepositoryAction.cancelPush:
@@ -667,6 +785,7 @@ class _RepositoryWorkspaceScreenState
     RepositoryOperationKind.pull => '拉取更新',
     RepositoryOperationKind.push => '推送当前分支',
     RepositoryOperationKind.stash => '管理贮藏',
+    RepositoryOperationKind.history => '历史提交操作',
   };
 
   /// 中文：返回操作结果对应的简短本地化状态说明。
@@ -883,6 +1002,76 @@ class _RepositoryWorkspaceScreenState
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
         content: Text(aborted ? '已中止变基。' : '中止变基失败，请查看仓库错误信息。'),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  /// 中文：继续当前暂停的遴选或回滚，并保留 Git 的冲突恢复语义。
+  /// English: Continues the current paused cherry-pick or revert while
+  /// preserving Git's conflict recovery semantics.
+  Future<void> _continueSequencer() async {
+    final operationState = ref.read(repositorySessionProvider).operationState;
+    final isCherryPick =
+        operationState == GitRepositoryOperationState.cherryPick;
+    if (!isCherryPick && operationState != GitRepositoryOperationState.revert) {
+      return;
+    }
+    final completed = isCherryPick
+        ? await ref
+              .read(repositorySessionProvider.notifier)
+              .continueCherryPick()
+        : await ref.read(repositorySessionProvider.notifier).continueRevert();
+    if (!mounted) return;
+    final operationName = isCherryPick ? '遴选' : '回滚';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          completed ? '已继续$operationName。' : '$operationName尚未完成，请处理冲突后重试。',
+        ),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  /// 中文：在中止当前暂停的遴选或回滚前说明恢复范围。
+  /// English: Confirms aborting a paused cherry-pick or revert before Git
+  /// restores the branch to its pre-operation state.
+  Future<void> _confirmAbortSequencer() async {
+    final operationState = ref.read(repositorySessionProvider).operationState;
+    final isCherryPick =
+        operationState == GitRepositoryOperationState.cherryPick;
+    if (!isCherryPick && operationState != GitRepositoryOperationState.revert) {
+      return;
+    }
+    final operationName = isCherryPick ? '遴选' : '回滚';
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('中止$operationName'),
+        content: Text('将放弃当前$operationName过程并恢复操作前的分支状态。此操作不会删除未提交文件。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: Text('中止$operationName'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+    final aborted = isCherryPick
+        ? await ref.read(repositorySessionProvider.notifier).abortCherryPick()
+        : await ref.read(repositorySessionProvider.notifier).abortRevert();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          aborted ? '已中止$operationName。' : '中止$operationName失败，请查看仓库错误信息。',
+        ),
         duration: const Duration(seconds: 3),
       ),
     );
@@ -1246,7 +1435,7 @@ class _RepositoryWorkspaceScreenState
   Future<void> _showRenameLocalBranchDialog(String oldName) async {
     final newName = await showDialog<String>(
       context: context,
-      builder: (BuildContext context) => _RenameBranchDialog(oldName: oldName),
+      builder: (BuildContext context) => RenameBranchDialog(oldName: oldName),
     );
     if (newName == null || !mounted) return;
 
@@ -1264,38 +1453,43 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
-  /// 中文：确认后仅以 Git 的安全删除模式删除一个非当前本地分支。
+  /// 中文：确认删除一个非当前本地分支，并允许用户明确选择强制删除或同步删除其上游远端分支。
   ///
-  /// English: Confirms deletion of a non-current local branch using only Git's
-  /// safe deletion mode.
+  /// English: Confirms deletion of a non-current local branch and lets the user
+  /// explicitly opt into force deletion or deletion of its upstream remote ref.
   Future<void> _confirmDeleteLocalBranch(String branchName) async {
-    final approved = await showDialog<bool>(
+    final session = ref.read(repositorySessionProvider);
+    final upstream = session.localBranches
+        .where((branch) => branch.name == branchName)
+        .map((branch) => branch.upstream)
+        .firstOrNull;
+    final remoteBranchName =
+        upstream != null &&
+            session.remoteBranches.any((branch) => branch.name == upstream)
+        ? upstream
+        : null;
+    final result = await showDialog<DeleteLocalBranchDialogResult>(
       context: context,
-      builder: (BuildContext context) => AlertDialog(
-        title: const Text('删除本地分支'),
-        content: Text('删除 $branchName？仅删除已合并的分支；未合并提交会被 Git 拒绝，且不会强制删除。'),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.of(context).pop(false),
-            child: const Text('取消'),
-          ),
-          FilledButton.icon(
-            onPressed: () => Navigator.of(context).pop(true),
-            icon: const Icon(Icons.delete_outline),
-            label: const Text('安全删除'),
-          ),
-        ],
+      builder: (BuildContext context) => DeleteLocalBranchDialog(
+        branchName: branchName,
+        remoteBranchName: remoteBranchName,
       ),
     );
-    if (approved != true || !mounted) return;
+    if (result == null || !mounted) return;
 
     final deleted = await ref
         .read(repositorySessionProvider.notifier)
-        .deleteMergedLocalBranch(branchName);
+        .deleteBranches(
+          localBranchNames: [branchName],
+          remoteBranchNames: result.deleteRemote && remoteBranchName != null
+              ? [remoteBranchName]
+              : const [],
+          forceLocal: result.force,
+        );
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(deleted ? '已删除本地分支 $branchName。' : '分支未删除；它可能包含尚未合并的提交。'),
+        content: Text(deleted ? '已删除分支 $branchName。' : '分支未完全删除；请查看仓库状态和错误信息。'),
         duration: const Duration(seconds: 3),
       ),
     );
@@ -1392,6 +1586,401 @@ class _RepositoryWorkspaceScreenState
               : '合并未完成；如存在冲突，请处理后使用 Git 命令行继续或中止合并，再刷新仓库。',
         ),
         duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  /// 中文：确认后把当前分支变基到右键选中的提交；变基会改写提交历史。
+  /// English: Confirms rebasing the current branch onto the selected commit;
+  /// rebasing rewrites local commit history.
+  Future<void> _confirmRebaseOntoCommit(CommitViewData commit) async {
+    final session = ref.read(repositorySessionProvider);
+    final currentBranch = session.status?.branch.head;
+    if (currentBranch == null) return;
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('变基'),
+        content: Text(
+          '将 $currentBranch 变基到提交 ${commit.shortOid}。\n\n'
+          '这会重写当前分支上该提交之后的本地历史。仅在工作区干净、且没有正在进行的 Git 操作时执行；'
+          '如果这些提交已经推送给他人，请先确认协作影响。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(context).pop(true),
+            icon: const Icon(Icons.call_split),
+            label: const Text('开始变基'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+    final controller = ref.read(repositorySessionProvider.notifier);
+    final completed = await controller.rebaseOntoCommit(commit.oid);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(completed ? '已完成变基。' : '变基未完成；请确认工作区干净并查看仓库状态。'),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  /// 中文：读取可编辑的 todo 列表，并在确认后按用户选择执行交互式变基。
+  /// English: Reads an editable todo list and runs interactive rebase after
+  /// the user confirms the chosen order and actions.
+  Future<void> _showInteractiveRebaseDialog(CommitViewData commit) async {
+    final controller = ref.read(repositorySessionProvider.notifier);
+    final session = ref.read(repositorySessionProvider);
+    final branchName = session.status?.branch.head;
+    if (branchName == null) return;
+    List<GitInteractiveRebaseInstruction> todo;
+    try {
+      todo = await controller.readInteractiveRebaseTodo(commit.oid);
+    } on Object {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('无法读取交互式变基列表，请刷新仓库后重试。')));
+      return;
+    }
+    if (!mounted) return;
+    if (todo.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前分支没有可在此提交之后重放的提交。')));
+      return;
+    }
+    final instructions =
+        await showDialog<List<GitInteractiveRebaseInstruction>>(
+          context: context,
+          barrierDismissible: false,
+          builder: (context) => _InteractiveRebaseDialog(
+            branchName: branchName,
+            upstreamCommit: commit,
+            initialInstructions: todo,
+          ),
+        );
+    if (instructions == null || !mounted) return;
+    final completed = await controller.interactiveRebaseOntoCommit(
+      commit.oid,
+      instructions: instructions,
+    );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(completed ? '已完成交互式变基。' : '交互式变基未完成，请查看仓库状态。'),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  /// 中文：让用户选择重置模式，并在 hard 重置前明确说明可能丢失的改动。
+  /// English: Lets the user choose a reset mode and explains data loss before
+  /// a hard reset can be confirmed.
+  Future<void> _confirmResetCurrentBranch(CommitViewData commit) async {
+    final session = ref.read(repositorySessionProvider);
+    final currentBranch = session.status?.branch.head;
+    if (currentBranch == null) return;
+    final result = await showDialog<GitResetMode>(
+      context: context,
+      builder: (context) => _ResetCommitDialog(
+        branchName: currentBranch,
+        commit: commit,
+        hasWorkingChanges: !(session.status?.isClean ?? true),
+      ),
+    );
+    if (result == null || !mounted) return;
+    final completed = await ref
+        .read(repositorySessionProvider.notifier)
+        .resetCurrentBranchToCommit(commit.oid, mode: result);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          completed
+              ? '已将 $currentBranch 重置到 ${commit.shortOid}。'
+              : '重置未完成，请查看仓库状态和错误信息。',
+        ),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  /// 中文：确认后创建所选提交的反向提交，不移动已有分支历史。
+  /// English: Confirms creation of an inverse commit without moving existing
+  /// branch history.
+  Future<void> _confirmRevertCommit(CommitViewData commit) async {
+    int? mainlineParent;
+    if (commit.parents.length > 1) {
+      mainlineParent = await _selectMainlineParent(commit, operation: '回滚');
+      if (mainlineParent == null || !mounted) return;
+    }
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('提交回滚'),
+        content: Text(
+          '将创建一个新提交来撤销 ${commit.shortOid} 的改动。不会删除原提交；'
+          '若出现冲突，Git 会保留冲突状态供你解决。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(context).pop(true),
+            icon: const Icon(Icons.undo),
+            label: const Text('回滚提交'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+    final completed = await ref
+        .read(repositorySessionProvider.notifier)
+        .revertCommit(commit.oid, mainlineParent: mainlineParent);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          completed ? '已创建 ${commit.shortOid} 的回滚提交。' : '回滚未完成，请查看仓库状态。',
+        ),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  /// 中文：确认后把右键选中的提交遴选到当前分支；提交信息会标记来源。
+  /// English: Confirms cherry-picking the selected commit onto the current
+  /// branch and records the source in the resulting commit message.
+  Future<void> _confirmCherryPickCommit(CommitViewData commit) async {
+    final currentBranch = ref
+        .read(repositorySessionProvider)
+        .status
+        ?.branch
+        .head;
+    if (currentBranch == null) return;
+    int? mainlineParent;
+    if (commit.parents.length > 1) {
+      mainlineParent = await _selectMainlineParent(commit, operation: '遴选');
+      if (mainlineParent == null || !mounted) return;
+    }
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('遴选提交'),
+        content: Text(
+          '将提交 ${commit.shortOid} 应用到当前分支 $currentBranch。'
+          '若出现冲突，Git 会保留冲突状态供你解决。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(context).pop(true),
+            icon: const Icon(Icons.content_copy),
+            label: const Text('遴选'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+    final completed = await ref
+        .read(repositorySessionProvider.notifier)
+        .cherryPickCommit(commit.oid, mainlineParent: mainlineParent);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          completed ? '已遴选提交 ${commit.shortOid}。' : '遴选未完成，请查看仓库状态。',
+        ),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  /// 中文：合并提交需要用户指定主线父提交，Git 据此决定要保留的一侧。
+  /// English: Lets the user choose the mainline parent Git needs for a merge
+  /// commit revert or cherry-pick.
+  Future<int?> _selectMainlineParent(
+    CommitViewData commit, {
+    required String operation,
+  }) => showDialog<int>(
+    context: context,
+    builder: (context) => AlertDialog(
+      title: Text('$operation合并提交'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 460, maxHeight: 360),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('提交 ${commit.shortOid} 有多个父提交。请选择要保留为主线的一侧：'),
+            const SizedBox(height: 8),
+            Flexible(
+              child: ListView.builder(
+                shrinkWrap: true,
+                itemCount: commit.parents.length,
+                itemBuilder: (context, index) => ListTile(
+                  title: Text('父提交 ${index + 1}'),
+                  subtitle: Text(commit.parents[index]),
+                  onTap: () => Navigator.of(context).pop(index + 1),
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+      ],
+    ),
+  );
+
+  /// 中文：要求用户选择补丁输出位置，然后通过应用层导出所选提交。
+  /// English: Requests a user-selected patch destination, then exports the
+  /// selected commit through the application layer.
+  Future<void> _createPatchForCommit(CommitViewData commit) async {
+    final location = await getSaveLocation(
+      suggestedName:
+          '${commit.shortOid}-${_safePatchFileStem(commit.subject)}.patch',
+      acceptedTypeGroups: const [
+        XTypeGroup(label: 'Git patch', extensions: ['patch']),
+      ],
+    );
+    if (location == null || !mounted) return;
+    final outputPath = location.path;
+    final completed = await ref
+        .read(repositorySessionProvider.notifier)
+        .createPatchForCommit(commit.oid, outputPath: outputPath);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(completed ? '已创建补丁：$outputPath' : '未能创建补丁，请查看仓库状态。'),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  String _safePatchFileStem(String subject) {
+    final normalized = subject
+        .replaceAll(RegExp(r'[^A-Za-z0-9._-]+'), '-')
+        .replaceAll(RegExp(r'-+'), '-')
+        .replaceAll(RegExp(r'^-|-$'), '');
+    if (normalized.isEmpty) return 'commit';
+    return normalized.length <= 48 ? normalized : normalized.substring(0, 48);
+  }
+
+  /// 中文：从 macOS“动作”菜单打开补丁创建窗口，选择已加载提交和输出位置。
+  /// English: Opens the patch-export window from the native Action menu.
+  Future<void> _showCreatePatchDialog() async {
+    final session = ref.read(repositorySessionProvider);
+    if (session.repository == null || session.historyCommits.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请先打开包含提交历史的仓库。')));
+      return;
+    }
+    final request = await showDialog<_PatchCreateRequest>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => Consumer(
+        builder: (context, dialogRef, _) {
+          final dialogSession = dialogRef.watch(repositorySessionProvider);
+          // The workspace search field only filters the main history view.
+          // Patch export must retain every loaded commit, otherwise a search
+          // can silently remove the selected commit from this dialog.
+          final repository = mapRepositoryOverview(
+            dialogSession.copyWith(searchQuery: ''),
+          ).repository;
+          if (repository == null || repository.commits.isEmpty) {
+            return AlertDialog(
+              content: const Text('当前仓库没有可导出的提交。'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.of(context).pop(),
+                  child: const Text('关闭'),
+                ),
+              ],
+            );
+          }
+          final controller = dialogRef.read(repositorySessionProvider.notifier);
+          return _PatchCreateDialog(
+            repository: repository,
+            selectedCommitId: session.selectedCommitId,
+            onCommitSelected: (commit) =>
+                unawaited(controller.selectCommit(commit.oid)),
+            onCommitFileSelected: (file) =>
+                unawaited(controller.selectCommitFile(file)),
+            onLoadMore: repository.hasMoreHistory
+                ? () => unawaited(controller.loadMoreHistory())
+                : null,
+          );
+        },
+      ),
+    );
+    if (request == null || !mounted) return;
+    final completed = await ref
+        .read(repositorySessionProvider.notifier)
+        .createPatches(
+          request.commitIds,
+          outputPath: request.outputPath,
+          createSeparateFiles: request.createSeparateFiles,
+        );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          completed ? '已创建补丁：${request.outputPath}' : '未能创建补丁，请查看仓库状态。',
+        ),
+      ),
+    );
+  }
+
+  /// 中文：从 macOS“动作”菜单打开补丁应用窗口，并根据用户选项检查或应用补丁。
+  /// English: Opens the patch-apply window from the native Action menu.
+  Future<void> _showApplyPatchDialog() async {
+    final session = ref.read(repositorySessionProvider);
+    if (session.repository == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请先打开一个仓库。')));
+      return;
+    }
+    final request = await showDialog<_PatchApplyRequest>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => const _PatchApplyDialog(),
+    );
+    if (request == null || !mounted) return;
+    final completed = await ref
+        .read(repositorySessionProvider.notifier)
+        .applyPatchFile(
+          patchPath: request.patchPath,
+          stripLevel: request.stripLevel,
+          basePath: request.basePath,
+          checkOnly: request.checkOnly,
+        );
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          completed
+              ? (request.checkOnly ? '补丁检查通过。' : '已应用补丁。')
+              : '补丁未能应用，请查看仓库状态。',
+        ),
       ),
     );
   }
@@ -1602,6 +2191,27 @@ class _RepositoryWorkspaceScreenState
             duration: Duration(seconds: 2),
           ),
         );
+        return;
+      case RepositoryCommitContextAction.pushRevision:
+        await _confirmPush();
+        return;
+      case RepositoryCommitContextAction.rebase:
+        await _confirmRebaseOntoCommit(commit);
+        return;
+      case RepositoryCommitContextAction.interactiveRebase:
+        await _showInteractiveRebaseDialog(commit);
+        return;
+      case RepositoryCommitContextAction.reset:
+        await _confirmResetCurrentBranch(commit);
+        return;
+      case RepositoryCommitContextAction.revert:
+        await _confirmRevertCommit(commit);
+        return;
+      case RepositoryCommitContextAction.createPatch:
+        await _createPatchForCommit(commit);
+        return;
+      case RepositoryCommitContextAction.cherryPick:
+        await _confirmCherryPickCommit(commit);
         return;
       case RepositoryCommitContextAction.tag:
         break;
@@ -2115,6 +2725,1166 @@ class _RepositoryWorkspaceScreenState
     );
   }
 }
+
+final class _ResetCommitDialog extends StatefulWidget {
+  const _ResetCommitDialog({
+    required this.branchName,
+    required this.commit,
+    required this.hasWorkingChanges,
+  });
+
+  final String branchName;
+  final CommitViewData commit;
+  final bool hasWorkingChanges;
+
+  @override
+  State<_ResetCommitDialog> createState() => _ResetCommitDialogState();
+}
+
+final class _ResetCommitDialogState extends State<_ResetCommitDialog> {
+  var _mode = GitResetMode.mixed;
+  var _hardResetAcknowledged = false;
+
+  @override
+  Widget build(BuildContext context) {
+    final isHard = _mode == GitResetMode.hard;
+    return AlertDialog(
+      title: const Text('将当前分支重置到此次提交'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 460),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('将 ${widget.branchName} 重置到 ${widget.commit.shortOid}。'),
+            const SizedBox(height: 12),
+            RadioGroup<GitResetMode>(
+              groupValue: _mode,
+              onChanged: (value) => setState(() => _mode = value!),
+              child: Column(
+                children: const [
+                  RadioListTile<GitResetMode>(
+                    value: GitResetMode.soft,
+                    title: Text('软重置'),
+                    subtitle: Text('保留暂存区和工作区改动。'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                  RadioListTile<GitResetMode>(
+                    value: GitResetMode.mixed,
+                    title: Text('混合重置'),
+                    subtitle: Text('保留工作区改动，但取消暂存。'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                  RadioListTile<GitResetMode>(
+                    value: GitResetMode.hard,
+                    title: Text('硬重置'),
+                    subtitle: Text('丢弃已跟踪文件和暂存区的未提交改动。'),
+                    contentPadding: EdgeInsets.zero,
+                  ),
+                ],
+              ),
+            ),
+            if (isHard) ...[
+              const SizedBox(height: 6),
+              CheckboxListTile(
+                value: _hardResetAcknowledged,
+                onChanged: (value) =>
+                    setState(() => _hardResetAcknowledged = value ?? false),
+                title: Text(
+                  widget.hasWorkingChanges
+                      ? '我知道这会永久丢弃当前已跟踪的未提交改动'
+                      : '我知道硬重置会永久丢弃已跟踪的未提交改动',
+                ),
+                controlAffinity: ListTileControlAffinity.leading,
+                contentPadding: EdgeInsets.zero,
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: isHard && !_hardResetAcknowledged
+              ? null
+              : () => Navigator.of(context).pop(_mode),
+          style: isHard
+              ? FilledButton.styleFrom(
+                  backgroundColor: Theme.of(context).colorScheme.error,
+                  foregroundColor: Theme.of(context).colorScheme.onError,
+                )
+              : null,
+          child: const Text('重置'),
+        ),
+      ],
+    );
+  }
+}
+
+final class _InteractiveRebaseDialog extends StatefulWidget {
+  const _InteractiveRebaseDialog({
+    required this.branchName,
+    required this.upstreamCommit,
+    required this.initialInstructions,
+  });
+
+  final String branchName;
+  final CommitViewData upstreamCommit;
+  final List<GitInteractiveRebaseInstruction> initialInstructions;
+
+  @override
+  State<_InteractiveRebaseDialog> createState() =>
+      _InteractiveRebaseDialogState();
+}
+
+final class _InteractiveRebaseDialogState
+    extends State<_InteractiveRebaseDialog> {
+  late final List<GitInteractiveRebaseInstruction> _instructions;
+
+  @override
+  void initState() {
+    super.initState();
+    _instructions = [...widget.initialInstructions];
+  }
+
+  bool get _canSubmit {
+    var hasPreviousAppliedCommit = false;
+    for (final instruction in _instructions) {
+      switch (instruction.action) {
+        case GitInteractiveRebaseAction.squash:
+        case GitInteractiveRebaseAction.fixup:
+          if (!hasPreviousAppliedCommit) return false;
+        case GitInteractiveRebaseAction.drop:
+          continue;
+        case GitInteractiveRebaseAction.pick:
+        case GitInteractiveRebaseAction.reword:
+        case GitInteractiveRebaseAction.edit:
+          hasPreviousAppliedCommit = true;
+      }
+    }
+    return true;
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('交互式变基'),
+    content: SizedBox(
+      width: 660,
+      height: 480,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            '${widget.branchName} 将变基到 ${widget.upstreamCommit.shortOid}。拖动提交可调整顺序；'
+            '选择操作后将改写本地历史。',
+          ),
+          const SizedBox(height: 10),
+          const Text('squash 和 fixup 必须位于一个未丢弃提交之后。'),
+          const SizedBox(height: 12),
+          Expanded(
+            child: ReorderableListView.builder(
+              buildDefaultDragHandles: false,
+              itemCount: _instructions.length,
+              onReorderItem: (oldIndex, newIndex) {
+                setState(() {
+                  if (oldIndex < newIndex) newIndex--;
+                  final item = _instructions.removeAt(oldIndex);
+                  _instructions.insert(newIndex, item);
+                });
+              },
+              itemBuilder: (context, index) {
+                final instruction = _instructions[index];
+                return ListTile(
+                  key: ValueKey(instruction.objectId),
+                  leading: ReorderableDragStartListener(
+                    index: index,
+                    child: const Icon(Icons.drag_indicator),
+                  ),
+                  title: Text(
+                    instruction.subject.isEmpty
+                        ? '（无提交标题）'
+                        : instruction.subject,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                  ),
+                  subtitle: Text(instruction.objectId.substring(0, 8)),
+                  trailing: DropdownButton<GitInteractiveRebaseAction>(
+                    value: instruction.action,
+                    onChanged: (action) {
+                      if (action == null) return;
+                      setState(() {
+                        _instructions[index] = instruction.copyWith(
+                          action: action,
+                        );
+                      });
+                    },
+                    items: [
+                      for (final action in GitInteractiveRebaseAction.values)
+                        if (action != GitInteractiveRebaseAction.reword)
+                          DropdownMenuItem(
+                            value: action,
+                            child: Text(_interactiveRebaseActionLabel(action)),
+                          ),
+                    ],
+                  ),
+                );
+              },
+            ),
+          ),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('取消'),
+      ),
+      FilledButton.icon(
+        onPressed: _canSubmit
+            ? () => Navigator.of(context).pop(_instructions)
+            : null,
+        icon: const Icon(Icons.call_split),
+        label: const Text('开始变基'),
+      ),
+    ],
+  );
+
+  String _interactiveRebaseActionLabel(GitInteractiveRebaseAction action) =>
+      switch (action) {
+        GitInteractiveRebaseAction.pick => 'pick',
+        GitInteractiveRebaseAction.reword => 'reword',
+        GitInteractiveRebaseAction.edit => 'edit',
+        GitInteractiveRebaseAction.squash => 'squash',
+        GitInteractiveRebaseAction.fixup => 'fixup',
+        GitInteractiveRebaseAction.drop => 'drop',
+      };
+}
+
+final class _PatchCreateRequest {
+  const _PatchCreateRequest({
+    required this.commitIds,
+    required this.outputPath,
+    required this.createSeparateFiles,
+  });
+  final List<String> commitIds;
+  final String outputPath;
+  final bool createSeparateFiles;
+}
+
+final class _PatchApplyRequest {
+  const _PatchApplyRequest({
+    required this.patchPath,
+    required this.stripLevel,
+    required this.basePath,
+    required this.checkOnly,
+  });
+  final String patchPath;
+  final int? stripLevel;
+  final String basePath;
+  final bool checkOnly;
+}
+
+final class _RepositoryDetailsDialog extends ConsumerStatefulWidget {
+  const _RepositoryDetailsDialog({required this.repositoryName});
+
+  final String repositoryName;
+
+  @override
+  ConsumerState<_RepositoryDetailsDialog> createState() =>
+      _RepositoryDetailsDialogState();
+}
+
+final class _RepositoryDetailsDialogState
+    extends ConsumerState<_RepositoryDetailsDialog> {
+  GitRepositoryDetails? _details;
+  Object? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  Future<void> _load() async {
+    try {
+      final details = await ref
+          .read(repositorySessionProvider.notifier)
+          .readRepositoryDetails();
+      if (mounted) setState(() => _details = details);
+    } on Object catch (error) {
+      if (mounted) setState(() => _error = error);
+    }
+  }
+
+  @override
+  void dispose() {
+    ref.read(repositorySessionProvider.notifier).cancelRepositoryDetailsRead();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => _ResizableDialogSurface(
+    initialSize: const Size(660, 670),
+    minimumSize: const Size(520, 420),
+    builder: (context, _) {
+      final details = _details;
+      if (details == null) {
+        return Column(
+          children: [
+            _dialogTitle('仓库详情'),
+            Expanded(
+              child: Center(
+                child: _error == null
+                    ? const CircularProgressIndicator()
+                    : Padding(
+                        padding: const EdgeInsets.all(24),
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(Icons.error_outline, size: 32),
+                            const SizedBox(height: 10),
+                            const Text('无法读取仓库详情'),
+                            const SizedBox(height: 6),
+                            Text(
+                              _error.toString(),
+                              textAlign: TextAlign.center,
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                            const SizedBox(height: 14),
+                            OutlinedButton(
+                              onPressed: () => setState(() {
+                                _error = null;
+                                unawaited(_load());
+                              }),
+                              child: const Text('重试'),
+                            ),
+                          ],
+                        ),
+                      ),
+              ),
+            ),
+            _dialogActions(
+              context,
+              enabled: true,
+              label: '关闭',
+              onConfirm: () => Navigator.of(context).pop(),
+            ),
+          ],
+        );
+      }
+      final totalAuthorCommits = details.authors.fold<int>(
+        0,
+        (total, author) => total + author.commitCount,
+      );
+      return Column(
+        children: [
+          _dialogTitle('仓库详情'),
+          Container(
+            width: double.infinity,
+            padding: const EdgeInsets.fromLTRB(22, 18, 22, 16),
+            color: Theme.of(context).colorScheme.surfaceContainerHighest,
+            child: Row(
+              children: [
+                CircleAvatar(
+                  radius: 23,
+                  backgroundColor: Theme.of(context).colorScheme.primary,
+                  child: Icon(
+                    Icons.code_rounded,
+                    color: Theme.of(context).colorScheme.onPrimary,
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    widget.repositoryName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+          Expanded(
+            child: SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(28, 18, 28, 12),
+              child: Column(
+                children: [
+                  _RepositoryDetailsFacts(details: details),
+                  const SizedBox(height: 16),
+                  _RepositoryAuthorTable(
+                    authors: details.authors,
+                    totalCommitCount: totalAuthorCommits,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          _dialogActions(
+            context,
+            enabled: true,
+            label: '关闭',
+            onConfirm: () => Navigator.of(context).pop(),
+          ),
+        ],
+      );
+    },
+  );
+}
+
+final class _RepositoryDetailsFacts extends StatelessWidget {
+  const _RepositoryDetailsFacts({required this.details});
+
+  final GitRepositoryDetails details;
+
+  @override
+  Widget build(BuildContext context) {
+    final labelStyle = Theme.of(context).textTheme.bodySmall?.copyWith(
+      color: Theme.of(context).colorScheme.onSurfaceVariant,
+    );
+    final valueStyle = Theme.of(
+      context,
+    ).textTheme.bodySmall?.copyWith(fontWeight: FontWeight.w600);
+    final facts = <(String, String)>[
+      ('创建于', _formatRepositoryDate(details.createdAt)),
+      ('上次提交', _formatRepositoryDate(details.lastCommitAt)),
+      ('占用磁盘空间', _formatBytes(details.diskUsageBytes)),
+      ('LFS', details.lfsStatus),
+      ('分支', '${details.branchCount}'),
+      ('标签', '${details.tagCount}'),
+      ('总提交数', '${details.commitCount}'),
+      ('已跟踪文件', '${details.trackedFileCount}'),
+      ('总作者数', '${details.authors.length}'),
+    ];
+    return Wrap(
+      spacing: 20,
+      runSpacing: 12,
+      children: [
+        for (final fact in facts)
+          SizedBox(
+            width: 250,
+            child: Row(
+              children: [
+                SizedBox(width: 84, child: Text(fact.$1, style: labelStyle)),
+                Expanded(child: Text(fact.$2, style: valueStyle)),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+final class _RepositoryAuthorTable extends StatelessWidget {
+  const _RepositoryAuthorTable({
+    required this.authors,
+    required this.totalCommitCount,
+  });
+
+  final List<GitRepositoryAuthorSummary> authors;
+  final int totalCommitCount;
+
+  @override
+  Widget build(BuildContext context) => Container(
+    width: double.infinity,
+    decoration: BoxDecoration(
+      border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+    ),
+    child: Column(
+      children: [
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+          color: Theme.of(context).colorScheme.surfaceContainerHigh,
+          child: const Row(
+            children: [
+              Expanded(flex: 3, child: Text('作者')),
+              Expanded(child: Text('提交')),
+              SizedBox(width: 62, child: Text('占比')),
+            ],
+          ),
+        ),
+        if (authors.isEmpty)
+          const Padding(padding: EdgeInsets.all(18), child: Text('暂无提交作者'))
+        else
+          for (final author in authors)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
+              child: Row(
+                children: [
+                  Expanded(
+                    flex: 3,
+                    child: Text(
+                      author.email.isEmpty
+                          ? author.name
+                          : '${author.name} <${author.email}>',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+                  Expanded(child: Text('${author.commitCount}')),
+                  SizedBox(
+                    width: 62,
+                    child: Text(
+                      totalCommitCount == 0
+                          ? '—'
+                          : '${(author.commitCount * 100 / totalCommitCount).toStringAsFixed(1)}%',
+                    ),
+                  ),
+                ],
+              ),
+            ),
+      ],
+    ),
+  );
+}
+
+String _formatRepositoryDate(DateTime? date) {
+  if (date == null) return '—';
+  return '${date.year}年${date.month}月${date.day}日 '
+      '${date.hour.toString().padLeft(2, '0')}:${date.minute.toString().padLeft(2, '0')}';
+}
+
+String _formatBytes(int bytes) {
+  if (bytes < 1024) return '$bytes B';
+  if (bytes < 1024 * 1024) return '${(bytes / 1024).toStringAsFixed(1)} KB';
+  if (bytes < 1024 * 1024 * 1024) {
+    return '${(bytes / (1024 * 1024)).toStringAsFixed(1)} MB';
+  }
+  return '${(bytes / (1024 * 1024 * 1024)).toStringAsFixed(1)} GB';
+}
+
+final class _ResizableDialogSurface extends StatefulWidget {
+  const _ResizableDialogSurface({
+    required this.initialSize,
+    required this.minimumSize,
+    required this.builder,
+  });
+  final Size initialSize;
+  final Size minimumSize;
+  final Widget Function(BuildContext context, Size size) builder;
+  @override
+  State<_ResizableDialogSurface> createState() =>
+      _ResizableDialogSurfaceState();
+}
+
+final class _ResizableDialogSurfaceState
+    extends State<_ResizableDialogSurface> {
+  late Size _size = widget.initialSize;
+  var _offset = Offset.zero;
+
+  Size _fitSize(Size candidate, Size viewport) {
+    const inset = 20.0;
+    final maximumWidth = (viewport.width - inset * 2)
+        .clamp(0.0, 1400.0)
+        .toDouble();
+    final maximumHeight = (viewport.height - inset * 2)
+        .clamp(0.0, 960.0)
+        .toDouble();
+    return Size(
+      candidate.width.clamp(0.0, maximumWidth).toDouble(),
+      candidate.height.clamp(0.0, maximumHeight).toDouble(),
+    );
+  }
+
+  void _resize(_DialogResizeEdge edge, Offset delta) {
+    const inset = 20.0;
+    final viewport = MediaQuery.sizeOf(context);
+    final currentSize = _fitSize(_size, viewport);
+    final maximumWidth = (viewport.width - inset * 2)
+        .clamp(0.0, 1400.0)
+        .toDouble();
+    final maximumHeight = (viewport.height - inset * 2)
+        .clamp(0.0, 960.0)
+        .toDouble();
+    final minimumWidth = widget.minimumSize.width.clamp(0.0, maximumWidth);
+    final minimumHeight = widget.minimumSize.height.clamp(0.0, maximumHeight);
+    final resizeHorizontally = edge.hasLeft || edge.hasRight;
+    final resizeVertically = edge.hasTop || edge.hasBottom;
+    final requestedWidth =
+        currentSize.width +
+        (edge.hasLeft ? -delta.dx : (edge.hasRight ? delta.dx : 0));
+    final requestedHeight =
+        currentSize.height +
+        (edge.hasTop ? -delta.dy : (edge.hasBottom ? delta.dy : 0));
+    final nextWidth = resizeHorizontally
+        ? requestedWidth.clamp(minimumWidth, maximumWidth).toDouble()
+        : currentSize.width;
+    final nextHeight = resizeVertically
+        ? requestedHeight.clamp(minimumHeight, maximumHeight).toDouble()
+        : currentSize.height;
+    final widthChange = nextWidth - currentSize.width;
+    final heightChange = nextHeight - currentSize.height;
+    final requestedOffset =
+        _offset +
+        Offset(
+          edge.hasLeft ? -widthChange / 2 : widthChange / 2,
+          edge.hasTop ? -heightChange / 2 : heightChange / 2,
+        );
+    final horizontalLimit = ((viewport.width - inset * 2 - nextWidth) / 2)
+        .clamp(0.0, double.infinity);
+    final verticalLimit = ((viewport.height - inset * 2 - nextHeight) / 2)
+        .clamp(0.0, double.infinity);
+    final nextOffset = Offset(
+      requestedOffset.dx.clamp(-horizontalLimit, horizontalLimit).toDouble(),
+      requestedOffset.dy.clamp(-verticalLimit, verticalLimit).toDouble(),
+    );
+    setState(() {
+      _size = Size(nextWidth, nextHeight);
+      _offset = nextOffset;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    const inset = 20.0;
+    final viewport = MediaQuery.sizeOf(context);
+    final size = _fitSize(_size, viewport);
+    final horizontalLimit = ((viewport.width - inset * 2 - size.width) / 2)
+        .clamp(0.0, double.infinity);
+    final verticalLimit = ((viewport.height - inset * 2 - size.height) / 2)
+        .clamp(0.0, double.infinity);
+    final offset = Offset(
+      _offset.dx.clamp(-horizontalLimit, horizontalLimit).toDouble(),
+      _offset.dy.clamp(-verticalLimit, verticalLimit).toDouble(),
+    );
+    return Transform.translate(
+      // Translate the complete dialog, including its Material surface. Moving
+      // only Dialog.child separates content from the rounded background.
+      offset: offset,
+      child: Dialog(
+        insetPadding: const EdgeInsets.all(20),
+        child: SizedBox(
+          width: size.width,
+          height: size.height,
+          child: Stack(
+            clipBehavior: Clip.none,
+            children: [
+              Positioned.fill(child: widget.builder(context, size)),
+              for (final edge in _DialogResizeEdge.values)
+                _DialogResizeHandle(
+                  edge: edge,
+                  onPanUpdate: (delta) => _resize(edge, delta),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+enum _DialogResizeEdge {
+  top,
+  right,
+  bottom,
+  left,
+  topLeft,
+  topRight,
+  bottomRight,
+  bottomLeft;
+
+  bool get hasTop => this == top || this == topLeft || this == topRight;
+  bool get hasRight => this == right || this == topRight || this == bottomRight;
+  bool get hasBottom =>
+      this == bottom || this == bottomLeft || this == bottomRight;
+  bool get hasLeft => this == left || this == topLeft || this == bottomLeft;
+
+  SystemMouseCursor get cursor => switch (this) {
+    top || bottom => SystemMouseCursors.resizeUpDown,
+    left || right => SystemMouseCursors.resizeLeftRight,
+    topLeft || bottomRight => SystemMouseCursors.resizeUpLeftDownRight,
+    topRight || bottomLeft => SystemMouseCursors.resizeUpRightDownLeft,
+  };
+}
+
+final class _DialogResizeHandle extends StatelessWidget {
+  const _DialogResizeHandle({required this.edge, required this.onPanUpdate});
+  final _DialogResizeEdge edge;
+  final ValueChanged<Offset> onPanUpdate;
+
+  @override
+  Widget build(BuildContext context) {
+    const edgeSize = 10.0;
+    const cornerSize = 24.0;
+    final handle = MouseRegion(
+      cursor: edge.cursor,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onPanUpdate: (details) => onPanUpdate(details.delta),
+      ),
+    );
+    // Keep each hot zone inside the material bounds. Flutter intentionally
+    // excludes overflow from hit testing, which made the previous negative
+    // offsets leave the corner handles effectively unreachable.
+    return switch (edge) {
+      _DialogResizeEdge.top => Positioned(
+        left: cornerSize,
+        right: cornerSize,
+        top: 0,
+        height: edgeSize,
+        child: handle,
+      ),
+      _DialogResizeEdge.right => Positioned(
+        top: cornerSize,
+        right: 0,
+        bottom: cornerSize,
+        width: edgeSize,
+        child: handle,
+      ),
+      _DialogResizeEdge.bottom => Positioned(
+        left: cornerSize,
+        right: cornerSize,
+        bottom: 0,
+        height: edgeSize,
+        child: handle,
+      ),
+      _DialogResizeEdge.left => Positioned(
+        top: cornerSize,
+        left: 0,
+        bottom: cornerSize,
+        width: edgeSize,
+        child: handle,
+      ),
+      _DialogResizeEdge.topLeft => Positioned(
+        left: 0,
+        top: 0,
+        width: cornerSize,
+        height: cornerSize,
+        child: handle,
+      ),
+      _DialogResizeEdge.topRight => Positioned(
+        right: 0,
+        top: 0,
+        width: cornerSize,
+        height: cornerSize,
+        child: handle,
+      ),
+      _DialogResizeEdge.bottomRight => Positioned(
+        right: 0,
+        bottom: 0,
+        width: cornerSize,
+        height: cornerSize,
+        child: handle,
+      ),
+      _DialogResizeEdge.bottomLeft => Positioned(
+        left: 0,
+        bottom: 0,
+        width: cornerSize,
+        height: cornerSize,
+        child: handle,
+      ),
+    };
+  }
+}
+
+final class _PatchCreateDialog extends StatefulWidget {
+  const _PatchCreateDialog({
+    required this.repository,
+    required this.onCommitSelected,
+    required this.onCommitFileSelected,
+    required this.onLoadMore,
+    this.selectedCommitId,
+  });
+  final RepositoryViewData repository;
+  final String? selectedCommitId;
+  final RepositoryCommitCallback onCommitSelected;
+  final RepositoryCommitFileCallback onCommitFileSelected;
+  final VoidCallback? onLoadMore;
+  @override
+  State<_PatchCreateDialog> createState() => _PatchCreateDialogState();
+}
+
+final class _PatchCreateDialogState extends State<_PatchCreateDialog> {
+  late Set<String> _commitIds = {
+    widget.selectedCommitId ?? widget.repository.commits.first.oid,
+  };
+  final _output = TextEditingController();
+  var _createSeparateFiles = false;
+
+  @override
+  void initState() {
+    super.initState();
+    if (widget.selectedCommitId == null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted) widget.onCommitSelected(widget.repository.commits.first);
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _output.dispose();
+    super.dispose();
+  }
+
+  @override
+  void didUpdateWidget(covariant _PatchCreateDialog oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final visibleIds = widget.repository.commits
+        .map((commit) => commit.oid)
+        .toSet();
+    final retained = _commitIds.where(visibleIds.contains).toSet();
+    if (retained.isEmpty && widget.repository.commits.isNotEmpty) {
+      retained.add(widget.repository.commits.first.oid);
+    }
+    _commitIds = retained;
+  }
+
+  Future<void> _browse() async {
+    if (_createSeparateFiles) {
+      final directory = await getDirectoryPath(confirmButtonText: '选择补丁目录');
+      if (directory != null && mounted) {
+        setState(() => _output.text = directory);
+      }
+      return;
+    }
+    final commit = widget.repository.commits.firstWhere(
+      (item) => item.oid == _commitIds.first,
+      orElse: () => widget.repository.commits.first,
+    );
+    final location = await getSaveLocation(
+      suggestedName: '${commit.shortOid}.patch',
+      acceptedTypeGroups: const [
+        XTypeGroup(label: 'Git patch', extensions: ['patch']),
+      ],
+    );
+    if (location != null && mounted) {
+      setState(() => _output.text = location.path);
+    }
+  }
+
+  void _toggleCommit(CommitViewData commit) {
+    setState(() {
+      if (!_commitIds.add(commit.oid)) _commitIds.remove(commit.oid);
+    });
+    widget.onCommitSelected(commit);
+  }
+
+  @override
+  Widget build(BuildContext context) => _ResizableDialogSurface(
+    initialSize: const Size(1320, 820),
+    minimumSize: const Size(760, 540),
+    builder: (context, _) => Column(
+      children: [
+        _dialogTitle('由提交操作创建补丁'),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(12, 10, 12, 0),
+            child: Column(
+              children: [
+                Container(
+                  height: 34,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  decoration: BoxDecoration(
+                    color: Theme.of(context).colorScheme.surfaceContainerLow,
+                    border: Border.all(
+                      color: Theme.of(context).colorScheme.outlineVariant,
+                    ),
+                  ),
+                  child: Row(
+                    children: [
+                      Text(
+                        '选择要导出的提交',
+                        style: Theme.of(context).textTheme.labelMedium
+                            ?.copyWith(fontWeight: FontWeight.w600),
+                      ),
+                      const SizedBox(width: 10),
+                      Text(
+                        '点击提交可切换选择',
+                        style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: Theme.of(context).colorScheme.onSurfaceVariant,
+                        ),
+                      ),
+                      const Spacer(),
+                      Text('${_commitIds.length} 个已选择'),
+                    ],
+                  ),
+                ),
+                Expanded(
+                  flex: 3,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      border: Border(
+                        left: BorderSide(
+                          color: Theme.of(context).colorScheme.outlineVariant,
+                        ),
+                        right: BorderSide(
+                          color: Theme.of(context).colorScheme.outlineVariant,
+                        ),
+                        bottom: BorderSide(
+                          color: Theme.of(context).colorScheme.outlineVariant,
+                        ),
+                      ),
+                    ),
+                    child: RepositoryHistoryPane(
+                      repository: widget.repository,
+                      selectedCommitIds: _commitIds,
+                      showPaneHeader: false,
+                      includeUncommittedChanges: false,
+                      onSelected: _toggleCommit,
+                      onLoadMore: widget.onLoadMore,
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Expanded(
+                  flex: 2,
+                  child: LayoutBuilder(
+                    builder: (context, constraints) => Row(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        Expanded(
+                          child: RepositoryCommitChangesPane(
+                            repository: widget.repository,
+                            onSelected: widget.onCommitFileSelected,
+                          ),
+                        ),
+                        if (constraints.maxWidth >= 960) ...[
+                          VerticalDivider(
+                            width: 1,
+                            color: Theme.of(context).colorScheme.outlineVariant,
+                          ),
+                          SizedBox(
+                            width: 300,
+                            child: RepositoryCommitDetailsPane(
+                              details: widget.repository.selectedCommit,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+        Container(
+          padding: const EdgeInsets.fromLTRB(16, 10, 16, 8),
+          color: Theme.of(context).colorScheme.surfaceContainerLow,
+          child: Column(
+            children: [
+              Row(
+                children: [
+                  Text(_createSeparateFiles ? '补丁目录：' : '补丁文件：'),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: TextField(
+                      controller: _output,
+                      onChanged: (_) => setState(() {}),
+                      decoration: const InputDecoration(
+                        isDense: true,
+                        border: OutlineInputBorder(),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  OutlinedButton(
+                    onPressed: _commitIds.isEmpty ? null : _browse,
+                    child: const Text('浏览…'),
+                  ),
+                ],
+              ),
+              CheckboxListTile(
+                contentPadding: EdgeInsets.zero,
+                dense: true,
+                value: _createSeparateFiles,
+                onChanged: (value) => setState(() {
+                  _createSeparateFiles = value ?? false;
+                  _output.clear();
+                }),
+                title: const Text('为每个提交创建独立的补丁文件（附加序号到文件名）'),
+                controlAffinity: ListTileControlAffinity.leading,
+              ),
+            ],
+          ),
+        ),
+        _dialogActions(
+          context,
+          enabled: _commitIds.isNotEmpty && _output.text.trim().isNotEmpty,
+          label: '创建',
+          onConfirm: () => Navigator.of(context).pop(
+            _PatchCreateRequest(
+              // History is displayed newest first; patches must be exported
+              // oldest first so dependent changes remain applicable.
+              commitIds: widget.repository.commits.reversed
+                  .where((commit) => _commitIds.contains(commit.oid))
+                  .map((commit) => commit.oid)
+                  .toList(growable: false),
+              outputPath: _output.text.trim(),
+              createSeparateFiles: _createSeparateFiles,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+final class _PatchApplyDialog extends StatefulWidget {
+  const _PatchApplyDialog();
+  @override
+  State<_PatchApplyDialog> createState() => _PatchApplyDialogState();
+}
+
+final class _PatchApplyDialogState extends State<_PatchApplyDialog> {
+  final _path = TextEditingController();
+  final _base = TextEditingController();
+  int? _strip;
+  var _checkOnly = false;
+  @override
+  void dispose() {
+    _path.dispose();
+    _base.dispose();
+    super.dispose();
+  }
+
+  Future<void> _browse() async {
+    final file = await openFile(
+      acceptedTypeGroups: const [
+        XTypeGroup(label: 'Git patch', extensions: ['patch', 'diff']),
+      ],
+    );
+    if (file != null && mounted) setState(() => _path.text = file.path);
+  }
+
+  @override
+  Widget build(BuildContext context) => _ResizableDialogSurface(
+    initialSize: const Size(760, 500),
+    minimumSize: const Size(560, 360),
+    builder: (context, _) => Column(
+      children: [
+        _dialogTitle('补丁文件'),
+        Expanded(
+          child: Padding(
+            padding: const EdgeInsets.all(16),
+            child: Column(
+              children: [
+                Row(
+                  children: [
+                    const Text('文件：'),
+                    Expanded(
+                      child: TextField(
+                        controller: _path,
+                        onChanged: (_) => setState(() {}),
+                        decoration: const InputDecoration(
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    OutlinedButton(
+                      onPressed: _browse,
+                      child: const Text('浏览…'),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 12),
+                Expanded(
+                  child: Container(
+                    alignment: Alignment.topLeft,
+                    width: double.infinity,
+                    padding: const EdgeInsets.all(10),
+                    decoration: BoxDecoration(
+                      border: Border.all(color: Theme.of(context).dividerColor),
+                    ),
+                    child: Text(_path.text.isEmpty ? '未指定补丁文件' : _path.text),
+                  ),
+                ),
+                Row(
+                  children: [
+                    const Text('剥离：'),
+                    DropdownButton<int?>(
+                      value: _strip,
+                      items: const [
+                        DropdownMenuItem<int?>(
+                          value: null,
+                          child: Text('默认（Git -p1）'),
+                        ),
+                        DropdownMenuItem<int?>(value: 0, child: Text('0')),
+                        DropdownMenuItem<int?>(value: 1, child: Text('1')),
+                        DropdownMenuItem<int?>(value: 2, child: Text('2')),
+                        DropdownMenuItem<int?>(value: 3, child: Text('3')),
+                      ],
+                      onChanged: (value) => setState(() => _strip = value),
+                    ),
+                    const SizedBox(width: 20),
+                    Expanded(
+                      child: TextField(
+                        controller: _base,
+                        decoration: const InputDecoration(
+                          labelText: '基础路径',
+                          isDense: true,
+                          border: OutlineInputBorder(),
+                        ),
+                      ),
+                    ),
+                    Checkbox(
+                      value: _checkOnly,
+                      onChanged: (value) =>
+                          setState(() => _checkOnly = value ?? false),
+                    ),
+                    const Text('试运行'),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+        _dialogActions(
+          context,
+          enabled: _path.text.trim().isNotEmpty,
+          label: _checkOnly ? '检查' : '应用',
+          onConfirm: () => Navigator.of(context).pop(
+            _PatchApplyRequest(
+              patchPath: _path.text.trim(),
+              stripLevel: _strip,
+              basePath: _base.text.trim(),
+              checkOnly: _checkOnly,
+            ),
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+Widget _dialogTitle(String title) => Container(
+  width: double.infinity,
+  padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 16),
+  color: Colors.black12,
+  child: Text(
+    title,
+    style: const TextStyle(fontSize: 16, fontWeight: FontWeight.w700),
+  ),
+);
+Widget _dialogActions(
+  BuildContext context, {
+  required bool enabled,
+  required String label,
+  required VoidCallback onConfirm,
+}) => Padding(
+  // Leave a clear interior margin for the bottom-corner resize targets.
+  padding: const EdgeInsets.fromLTRB(14, 14, 30, 30),
+  child: Row(
+    mainAxisAlignment: MainAxisAlignment.end,
+    children: [
+      TextButton(
+        onPressed: () => Navigator.of(context).pop(),
+        child: const Text('取消'),
+      ),
+      const SizedBox(width: 8),
+      FilledButton(onPressed: enabled ? onConfirm : null, child: Text(label)),
+    ],
+  ),
+);
 
 final class RepositoryTabStrip extends StatelessWidget {
   const RepositoryTabStrip({
@@ -4227,22 +5997,34 @@ class _CreateBranchDialogState extends State<_CreateBranchDialog> {
   }
 }
 
-class _RenameBranchDialog extends StatefulWidget {
-  const _RenameBranchDialog({required this.oldName});
+class RenameBranchDialog extends StatefulWidget {
+  const RenameBranchDialog({super.key, required this.oldName});
 
   final String oldName;
 
   /// 中文：创建关联的状态对象。
   /// English: Creates the associated state object.
   @override
-  State<_RenameBranchDialog> createState() => _RenameBranchDialogState();
+  State<RenameBranchDialog> createState() => _RenameBranchDialogState();
 }
 
-class _RenameBranchDialogState extends State<_RenameBranchDialog> {
+class _RenameBranchDialogState extends State<RenameBranchDialog> {
   final _formKey = GlobalKey<FormState>();
   late final TextEditingController _nameController = TextEditingController(
     text: widget.oldName,
   );
+
+  /// 中文：初始化名称并默认全选，输入后即可直接替换旧分支名。
+  /// English: Initializes and selects the complete name so typing immediately
+  /// replaces the old branch name.
+  @override
+  void initState() {
+    super.initState();
+    _nameController.selection = TextSelection(
+      baseOffset: 0,
+      extentOffset: _nameController.text.length,
+    );
+  }
 
   /// 中文：释放当前对象持有的资源。
   /// English: Releases resources held by this object.
@@ -4264,26 +6046,42 @@ class _RenameBranchDialogState extends State<_RenameBranchDialog> {
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('重命名本地分支'),
+      key: const ValueKey<String>('rename-branch-dialog'),
+      title: const Text('重命名分支'),
       content: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 420),
+        constraints: const BoxConstraints(maxWidth: 320),
         child: Form(
           key: _formKey,
-          child: TextFormField(
-            controller: _nameController,
-            autofocus: true,
-            decoration: const InputDecoration(
-              border: OutlineInputBorder(),
-              labelText: '新分支名称',
-              helperText: '不会覆盖已有分支，Git 会校验名称。',
-            ),
-            validator: (String? value) {
-              if (value == null || value.trim().isEmpty) {
-                return '请输入分支名称。';
-              }
-              return null;
-            },
-            onFieldSubmitted: (_) => _submit(),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const Text('新分支名称：'),
+              const SizedBox(height: 7),
+              TextFormField(
+                key: const ValueKey<String>('rename-branch-name'),
+                controller: _nameController,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  border: OutlineInputBorder(),
+                  isDense: true,
+                ),
+                validator: (String? value) {
+                  if (value == null || value.trim().isEmpty) {
+                    return '请输入分支名称。';
+                  }
+                  return null;
+                },
+                onFieldSubmitted: (_) => _submit(),
+              ),
+              const SizedBox(height: 7),
+              Text(
+                '不会覆盖已有分支，名称仍由 Git 校验。',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -4292,10 +6090,137 @@ class _RenameBranchDialogState extends State<_RenameBranchDialog> {
           onPressed: () => Navigator.of(context).pop(),
           child: const Text('取消'),
         ),
-        FilledButton.icon(
+        FilledButton(
+          key: const ValueKey<String>('rename-branch-confirm'),
           onPressed: _submit,
-          icon: const Icon(Icons.drive_file_rename_outline),
-          label: const Text('重命名'),
+          child: const Text('确定'),
+        ),
+      ],
+    );
+  }
+}
+
+final class DeleteLocalBranchDialogResult {
+  const DeleteLocalBranchDialogResult({
+    required this.force,
+    required this.deleteRemote,
+  });
+
+  final bool force;
+  final bool deleteRemote;
+}
+
+class DeleteLocalBranchDialog extends StatefulWidget {
+  const DeleteLocalBranchDialog({
+    super.key,
+    required this.branchName,
+    required this.remoteBranchName,
+  });
+
+  final String branchName;
+  final String? remoteBranchName;
+
+  /// 中文：创建删除分支确认弹窗的状态对象。
+  /// English: Creates the state for the branch-deletion confirmation dialog.
+  @override
+  State<DeleteLocalBranchDialog> createState() =>
+      _DeleteLocalBranchDialogState();
+}
+
+class _DeleteLocalBranchDialogState extends State<DeleteLocalBranchDialog> {
+  bool _force = false;
+  bool _deleteRemote = false;
+
+  /// 中文：返回用户明确确认的本地强制删除和远端删除范围。
+  /// English: Returns the explicitly confirmed local force-delete and remote
+  /// deletion scope.
+  void _submit() {
+    Navigator.of(context).pop(
+      DeleteLocalBranchDialogResult(force: _force, deleteRemote: _deleteRemote),
+    );
+  }
+
+  /// 中文：构建接近 Sourcetree 信息层级的删除分支确认弹窗。
+  /// English: Builds a branch-deletion confirmation dialog with a
+  /// Sourcetree-like information hierarchy.
+  @override
+  Widget build(BuildContext context) {
+    final remoteBranchName = widget.remoteBranchName;
+    final colors = Theme.of(context).colorScheme;
+    return AlertDialog(
+      key: const ValueKey<String>('delete-branch-dialog'),
+      title: const Text('确认删除分支'),
+      content: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 360),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text('您确定要删除以下分支吗？'),
+            const SizedBox(height: 7),
+            Text(
+              widget.branchName,
+              key: const ValueKey<String>('delete-branch-name'),
+              style: Theme.of(
+                context,
+              ).textTheme.bodyMedium?.copyWith(fontWeight: FontWeight.w700),
+            ),
+            const SizedBox(height: 10),
+            CheckboxListTile(
+              key: const ValueKey<String>('delete-branch-force'),
+              value: _force,
+              onChanged: (value) => setState(() => _force = value ?? false),
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              visualDensity: VisualDensity.compact,
+              controlAffinity: ListTileControlAffinity.leading,
+              title: const Text('强制删除'),
+            ),
+            CheckboxListTile(
+              key: const ValueKey<String>('delete-branch-remote'),
+              value: _deleteRemote,
+              onChanged: remoteBranchName == null
+                  ? null
+                  : (value) => setState(() => _deleteRemote = value ?? false),
+              dense: true,
+              contentPadding: EdgeInsets.zero,
+              visualDensity: VisualDensity.compact,
+              controlAffinity: ListTileControlAffinity.leading,
+              title: const Text('删除远程分支'),
+              subtitle: remoteBranchName == null
+                  ? const Text('此分支没有已加载的上游远程分支')
+                  : Text(remoteBranchName),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              _force
+                  ? '强制删除会忽略合并状态，未合并提交可能无法再通过分支引用找回。'
+                  : '默认使用 Git 安全删除；包含未合并提交时 Git 会拒绝。',
+              style: Theme.of(
+                context,
+              ).textTheme.bodySmall?.copyWith(color: colors.onSurfaceVariant),
+            ),
+            if (_deleteRemote && remoteBranchName != null) ...[
+              const SizedBox(height: 5),
+              Text(
+                '同时请求删除远端 $remoteBranchName，最终结果受远端权限和保护规则限制。',
+                style: Theme.of(
+                  context,
+                ).textTheme.bodySmall?.copyWith(color: colors.error),
+              ),
+            ],
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          key: const ValueKey<String>('delete-branch-confirm'),
+          onPressed: _submit,
+          child: const Text('确定'),
         ),
       ],
     );

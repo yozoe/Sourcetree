@@ -35,7 +35,7 @@ final repositorySessionProvider =
 
 enum RepositorySessionPhase { empty, loading, ready, error }
 
-enum RepositoryOperationKind { clone, fetch, pull, push, stash }
+enum RepositoryOperationKind { clone, fetch, pull, push, stash, history }
 
 enum RepositoryOperationOutcome { running, succeeded, cancelled, failed }
 
@@ -498,6 +498,8 @@ final class RepositorySessionController
   GitCancellationToken? _pushCancellation;
   GitCancellationToken? _pushVerificationCancellation;
   GitCancellationToken? _stashCancellation;
+  GitCancellationToken? _historyMutationCancellation;
+  GitCancellationToken? _repositoryDetailsCancellation;
   Future<void> _sessionWriteChain = Future<void>.value();
   bool _isRestoringSession = false;
   bool _sessionPersistenceEnabled = false;
@@ -541,7 +543,9 @@ final class RepositorySessionController
       _pullCancellation != null ||
       _pushCancellation != null ||
       _pushVerificationCancellation != null ||
-      _stashCancellation != null;
+      _stashCancellation != null ||
+      _historyMutationCancellation != null ||
+      _repositoryDetailsCancellation != null;
 
   void _cancelActiveGitOperations() {
     _cloneCancellation?.cancel();
@@ -550,6 +554,47 @@ final class RepositorySessionController
     _pushCancellation?.cancel();
     _pushVerificationCancellation?.cancel();
     _stashCancellation?.cancel();
+    _historyMutationCancellation?.cancel();
+    _repositoryDetailsCancellation?.cancel();
+  }
+
+  /// 中文：读取当前仓库的详情统计，不改变工作区的加载或错误状态。
+  ///
+  /// English: Reads details for the active repository without changing the
+  /// workspace-wide loading or error state. A new request cancels a prior
+  /// details read, and a repository switch invalidates its result.
+  Future<GitRepositoryDetails> readRepositoryDetails() async {
+    final repository = state.repository;
+    if (repository == null) {
+      throw const GitException('请先打开一个仓库。');
+    }
+    _repositoryDetailsCancellation?.cancel();
+    final cancellation = GitCancellationToken();
+    _repositoryDetailsCancellation = cancellation;
+    final generation = _repositoryGeneration;
+    try {
+      final details = await _reader.readRepositoryDetails(
+        repository,
+        cancellationToken: cancellation,
+      );
+      if (cancellation.isCancelled ||
+          generation != _repositoryGeneration ||
+          !identical(state.repository, repository)) {
+        throw const GitException('仓库详情读取已失效。');
+      }
+      return details;
+    } finally {
+      if (identical(_repositoryDetailsCancellation, cancellation)) {
+        _repositoryDetailsCancellation = null;
+      }
+    }
+  }
+
+  /// 中文：取消仍在读取的仓库详情，供详情窗口关闭时释放文件遍历。
+  /// English: Cancels an in-flight repository-details read when its window
+  /// closes, releasing Git and file traversal work promptly.
+  void cancelRepositoryDetailsRead() {
+    _repositoryDetailsCancellation?.cancel();
   }
 
   /// 中文：恢复上次成功打开的仓库和活动标签，不保存凭据或运行中的操作；失效路径会被丢弃。
@@ -1485,6 +1530,105 @@ final class RepositorySessionController
     } finally {
       if (identical(_pullCancellation, cancellation)) {
         _pullCancellation = null;
+      }
+    }
+  }
+
+  /// Continues a paused cherry-pick after conflict fixes have been staged.
+  /// 中文：暂存冲突修复后继续暂停的遴选。
+  Future<bool> continueCherryPick() => _finishPausedSequencer(
+    expectedState: GitRepositoryOperationState.cherryPick,
+    successMessage: '已继续遴选。',
+    conflictMessage: '遴选仍有冲突。请解决冲突并暂存后继续，或选择中止遴选。',
+    run: (repository, cancellation) =>
+        _writer.continueCherryPick(repository, cancellationToken: cancellation),
+  );
+
+  /// Aborts a paused cherry-pick and restores its pre-pick branch state.
+  /// 中文：中止暂停的遴选并恢复遴选前状态。
+  Future<bool> abortCherryPick() => _finishPausedSequencer(
+    expectedState: GitRepositoryOperationState.cherryPick,
+    successMessage: '已中止遴选。',
+    conflictMessage: '遴选仍有冲突。',
+    run: (repository, cancellation) =>
+        _writer.abortCherryPick(repository, cancellationToken: cancellation),
+  );
+
+  /// Continues a paused revert after conflict fixes have been staged.
+  /// 中文：暂存冲突修复后继续暂停的回滚。
+  Future<bool> continueRevert() => _finishPausedSequencer(
+    expectedState: GitRepositoryOperationState.revert,
+    successMessage: '已继续回滚。',
+    conflictMessage: '回滚仍有冲突。请解决冲突并暂存后继续，或选择中止回滚。',
+    run: (repository, cancellation) =>
+        _writer.continueRevert(repository, cancellationToken: cancellation),
+  );
+
+  /// Aborts a paused revert and restores its pre-revert branch state.
+  /// 中文：中止暂停的回滚并恢复回滚前状态。
+  Future<bool> abortRevert() => _finishPausedSequencer(
+    expectedState: GitRepositoryOperationState.revert,
+    successMessage: '已中止回滚。',
+    conflictMessage: '回滚仍有冲突。',
+    run: (repository, cancellation) =>
+        _writer.abortRevert(repository, cancellationToken: cancellation),
+  );
+
+  Future<bool> _finishPausedSequencer({
+    required GitRepositoryOperationState expectedState,
+    required String successMessage,
+    required String conflictMessage,
+    required Future<void> Function(GitRepository, GitCancellationToken) run,
+  }) async {
+    final repository = state.repository;
+    if (repository == null ||
+        state.operationState != expectedState ||
+        state.phase == RepositorySessionPhase.loading) {
+      return false;
+    }
+    final cancellation = GitCancellationToken();
+    _historyMutationCancellation = cancellation;
+    final operation = _startOperation(RepositoryOperationKind.history);
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await run(repository, cancellation);
+      await refresh();
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.failed,
+        message: succeeded ? successMessage : state.message,
+      );
+      return succeeded;
+    } on Object catch (error, stackTrace) {
+      await refresh();
+      final message =
+          error is GitCommandException && error.kind == GitErrorKind.conflicts
+          ? conflictMessage
+          : _friendlyError(error);
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: message,
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: message,
+      );
+      return false;
+    } finally {
+      if (identical(_historyMutationCancellation, cancellation)) {
+        _historyMutationCancellation = null;
       }
     }
   }
@@ -3071,16 +3215,15 @@ final class RepositorySessionController
     }
   }
 
-  /// 中文：仅在工作区干净且分支仍被加载时重命名本地分支，不允许覆盖已有分支。
+  /// 中文：重命名仍被加载的本地分支，不触碰工作区文件且不允许覆盖已有分支。
   ///
-  /// English: Renames a loaded local branch only with a clean work tree and
-  /// never allows Git to overwrite an existing branch.
+  /// English: Renames a loaded local branch without touching work-tree files
+  /// and never allows Git to overwrite an existing branch.
   Future<bool> renameLocalBranch(String oldName, String newName) async {
     final repository = state.repository;
     final status = state.status;
     if (repository == null ||
         status == null ||
-        !status.isClean ||
         state.phase == RepositorySessionPhase.loading ||
         !state.localBranches.any((branch) => branch.name == oldName)) {
       return false;
@@ -3152,8 +3295,7 @@ final class RepositorySessionController
         ) ||
         !remoteNames.every(
           (name) => state.remoteBranches.any((branch) => branch.name == name),
-        ) ||
-        (localNames.isNotEmpty && !status.isClean)) {
+        )) {
       return false;
     }
 
@@ -3293,6 +3435,320 @@ final class RepositorySessionController
         technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
+    }
+  }
+
+  /// Rebases the checked-out branch onto a loaded historical commit. A clean
+  /// working tree is required because Git may replay multiple commits.
+  /// 中文：将当前检出分支变基到已加载历史提交；因可能重放多个提交，要求工作区干净。
+  Future<bool> rebaseOntoCommit(String objectId) => _runHistoryMutation(
+    objectId: objectId,
+    requireCleanWorkTree: true,
+    successMessage: '已完成变基。',
+    conflictMessage: '变基遇到冲突。请解决冲突并暂存后继续，或选择放弃变基。',
+    run: (repository, cancellation) => _writer.rebaseOnto(
+      repository,
+      objectId: objectId,
+      cancellationToken: cancellation,
+    ),
+  );
+
+  /// Starts Git's interactive rebase for the commits after [objectId] while
+  /// accepting Git's generated todo list unchanged instead of launching an
+  /// external editor.
+  /// 中文：对 [objectId] 之后的提交启动 Git 交互式变基；不启动外部编辑器，直接接受 Git 生成的 todo 列表。
+  Future<bool> interactiveRebaseOntoCommit(
+    String objectId, {
+    required List<GitInteractiveRebaseInstruction> instructions,
+  }) => _runHistoryMutation(
+    objectId: objectId,
+    requireCleanWorkTree: true,
+    successMessage: '已完成交互式变基。',
+    conflictMessage: '交互式变基遇到冲突。请解决冲突并暂存后继续，或选择放弃变基。',
+    run: (repository, cancellation) => _writer.interactiveRebaseOnto(
+      repository,
+      objectId: objectId,
+      cancellationToken: cancellation,
+      instructions: instructions,
+    ),
+  );
+
+  /// Reads the current branch commits that can be edited before interactive
+  /// rebasing them onto [objectId].
+  /// 中文：读取当前分支中可在交互式变基前编辑、并会重放到 [objectId] 之后的提交。
+  Future<List<GitInteractiveRebaseInstruction>> readInteractiveRebaseTodo(
+    String objectId,
+  ) async {
+    final repository = state.repository;
+    final status = state.status;
+    final normalizedId = objectId.trim();
+    if (repository == null ||
+        status == null ||
+        status.branch.head == null ||
+        !status.isClean ||
+        state.phase == RepositorySessionPhase.loading ||
+        state.operationState != GitRepositoryOperationState.none ||
+        !state.historyCommits.any(
+          (commit) => commit.objectId == normalizedId,
+        )) {
+      return const [];
+    }
+    return _reader.readInteractiveRebaseTodo(
+      repository,
+      upstreamObjectId: normalizedId,
+    );
+  }
+
+  /// Resets the checked-out branch to a loaded commit using the confirmed
+  /// mode. Hard reset approval is owned by the UI.
+  /// 中文：按已确认的模式将当前分支重置到已加载提交；hard 重置的确认由 UI 负责。
+  Future<bool> resetCurrentBranchToCommit(
+    String objectId, {
+    required GitResetMode mode,
+  }) => _runHistoryMutation(
+    objectId: objectId,
+    requireCleanWorkTree: false,
+    successMessage: '已重置当前分支。',
+    run: (repository, cancellation) => _writer.resetToCommit(
+      repository,
+      objectId: objectId,
+      mode: mode,
+      cancellationToken: cancellation,
+    ),
+  );
+
+  /// Creates an inverse commit for one loaded historical commit. Conflicts
+  /// stay in the repository for Git's normal recovery flow.
+  /// 中文：为已加载的历史提交创建反向提交；冲突保留给 Git 的正常恢复流程。
+  Future<bool> revertCommit(String objectId, {int? mainlineParent}) =>
+      _runHistoryMutation(
+        objectId: objectId,
+        requireCleanWorkTree: true,
+        successMessage: '已创建回滚提交。',
+        conflictMessage: '回滚遇到冲突。请解决冲突后使用 Git 命令行继续或中止回滚，再刷新仓库。',
+        run: (repository, cancellation) => _writer.revertCommit(
+          repository,
+          objectId: objectId,
+          mainlineParent: mainlineParent,
+          cancellationToken: cancellation,
+        ),
+      );
+
+  /// Applies a loaded commit to the checked-out branch and records its source.
+  /// 中文：将已加载提交遴选到当前分支，并记录来源提交。
+  Future<bool> cherryPickCommit(String objectId, {int? mainlineParent}) =>
+      _runHistoryMutation(
+        objectId: objectId,
+        requireCleanWorkTree: true,
+        successMessage: '已遴选提交。',
+        conflictMessage: '遴选遇到冲突。请解决冲突后使用 Git 命令行继续或中止遴选，再刷新仓库。',
+        run: (repository, cancellation) => _writer.cherryPickCommit(
+          repository,
+          objectId: objectId,
+          mainlineParent: mainlineParent,
+          cancellationToken: cancellation,
+        ),
+      );
+
+  /// Exports one loaded commit as a patch without changing Git state.
+  /// 中文：将一个已加载提交导出为补丁，不修改 Git 仓库状态。
+  Future<bool> createPatchForCommit(
+    String objectId, {
+    required String outputPath,
+  }) => createPatches(
+    [objectId],
+    outputPath: outputPath,
+    createSeparateFiles: false,
+  );
+
+  /// Exports loaded commits as one patch or individual patch files.
+  /// 中文：将已加载提交导出为一个补丁或多个独立补丁文件，不修改 Git 仓库状态。
+  Future<bool> createPatches(
+    List<String> objectIds, {
+    required String outputPath,
+    required bool createSeparateFiles,
+  }) async {
+    final repository = state.repository;
+    final normalizedIds = objectIds
+        .map((objectId) => objectId.trim())
+        .where((objectId) => objectId.isNotEmpty)
+        .toList(growable: false);
+    if (repository == null ||
+        state.phase == RepositorySessionPhase.loading ||
+        normalizedIds.isEmpty ||
+        normalizedIds.toSet().length != normalizedIds.length ||
+        normalizedIds.any(
+          (objectId) => !state.historyCommits.any(
+            (commit) => commit.objectId == objectId,
+          ),
+        )) {
+      return false;
+    }
+    final cancellation = GitCancellationToken();
+    _historyMutationCancellation = cancellation;
+    final operation = _startOperation(RepositoryOperationKind.history);
+    try {
+      await _writer.createPatches(
+        repository,
+        objectIds: normalizedIds,
+        outputPath: outputPath,
+        createSeparateFiles: createSeparateFiles,
+        cancellationToken: cancellation,
+      );
+      _completeOperation(
+        operation,
+        outcome: RepositoryOperationOutcome.succeeded,
+        message: '已创建补丁。',
+      );
+      return true;
+    } on Object catch (error, stackTrace) {
+      final message = _friendlyError(error);
+      state = state.copyWith(
+        message: message,
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: message,
+      );
+      return false;
+    } finally {
+      if (identical(_historyMutationCancellation, cancellation)) {
+        _historyMutationCancellation = null;
+      }
+    }
+  }
+
+  /// Applies or validates a selected patch, then refreshes Git-backed state.
+  /// 中文：应用或验证用户选择的补丁；完成后刷新以 Git 为准的仓库状态。
+  Future<bool> applyPatchFile({
+    required String patchPath,
+    required int? stripLevel,
+    required String basePath,
+    required bool checkOnly,
+  }) async {
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        state.phase == RepositorySessionPhase.loading ||
+        state.operationState != GitRepositoryOperationState.none ||
+        status.conflictedEntries.isNotEmpty) {
+      return false;
+    }
+    final cancellation = GitCancellationToken();
+    _historyMutationCancellation = cancellation;
+    final operation = _startOperation(RepositoryOperationKind.history);
+    try {
+      await _writer.applyPatch(
+        repository,
+        patchPath: patchPath,
+        stripLevel: stripLevel,
+        basePath: basePath,
+        checkOnly: checkOnly,
+        cancellationToken: cancellation,
+      );
+      // A dry run does not mutate Git, but a refresh keeps all asynchronous
+      // snapshots coherent. Do not put the whole workspace into `loading`: a
+      // rejected patch must not blank the repository behind this local dialog.
+      await refresh();
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.failed,
+        message: succeeded ? (checkOnly ? '补丁检查通过。' : '已应用补丁。') : state.message,
+      );
+      return succeeded;
+    } on Object catch (error, stackTrace) {
+      if (!checkOnly) await refresh();
+      final message = _friendlyError(error);
+      state = state.copyWith(
+        isDiffLoading: false,
+        message: message,
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: message,
+      );
+      return false;
+    } finally {
+      if (identical(_historyMutationCancellation, cancellation)) {
+        _historyMutationCancellation = null;
+      }
+    }
+  }
+
+  Future<bool> _runHistoryMutation({
+    required String objectId,
+    required bool requireCleanWorkTree,
+    required String successMessage,
+    String? conflictMessage,
+    required Future<void> Function(GitRepository, GitCancellationToken) run,
+  }) async {
+    final repository = state.repository;
+    final status = state.status;
+    final normalizedId = objectId.trim();
+    if (repository == null ||
+        status == null ||
+        status.branch.head == null ||
+        state.phase == RepositorySessionPhase.loading ||
+        state.operationState != GitRepositoryOperationState.none ||
+        status.conflictedEntries.isNotEmpty ||
+        (requireCleanWorkTree && !status.isClean) ||
+        !state.historyCommits.any(
+          (commit) => commit.objectId == normalizedId,
+        )) {
+      return false;
+    }
+    final cancellation = GitCancellationToken();
+    _historyMutationCancellation = cancellation;
+    final operation = _startOperation(RepositoryOperationKind.history);
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await run(repository, cancellation);
+      await refresh();
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.failed,
+        message: succeeded ? successMessage : state.message,
+      );
+      return succeeded;
+    } on Object catch (error, stackTrace) {
+      await refresh();
+      final hasConflicts = state.status?.conflictedEntries.isNotEmpty ?? false;
+      final message = hasConflicts && conflictMessage != null
+          ? conflictMessage
+          : _friendlyError(error);
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: message,
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: message,
+      );
+      return false;
+    } finally {
+      if (identical(_historyMutationCancellation, cancellation)) {
+        _historyMutationCancellation = null;
+      }
     }
   }
 

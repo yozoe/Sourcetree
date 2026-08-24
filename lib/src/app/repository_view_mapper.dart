@@ -68,6 +68,10 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
   };
   final isRebaseInProgress =
       state.operationState == GitRepositoryOperationState.rebase;
+  final isCherryPickInProgress =
+      state.operationState == GitRepositoryOperationState.cherryPick;
+  final isRevertInProgress =
+      state.operationState == GitRepositoryOperationState.revert;
   if (state.operationState != GitRepositoryOperationState.none) {
     disabledActions.addAll([
       RepositoryAction.fetch,
@@ -142,6 +146,8 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     isPushing: state.isPushRunning,
     isStashing: state.isStashRunning,
     isRebaseInProgress: isRebaseInProgress,
+    isCherryPickInProgress: isCherryPickInProgress,
+    isRevertInProgress: isRevertInProgress,
     isWorkingTreeClean: status.isClean,
     isUncommittedChangesSelected: state.selectedRefId == 'uncommitted',
     refs: [
@@ -353,6 +359,7 @@ String _operationLabel(RepositoryOperationKind kind) => switch (kind) {
   RepositoryOperationKind.pull => '拉取更新',
   RepositoryOperationKind.push => '推送当前分支',
   RepositoryOperationKind.stash => '管理贮藏',
+  RepositoryOperationKind.history => '历史提交操作',
 };
 
 /// 中文：将会话操作结果映射为呈现层的状态枚举。

@@ -688,6 +688,31 @@ class _RepositoryToolbar extends StatelessWidget {
                                       repository: repository,
                                       onAction: callbacks.onAction,
                                     ),
+                                  ] else if ((repository
+                                              .isCherryPickInProgress ||
+                                          repository.isRevertInProgress) &&
+                                      !repository.isPulling) ...[
+                                    _ToolbarAction(
+                                      action:
+                                          RepositoryAction.continueSequencer,
+                                      icon: Icons.play_arrow_outlined,
+                                      label: repository.isCherryPickInProgress
+                                          ? '继续遴选'
+                                          : '继续回滚',
+                                      showLabel: showLabels,
+                                      repository: repository,
+                                      onAction: callbacks.onAction,
+                                    ),
+                                    _ToolbarAction(
+                                      action: RepositoryAction.abortSequencer,
+                                      icon: Icons.stop_circle_outlined,
+                                      label: repository.isCherryPickInProgress
+                                          ? '中止遴选'
+                                          : '中止回滚',
+                                      showLabel: showLabels,
+                                      repository: repository,
+                                      onAction: callbacks.onAction,
+                                    ),
                                   ] else
                                     _ToolbarAction(
                                       action: repository.isPulling
@@ -1213,15 +1238,14 @@ class _RefsNavigation extends StatelessWidget {
         !isBusy && !disabledActions.contains(RepositoryAction.fetch);
     final canPull = !isBusy && !disabledActions.contains(RepositoryAction.pull);
     final canPush = !isBusy && !disabledActions.contains(RepositoryAction.push);
-    final canSwitch =
-        !isBusy &&
-        !repository.changes.any(
-          (change) => change.kind == RepositoryChangeKind.conflicted,
-        );
+    final hasConflicts = repository.changes.any(
+      (change) => change.kind == RepositoryChangeKind.conflicted,
+    );
+    final canSwitch = !isBusy && !hasConflicts;
     final canMerge = !disabledActions.contains(RepositoryAction.mergeBranch);
     final canCreate =
         !isBusy && !disabledActions.contains(RepositoryAction.createBranch);
-    final canManageLocalBranch = repository.isWorkingTreeClean && !isBusy;
+    final canManageLocalBranch = canCreate && !hasConflicts;
     final canManageRemote = !isBusy && !repository.isRebaseInProgress;
     final remoteName = _remoteNameFor(ref);
     if (ref.id == 'history') {
@@ -2078,6 +2102,45 @@ final class _HistoryColumnWidths {
   final double dateMinimum;
 }
 
+/// Reuses the workspace's Sourcetree-style commit history table in focused
+/// workflows such as patch creation.
+/// 中文：在创建补丁等聚焦流程中复用工作区的 Sourcetree 风格提交历史表格。
+class RepositoryHistoryPane extends StatelessWidget {
+  const RepositoryHistoryPane({
+    super.key,
+    required this.repository,
+    required this.onSelected,
+    this.onActivated,
+    this.onLoadMore,
+    this.onContextAction,
+    this.selectedCommitIds,
+    this.showPaneHeader = true,
+    this.includeUncommittedChanges = true,
+  });
+
+  final RepositoryViewData repository;
+  final RepositoryCommitCallback? onSelected;
+  final RepositoryCommitActivationCallback? onActivated;
+  final RepositoryCommitContextActionCallback? onContextAction;
+  final VoidCallback? onLoadMore;
+  final Set<String>? selectedCommitIds;
+  final bool showPaneHeader;
+  final bool includeUncommittedChanges;
+
+  @override
+  Widget build(BuildContext context) => _HistoryPane(
+    repository: repository,
+    onSelected: onSelected,
+    onActivated: onActivated,
+    onContextAction: onContextAction,
+    onLoadMore: onLoadMore,
+    onUncommittedChangesSelected: null,
+    selectedCommitIds: selectedCommitIds,
+    showPaneHeader: showPaneHeader,
+    includeUncommittedChanges: includeUncommittedChanges,
+  );
+}
+
 class _HistoryPane extends StatefulWidget {
   const _HistoryPane({
     required this.repository,
@@ -2088,6 +2151,9 @@ class _HistoryPane extends StatefulWidget {
     this.onContextAction,
     this.showSearch = false,
     this.onSearchChanged,
+    this.selectedCommitIds,
+    this.showPaneHeader = true,
+    this.includeUncommittedChanges = true,
   });
 
   final RepositoryViewData repository;
@@ -2098,6 +2164,9 @@ class _HistoryPane extends StatefulWidget {
   final VoidCallback? onLoadMore;
   final bool showSearch;
   final ValueChanged<String>? onSearchChanged;
+  final Set<String>? selectedCommitIds;
+  final bool showPaneHeader;
+  final bool includeUncommittedChanges;
 
   @override
   State<_HistoryPane> createState() => _HistoryPaneState();
@@ -2166,7 +2235,9 @@ class _HistoryPaneState extends State<_HistoryPane> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
-    final showUncommittedChanges = !widget.repository.isWorkingTreeClean;
+    final showUncommittedChanges =
+        widget.includeUncommittedChanges &&
+        !widget.repository.isWorkingTreeClean;
     final commits = _visibleCommits(widget.repository);
     final fallbackGraphs =
         commits.every(
@@ -2195,11 +2266,12 @@ class _HistoryPaneState extends State<_HistoryPane> {
       color: _historyBackground(colors),
       child: Column(
         children: [
-          _PaneHeader(
-            title: '历史',
-            icon: Icons.history,
-            trailing: '${commits.length} 个提交',
-          ),
+          if (widget.showPaneHeader)
+            _PaneHeader(
+              title: '历史',
+              icon: Icons.history,
+              trailing: '${commits.length} 个提交',
+            ),
           Expanded(
             child: LayoutBuilder(
               builder: (context, constraints) {
@@ -2302,6 +2374,10 @@ class _HistoryPaneState extends State<_HistoryPane> {
                                           return _CommitRow(
                                             commit: commit.copyWith(
                                               graph: graphWithWorkspace,
+                                              isSelected:
+                                                  widget.selectedCommitIds
+                                                      ?.contains(commit.oid) ??
+                                                  commit.isSelected,
                                             ),
                                             currentBranch:
                                                 widget.repository.currentBranch,
@@ -3140,39 +3216,39 @@ class _CommitRow extends StatelessWidget {
         ),
         PopupMenuDivider(),
         PopupMenuItem<RepositoryCommitContextAction>(
-          enabled: false,
+          value: RepositoryCommitContextAction.pushRevision,
           height: 30,
-          child: Text('推送修订版本…（尚未实现）'),
+          child: Text('推送修订版本…'),
         ),
         PopupMenuItem<RepositoryCommitContextAction>(
-          enabled: false,
+          value: RepositoryCommitContextAction.rebase,
           height: 30,
-          child: Text('变基…（尚未实现）'),
+          child: Text('变基…'),
         ),
         PopupMenuItem<RepositoryCommitContextAction>(
-          enabled: false,
+          value: RepositoryCommitContextAction.interactiveRebase,
           height: 30,
-          child: Text('交互式变基…（尚未实现）'),
+          child: Text('交互式变基…'),
         ),
         PopupMenuItem<RepositoryCommitContextAction>(
-          enabled: false,
+          value: RepositoryCommitContextAction.reset,
           height: 30,
-          child: Text('将当前分支重置到此次提交（尚未实现）'),
+          child: Text('将当前分支重置到此次提交'),
         ),
         PopupMenuItem<RepositoryCommitContextAction>(
-          enabled: false,
+          value: RepositoryCommitContextAction.revert,
           height: 30,
-          child: Text('提交回滚（尚未实现）'),
+          child: Text('提交回滚'),
         ),
         PopupMenuItem<RepositoryCommitContextAction>(
-          enabled: false,
+          value: RepositoryCommitContextAction.createPatch,
           height: 30,
-          child: Text('创建补丁…（尚未实现）'),
+          child: Text('创建补丁…'),
         ),
         PopupMenuItem<RepositoryCommitContextAction>(
-          enabled: false,
+          value: RepositoryCommitContextAction.cherryPick,
           height: 30,
-          child: Text('遴选（尚未实现）'),
+          child: Text('遴选'),
         ),
       ],
     );
@@ -3664,6 +3740,28 @@ class _SelectedChangesPane extends StatelessWidget {
       onRemove: onRemove,
     );
   }
+}
+
+/// Reuses the workspace's selected-commit file list and Diff preview.
+/// 中文：复用工作区中所选提交的文件列表与 Diff 预览。
+class RepositoryCommitChangesPane extends StatelessWidget {
+  const RepositoryCommitChangesPane({
+    super.key,
+    required this.repository,
+    required this.onSelected,
+    this.title = '提交改动',
+  });
+
+  final RepositoryViewData repository;
+  final RepositoryCommitFileCallback? onSelected;
+  final String title;
+
+  @override
+  Widget build(BuildContext context) => _CommitChangesPane(
+    repository: repository,
+    onSelected: onSelected,
+    title: title,
+  );
 }
 
 class _CommitChangesPane extends StatelessWidget {
@@ -4820,6 +4918,17 @@ class _LineNumber extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Reuses the workspace's selected-commit metadata pane.
+/// 中文：复用工作区中所选提交的元数据面板。
+class RepositoryCommitDetailsPane extends StatelessWidget {
+  const RepositoryCommitDetailsPane({super.key, required this.details});
+
+  final CommitDetailsViewData? details;
+
+  @override
+  Widget build(BuildContext context) => _CommitDetailsPane(details: details);
 }
 
 class _CommitDetailsPane extends StatelessWidget {

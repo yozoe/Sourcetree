@@ -53,6 +53,42 @@ void main() {
     expect(find.text('初始化仓库'), findsOneWidget);
   });
 
+  testWidgets('keeps cherry-pick recovery actions available in the toolbar', (
+    tester,
+  ) async {
+    final actions = <RepositoryAction>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            const RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              isCherryPickInProgress: true,
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(onAction: actions.add),
+        ),
+      ),
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey('repository-action-continueSequencer')),
+    );
+    await tester.tap(
+      find.byKey(const ValueKey('repository-action-abortSequencer')),
+    );
+
+    expect(
+      actions,
+      containsAll([
+        RepositoryAction.continueSequencer,
+        RepositoryAction.abortSequencer,
+      ]),
+    );
+  });
+
   testWidgets('workspace windows do not restore the global repository list', (
     tester,
   ) async {
@@ -496,12 +532,107 @@ void main() {
           .enabled,
       isTrue,
     );
+    expect(
+      tester
+          .widget<PopupMenuItem<RepositoryRefContextAction>>(
+            find.widgetWithText(
+              PopupMenuItem<RepositoryRefContextAction>,
+              '重命名分支',
+            ),
+          )
+          .enabled,
+      isTrue,
+    );
+    expect(
+      tester
+          .widget<PopupMenuItem<RepositoryRefContextAction>>(
+            find.widgetWithText(
+              PopupMenuItem<RepositoryRefContextAction>,
+              '删除分支',
+            ),
+          )
+          .enabled,
+      isTrue,
+    );
 
     await tester.tap(find.text('合并到当前分支'));
     await tester.pumpAndSettle();
 
     expect(selectedReference, featureBranch);
     expect(selectedAction, RepositoryRefContextAction.mergeIntoCurrent);
+  });
+
+  testWidgets('rename branch dialog selects the current branch name', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () => showDialog<String>(
+              context: context,
+              builder: (context) =>
+                  const RenameBranchDialog(oldName: 'feature/menu'),
+            ),
+            child: const Text('打开重命名'),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('打开重命名'));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(
+      find.byKey(const ValueKey<String>('rename-branch-dialog')),
+      findsOneWidget,
+    );
+    expect(find.text('新分支名称：'), findsOneWidget);
+    final renameField = tester.widget<TextFormField>(
+      find.byKey(const ValueKey<String>('rename-branch-name')),
+    );
+    expect(renameField.controller!.text, 'feature/menu');
+    expect(renameField.controller!.selection.start, 0);
+    expect(
+      renameField.controller!.selection.end,
+      renameField.controller!.text.length,
+    );
+  });
+
+  testWidgets('delete branch dialog exposes explicit deletion scopes', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => TextButton(
+            onPressed: () => showDialog<DeleteLocalBranchDialogResult>(
+              context: context,
+              builder: (context) => const DeleteLocalBranchDialog(
+                branchName: 'feature/menu',
+                remoteBranchName: null,
+              ),
+            ),
+            child: const Text('打开删除'),
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('打开删除'));
+    await tester.pump(const Duration(milliseconds: 300));
+
+    expect(
+      find.byKey(const ValueKey<String>('delete-branch-dialog')),
+      findsOneWidget,
+    );
+    expect(find.text('您确定要删除以下分支吗？'), findsOneWidget);
+    expect(find.text('强制删除'), findsOneWidget);
+    final remoteDelete = tester.widget<CheckboxListTile>(
+      find.byKey(const ValueKey<String>('delete-branch-remote')),
+    );
+    expect(remoteDelete.onChanged, isNull);
+    await tester.tap(find.byKey(const ValueKey<String>('delete-branch-force')));
+    await tester.pump();
+    expect(find.textContaining('未合并提交可能无法再通过分支引用找回'), findsOneWidget);
   });
 
   testWidgets('commit context menu restores supported history actions', (
@@ -554,18 +685,28 @@ void main() {
     expect(find.text('标签…'), findsOneWidget);
     expect(find.text('分支…'), findsOneWidget);
     expect(find.text('复制 SHA-1 到剪贴板'), findsOneWidget);
-    expect(find.text('变基…（尚未实现）'), findsOneWidget);
-    expect(
-      tester
-          .widget<PopupMenuItem<RepositoryCommitContextAction>>(
-            find.widgetWithText(
-              PopupMenuItem<RepositoryCommitContextAction>,
-              '变基…（尚未实现）',
-            ),
-          )
-          .enabled,
-      isFalse,
-    );
+    for (final label in const [
+      '推送修订版本…',
+      '变基…',
+      '交互式变基…',
+      '将当前分支重置到此次提交',
+      '提交回滚',
+      '创建补丁…',
+      '遴选',
+    ]) {
+      expect(find.text(label), findsOneWidget);
+      expect(
+        tester
+            .widget<PopupMenuItem<RepositoryCommitContextAction>>(
+              find.widgetWithText(
+                PopupMenuItem<RepositoryCommitContextAction>,
+                label,
+              ),
+            )
+            .enabled,
+        isTrue,
+      );
+    }
 
     await tester.tap(find.text('标签…'));
     await tester.pumpAndSettle();
@@ -894,6 +1035,64 @@ void main() {
       );
     },
   );
+
+  testWidgets('reuses the history table with workflow-local multi-selection', (
+    tester,
+  ) async {
+    const first = CommitViewData(
+      oid: '1111111111111111111111111111111111111111',
+      shortOid: '11111111',
+      subject: 'First patch commit',
+      author: 'tester',
+      relativeDate: '今天',
+    );
+    const second = CommitViewData(
+      oid: '2222222222222222222222222222222222222222',
+      shortOid: '22222222',
+      subject: 'Second patch commit',
+      author: 'tester',
+      relativeDate: '昨天',
+    );
+    CommitViewData? tapped;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: SizedBox(
+          width: 900,
+          height: 500,
+          child: RepositoryHistoryPane(
+            repository: const RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              commits: [first, second],
+            ),
+            selectedCommitIds: const {
+              '1111111111111111111111111111111111111111',
+              '2222222222222222222222222222222222222222',
+            },
+            showPaneHeader: false,
+            includeUncommittedChanges: false,
+            onSelected: (commit) => tapped = commit,
+          ),
+        ),
+      ),
+    );
+
+    expect(
+      find.byKey(const ValueKey<String>('history-column-header')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('commit-graph-canvas')),
+      findsNWidgets(2),
+    );
+    expect(find.text('历史'), findsNothing);
+
+    await tester.tap(find.text('Second patch commit'));
+    await tester.pump();
+    expect(tapped, second);
+  });
 
   testWidgets('renders commit tags with the tag icon instead of branch icon', (
     tester,

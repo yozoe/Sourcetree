@@ -56,6 +56,63 @@ void main() {
     expect(await reader.readRecentHistory(repository), isEmpty);
   });
 
+  test(
+    'reads Git-backed repository details without relying on loaded history',
+    () async {
+      await File(
+        '${temporaryDirectory.path}${Platform.pathSeparator}README.md',
+      ).writeAsString('# Details\n');
+      await File(
+        '${temporaryDirectory.path}${Platform.pathSeparator}lib.dart',
+      ).writeAsString('void main() {}\n');
+      await _git(temporaryDirectory.path, ['add', '--all']);
+      await _git(temporaryDirectory.path, ['commit', '--quiet', '-m', 'first']);
+      final primaryBranch = (await _git(temporaryDirectory.path, [
+        'branch',
+        '--show-current',
+      ])).stdout.toString().trim();
+      await _git(temporaryDirectory.path, ['branch', 'feature/details']);
+      await _git(temporaryDirectory.path, [
+        'switch',
+        '--quiet',
+        'feature/details',
+      ]);
+      await File(
+        '${temporaryDirectory.path}${Platform.pathSeparator}feature.dart',
+      ).writeAsString('const details = true;\n');
+      await _git(temporaryDirectory.path, ['add', '--all']);
+      await _git(temporaryDirectory.path, [
+        'commit',
+        '--quiet',
+        '-m',
+        'feature',
+      ]);
+      await _git(temporaryDirectory.path, ['switch', '--quiet', primaryBranch]);
+      await _git(temporaryDirectory.path, ['tag', 'v1.0.0']);
+
+      final repository = (await inspector.inspect(temporaryDirectory.path))!;
+      final details = await reader.readRepositoryDetails(repository);
+
+      expect(details.createdAt, isNotNull);
+      expect(details.lastCommitAt, isNotNull);
+      expect(details.diskUsageBytes, greaterThan(0));
+      expect(details.lfsStatus, '未使用 LFS');
+      expect(details.branchCount, 2);
+      expect(details.tagCount, 1);
+      expect(details.commitCount, 2);
+      expect(details.trackedFileCount, 2);
+      expect(
+        details.authors,
+        contains(
+          predicate<GitRepositoryAuthorSummary>(
+            (author) =>
+                author.name == 'Git Desktop Test' && author.commitCount == 2,
+          ),
+        ),
+      );
+    },
+  );
+
   test('detects Git operation markers for merge and rebase recovery', () async {
     final repository = (await inspector.inspect(temporaryDirectory.path))!;
     expect(

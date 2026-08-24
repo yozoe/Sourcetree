@@ -17,6 +17,8 @@ enum RepositoryAction {
   cancelStash,
   continueRebase,
   abortRebase,
+  continueSequencer,
+  abortSequencer,
   cancelPush,
   initializeRepository,
   fetch,
@@ -63,6 +65,13 @@ enum RepositoryCommitContextAction {
   createBranch,
   tag,
   copyCommitHash,
+  pushRevision,
+  rebase,
+  interactiveRebase,
+  reset,
+  revert,
+  createPatch,
+  cherryPick,
 }
 
 enum RepositoryChangeKind {
@@ -159,6 +168,8 @@ final class RepositoryViewData {
     this.isPushing = false,
     this.isStashing = false,
     this.isRebaseInProgress = false,
+    this.isCherryPickInProgress = false,
+    this.isRevertInProgress = false,
     this.isWorkingTreeClean = true,
     this.isUncommittedChangesSelected = false,
     this.refs = const [],
@@ -194,6 +205,8 @@ final class RepositoryViewData {
   final bool isPushing;
   final bool isStashing;
   final bool isRebaseInProgress;
+  final bool isCherryPickInProgress;
+  final bool isRevertInProgress;
   final bool isWorkingTreeClean;
 
   /// Whether the synthetic uncommitted row is selected in the history graph.
@@ -606,22 +619,26 @@ final class CommitViewData {
   final bool isMerge;
   final List<String> parents;
 
-  CommitViewData copyWith({CommitGraphViewData? graph}) => CommitViewData(
-    oid: oid,
-    shortOid: shortOid,
-    subject: subject,
-    author: author,
-    relativeDate: relativeDate,
-    refs: refs,
-    remoteRefs: remoteRefs,
-    tagRefs: tagRefs,
-    references: references,
-    graph: graph ?? this.graph,
-    isHead: isHead,
-    isSelected: isSelected,
-    isMerge: isMerge,
-    parents: parents,
-  );
+  /// Copies this row while allowing reusable history surfaces to override its
+  /// graph or local selection without changing Git-backed commit identity.
+  /// 中文：复制提交行，并允许复用历史视图覆盖图线或局部选中态，不改变 Git 提交身份。
+  CommitViewData copyWith({CommitGraphViewData? graph, bool? isSelected}) =>
+      CommitViewData(
+        oid: oid,
+        shortOid: shortOid,
+        subject: subject,
+        author: author,
+        relativeDate: relativeDate,
+        refs: refs,
+        remoteRefs: remoteRefs,
+        tagRefs: tagRefs,
+        references: references,
+        graph: graph ?? this.graph,
+        isHead: isHead,
+        isSelected: isSelected ?? this.isSelected,
+        isMerge: isMerge,
+        parents: parents,
+      );
 }
 
 final class CommitDetailsViewData {

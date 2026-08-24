@@ -298,6 +298,71 @@
                         </items>
                     </menu>
                 </menuItem>
+                <menuItem title="仓库" id="GDA-repository-menu">
+                    <modifierMask key="keyEquivalentModifierMask"/>
+                    <menu key="submenu" title="仓库" id="GDA-repository-submenu">
+                        <items>
+                            <menuItem title="仓库设置…（待实现）" id="GDA-repository-settings">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-settings-action"/>
+                                </connections>
+                            </menuItem>
+                            <menuItem title="仓库详情…" id="GDA-repository-details">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="repositoryDetailsFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-details-action"/>
+                                </connections>
+                            </menuItem>
+                            <menuItem isSeparatorItem="YES" id="GDA-repository-separator-1"/>
+                            <menuItem title="刷新（待实现）" id="GDA-repository-refresh"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-refresh-action"/></connections></menuItem>
+                            <menuItem title="刷新远程仓库状态（待实现）" id="GDA-repository-refresh-remote"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-refresh-remote-action"/></connections></menuItem>
+                            <menuItem title="提交…（待实现）" id="GDA-repository-commit"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-commit-action"/></connections></menuItem>
+                            <menuItem title="提交所有…（待实现）" id="GDA-repository-commit-all"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-commit-all-action"/></connections></menuItem>
+                            <menuItem title="提交选中项…（待实现）" id="GDA-repository-commit-selected"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-commit-selected-action"/></connections></menuItem>
+                            <menuItem title="重置…（待实现）" id="GDA-repository-reset"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-reset-action"/></connections></menuItem>
+                            <menuItem title="隐藏变更…（待实现）" id="GDA-repository-hide-changes"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-hide-changes-action"/></connections></menuItem>
+                            <menuItem title="推送…（待实现）" id="GDA-repository-push"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-push-action"/></connections></menuItem>
+                            <menuItem title="拉取…（待实现）" id="GDA-repository-pull"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-pull-action"/></connections></menuItem>
+                            <menuItem title="抓取…（待实现）" id="GDA-repository-fetch"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-fetch-action"/></connections></menuItem>
+                            <menuItem title="更新（待实现）" id="GDA-repository-update"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-update-action"/></connections></menuItem>
+                            <menuItem isSeparatorItem="YES" id="GDA-repository-separator-2"/>
+                            <menuItem title="检出…（待实现）" id="GDA-repository-checkout"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-checkout-action"/></connections></menuItem>
+                            <menuItem title="分支…（待实现）" id="GDA-repository-branch"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-branch-action"/></connections></menuItem>
+                            <menuItem title="合并…（待实现）" id="GDA-repository-merge"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-merge-action"/></connections></menuItem>
+                            <menuItem title="标签…（待实现）" id="GDA-repository-tag"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-tag-action"/></connections></menuItem>
+                            <menuItem title="贮藏…（待实现）" id="GDA-repository-stash"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-stash-action"/></connections></menuItem>
+                            <menuItem title="交互式变基…（待实现）" id="GDA-repository-rebase"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-rebase-action"/></connections></menuItem>
+                            <menuItem isSeparatorItem="YES" id="GDA-repository-separator-3"/>
+                            <menuItem title="添加远程仓库…（待实现）" id="GDA-repository-add-remote"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-add-remote-action"/></connections></menuItem>
+                            <menuItem title="添加子模块…（待实现）" id="GDA-repository-add-submodule"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-add-submodule-action"/></connections></menuItem>
+                            <menuItem title="添加/链接子树…（待实现）" id="GDA-repository-add-subtree"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-add-subtree-action"/></connections></menuItem>
+                            <menuItem title="Git LFS（待实现）" id="GDA-repository-lfs"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-lfs-action"/></connections></menuItem>
+                            <menuItem title="git-flow 或 hg flow（待实现）" id="GDA-repository-flow"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-flow-action"/></connections></menuItem>
+                            <menuItem title="显示远程服务器（待实现）" id="GDA-repository-show-remote"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-show-remote-action"/></connections></menuItem>
+                            <menuItem title="创建拉取请求…（待实现）" id="GDA-repository-create-pr"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-create-pr-action"/></connections></menuItem>
+                        </items>
+                    </menu>
+                </menuItem>
+                <menuItem title="动作" id="GDA-ct-ion">
+                    <modifierMask key="keyEquivalentModifierMask"/>
+                    <menu key="submenu" title="动作" id="GDA-ct-sub">
+                        <items>
+                            <menuItem title="创建补丁…" id="GDA-ct-create">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="createPatchFromMenu:" target="Voe-Tx-rLC" id="GDA-ct-create-action"/>
+                                </connections>
+                            </menuItem>
+                            <menuItem title="应用补丁…" id="GDA-ct-apply">
+                                <modifierMask key="keyEquivalentModifierMask"/>
+                                <connections>
+                                    <action selector="applyPatchFromMenu:" target="Voe-Tx-rLC" id="GDA-ct-apply-action"/>
+                                </connections>
+                            </menuItem>
+                        </items>
+                    </menu>
+                </menuItem>
                 <menuItem title="Window" id="aUF-d1-5bR">
                     <modifierMask key="keyEquivalentModifierMask"/>
                     <menu key="submenu" title="Window" systemMenu="window" id="Td7-aD-5lo">

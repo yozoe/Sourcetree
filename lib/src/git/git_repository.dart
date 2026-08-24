@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:path/path.dart' as path_utils;
 
 import 'git_errors.dart';
+import 'git_cancellation.dart';
 import 'git_history_parser.dart';
 import 'git_models.dart';
 import 'git_runner.dart';
@@ -144,6 +145,198 @@ final class GitRepositoryReader {
   final GitRunner runner;
   final GitStatusParser statusParser;
   final GitHistoryParser historyParser;
+
+  /// 中文：读取仓库详情所需的真实 Git 统计和本地磁盘用量。
+  ///
+  /// English: Reads Git-backed repository statistics and local disk usage for
+  /// the repository-details window. Cancellation stops subsequent reads and
+  /// file traversal without changing repository state.
+  Future<GitRepositoryDetails> readRepositoryDetails(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+  }) async {
+    void ensureNotCancelled() {
+      if (cancellationToken?.isCancelled ?? false) {
+        throw const GitException('Reading repository details was cancelled.');
+      }
+    }
+
+    ensureNotCancelled();
+    final hasHead = await _hasResolvableHead(repository);
+    ensureNotCancelled();
+    final results = await Future.wait([
+      _runDetailsCommand(repository, const [
+        '--no-pager',
+        'for-each-ref',
+        '--format=%(refname)',
+        'refs/heads',
+      ], cancellationToken),
+      _runDetailsCommand(repository, const [
+        '--no-pager',
+        'for-each-ref',
+        '--format=%(refname)',
+        'refs/tags',
+      ], cancellationToken),
+      _runDetailsCommand(repository, const [
+        '--no-pager',
+        'ls-files',
+        '-z',
+      ], cancellationToken),
+      _runDetailsCommand(repository, const [
+        '--no-pager',
+        'shortlog',
+        '-sne',
+        '--all',
+      ], cancellationToken),
+      if (hasHead)
+        _runDetailsCommand(repository, const [
+          '--no-pager',
+          'log',
+          '--reverse',
+          '--format=%ct',
+          '-1',
+          '--all',
+          'HEAD',
+        ], cancellationToken),
+      if (hasHead)
+        _runDetailsCommand(repository, const [
+          '--no-pager',
+          'log',
+          '-1',
+          '--format=%ct',
+          '--all',
+          'HEAD',
+        ], cancellationToken),
+      if (hasHead)
+        _runDetailsCommand(repository, const [
+          '--no-pager',
+          'rev-list',
+          '--count',
+          '--all',
+        ], cancellationToken),
+    ]);
+    ensureNotCancelled();
+    final branchOutput = results[0];
+    final tagOutput = results[1];
+    final trackedFilesOutput = results[2];
+    final authorsOutput = results[3];
+    final createdOutput = hasHead ? results[4] : null;
+    final lastCommitOutput = hasHead ? results[5] : null;
+    final commitCountOutput = hasHead ? results[6] : null;
+    final diskUsageBytes = await _readRepositoryDiskUsage(
+      repository,
+      cancellationToken,
+    );
+    ensureNotCancelled();
+    return GitRepositoryDetails(
+      createdAt: _parseUnixTimestamp(createdOutput?.stdoutBytes),
+      lastCommitAt: _parseUnixTimestamp(lastCommitOutput?.stdoutBytes),
+      diskUsageBytes: diskUsageBytes,
+      lfsStatus: await _readLfsStatus(repository, cancellationToken),
+      branchCount: _outputLines(
+        branchOutput.stdoutBytes,
+      ).where((line) => line.isNotEmpty).length,
+      tagCount: _outputLines(
+        tagOutput.stdoutBytes,
+      ).where((line) => line.isNotEmpty).length,
+      commitCount:
+          int.tryParse(
+            _decodeSingleLine(commitCountOutput?.stdoutBytes ?? const []),
+          ) ??
+          0,
+      trackedFileCount: _nullSeparatedBytes(
+        trackedFilesOutput.stdoutBytes,
+      ).where((path) => path.isNotEmpty).length,
+      authors: _parseAuthorSummaries(authorsOutput.stdoutBytes),
+    );
+  }
+
+  Future<GitResult> _runDetailsCommand(
+    GitRepository repository,
+    List<String> arguments,
+    GitCancellationToken? cancellationToken,
+  ) async {
+    final result = await runner.run(
+      GitInvocation(
+        arguments: arguments,
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 16 * 1024 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Reading repository details');
+    if (result.stdoutTruncated) {
+      throw const GitParseException(
+        'Repository details exceeded the configured output limit.',
+      );
+    }
+    return result;
+  }
+
+  Future<int> _readRepositoryDiskUsage(
+    GitRepository repository,
+    GitCancellationToken? cancellationToken,
+  ) async {
+    final roots = <String>{
+      repository.workTreeRoot ?? repository.commonDirectory,
+    };
+    final workTree = repository.workTreeRoot;
+    if (workTree == null ||
+        !path_utils.isWithin(workTree, repository.commonDirectory)) {
+      roots.add(repository.commonDirectory);
+    }
+    var total = 0;
+    for (final root in roots) {
+      final entity = Directory(root);
+      if (!await entity.exists()) continue;
+      try {
+        await for (final child in entity.list(
+          recursive: true,
+          followLinks: false,
+        )) {
+          if (cancellationToken?.isCancelled ?? false) {
+            throw const GitException(
+              'Reading repository details was cancelled.',
+            );
+          }
+          if (child is File) {
+            try {
+              total += await child.length();
+            } on FileSystemException {
+              // A concurrently removed or protected file simply cannot be
+              // included in a best-effort disk usage summary.
+            }
+          }
+        }
+      } on FileSystemException {
+        // Disk usage remains best effort when a directory disappears or
+        // becomes inaccessible while it is being enumerated.
+      }
+    }
+    return total;
+  }
+
+  Future<String> _readLfsStatus(
+    GitRepository repository,
+    GitCancellationToken? cancellationToken,
+  ) async {
+    if (cancellationToken?.isCancelled ?? false) {
+      throw const GitException('Reading repository details was cancelled.');
+    }
+    final root = repository.workTreeRoot;
+    if (root == null) return '未使用 LFS';
+    try {
+      final attributes = File(path_utils.join(root, '.gitattributes'));
+      if (!await attributes.exists()) return '未使用 LFS';
+      final content = await attributes.readAsString();
+      return content.contains('filter=lfs') ? '已配置 LFS' : '未使用 LFS';
+    } on FileSystemException {
+      return '状态不可用';
+    }
+  }
 
   /// 中文：读取冲突文件的共同基线、我的版本、他们的版本和当前工作区内容。
   ///
@@ -438,6 +631,61 @@ final class GitRepositoryReader {
       );
     }
     return historyParser.parse(result.stdoutBytes).commits;
+  }
+
+  /// Reads the current branch commits that an interactive rebase will replay
+  /// after [upstreamObjectId], oldest first.
+  /// 中文：读取交互式变基将在 [upstreamObjectId] 之后重放的当前分支提交，按从旧到新排序。
+  Future<List<GitInteractiveRebaseInstruction>> readInteractiveRebaseTodo(
+    GitRepository repository, {
+    required String upstreamObjectId,
+  }) async {
+    _validateObjectId(upstreamObjectId);
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          '-c',
+          'color.ui=false',
+          'log',
+          '--reverse',
+          '-z',
+          '--format=%H%x00%s',
+          '$upstreamObjectId..HEAD',
+          '--',
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 8 * 1024 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Reading interactive rebase todo');
+    if (result.stdoutTruncated) {
+      throw const GitParseException(
+        'Interactive rebase todo exceeded the configured output limit.',
+      );
+    }
+    final fields = utf8
+        .decode(result.stdoutBytes, allowMalformed: false)
+        .split('\u0000');
+    if (fields.isNotEmpty && fields.last.isEmpty) fields.removeLast();
+    if (fields.length.isOdd) {
+      throw const GitParseException(
+        'Interactive rebase todo has invalid fields.',
+      );
+    }
+    return List<GitInteractiveRebaseInstruction>.unmodifiable([
+      for (var index = 0; index < fields.length; index += 2)
+        () {
+          _validateObjectId(fields[index]);
+          return GitInteractiveRebaseInstruction(
+            objectId: fields[index],
+            subject: fields[index + 1],
+          );
+        }(),
+    ]);
   }
 
   /// 中文：确认仓库已经有可解析的 HEAD；未首次提交的仓库返回 `false`。
@@ -1324,6 +1572,36 @@ String _decodeSingleLine(List<int> bytes) {
     end--;
   }
   return utf8.decode(bytes.sublist(0, end), allowMalformed: true);
+}
+
+DateTime? _parseUnixTimestamp(List<int>? bytes) {
+  if (bytes == null) return null;
+  final seconds = int.tryParse(_decodeSingleLine(bytes).trim());
+  return seconds == null
+      ? null
+      : DateTime.fromMillisecondsSinceEpoch(
+          seconds * 1000,
+          isUtc: true,
+        ).toLocal();
+}
+
+List<GitRepositoryAuthorSummary> _parseAuthorSummaries(List<int> bytes) {
+  final summaries = <GitRepositoryAuthorSummary>[];
+  final record = RegExp(r'^\s*(\d+)\s+(.+?)\s+<([^>]*)>$');
+  for (final line in _outputLines(bytes)) {
+    final match = record.firstMatch(line);
+    if (match == null) continue;
+    final count = int.tryParse(match.group(1)!);
+    if (count == null) continue;
+    summaries.add(
+      GitRepositoryAuthorSummary(
+        name: match.group(2)!.trim(),
+        email: match.group(3)!.trim(),
+        commitCount: count,
+      ),
+    );
+  }
+  return List<GitRepositoryAuthorSummary>.unmodifiable(summaries);
 }
 
 /// 中文：识别由 Git stash reflog 输出的受限引用选择器。

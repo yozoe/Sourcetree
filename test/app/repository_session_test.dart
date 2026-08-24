@@ -60,6 +60,41 @@ void main() {
     expect(selected.commitDiff.lines, isNotEmpty);
   });
 
+  test('patch dry-run returns the session to ready state', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', '# Base\n');
+    await repository.commit('Base');
+    await repository.writeFile('README.md', '# Changed\n');
+    final change = await repository.commit('Change');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final patchPath =
+        '${repository.workingDirectory.path}${Platform.pathSeparator}change.patch';
+    expect(
+      await controller.createPatchForCommit(change, outputPath: patchPath),
+      isTrue,
+    );
+    await repository.runGit(['reset', '--hard', 'HEAD~1']);
+
+    expect(
+      await controller.applyPatchFile(
+        patchPath: patchPath,
+        stripLevel: null,
+        basePath: '',
+        checkOnly: true,
+      ),
+      isTrue,
+    );
+    expect(
+      container.read(repositorySessionProvider).phase,
+      RepositorySessionPhase.ready,
+    );
+  });
+
   test('loads older history pages and stops at the oldest commit', () async {
     final repository = await GitTestRepository.create();
     addTearDown(repository.dispose);
@@ -1035,6 +1070,52 @@ void main() {
       contains('feature/unmerged'),
     );
   });
+
+  test(
+    'renames and safely deletes a non-current branch with dirty files',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', '# Git Desktop\n');
+      await repository.commit('Initial commit');
+      await repository.runGit(['branch', 'feature/dirty-management']);
+      await repository.writeFile('uncommitted.txt', 'keep this change\n');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+
+      expect(
+        container.read(repositorySessionProvider).status!.isClean,
+        isFalse,
+      );
+      expect(
+        await controller.renameLocalBranch(
+          'feature/dirty-management',
+          'feature/renamed-while-dirty',
+        ),
+        isTrue,
+      );
+      expect(
+        await controller.deleteMergedLocalBranch('feature/renamed-while-dirty'),
+        isTrue,
+      );
+      expect(
+        container
+            .read(repositorySessionProvider)
+            .localBranches
+            .map((branch) => branch.name),
+        isNot(contains('feature/renamed-while-dirty')),
+      );
+      expect(
+        File(
+          '${repository.workingDirectory.path}/uncommitted.txt',
+        ).readAsStringSync(),
+        'keep this change\n',
+      );
+    },
+  );
 
   test('switches branches while preserving safe untracked changes', () async {
     final repository = await GitTestRepository.create();

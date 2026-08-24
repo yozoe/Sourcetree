@@ -52,6 +52,46 @@ final class GitRepository {
   String get commandDirectory => workTreeRoot ?? commonDirectory;
 }
 
+/// A Git-backed summary rendered in the repository-details window.
+/// 中文：用于仓库详情窗口的 Git 实际数据摘要；空仓库的提交相关字段为 `null`。
+final class GitRepositoryDetails {
+  GitRepositoryDetails({
+    required this.createdAt,
+    required this.lastCommitAt,
+    required this.diskUsageBytes,
+    required this.lfsStatus,
+    required this.branchCount,
+    required this.tagCount,
+    required this.commitCount,
+    required this.trackedFileCount,
+    required List<GitRepositoryAuthorSummary> authors,
+  }) : authors = List<GitRepositoryAuthorSummary>.unmodifiable(authors);
+
+  final DateTime? createdAt;
+  final DateTime? lastCommitAt;
+  final int diskUsageBytes;
+  final String lfsStatus;
+  final int branchCount;
+  final int tagCount;
+  final int commitCount;
+  final int trackedFileCount;
+  final List<GitRepositoryAuthorSummary> authors;
+}
+
+/// One author and the number of commits attributed by Git's all-ref history.
+/// 中文：Git 全部引用历史中的作者及其提交数量。
+final class GitRepositoryAuthorSummary {
+  const GitRepositoryAuthorSummary({
+    required this.name,
+    required this.email,
+    required this.commitCount,
+  });
+
+  final String name;
+  final String email;
+  final int commitCount;
+}
+
 /// A Git pathname with its exact bytes retained.
 ///
 /// Git paths are byte strings on Unix. [display] is deliberately lossy only
@@ -488,6 +528,36 @@ final class GitPullOptions {
   final bool includeMergedCommits;
   final bool createMergeCommit;
   final bool rebase;
+}
+
+/// Reset modes exposed by the history context menu.
+/// 中文：历史提交右键菜单可选的重置模式。
+enum GitResetMode { soft, mixed, hard }
+
+/// One action available for a commit in an interactive rebase todo list.
+/// 中文：交互式变基 todo 列表中单个提交可选的操作。
+enum GitInteractiveRebaseAction { pick, reword, edit, squash, fixup, drop }
+
+/// A selected commit and its requested interactive-rebase action.
+/// 中文：用户在交互式变基中选定的提交及其执行操作。
+final class GitInteractiveRebaseInstruction {
+  const GitInteractiveRebaseInstruction({
+    required this.objectId,
+    required this.subject,
+    this.action = GitInteractiveRebaseAction.pick,
+  });
+
+  final String objectId;
+  final String subject;
+  final GitInteractiveRebaseAction action;
+
+  GitInteractiveRebaseInstruction copyWith({
+    GitInteractiveRebaseAction? action,
+  }) => GitInteractiveRebaseInstruction(
+    objectId: objectId,
+    subject: subject,
+    action: action ?? this.action,
+  );
 }
 
 final class GitStatusSnapshot {

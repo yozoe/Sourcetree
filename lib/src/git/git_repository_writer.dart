@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:path/path.dart' as path_utils;
 
@@ -8,10 +9,10 @@ import 'git_errors.dart';
 import 'git_models.dart';
 import 'git_runner.dart';
 
-/// Performs the small, explicitly allowed Git mutations used by the P0 UI.
+/// Performs the explicitly confirmed Git mutations used by the desktop UI.
 ///
-/// This class deliberately excludes reset and clean operations. Each method
-/// accepts literal inputs and never invokes a shell.
+/// Every method accepts literal inputs and never invokes a shell. Destructive
+/// mutations such as hard reset are only reachable after a UI confirmation.
 final class GitRepositoryWriter {
   GitRepositoryWriter(this.runner);
 
@@ -1176,6 +1177,576 @@ final class GitRepositoryWriter {
     );
   }
 
+  /// Rebases the checked-out branch onto one loaded commit. The caller must
+  /// ensure the working tree is clean and show the history-rewrite warning.
+  /// 中文：将当前分支变基到指定提交；调用方必须先确认工作区干净并展示改写历史提示。
+  Future<void> rebaseOnto(
+    GitRepository repository, {
+    required String objectId,
+    GitCancellationToken? cancellationToken,
+    Map<String, String> environment = const {},
+  }) async {
+    final normalizedId = _requireCommitId(objectId);
+    await _runRebaseCommand(
+      repository,
+      [normalizedId],
+      operation: 'Rebasing current branch',
+      cancellationToken: cancellationToken,
+      environment: environment,
+    );
+  }
+
+  /// Starts an interactive rebase using the user-edited [instructions]. The
+  /// generated temporary todo file is copied into Git's sequence-editor path
+  /// and removed when the Git process completes.
+  /// 中文：使用用户编辑后的 [instructions] 启动交互式变基；临时 todo 文件会复制给 Git 并在结束后删除。
+  Future<void> interactiveRebaseOnto(
+    GitRepository repository, {
+    required String objectId,
+    required List<GitInteractiveRebaseInstruction> instructions,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final normalizedId = _requireCommitId(objectId);
+    if (instructions.isEmpty) {
+      throw ArgumentError.value(
+        instructions,
+        'instructions',
+        'At least one commit is required.',
+      );
+    }
+    final todoLines = <String>[];
+    final seen = <String>{};
+    for (final instruction in instructions) {
+      final id = _requireCommitId(instruction.objectId);
+      if (!seen.add(id)) {
+        throw ArgumentError.value(
+          instructions,
+          'instructions',
+          'Each commit may appear once.',
+        );
+      }
+      if (instruction.action == GitInteractiveRebaseAction.reword) {
+        throw UnsupportedError(
+          'Interactive rebase reword requires the in-app commit-message editor.',
+        );
+      }
+      final action = switch (instruction.action) {
+        GitInteractiveRebaseAction.pick => 'pick',
+        GitInteractiveRebaseAction.reword => throw StateError('unreachable'),
+        GitInteractiveRebaseAction.edit => 'edit',
+        GitInteractiveRebaseAction.squash => 'squash',
+        GitInteractiveRebaseAction.fixup => 'fixup',
+        GitInteractiveRebaseAction.drop => 'drop',
+      };
+      todoLines.add(
+        '$action $id ${instruction.subject.replaceAll(RegExp(r'[\r\n]+'), ' ')}',
+      );
+    }
+    final temporaryDirectory = await Directory.systemTemp.createTemp(
+      'git-desktop-rebase-',
+    );
+    final todoFile = File(path_utils.join(temporaryDirectory.path, 'todo'));
+    try {
+      await todoFile.writeAsString('${todoLines.join('\n')}\n', flush: true);
+      final escapedTodoPath = todoFile.path.replaceAll("'", "'\\''");
+      await _runRebaseCommand(
+        repository,
+        ['--interactive', normalizedId],
+        operation: 'Starting interactive rebase',
+        cancellationToken: cancellationToken,
+        environment: {'GIT_SEQUENCE_EDITOR': "/bin/cp '$escapedTodoPath'"},
+      );
+    } finally {
+      try {
+        await temporaryDirectory.delete(recursive: true);
+      } on FileSystemException {
+        // A stale temp todo has no repository effect and will be cleaned by
+        // the operating system later.
+      }
+    }
+  }
+
+  /// Moves the current branch to [objectId] using the explicitly chosen reset
+  /// mode. `hard` may discard tracked working-tree changes and requires UI
+  /// confirmation before this method is called.
+  /// 中文：按用户明确选择的模式将当前分支重置到指定提交；hard 会丢弃已跟踪改动，必须先确认。
+  Future<void> resetToCommit(
+    GitRepository repository, {
+    required String objectId,
+    required GitResetMode mode,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final normalizedId = _requireCommitId(objectId);
+    final flag = switch (mode) {
+      GitResetMode.soft => '--soft',
+      GitResetMode.mixed => '--mixed',
+      GitResetMode.hard => '--hard',
+    };
+    final result = await runner.run(
+      GitInvocation(
+        arguments: ['--no-pager', 'reset', flag, normalizedId],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 512 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Resetting current branch');
+  }
+
+  /// Creates a new inverse commit for [objectId]. Conflicts remain in the
+  /// repository for the normal Git continue/abort recovery workflow.
+  /// 中文：为指定提交创建反向提交；若发生冲突，保留 Git 的正常继续/中止恢复状态。
+  Future<void> revertCommit(
+    GitRepository repository, {
+    required String objectId,
+    int? mainlineParent,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final normalizedId = _requireCommitId(objectId);
+    if (mainlineParent != null && mainlineParent <= 0) {
+      throw ArgumentError.value(
+        mainlineParent,
+        'mainlineParent',
+        'Must be positive.',
+      );
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          'revert',
+          '--no-edit',
+          if (mainlineParent != null) ...['-m', '$mainlineParent'],
+          normalizedId,
+        ],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 1024 * 1024,
+          stderrBytes: 1024 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Reverting commit');
+  }
+
+  /// Applies [objectId] to the current branch and records its origin with
+  /// `-x`. Conflicts are deliberately left for Git's continue/abort workflow.
+  /// 中文：以 `-x` 将指定提交遴选到当前分支；冲突保留给 Git 的继续/中止流程处理。
+  Future<void> cherryPickCommit(
+    GitRepository repository, {
+    required String objectId,
+    int? mainlineParent,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final normalizedId = _requireCommitId(objectId);
+    if (mainlineParent != null && mainlineParent <= 0) {
+      throw ArgumentError.value(
+        mainlineParent,
+        'mainlineParent',
+        'Must be positive.',
+      );
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          'cherry-pick',
+          '-x',
+          if (mainlineParent != null) ...['-m', '$mainlineParent'],
+          normalizedId,
+        ],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 1024 * 1024,
+          stderrBytes: 1024 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Cherry-picking commit');
+  }
+
+  /// Continues a paused cherry-pick after conflict resolutions are staged.
+  /// 中文：在暂存冲突解决结果后继续暂停的遴选。
+  Future<void> continueCherryPick(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+  }) => _runSequencerCommand(
+    repository,
+    command: 'cherry-pick',
+    argument: '--continue',
+    operation: 'Continuing cherry-pick',
+    cancellationToken: cancellationToken,
+  );
+
+  /// Aborts a paused cherry-pick and restores its pre-pick branch state.
+  /// 中文：中止暂停的遴选并恢复遴选前的分支状态。
+  Future<void> abortCherryPick(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+  }) => _runSequencerCommand(
+    repository,
+    command: 'cherry-pick',
+    argument: '--abort',
+    operation: 'Aborting cherry-pick',
+    cancellationToken: cancellationToken,
+  );
+
+  /// Continues a paused revert after conflict resolutions are staged.
+  /// 中文：在暂存冲突解决结果后继续暂停的回滚。
+  Future<void> continueRevert(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+  }) => _runSequencerCommand(
+    repository,
+    command: 'revert',
+    argument: '--continue',
+    operation: 'Continuing revert',
+    cancellationToken: cancellationToken,
+  );
+
+  /// Aborts a paused revert and restores its pre-revert branch state.
+  /// 中文：中止暂停的回滚并恢复回滚前的分支状态。
+  Future<void> abortRevert(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+  }) => _runSequencerCommand(
+    repository,
+    command: 'revert',
+    argument: '--abort',
+    operation: 'Aborting revert',
+    cancellationToken: cancellationToken,
+  );
+
+  Future<void> _runSequencerCommand(
+    GitRepository repository, {
+    required String command,
+    required String argument,
+    required String operation,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final result = await runner.run(
+      GitInvocation(
+        arguments: ['--no-pager', command, argument],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 1024 * 1024,
+          stderrBytes: 1024 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: operation);
+  }
+
+  /// Writes one binary-safe mail patch for [objectId] to [outputPath]. The
+  /// destination is selected by the user and must not already be a directory.
+  /// 中文：为指定提交写出一个支持二进制内容的邮件补丁；目标路径由用户选择，不能是目录。
+  Future<void> createPatch(
+    GitRepository repository, {
+    required String objectId,
+    required String outputPath,
+    GitCancellationToken? cancellationToken,
+  }) => createPatches(
+    repository,
+    objectIds: [objectId],
+    outputPath: outputPath,
+    createSeparateFiles: false,
+    cancellationToken: cancellationToken,
+  );
+
+  /// Writes selected commits to one combined mail patch, or one patch per
+  /// commit below an existing output directory. Existing files are never
+  /// overwritten, so a failed or repeated export cannot destroy a patch.
+  /// 中文：把选中的提交写入一个合并邮件补丁，或写成输出目录中的独立文件；绝不覆盖已有补丁文件。
+  Future<void> createPatches(
+    GitRepository repository, {
+    required List<String> objectIds,
+    required String outputPath,
+    required bool createSeparateFiles,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final normalizedIds = objectIds
+        .map(_requireCommitId)
+        .toList(growable: false);
+    if (normalizedIds.isEmpty ||
+        normalizedIds.toSet().length != normalizedIds.length) {
+      throw ArgumentError.value(
+        objectIds,
+        'objectIds',
+        'At least one unique commit is required.',
+      );
+    }
+    final target = outputPath.trim();
+    if (target.isEmpty) {
+      throw ArgumentError.value(
+        outputPath,
+        'outputPath',
+        'An output file is required.',
+      );
+    }
+    final type = await FileSystemEntity.type(target, followLinks: false);
+    if (createSeparateFiles) {
+      if (type != FileSystemEntityType.directory) {
+        throw ArgumentError.value(
+          outputPath,
+          'outputPath',
+          'A destination directory is required for separate patch files.',
+        );
+      }
+      await _createSeparatePatches(
+        repository,
+        objectIds: normalizedIds,
+        outputDirectory: Directory(target),
+        cancellationToken: cancellationToken,
+      );
+      return;
+    }
+    if (type == FileSystemEntityType.directory ||
+        type == FileSystemEntityType.link) {
+      throw ArgumentError.value(
+        outputPath,
+        'outputPath',
+        'The patch destination must be a regular file.',
+      );
+    }
+    if (type == FileSystemEntityType.file) {
+      throw ArgumentError.value(
+        outputPath,
+        'outputPath',
+        'The patch destination already exists.',
+      );
+    }
+    final bytes = BytesBuilder(copy: false);
+    for (final objectId in normalizedIds) {
+      final patch = await _renderPatch(
+        repository,
+        objectId: objectId,
+        cancellationToken: cancellationToken,
+      );
+      bytes.add(patch);
+      if (patch.isNotEmpty && patch.last != 10) bytes.addByte(10);
+    }
+    final parent = Directory(path_utils.dirname(target));
+    if (!await parent.exists()) {
+      throw ArgumentError.value(
+        outputPath,
+        'outputPath',
+        'The patch destination directory does not exist.',
+      );
+    }
+    await _writePatchAtomically(
+      parent,
+      path_utils.basename(target),
+      bytes.takeBytes(),
+    );
+  }
+
+  Future<List<int>> _renderPatch(
+    GitRepository repository, {
+    required String objectId,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          'format-patch',
+          '--binary',
+          '--stdout',
+          '-1',
+          objectId,
+        ],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 16 * 1024 * 1024,
+          stderrBytes: 1024 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Creating patch');
+    if (result.stdoutTruncated) {
+      throw const GitException(
+        'The generated patch exceeds the supported 16 MB limit.',
+      );
+    }
+    return result.stdoutBytes;
+  }
+
+  Future<void> _createSeparatePatches(
+    GitRepository repository, {
+    required List<String> objectIds,
+    required Directory outputDirectory,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final fileNames = [
+      for (var index = 0; index < objectIds.length; index++)
+        '${(index + 1).toString().padLeft(4, '0')}-${objectIds[index].substring(0, 12)}.patch',
+    ];
+    for (final name in fileNames) {
+      if (await FileSystemEntity.type(
+            path_utils.join(outputDirectory.path, name),
+            followLinks: false,
+          ) !=
+          FileSystemEntityType.notFound) {
+        throw ArgumentError.value(
+          outputDirectory.path,
+          'outputPath',
+          'A patch file named $name already exists.',
+        );
+      }
+    }
+    final generated = <List<int>>[];
+    for (final objectId in objectIds) {
+      generated.add(
+        await _renderPatch(
+          repository,
+          objectId: objectId,
+          cancellationToken: cancellationToken,
+        ),
+      );
+    }
+    final temporaryDirectory = await outputDirectory.createTemp(
+      '.git-desktop-patches.',
+    );
+    try {
+      for (var index = 0; index < fileNames.length; index++) {
+        await File(
+          path_utils.join(temporaryDirectory.path, fileNames[index]),
+        ).writeAsBytes(generated[index], flush: true);
+      }
+      for (final name in fileNames) {
+        await _movePatchIfDestinationAbsent(
+          File(path_utils.join(temporaryDirectory.path, name)),
+          path_utils.join(outputDirectory.path, name),
+        );
+      }
+    } finally {
+      if (await temporaryDirectory.exists()) {
+        try {
+          await temporaryDirectory.delete(recursive: true);
+        } on FileSystemException {
+          // Do not mask the original export failure with cleanup noise.
+        }
+      }
+    }
+  }
+
+  Future<void> _writePatchAtomically(
+    Directory parent,
+    String fileName,
+    List<int> bytes,
+  ) async {
+    final temporaryDirectory = await parent.createTemp('.$fileName.');
+    final temporaryFile = File(
+      path_utils.join(temporaryDirectory.path, 'patch'),
+    );
+    final target = path_utils.join(parent.path, fileName);
+    try {
+      await temporaryFile.writeAsBytes(bytes, flush: true);
+      await _movePatchIfDestinationAbsent(temporaryFile, target);
+    } finally {
+      if (await temporaryFile.exists()) {
+        try {
+          await temporaryFile.delete();
+        } on FileSystemException {
+          // Do not mask the original export failure with cleanup noise.
+        }
+      }
+      if (await temporaryDirectory.exists()) {
+        try {
+          await temporaryDirectory.delete(recursive: true);
+        } on FileSystemException {
+          // Do not mask the original export failure with cleanup noise.
+        }
+      }
+    }
+  }
+
+  /// Moves one completed temporary patch after confirming that the named
+  /// destination did not exist.
+  /// 中文：在确认目标文件不存在后复制已完成的临时补丁。
+  Future<void> _movePatchIfDestinationAbsent(
+    File source,
+    String targetPath,
+  ) async {
+    if (await FileSystemEntity.type(targetPath, followLinks: false) !=
+        FileSystemEntityType.notFound) {
+      throw ArgumentError.value(
+        targetPath,
+        'outputPath',
+        'The patch destination already exists.',
+      );
+    }
+    await source.rename(targetPath);
+  }
+
+  /// Applies a user-selected patch to the work tree, or checks whether it can
+  /// apply when [checkOnly] is true. Git remains the source of conflict data.
+  /// 中文：将用户选择的补丁应用到工作区；[checkOnly] 为真时仅检查是否可应用，冲突状态仍由 Git 提供。
+  Future<void> applyPatch(
+    GitRepository repository, {
+    required String patchPath,
+    int? stripLevel,
+    String basePath = '',
+    bool checkOnly = false,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final normalizedPath = patchPath.trim();
+    if (normalizedPath.isEmpty || (stripLevel != null && stripLevel < 0)) {
+      throw ArgumentError(
+        'A patch path and non-negative strip level are required.',
+      );
+    }
+    final type = await FileSystemEntity.type(
+      normalizedPath,
+      followLinks: false,
+    );
+    if (type != FileSystemEntityType.file) {
+      throw ArgumentError.value(
+        patchPath,
+        'patchPath',
+        'The patch must be a regular file.',
+      );
+    }
+    final normalizedBasePath = basePath.trim();
+    if (normalizedBasePath.startsWith('-') ||
+        normalizedBasePath.contains('\u0000')) {
+      throw ArgumentError.value(
+        basePath,
+        'basePath',
+        'The base path is invalid.',
+      );
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          'apply',
+          if (checkOnly) '--check',
+          if (stripLevel != null) '-p$stripLevel',
+          if (normalizedBasePath.isNotEmpty) '--directory=$normalizedBasePath',
+          '--',
+          normalizedPath,
+        ],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 1024 * 1024,
+          stderrBytes: 1024 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(
+      operation: checkOnly ? 'Checking patch' : 'Applying patch',
+    );
+  }
+
   Future<void> _runRebaseCommand(
     GitRepository repository,
     List<String> commandArguments, {
@@ -1577,6 +2148,18 @@ final class GitRepositoryWriter {
       );
     }
     return path.display;
+  }
+
+  String _requireCommitId(String value) {
+    final normalized = value.trim();
+    if (!RegExp(r'^[0-9a-fA-F]{7,64}$').hasMatch(normalized)) {
+      throw ArgumentError.value(
+        value,
+        'objectId',
+        'A valid commit id is required.',
+      );
+    }
+    return normalized;
   }
 }
 

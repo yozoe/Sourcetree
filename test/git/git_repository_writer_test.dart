@@ -1377,6 +1377,305 @@ void main() {
       throwsA(isA<GitCancelledException>()),
     );
   });
+
+  test('resets the checked-out branch to a selected commit', () async {
+    await fixture.writeFile('README.md', '# One\n');
+    final first = await fixture.commit('First');
+    await fixture.writeFile('README.md', '# Two\n');
+    await fixture.commit('Second');
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await writer.resetToCommit(
+      repository,
+      objectId: first,
+      mode: GitResetMode.mixed,
+    );
+
+    expect(
+      (await fixture.runGit(['rev-parse', 'HEAD'])).stdout.toString().trim(),
+      first,
+    );
+    expect((await reader.readStatus(repository)).entries, isNotEmpty);
+  });
+
+  test('reverts and cherry-picks selected commits', () async {
+    await fixture.writeFile('README.md', '# Base\n');
+    await fixture.commit('Base');
+    await fixture.writeFile('README.md', '# Changed\n');
+    final change = await fixture.commit('Change README');
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await writer.revertCommit(repository, objectId: change);
+    expect(
+      (await reader.readRecentHistory(repository)).first.subject,
+      'Revert "Change README"',
+    );
+
+    await fixture.runGit(['switch', '-c', 'feature/cherry']);
+    await fixture.writeFile('feature.txt', 'cherry\n');
+    final featureCommit = await fixture.commit('Feature cherry');
+    await fixture.runGit(['switch', 'main']);
+    await writer.cherryPickCommit(repository, objectId: featureCommit);
+    expect(
+      (await reader.readRecentHistory(repository)).first.subject,
+      'Feature cherry',
+    );
+  });
+
+  test('exports a selected commit as a binary-safe patch', () async {
+    await fixture.writeFile('README.md', '# Patch\n');
+    final commit = await fixture.commit('Patch subject');
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+    final patchPath =
+        '${fixture.workingDirectory.path}${Platform.pathSeparator}change.patch';
+
+    await writer.createPatch(
+      repository,
+      objectId: commit,
+      outputPath: patchPath,
+    );
+
+    expect(
+      await File(patchPath).readAsString(),
+      contains('Subject: [PATCH] Patch subject'),
+    );
+  });
+
+  test(
+    'checks and applies an exported patch with the default strip level',
+    () async {
+      await fixture.writeFile('README.md', '# Base\n');
+      final base = await fixture.commit('Base');
+      await fixture.writeFile('README.md', '# Changed\n');
+      final change = await fixture.commit('Change README');
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+      final patchPath =
+          '${fixture.workingDirectory.path}${Platform.pathSeparator}change.patch';
+      await writer.createPatch(
+        repository,
+        objectId: change,
+        outputPath: patchPath,
+      );
+      await writer.resetToCommit(
+        repository,
+        objectId: base,
+        mode: GitResetMode.hard,
+      );
+
+      await writer.applyPatch(
+        repository,
+        patchPath: patchPath,
+        checkOnly: true,
+      );
+      await writer.applyPatch(repository, patchPath: patchPath);
+
+      expect(
+        await File(
+          '${fixture.workingDirectory.path}${Platform.pathSeparator}README.md',
+        ).readAsString(),
+        '# Changed\n',
+      );
+    },
+  );
+
+  test(
+    'applies a path-without-prefix patch with an explicit strip level of 0',
+    () async {
+      await fixture.writeFile('README.md', 'before\n');
+      await fixture.commit('Base');
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+      final patchPath =
+          '${fixture.workingDirectory.path}${Platform.pathSeparator}plain.diff';
+      await File(patchPath).writeAsString('''diff --git README.md README.md
+index 0000000..0000000 100644
+--- README.md
++++ README.md
+@@ -1 +1 @@
+-before
++after
+''');
+
+      await writer.applyPatch(
+        repository,
+        patchPath: patchPath,
+        stripLevel: 0,
+        checkOnly: true,
+      );
+      await writer.applyPatch(repository, patchPath: patchPath, stripLevel: 0);
+
+      expect(
+        await File(
+          '${fixture.workingDirectory.path}${Platform.pathSeparator}README.md',
+        ).readAsString(),
+        'after\n',
+      );
+    },
+  );
+
+  test(
+    'exports multiple commits as separate patches without overwriting',
+    () async {
+      await fixture.writeFile('README.md', '# Base\n');
+      await fixture.commit('Base');
+      await fixture.writeFile('first.txt', 'first\n');
+      final first = await fixture.commit('First');
+      await fixture.writeFile('second.txt', 'second\n');
+      final second = await fixture.commit('Second');
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+      final outputDirectory = Directory(
+        '${fixture.workingDirectory.path}${Platform.pathSeparator}patches',
+      );
+      await outputDirectory.create();
+
+      await writer.createPatches(
+        repository,
+        objectIds: [first, second],
+        outputPath: outputDirectory.path,
+        createSeparateFiles: true,
+      );
+
+      final patches = await outputDirectory
+          .list()
+          .where((entity) => entity is File)
+          .cast<File>()
+          .toList();
+      expect(patches, hasLength(2));
+      final firstPatch = patches.singleWhere(
+        (patch) =>
+            patch.path.split(Platform.pathSeparator).last.startsWith('0001-'),
+      );
+      final secondPatch = patches.singleWhere(
+        (patch) =>
+            patch.path.split(Platform.pathSeparator).last.startsWith('0002-'),
+      );
+      expect(
+        await firstPatch.readAsString(),
+        contains('Subject: [PATCH] First'),
+      );
+      expect(
+        await secondPatch.readAsString(),
+        contains('Subject: [PATCH] Second'),
+      );
+      await expectLater(
+        writer.createPatches(
+          repository,
+          objectIds: [first, second],
+          outputPath: outputDirectory.path,
+          createSeparateFiles: true,
+        ),
+        throwsArgumentError,
+      );
+    },
+  );
+
+  test('uses the edited interactive rebase todo order and actions', () async {
+    await fixture.writeFile('README.md', '# Base\n');
+    final base = await fixture.commit('Base');
+    await fixture.runGit(['branch', 'feature/rebase']);
+    await fixture.writeFile('main.txt', 'main\n');
+    final upstream = await fixture.commit('Main change');
+    await fixture.runGit(['switch', 'feature/rebase']);
+    await fixture.writeFile('one.txt', 'one\n');
+    final dropped = await fixture.commit('Drop this');
+    await fixture.writeFile('two.txt', 'two\n');
+    final kept = await fixture.commit('Keep this');
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await writer.interactiveRebaseOnto(
+      repository,
+      objectId: upstream,
+      instructions: [
+        GitInteractiveRebaseInstruction(
+          objectId: dropped,
+          subject: 'Drop this',
+          action: GitInteractiveRebaseAction.drop,
+        ),
+        GitInteractiveRebaseInstruction(objectId: kept, subject: 'Keep this'),
+      ],
+    );
+
+    expect(
+      (await fixture.runGit([
+        'rev-list',
+        '--parents',
+        '-1',
+        'HEAD',
+      ])).stdout.toString(),
+      contains(upstream),
+    );
+    expect(
+      await File('${fixture.workingDirectory.path}/one.txt').exists(),
+      isFalse,
+    );
+    expect(
+      await File('${fixture.workingDirectory.path}/two.txt').exists(),
+      isTrue,
+    );
+    expect(base, isNot(upstream));
+  });
+
+  test(
+    'uses a selected mainline parent for merge reverts and cherry-picks',
+    () async {
+      await fixture.writeFile('README.md', '# Base\n');
+      final base = await fixture.commit('Base');
+      await fixture.runGit(['branch', 'feature/merge-parent']);
+      await fixture.writeFile('main.txt', 'main\n');
+      await fixture.commit('Main side');
+      await fixture.runGit(['switch', 'feature/merge-parent']);
+      await fixture.writeFile('feature.txt', 'feature\n');
+      await fixture.commit('Feature side');
+      await fixture.runGit(['switch', 'main']);
+      await fixture.runGit([
+        'merge',
+        '--no-ff',
+        '--no-edit',
+        'feature/merge-parent',
+      ]);
+      final mergeCommit = (await fixture.runGit([
+        'rev-parse',
+        'HEAD',
+      ])).stdout.toString().trim();
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+
+      await writer.revertCommit(
+        repository,
+        objectId: mergeCommit,
+        mainlineParent: 1,
+      );
+      expect(
+        await File('${fixture.workingDirectory.path}/feature.txt').exists(),
+        isFalse,
+      );
+
+      await fixture.runGit(['switch', '-c', 'replay/merge', base]);
+      await writer.cherryPickCommit(
+        repository,
+        objectId: mergeCommit,
+        mainlineParent: 1,
+      );
+      expect(
+        await File('${fixture.workingDirectory.path}/feature.txt').exists(),
+        isTrue,
+      );
+    },
+  );
 }
 
 Future<GitRepository> _createContentConflict(

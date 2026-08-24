@@ -189,6 +189,11 @@ final class WorkspaceFlutterWindowController: NSWindowController,
     (window as? MainFlutterWindow)?.bringToFront()
   }
 
+  /// Delivers a native menu action to this workspace's Flutter Engine.
+  func performWorkspaceAction(_ action: String) {
+    windowChannel.invokeMethod("workspaceAction", arguments: ["action": action])
+  }
+
   func requestClose() {
     prepareForShutdown { [weak self] in
       guard let self else {
@@ -429,6 +434,25 @@ final class WindowCoordinator {
     } catch {
       completion(error)
     }
+  }
+
+  /// Sends a menu action only to the workspace that currently owns keyboard
+  /// focus. A repository-library window must never mutate a background repo.
+  func performWorkspaceAction(_ action: String) {
+    currentWorkspaceController?.performWorkspaceAction(action)
+  }
+
+  /// Whether the native Action menu can safely address the key workspace.
+  var canPerformWorkspaceAction: Bool {
+    currentWorkspaceController != nil
+  }
+
+  private var currentWorkspaceController: WorkspaceFlutterWindowController? {
+    guard let keyWindow = NSApp.keyWindow as? MainFlutterWindow,
+          keyWindow.role == .workspace else {
+      return nil
+    }
+    return workspaceControllers().first { $0.window === keyWindow }
   }
 
   func registerRepository(
@@ -721,9 +745,31 @@ class AppDelegate: FlutterAppDelegate {
     windowCoordinator.mergeAllWorkspaceWindows()
   }
 
+  @IBAction func createPatchFromMenu(_ sender: Any?) {
+    windowCoordinator.performWorkspaceAction("createPatch")
+  }
+
+  @IBAction func applyPatchFromMenu(_ sender: Any?) {
+    windowCoordinator.performWorkspaceAction("applyPatch")
+  }
+
+  @IBAction func repositoryDetailsFromMenu(_ sender: Any?) {
+    windowCoordinator.performWorkspaceAction("repositoryDetails")
+  }
+
+  @IBAction func repositoryFeaturePendingFromMenu(_ sender: Any?) {
+    windowCoordinator.performWorkspaceAction("repositoryFeaturePending")
+  }
+
   func validateMenuItem(_ menuItem: NSMenuItem) -> Bool {
     if menuItem.action == #selector(mergeAllRepositoryWindows(_:)) {
       return windowCoordinator.canMergeAllWorkspaceWindows
+    }
+    if menuItem.action == #selector(createPatchFromMenu(_:)) ||
+       menuItem.action == #selector(applyPatchFromMenu(_:)) ||
+       menuItem.action == #selector(repositoryDetailsFromMenu(_:)) ||
+       menuItem.action == #selector(repositoryFeaturePendingFromMenu(_:)) {
+      return windowCoordinator.canPerformWorkspaceAction
     }
     return true
   }

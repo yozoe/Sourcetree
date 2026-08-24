@@ -18,6 +18,7 @@ final class DesktopWindowBridge {
   _repositoryDirectoriesDroppedHandler;
   static void Function(bool isActive)? _repositoryDirectoryDragStateHandler;
   static FutureOr<void> Function()? _prepareToCloseHandler;
+  static FutureOr<void> Function(String action)? _workspaceActionHandler;
 
   /// Opens a dedicated repository workspace window.
   ///
@@ -70,13 +71,23 @@ final class DesktopWindowBridge {
     _updateMethodCallHandler();
   }
 
+  /// Registers menu actions delivered by the native macOS workspace menu.
+  /// 中文：注册由原生 macOS 工作区菜单投递的动作。
+  static void setWorkspaceActionHandler(
+    FutureOr<void> Function(String action)? handler,
+  ) {
+    _workspaceActionHandler = handler;
+    _updateMethodCallHandler();
+  }
+
   /// 中文：根据当前回调集合安装或移除原生调用处理器。
   /// English: Installs or removes the native call handler for active callbacks.
   static void _updateMethodCallHandler() {
     if (_repositoryOpenedHandler == null &&
         _repositoryDirectoriesDroppedHandler == null &&
         _repositoryDirectoryDragStateHandler == null &&
-        _prepareToCloseHandler == null) {
+        _prepareToCloseHandler == null &&
+        _workspaceActionHandler == null) {
       _channel.setMethodCallHandler(null);
       return;
     }
@@ -103,6 +114,15 @@ final class DesktopWindowBridge {
       case 'prepareToClose':
         final handler = _prepareToCloseHandler;
         if (handler != null) await handler();
+        return;
+      case 'workspaceAction':
+        final action = call.arguments is Map
+            ? (call.arguments as Map)['action'] as String?
+            : null;
+        final handler = _workspaceActionHandler;
+        if (handler != null && action != null && action.isNotEmpty) {
+          await handler(action);
+        }
         return;
       case 'repositoryDirectoriesDropped':
         final arguments = call.arguments;
