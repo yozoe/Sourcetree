@@ -41,6 +41,16 @@ final class DesktopWindowBridge {
     });
   }
 
+  /// 中文：报告启动恢复的仓库已无法由 Git 验证，以便原生宿主清除恢复记录并关闭该窗口。
+  /// English: Reports that a restored repository can no longer be verified so
+  /// the native host removes its restore record and closes that workspace.
+  static Future<void> repositoryRestoreFailed(String repositoryPath) {
+    return _channel.invokeMethod<void>(
+      'repositoryRestoreFailed',
+      <String, Object>{'repositoryPath': repositoryPath},
+    );
+  }
+
   /// Receives repositories opened by independent workspace Engines.
   static void setRepositoryOpenedHandler(
     FutureOr<void> Function(String repositoryPath)? handler,

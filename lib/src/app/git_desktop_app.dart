@@ -22,6 +22,7 @@ class GitDesktopApp extends StatefulWidget {
     this.isWorkspaceWindow = false,
     this.initialRepositoryPath,
     this.initialWorkspaceAction,
+    this.restoresPreviouslyOpenWorkspace = false,
     this.initialThemePreferences = GitDesktopThemePreferences.defaults,
     this.themePreferencesStore,
   });
@@ -34,6 +35,9 @@ class GitDesktopApp extends StatefulWidget {
 
   /// Optional action requested by the repository library for a new workspace.
   final String? initialWorkspaceAction;
+
+  /// Whether this workspace was reopened automatically from the last launch.
+  final bool restoresPreviouslyOpenWorkspace;
   final GitDesktopThemePreferences initialThemePreferences;
   final GitDesktopThemePreferencesStore? themePreferencesStore;
 
@@ -124,6 +128,7 @@ class _GitDesktopAppState extends State<GitDesktopApp> {
               ),
               initialRepositoryPath: _initialRepositoryPath,
               initialAction: _initialWorkspaceAction,
+              isRestoredWorkspace: widget.restoresPreviouslyOpenWorkspace,
               themeControl: themeControl,
             )
           : RepositoryLibraryWindow(themeControl: themeControl),
@@ -329,6 +334,7 @@ class RepositoryWorkspaceScreen extends ConsumerStatefulWidget {
     super.key,
     this.initialRepositoryPath,
     this.initialAction,
+    this.isRestoredWorkspace = false,
     this.themeControl,
   });
 
@@ -337,6 +343,9 @@ class RepositoryWorkspaceScreen extends ConsumerStatefulWidget {
 
   /// Action to start after this independent workspace window is ready.
   final String? initialAction;
+
+  /// Whether an initial repository-open failure must discard a saved window.
+  final bool isRestoredWorkspace;
   final Widget? themeControl;
 
   /// 中文：创建关联的状态对象。
@@ -353,9 +362,10 @@ class _RepositoryWorkspaceScreenState
   bool _isSequencerPromptVisible = false;
   bool _hasHandledInitialAction = false;
 
-  /// 中文：在窗口首次绘制后执行首页请求的仓库操作。
+  /// 中文：在窗口首次绘制后执行首页请求的仓库操作；恢复窗口打开失败时清除其原生恢复记录。
   /// English: Starts the repository action requested by the library after the
-  /// workspace window has drawn for the first time.
+  /// workspace window has drawn; removes the native restore record when a
+  /// restored workspace fails to open its repository.
   @override
   void initState() {
     super.initState();
@@ -416,6 +426,16 @@ class _RepositoryWorkspaceScreenState
     if (repositoryPath != null && repositoryPath.isNotEmpty) {
       _hasHandledInitialAction = true;
       await controller.openRepository(repositoryPath);
+      if (!mounted) return;
+      if (widget.isRestoredWorkspace &&
+          ref.read(repositorySessionProvider).phase !=
+              RepositorySessionPhase.ready) {
+        unawaited(
+          DesktopWindowBridge.repositoryRestoreFailed(
+            repositoryPath,
+          ).catchError((_) {}),
+        );
+      }
       return;
     }
     final RepositoryAction? action = _repositoryActionFromName(

@@ -18,14 +18,20 @@ Future<void> main(List<String> arguments) async {
       '--git-desktop-repository=',
     ),
     initialWorkspaceAction: _argumentValue(arguments, '--git-desktop-action='),
+    restoresPreviouslyOpenWorkspace: arguments.contains(
+      '--git-desktop-restored-workspace',
+    ),
   );
 }
 
-/// Builds one Flutter Engine UI for either the library or a workspace window.
+/// 中文：为首页或工作区窗口创建一个 Flutter Engine 界面，并传入是否属于上次启动恢复的工作区。
+/// English: Builds one Flutter Engine UI for either the library or a workspace
+/// window and carries whether that workspace was restored from the last launch.
 Future<void> _runGitDesktop({
   required bool isWorkspaceWindow,
   String? initialRepositoryPath,
   String? initialWorkspaceAction,
+  required bool restoresPreviouslyOpenWorkspace,
 }) async {
   WidgetsFlutterBinding.ensureInitialized();
   final container = ProviderContainer();
@@ -42,6 +48,7 @@ Future<void> _runGitDesktop({
         isWorkspaceWindow: isWorkspaceWindow,
         initialRepositoryPath: initialRepositoryPath,
         initialWorkspaceAction: initialWorkspaceAction,
+        restoresPreviouslyOpenWorkspace: restoresPreviouslyOpenWorkspace,
         initialThemePreferences: themePreferences,
         themePreferencesStore: themeStore,
       ),

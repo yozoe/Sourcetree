@@ -15,7 +15,8 @@ func gitDesktopCanonicalRepositoryPath(_ path: String?) -> String? {
 
 func gitDesktopWorkspaceArguments(
   repositoryPath: String?,
-  initialAction: String?
+  initialAction: String?,
+  restoresPreviouslyOpenWorkspace: Bool = false
 ) -> [String] {
   var arguments = ["--git-desktop-workspace"]
   if let repositoryPath {
@@ -23,6 +24,9 @@ func gitDesktopWorkspaceArguments(
   }
   if let initialAction, !initialAction.isEmpty {
     arguments.append("--git-desktop-action=\(initialAction)")
+  }
+  if restoresPreviouslyOpenWorkspace {
+    arguments.append("--git-desktop-restored-workspace")
   }
   return arguments
 }
@@ -95,6 +99,74 @@ final class GitDesktopWindowFocusHistory<Host: AnyObject> {
   }
 }
 
+/// Captures the restorable repository workspaces and their native tab state.
+struct GitDesktopWorkspaceRestoreSnapshot {
+  let paths: [String]
+  let restoresMergedWorkspaces: Bool
+}
+
+/// Persists only repository workspace paths that were successfully opened.
+///
+/// The store deliberately lives on the native side because it describes
+/// window ownership, rather than Git session state. Closing one workspace
+/// removes it from the next-launch restore list; application termination keeps
+/// the current list intact for the next process.
+final class GitDesktopWorkspaceRestoreStore {
+  private static let pathsKey = "gitDesktopOpenWorkspacePaths"
+  private static let mergedWorkspacesKey = "gitDesktopRestoresMergedWorkspaces"
+
+  private let defaults: UserDefaults
+
+  init(defaults: UserDefaults = .standard) {
+    self.defaults = defaults
+  }
+
+  var snapshot: GitDesktopWorkspaceRestoreSnapshot {
+    guard let rawPaths = defaults.array(forKey: Self.pathsKey) as? [String]
+    else {
+      return GitDesktopWorkspaceRestoreSnapshot(
+        paths: [],
+        restoresMergedWorkspaces: false
+      )
+    }
+    let paths = normalizedPaths(rawPaths)
+    return GitDesktopWorkspaceRestoreSnapshot(
+      paths: paths,
+      restoresMergedWorkspaces:
+        paths.count > 1 && defaults.bool(forKey: Self.mergedWorkspacesKey)
+    )
+  }
+
+  var paths: [String] {
+    snapshot.paths
+  }
+
+  func save(
+    paths: [String],
+    restoresMergedWorkspaces: Bool = false
+  ) {
+    let normalized = normalizedPaths(paths)
+    defaults.set(normalized, forKey: Self.pathsKey)
+    defaults.set(
+      normalized.count > 1 && restoresMergedWorkspaces,
+      forKey: Self.mergedWorkspacesKey
+    )
+  }
+
+  private func normalizedPaths(_ candidates: [String]) -> [String] {
+    var result: [String] = []
+    var seen: Set<String> = []
+    for candidate in candidates {
+      guard let path = gitDesktopCanonicalRepositoryPath(candidate),
+            seen.insert(path).inserted else {
+        continue
+      }
+      result.append(path)
+    }
+    return result
+  }
+}
+
 private enum GitDesktopWindowHostError: LocalizedError {
   case engineStartFailed
   case invalidRepositoryRegistration
@@ -125,12 +197,14 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   init(
     repositoryPath: String?,
     initialAction: String?,
+    restoresPreviouslyOpenWorkspace: Bool = false,
     coordinator: WindowCoordinator
   ) throws {
     let project = FlutterDartProject()
     project.dartEntrypointArguments = gitDesktopWorkspaceArguments(
       repositoryPath: repositoryPath,
-      initialAction: initialAction
+      initialAction: initialAction,
+      restoresPreviouslyOpenWorkspace: restoresPreviouslyOpenWorkspace
     )
 
     let engine = FlutterEngine(
@@ -272,6 +346,25 @@ final class WorkspaceFlutterWindowController: NSWindowController,
           for: self
         )
         result(nil)
+      case "repositoryRestoreFailed":
+        guard let canonicalPath = gitDesktopCanonicalRepositoryPath(
+          repositoryPath
+        ) else {
+          result(
+            FlutterError(
+              code: "invalid_repository_registration",
+              message: GitDesktopWindowHostError
+                .invalidRepositoryRegistration.localizedDescription,
+              details: nil
+            )
+          )
+          return
+        }
+        coordinator.discardFailedRestoredRepository(
+          canonicalPath,
+          for: self
+        )
+        result(nil)
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -337,10 +430,19 @@ final class WindowCoordinator {
   private let workspaceHistory =
     GitDesktopWorkspaceHistory<WorkspaceFlutterWindowController>()
   private let windowFocusHistory = GitDesktopWindowFocusHistory<MainFlutterWindow>()
+  private let workspaceRestoreStore: GitDesktopWorkspaceRestoreStore
   private var unregisteredWorkspaces: [
     ObjectIdentifier: WorkspaceFlutterWindowController
   ] = [:]
+  private var didRequestWorkspaceRestoration = false
   private var isTerminating = false
+
+  init(
+    workspaceRestoreStore: GitDesktopWorkspaceRestoreStore =
+      GitDesktopWorkspaceRestoreStore()
+  ) {
+    self.workspaceRestoreStore = workspaceRestoreStore
+  }
 
   func attachRepositoryLibrary(
     window: MainFlutterWindow,
@@ -401,11 +503,13 @@ final class WindowCoordinator {
       }
     }
     repositoryLibraryChannel = channel
+    restoreOpenWorkspacesAfterLaunch()
   }
 
   func openWorkspace(
     repositoryPath: String?,
     initialAction: String?,
+    restoresPreviouslyOpenWorkspace: Bool = false,
     completion: @escaping (Error?) -> Void
   ) {
     let canonicalPath = gitDesktopCanonicalRepositoryPath(repositoryPath)
@@ -421,6 +525,7 @@ final class WindowCoordinator {
       let controller = try WorkspaceFlutterWindowController(
         repositoryPath: canonicalPath,
         initialAction: initialAction,
+        restoresPreviouslyOpenWorkspace: restoresPreviouslyOpenWorkspace,
         coordinator: self
       )
       if let canonicalPath {
@@ -476,7 +581,25 @@ final class WindowCoordinator {
     controller.repositoryPath = repositoryPath
     controller.window?.title = "\(URL(fileURLWithPath: repositoryPath).lastPathComponent) (Git)"
     workspaceIndex.register(controller, for: repositoryPath)
+    persistOpenWorkspaces()
     notifyRepositoryLibrary(repositoryPath: repositoryPath)
+  }
+
+  /// Removes a restored path that Flutter could no longer verify as a Git
+  /// repository, then closes only the failed workspace that reported it.
+  func discardFailedRestoredRepository(
+    _ repositoryPath: String,
+    for controller: WorkspaceFlutterWindowController
+  ) {
+    guard workspaceIndex.host(for: repositoryPath) === controller else {
+      return
+    }
+    workspaceIndex.remove(controller)
+    workspaceHistory.remove(controller)
+    persistOpenWorkspaces()
+    DispatchQueue.main.async {
+      controller.requestClose()
+    }
   }
 
   /// Merges all live repository workspaces into the current native tab group.
@@ -499,6 +622,7 @@ final class WindowCoordinator {
       }
     }
     primary.bringToFront()
+    persistOpenWorkspaces()
   }
 
   /// Returns whether at least two live workspaces still need to be merged.
@@ -519,6 +643,15 @@ final class WindowCoordinator {
     workspaceIndex.remove(controller)
     unregisteredWorkspaces.removeValue(forKey: ObjectIdentifier(controller))
     workspaceHistory.remove(controller)
+    if !isTerminating {
+      persistOpenWorkspaces()
+    }
+  }
+
+  /// Prevents normal window teardown during app termination from clearing the
+  /// workspace list that must be restored by the next process.
+  func beginApplicationTermination() {
+    isTerminating = true
   }
 
   /// Collects every live workspace once, including workspaces not yet bound to
@@ -649,6 +782,77 @@ final class WindowCoordinator {
     unregisteredWorkspaces.removeAll()
     workspaceHistory.removeAll()
     repositoryLibraryChannel?.setMethodCallHandler(nil)
+  }
+
+  /// Reopens the workspaces that were still open at the previous app exit.
+  ///
+  /// This runs only after the repository-library Flutter Engine is attached,
+  /// so restored workspaces can report their verified repository state back to
+  /// the library through the existing channel. Paths that no longer name a
+  /// readable directory are pruned before any window is created.
+  private func restoreOpenWorkspacesAfterLaunch() {
+    guard !didRequestWorkspaceRestoration else {
+      return
+    }
+    didRequestWorkspaceRestoration = true
+    DispatchQueue.main.async { [weak self] in
+      guard let self, !self.isTerminating else {
+        return
+      }
+      let savedSnapshot = self.workspaceRestoreStore.snapshot
+      let restorablePaths = savedSnapshot.paths.filter {
+        self.isReadableDirectory(at: $0)
+      }
+      let restoresMergedWorkspaces =
+        savedSnapshot.restoresMergedWorkspaces && restorablePaths.count > 1
+      self.workspaceRestoreStore.save(
+        paths: restorablePaths,
+        restoresMergedWorkspaces: restoresMergedWorkspaces
+      )
+      for repositoryPath in restorablePaths {
+        self.openWorkspace(
+          repositoryPath: repositoryPath,
+          initialAction: nil,
+          restoresPreviouslyOpenWorkspace: true
+        ) { _ in }
+      }
+      if restoresMergedWorkspaces {
+        self.mergeAllWorkspaceWindows()
+      }
+    }
+  }
+
+  /// Returns whether [path] still points at a directory the process can read.
+  private func isReadableDirectory(at path: String) -> Bool {
+    var isDirectory: ObjCBool = false
+    return FileManager.default.fileExists(
+      atPath: path,
+      isDirectory: &isDirectory
+    ) && isDirectory.boolValue && FileManager.default.isReadableFile(atPath: path)
+  }
+
+  /// Saves the live, registered workspaces in their existing restore order.
+  /// Empty/new workspaces are intentionally excluded until Flutter confirms a
+  /// repository has opened through `repositoryOpened`.
+  private func persistOpenWorkspaces() {
+    workspaceRestoreStore.save(
+      paths: workspaceIndex.allHosts.compactMap(\.repositoryPath),
+      restoresMergedWorkspaces: areAllWorkspaceWindowsMerged
+    )
+  }
+
+  /// Whether every restorable repository workspace belongs to one native tab group.
+  private var areAllWorkspaceWindowsMerged: Bool {
+    // Empty workspaces are intentionally not persisted, so they must not make
+    // a persisted group of repository workspaces look unmerged.
+    let windows = workspaceIndex.allHosts.compactMap(\.window)
+    guard windows.count > 1, let primary = windows.first else {
+      return false
+    }
+    let tabGroup = primary.tabbedWindows ?? [primary]
+    return windows.allSatisfy { candidate in
+      tabGroup.contains { tab in tab === candidate }
+    }
   }
 
   private func prepareRepositoryLibrary(
@@ -812,6 +1016,7 @@ class AppDelegate: FlutterAppDelegate {
     }
     if !isTerminationPreparationRunning {
       isTerminationPreparationRunning = true
+      windowCoordinator.beginApplicationTermination()
       windowCoordinator.prepareForApplicationTermination { [weak self] in
         guard let self else {
           sender.reply(toApplicationShouldTerminate: true)

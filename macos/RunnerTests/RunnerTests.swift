@@ -20,6 +20,18 @@ class RunnerTests: XCTestCase {
     )
     XCTAssertEqual(
       gitDesktopWorkspaceArguments(
+        repositoryPath: "/tmp/example",
+        initialAction: nil,
+        restoresPreviouslyOpenWorkspace: true
+      ),
+      [
+        "--git-desktop-workspace",
+        "--git-desktop-repository=/tmp/example",
+        "--git-desktop-restored-workspace",
+      ]
+    )
+    XCTAssertEqual(
+      gitDesktopWorkspaceArguments(
         repositoryPath: nil,
         initialAction: nil
       ),
@@ -126,6 +138,27 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue(history.frontmost === library)
     history.markFrontmost(workspace)
     XCTAssertTrue(history.frontmost === workspace)
+  }
+
+  func testWorkspaceRestoreStoreKeepsCanonicalUniquePaths() {
+    let suiteName = "git-desktop-workspace-restore-test-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer {
+      defaults.removePersistentDomain(forName: suiteName)
+    }
+    let store = GitDesktopWorkspaceRestoreStore(defaults: defaults)
+
+    store.save(
+      paths: ["/tmp/example", "/tmp/example/", "", "/tmp/other"],
+      restoresMergedWorkspaces: true
+    )
+
+    XCTAssertEqual(store.paths, ["/tmp/example", "/tmp/other"])
+    XCTAssertTrue(store.snapshot.restoresMergedWorkspaces)
+
+    store.save(paths: ["/tmp/example"], restoresMergedWorkspaces: true)
+
+    XCTAssertFalse(store.snapshot.restoresMergedWorkspaces)
   }
 
   func testRepositoryWindowShortcutRecognition() throws {
