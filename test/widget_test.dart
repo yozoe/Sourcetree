@@ -138,7 +138,9 @@ void main() {
     expect(store.saved.last.preset, YeknomColorPreset.obsidian);
   });
 
-  testWidgets('groups, filters and selects local repositories', (tester) async {
+  testWidgets('groups, filters and opens local repositories on double-click', (
+    tester,
+  ) async {
     String? selectedPath;
     List<String>? reorderedPaths;
     await tester.pumpWidget(
@@ -178,9 +180,19 @@ void main() {
         const ValueKey<String>('repository-library-tile:/work/alpha/web'),
       ),
     );
+    await tester.pump(const Duration(milliseconds: 350));
+    expect(selectedPath, isNull);
+
+    final tile = find.byKey(
+      const ValueKey<String>('repository-library-tile:/work/alpha/web'),
+    );
+    await tester.tap(tile);
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(tile);
     await tester.pump();
     expect(selectedPath, '/work/alpha/web');
     expect(reorderedPaths, isNull);
+    await tester.pumpAndSettle();
   });
 
   test('uses icon.png at the repository root as the custom icon path', () {

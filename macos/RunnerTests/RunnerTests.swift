@@ -12,6 +12,27 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(gitDesktopDockIconFrame(for: bounds), bounds)
   }
 
+  func testStopTrackingMenuRequiresKeyWorkspaceAndValidatedSelection() {
+    XCTAssertFalse(
+      gitDesktopCanPerformStopTrackingMenuAction(
+        hasKeyWorkspace: false,
+        hasValidatedTrackedSelection: true
+      )
+    )
+    XCTAssertFalse(
+      gitDesktopCanPerformStopTrackingMenuAction(
+        hasKeyWorkspace: true,
+        hasValidatedTrackedSelection: false
+      )
+    )
+    XCTAssertTrue(
+      gitDesktopCanPerformStopTrackingMenuAction(
+        hasKeyWorkspace: true,
+        hasValidatedTrackedSelection: true
+      )
+    )
+  }
+
   func testWorkspaceArgumentsIdentifyTheEngineAndInitialRepository() {
     XCTAssertEqual(
       gitDesktopWorkspaceArguments(
@@ -160,6 +181,43 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(
       strip.tabButtons[0].closeButton.toolTip,
       "关闭 Alpha (Git)"
+    )
+  }
+
+  func testWorkspaceTabDropIndexAndMovePreserveExpectedOrder() {
+    XCTAssertEqual(
+      gitDesktopWorkspaceTabDropIndex(
+        locationX: 295,
+        stripWidth: 300,
+        tabCount: 3,
+        sourceIndex: 0
+      ),
+      2
+    )
+    XCTAssertEqual(
+      gitDesktopWorkspaceTabDropIndex(
+        locationX: 5,
+        stripWidth: 300,
+        tabCount: 3,
+        sourceIndex: 2
+      ),
+      0
+    )
+    XCTAssertEqual(
+      gitDesktopMovingItem(
+        in: ["Alpha", "Beta", "Gamma"],
+        from: 0,
+        to: 2
+      ),
+      ["Beta", "Gamma", "Alpha"]
+    )
+    XCTAssertEqual(
+      gitDesktopMovingItem(
+        in: ["Alpha", "Beta", "Gamma"],
+        from: 2,
+        to: 0
+      ),
+      ["Gamma", "Alpha", "Beta"]
     )
   }
 
@@ -315,6 +373,32 @@ class RunnerTests: XCTestCase {
     store.save(paths: ["/tmp/example"], restoresMergedWorkspaces: true)
 
     XCTAssertFalse(store.snapshot.restoresMergedWorkspaces)
+  }
+
+  func testNewWorkspaceJoinsAnExistingMergedWindowOrder() {
+    let first = NSObject()
+    let second = NSObject()
+    let newlyOpened = NSObject()
+    let stale = NSObject()
+    let firstIdentifier = ObjectIdentifier(first)
+    let secondIdentifier = ObjectIdentifier(second)
+    let newIdentifier = ObjectIdentifier(newlyOpened)
+
+    XCTAssertEqual(
+      gitDesktopMergedWorkspaceOrderByAddingWindow(
+        existingOrder: [firstIdentifier, ObjectIdentifier(stale), secondIdentifier],
+        liveWindowIdentifiers: [firstIdentifier, secondIdentifier, newIdentifier],
+        newWindowIdentifier: newIdentifier
+      ),
+      [firstIdentifier, secondIdentifier, newIdentifier]
+    )
+    XCTAssertNil(
+      gitDesktopMergedWorkspaceOrderByAddingWindow(
+        existingOrder: [firstIdentifier],
+        liveWindowIdentifiers: [firstIdentifier, newIdentifier],
+        newWindowIdentifier: newIdentifier
+      )
+    )
   }
 
   func testRestorationGateWaitsForEveryWorkspaceBeforeMerging() {

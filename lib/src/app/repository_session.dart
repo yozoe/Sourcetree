@@ -2430,6 +2430,199 @@ final class RepositorySessionController
     }
   }
 
+  /// Stops tracking the selected working-tree files without deleting them.
+  ///
+  /// 中文：在调用方取得明确确认后，重新读取 Git 状态并仅从索引移除仍可安全
+  /// 停止追踪的文件；本地文件保持不变，调用成功后会留下待提交的删除记录。
+  Future<bool> stopTrackingChanges(
+    List<RepositoryChangeViewData> changes,
+  ) async {
+    if (changes.isEmpty || state.phase == RepositorySessionPhase.loading) {
+      return false;
+    }
+
+    // A confirmation dialog can stay open while another Git client changes
+    // the repository. Always validate against a fresh status before writing.
+    // 确认窗口显示期间，其他 Git 客户端仍可能改动仓库；写入前必须基于最新
+    // 状态重新校验，不能复用打开对话框时的选择快照。
+    await refresh();
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        state.phase != RepositorySessionPhase.ready) {
+      return false;
+    }
+
+    final paths = <GitPath>[];
+    for (final change in changes) {
+      if (!change.canStopTracking) {
+        return false;
+      }
+      final entry = status.entries
+          .where((candidate) => candidate.path.display == change.path)
+          .firstOrNull;
+      if (entry == null ||
+          entry.isConflicted ||
+          !entry.path.isValidUtf8 ||
+          entry.kind != GitFileStatusKind.ordinary ||
+          entry.workTreeStatus == GitChangeType.deleted ||
+          entry.indexStatus == GitChangeType.deleted) {
+        return false;
+      }
+      if (!paths.contains(entry.path)) paths.add(entry.path);
+    }
+    if (paths.isEmpty) return false;
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.stopTrackingPaths(repository, paths);
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
+  /// Stops tracking the file selected in a historical commit, if it remains a
+  /// safe tracked file in the current working tree.
+  ///
+  /// 中文：对历史提交文件列表中的当前选择停止追踪。提交历史只提供路径；执行前
+  /// 必须重新读取当前工作区并验证该路径仍在索引中且本地文件存在，不能依据历史
+  /// 快照直接写入 Git。
+  Future<bool> stopTrackingSelectedCommitFile() async {
+    final selected = state.selectedCommitFile;
+    if (selected == null || !selected.file.path.isValidUtf8) return false;
+
+    await refresh();
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        state.phase != RepositorySessionPhase.ready) {
+      return false;
+    }
+
+    final path = selected.file.path;
+    final currentEntry = status.entries
+        .where((entry) => entry.path == path)
+        .firstOrNull;
+    if (currentEntry != null &&
+        (currentEntry.isConflicted ||
+            currentEntry.kind == GitFileStatusKind.renamed ||
+            currentEntry.kind == GitFileStatusKind.copied ||
+            currentEntry.workTreeStatus == GitChangeType.deleted ||
+            currentEntry.indexStatus == GitChangeType.deleted)) {
+      return false;
+    }
+    if (!await _reader.isPathTracked(repository, path)) return false;
+
+    final workTreeRoot = repository.workTreeRoot;
+    if (workTreeRoot == null) return false;
+    final localPath = path_utils.normalize(
+      path_utils.join(workTreeRoot, path.display),
+    );
+    if (!path_utils.isWithin(workTreeRoot, localPath) ||
+        await FileSystemEntity.type(localPath, followLinks: false) ==
+            FileSystemEntityType.notFound) {
+      return false;
+    }
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.stopTrackingPaths(repository, [path]);
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
+  /// Restores selected staged tracked paths to their HEAD versions.
+  ///
+  /// 中文：在用户确认后重新读取 Git 状态，只将仍为已暂存普通已跟踪改动的路径
+  /// 恢复到 HEAD；索引和工作区都会恢复，不能用于未提交的新增、重命名、复制或
+  /// 冲突路径。
+  Future<bool> resetChangesToHead(
+    List<RepositoryChangeViewData> changes,
+  ) async {
+    if (changes.isEmpty || state.phase == RepositorySessionPhase.loading) {
+      return false;
+    }
+
+    await refresh();
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        state.phase != RepositorySessionPhase.ready ||
+        status.branch.objectId == null) {
+      return false;
+    }
+
+    final paths = <GitPath>[];
+    for (final change in changes) {
+      if (!change.canResetToHead) return false;
+      final entry = status.entries
+          .where((candidate) => candidate.path.display == change.path)
+          .firstOrNull;
+      if (entry == null ||
+          entry.isConflicted ||
+          !entry.path.isValidUtf8 ||
+          entry.kind != GitFileStatusKind.ordinary ||
+          !entry.hasStagedChange ||
+          entry.indexStatus == GitChangeType.added ||
+          entry.indexStatus == GitChangeType.renamed ||
+          entry.indexStatus == GitChangeType.copied) {
+        return false;
+      }
+      if (!paths.contains(entry.path)) paths.add(entry.path);
+    }
+    if (paths.isEmpty) return false;
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.resetPathsToHead(repository, paths);
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
   /// Executes one explicit conflict-resolution action for an unmerged file.
   /// 中文：对一个未合并文件执行明确选择的冲突解决操作，并刷新文件与 Diff 状态。
   Future<bool> resolveConflict(

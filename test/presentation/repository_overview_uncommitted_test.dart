@@ -7,6 +7,65 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:git_desktop/src/presentation/presentation.dart';
 
 void main() {
+  testWidgets('shows every toolbar action vertically without scrolling', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(760, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+            ),
+          ),
+          callbacks: const RepositoryOverviewCallbacks(),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final toolbar = find.byKey(const ValueKey<String>('repository-toolbar'));
+    expect(toolbar, findsOneWidget);
+    expect(
+      find.descendant(
+        of: toolbar,
+        matching: find.byType(SingleChildScrollView),
+      ),
+      findsNothing,
+    );
+    for (final label in <String>[
+      '提交',
+      '贮藏',
+      '拉取',
+      '推送',
+      '获取',
+      '分支',
+      '合并',
+      '刷新',
+      '打开仓库',
+    ]) {
+      expect(
+        find.descendant(of: toolbar, matching: find.text(label)),
+        findsOneWidget,
+      );
+    }
+
+    final commitIcon = find.descendant(
+      of: toolbar,
+      matching: find.byIcon(Icons.check_circle_outline),
+    );
+    final commitLabel = find.descendant(of: toolbar, matching: find.text('提交'));
+    expect(
+      tester.getTopLeft(commitIcon).dy,
+      lessThan(tester.getTopLeft(commitLabel).dy),
+    );
+  });
+
   testWidgets('shows ahead commit count and enables push like Sourcetree', (
     tester,
   ) async {
@@ -346,6 +405,81 @@ void main() {
     expect(selectedAction, RepositoryConflictAction.useOurs);
   });
 
+  testWidgets(
+    'shows the historical-file context menu and forwards its action',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1280, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      CommitFileViewData? selectedFile;
+      RepositoryCommitFileContextAction? selectedAction;
+      const commitFile = CommitFileViewData(
+        path: 'lib/main.dart',
+        kind: RepositoryChangeKind.modified,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RepositoryOverview(
+            data: const RepositoryOverviewViewData.ready(
+              RepositoryViewData(
+                name: 'playground',
+                path: '/tmp/playground',
+                currentBranch: 'main',
+                selectedCommit: CommitDetailsViewData(
+                  oid: '0123456789abcdef',
+                  subject: 'Add historical file menu',
+                  author: 'Test User',
+                  authoredAt: '2026-08-25 12:00',
+                ),
+                commitChanges: [commitFile],
+              ),
+            ),
+            callbacks: RepositoryOverviewCallbacks(
+              onCommitFileSelected: (file) => selectedFile = file,
+              onCommitFileContextAction: (file, action) {
+                selectedFile = file;
+                selectedAction = action;
+              },
+            ),
+          ),
+        ),
+      );
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.text('main.dart')),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      for (final label in <String>[
+        '查看选中的修改日志…（待实现）',
+        '审查选定的项目（待实现）',
+        '重置到提交…（待实现）',
+        '打开当前版本（待实现）',
+        '打开已选定版本（待实现）',
+        '在 Finder 中显示（待实现）',
+        '复制路径到剪贴板（待实现）',
+        '快速查看（待实现）',
+        '外部差异比对（待实现）',
+        '自定义操作（待实现）',
+      ]) {
+        expect(find.text(label), findsOneWidget);
+      }
+      expect(selectedFile, commitFile);
+
+      await tester.tap(find.text('打开当前版本（待实现）'));
+      await tester.pumpAndSettle();
+
+      expect(selectedFile, commitFile);
+      expect(
+        selectedAction,
+        RepositoryCommitFileContextAction.openCurrentVersion,
+      );
+    },
+  );
+
   testWidgets('command-click keeps multiple working-tree files selected', (
     tester,
   ) async {
@@ -495,5 +629,184 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(removed?.map((change) => change.path), ['scratch.txt']);
+  });
+
+  testWidgets('working-tree context menu stops tracking selected files', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    List<RepositoryChangeViewData>? stoppedTracking;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: [
+                RepositoryChangeViewData(
+                  path: 'config/local.json',
+                  kind: RepositoryChangeKind.modified,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onChangeStopTracking: (changes) => stoppedTracking = changes,
+          ),
+        ),
+      ),
+    );
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('local.json')),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('停止追踪'));
+    await tester.pumpAndSettle();
+
+    expect(stoppedTracking?.map((change) => change.path), [
+      'config/local.json',
+    ]);
+  });
+
+  testWidgets('context menu stops tracking selected staged new files', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    List<RepositoryChangeViewData>? stoppedTracking;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: [
+                RepositoryChangeViewData(
+                  path: 'config/local.json',
+                  kind: RepositoryChangeKind.added,
+                  isStaged: true,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onChangeStopTracking: (changes) => stoppedTracking = changes,
+          ),
+        ),
+      ),
+    );
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('local.json')),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('停止追踪'));
+    await tester.pumpAndSettle();
+
+    expect(stoppedTracking?.map((change) => change.path), [
+      'config/local.json',
+    ]);
+  });
+
+  testWidgets('context menu resets selected staged tracked files', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    List<RepositoryChangeViewData>? resetChanges;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: [
+                RepositoryChangeViewData(
+                  path: 'config/local.json',
+                  kind: RepositoryChangeKind.modified,
+                  isStaged: true,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onChangeReset: (changes) => resetChanges = changes,
+          ),
+        ),
+      ),
+    );
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('local.json')),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('重置…'));
+    await tester.pumpAndSettle();
+
+    expect(resetChanges?.map((change) => change.path), ['config/local.json']);
+  });
+
+  testWidgets('shows stop-tracking results in normal Git status groups', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: [
+                RepositoryChangeViewData(
+                  path: 'config/local.json',
+                  kind: RepositoryChangeKind.deleted,
+                  isStaged: true,
+                ),
+                RepositoryChangeViewData(
+                  path: 'config/local.json',
+                  kind: RepositoryChangeKind.untracked,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('已暂存文件'), findsOneWidget);
+    expect(find.text('未暂存文件'), findsOneWidget);
+    expect(find.text('已停止追踪（待提交）'), findsNothing);
+    expect(find.text('local.json'), findsNWidgets(2));
   });
 }

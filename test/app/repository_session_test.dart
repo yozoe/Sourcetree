@@ -480,6 +480,288 @@ void main() {
     );
   });
 
+  test('stops tracking a selected modified file without deleting it', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('config/local.json', '{"version": 1}\n');
+    await repository.commit('Add local config');
+    await repository.writeFile('config/local.json', '{"version": 2}\n');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final change = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.changes.single;
+
+    expect(await controller.stopTrackingChanges([change]), isTrue);
+    expect(
+      await File(
+        '${repository.workingDirectory.path}${Platform.pathSeparator}config'
+        '${Platform.pathSeparator}local.json',
+      ).readAsString(),
+      '{"version": 2}\n',
+    );
+    final state = container.read(repositorySessionProvider);
+    expect(
+      state.status!.entries.any(
+        (entry) =>
+            entry.path.display == 'config/local.json' &&
+            entry.indexStatus == GitChangeType.deleted,
+      ),
+      isTrue,
+    );
+    final overview = mapRepositoryOverview(state).repository!;
+    expect(overview.changes, hasLength(2));
+    expect(
+      overview.changes.any(
+        (change) =>
+            change.path == 'config/local.json' &&
+            change.isStaged &&
+            change.kind == RepositoryChangeKind.deleted,
+      ),
+      isTrue,
+    );
+    expect(
+      overview.changes.any(
+        (change) =>
+            change.path == 'config/local.json' &&
+            !change.isStaged &&
+            change.kind == RepositoryChangeKind.untracked,
+      ),
+      isTrue,
+    );
+  });
+
+  test('stops tracking the file selected from a historical commit', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('config/local.json', '{"version": 1}\n');
+    final commit = await repository.commit('Add local config');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    await controller.selectCommit(commit);
+
+    expect(
+      container
+          .read(repositorySessionProvider)
+          .selectedCommitFile
+          ?.file
+          .path
+          .display,
+      'config/local.json',
+    );
+    expect(await controller.stopTrackingSelectedCommitFile(), isTrue);
+    expect(
+      await File(
+        '${repository.workingDirectory.path}${Platform.pathSeparator}config'
+        '${Platform.pathSeparator}local.json',
+      ).readAsString(),
+      '{"version": 1}\n',
+    );
+    final overview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    expect(
+      overview.changes.any(
+        (change) =>
+            change.path == 'config/local.json' &&
+            change.isStaged &&
+            change.kind == RepositoryChangeKind.deleted,
+      ),
+      isTrue,
+    );
+  });
+
+  test(
+    'stops tracking a file with staged and unstaged modifications',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('config/local.json', '{"version": 1}\n');
+      await repository.commit('Add local config');
+      await repository.writeFile('config/local.json', '{"version": 2}\n');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      var overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      await controller.toggleStage(overview.changes.single);
+      await repository.writeFile('config/local.json', '{"version": 3}\n');
+      await controller.refresh();
+
+      overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      final staged = overview.changes.singleWhere((change) => change.isStaged);
+      expect(await controller.stopTrackingChanges([staged]), isTrue);
+      expect(
+        await File(
+          '${repository.workingDirectory.path}${Platform.pathSeparator}config'
+          '${Platform.pathSeparator}local.json',
+        ).readAsString(),
+        '{"version": 3}\n',
+      );
+      final status = container.read(repositorySessionProvider).status!;
+      expect(
+        status.entries.any(
+          (entry) =>
+              entry.path.display == 'config/local.json' &&
+              entry.indexStatus == GitChangeType.deleted,
+        ),
+        isTrue,
+      );
+      expect(
+        status.entries.any(
+          (entry) =>
+              entry.path.display == 'config/local.json' &&
+              entry.kind == GitFileStatusKind.untracked,
+        ),
+        isTrue,
+      );
+    },
+  );
+
+  test('resets a staged tracked file to HEAD in index and work tree', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('config/local.json', '{"version": 1}\n');
+    await repository.commit('Add local config');
+    await repository.writeFile('config/local.json', '{"version": 2}\n');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    var overview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    await controller.toggleStage(overview.changes.single);
+    await repository.writeFile('config/local.json', '{"version": 3}\n');
+    await controller.refresh();
+
+    overview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    final staged = overview.changes.singleWhere((change) => change.isStaged);
+    expect(staged.canResetToHead, isTrue);
+    expect(await controller.resetChangesToHead([staged]), isTrue);
+    expect(
+      await File(
+        '${repository.workingDirectory.path}${Platform.pathSeparator}config'
+        '${Platform.pathSeparator}local.json',
+      ).readAsString(),
+      '{"version": 1}\n',
+    );
+    expect(container.read(repositorySessionProvider).status!.isClean, isTrue);
+  });
+
+  test(
+    'refuses reset when the selected file was unstaged after confirmation',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('config/local.json', '{"version": 1}\n');
+      await repository.commit('Add local config');
+      await repository.writeFile('config/local.json', '{"version": 2}\n');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      var overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      await controller.toggleStage(overview.changes.single);
+      overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      final previouslyStaged = overview.changes.single;
+
+      await controller.toggleStage(previouslyStaged);
+      await repository.writeFile('config/local.json', '{"version": 3}\n');
+
+      expect(await controller.resetChangesToHead([previouslyStaged]), isFalse);
+      expect(
+        await File(
+          '${repository.workingDirectory.path}${Platform.pathSeparator}config'
+          '${Platform.pathSeparator}local.json',
+        ).readAsString(),
+        '{"version": 3}\n',
+      );
+    },
+  );
+
+  test(
+    'removes a staged new file from the index without deleting it',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('config/local.json', '{"version": 1}\n');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      var overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      await controller.toggleStage(overview.changes.single);
+
+      overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      final staged = overview.changes.single;
+      expect(staged.kind, RepositoryChangeKind.added);
+      expect(staged.isStaged, isTrue);
+
+      expect(await controller.stopTrackingChanges([staged]), isTrue);
+      expect(
+        await File(
+          '${repository.workingDirectory.path}${Platform.pathSeparator}config'
+          '${Platform.pathSeparator}local.json',
+        ).readAsString(),
+        '{"version": 1}\n',
+      );
+      final status = container.read(repositorySessionProvider).status!;
+      expect(status.entries, hasLength(1));
+      expect(status.entries.single.kind, GitFileStatusKind.untracked);
+    },
+  );
+
+  test('refuses to stop tracking an untracked file', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('scratch.txt', 'local only\n');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final change = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.changes.single;
+
+    expect(await controller.stopTrackingChanges([change]), isFalse);
+    expect(
+      await File(
+        '${repository.workingDirectory.path}${Platform.pathSeparator}scratch.txt',
+      ).readAsString(),
+      'local only\n',
+    );
+    expect(
+      container.read(repositorySessionProvider).status!.entries.single.kind,
+      GitFileStatusKind.untracked,
+    );
+  });
+
   test('stages every file in an unstaged change group', () async {
     final repository = await GitTestRepository.create();
     addTearDown(repository.dispose);

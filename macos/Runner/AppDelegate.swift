@@ -4,6 +4,15 @@ import FlutterMacOS
 private let gitDesktopEngineCleanupTimeout: TimeInterval = 3.5
 private let gitDesktopWorkspaceRestorationTimeout: TimeInterval = 30
 
+/// Returns whether the native Stop Tracking command may target its key window.
+/// 中文：判断原生“停止追踪”菜单能否安全作用于当前前台工作区。
+func gitDesktopCanPerformStopTrackingMenuAction(
+  hasKeyWorkspace: Bool,
+  hasValidatedTrackedSelection: Bool
+) -> Bool {
+  hasKeyWorkspace && hasValidatedTrackedSelection
+}
+
 func gitDesktopCanonicalRepositoryPath(_ path: String?) -> String? {
   guard let path, !path.isEmpty else {
     return nil
@@ -246,6 +255,23 @@ final class GitDesktopWorkspaceRestoreStore {
   }
 }
 
+/// 中文：返回追加新工作区后的实时合并窗口顺序；当前不存在合并组时返回 nil。
+///
+/// English: Returns the live merged-window order after adding a newly opened
+/// workspace, or nil when there is no existing merged group to extend.
+func gitDesktopMergedWorkspaceOrderByAddingWindow(
+  existingOrder: [ObjectIdentifier],
+  liveWindowIdentifiers: Set<ObjectIdentifier>,
+  newWindowIdentifier: ObjectIdentifier
+) -> [ObjectIdentifier]? {
+  let liveMergedOrder = existingOrder.filter(liveWindowIdentifiers.contains)
+  guard liveMergedOrder.count > 1,
+        !liveMergedOrder.contains(newWindowIdentifier) else {
+    return nil
+  }
+  return liveMergedOrder + [newWindowIdentifier]
+}
+
 private enum GitDesktopWindowHostError: LocalizedError {
   case engineStartFailed
   case invalidRepositoryRegistration
@@ -272,6 +298,12 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   private var shutdownPreparationCompletions: [() -> Void] = []
 
   var repositoryPath: String?
+
+  /// Flutter's last validated Stop Tracking availability for this Engine.
+  ///
+  /// 中文：此 Engine 最近一次由 Flutter 校验的“停止追踪”可用状态；仅供 AppKit
+  /// 即时禁用菜单，真正执行前仍由 Flutter 重新读取 Git 状态。
+  private(set) var canStopTrackingFromMenu = false
 
   init(
     repositoryPath: String?,
@@ -455,6 +487,9 @@ final class WorkspaceFlutterWindowController: NSWindowController,
           canonicalPath,
           for: self
         )
+        result(nil)
+      case "setWorkspaceMenuState":
+        canStopTrackingFromMenu = arguments?["canStopTracking"] as? Bool ?? false
         result(nil)
       default:
         result(FlutterMethodNotImplemented)
@@ -657,6 +692,16 @@ final class WindowCoordinator {
     currentWorkspaceController != nil
   }
 
+  /// Whether the key workspace has a Flutter-validated tracked file selected.
+  /// 中文：当前前台工作区是否已由 Flutter 校验出可停止追踪的已跟踪文件。
+  var canStopTrackingFromMenu: Bool {
+    gitDesktopCanPerformStopTrackingMenuAction(
+      hasKeyWorkspace: currentWorkspaceController != nil,
+      hasValidatedTrackedSelection:
+        currentWorkspaceController?.canStopTrackingFromMenu == true
+    )
+  }
+
   private var currentWorkspaceController: WorkspaceFlutterWindowController? {
     guard let keyWindow = NSApp.keyWindow as? MainFlutterWindow,
           keyWindow.role == .workspace else {
@@ -690,6 +735,7 @@ final class WindowCoordinator {
       refreshMergedWorkspaceTabStrips()
     }
     workspaceIndex.register(controller, for: repositoryPath)
+    mergeNewWorkspaceIntoExistingMergedGroupIfNeeded(controller)
     if !resolveRestoredRepository(repositoryPath) {
       persistOpenWorkspaces()
     }
@@ -862,6 +908,40 @@ final class WindowCoordinator {
     return mergedWorkspaceOrder.compactMap { windowByIdentifier[$0] }
   }
 
+  /// 中文：若已有合并标签组，将刚完成仓库验证的新窗口追加到该组。
+  ///
+  /// English: Appends a newly verified workspace to an existing merged group,
+  /// while leaving unrelated standalone workspaces independent.
+  private func mergeNewWorkspaceIntoExistingMergedGroupIfNeeded(
+    _ controller: WorkspaceFlutterWindowController
+  ) {
+    guard let newWindow = controller.window as? MainFlutterWindow else {
+      return
+    }
+    let controllers = workspaceControllers()
+    let controllerByWindowIdentifier = Dictionary(
+      uniqueKeysWithValues: controllers.compactMap { candidate in
+        (candidate.window as? MainFlutterWindow).map {
+          (ObjectIdentifier($0), candidate)
+        }
+      }
+    )
+    guard let mergedOrder = gitDesktopMergedWorkspaceOrderByAddingWindow(
+      existingOrder: mergedWorkspaceOrder,
+      liveWindowIdentifiers: Set(controllerByWindowIdentifier.keys),
+      newWindowIdentifier: ObjectIdentifier(newWindow)
+    ) else {
+      return
+    }
+    let mergedControllers = mergedOrder.compactMap {
+      controllerByWindowIdentifier[$0]
+    }
+    guard mergedControllers.count == mergedOrder.count else {
+      return
+    }
+    mergeWorkspaceWindows(mergedControllers)
+  }
+
   /// Selects the current workspace as tab host, falling back to the most
   /// recently used live workspace.
   private func activeWorkspaceWindow(
@@ -914,6 +994,31 @@ final class WindowCoordinator {
     return true
   }
 
+  /// 中文：把一个工作区移动到合并标签组的新索引，并立即保存恢复顺序。
+  ///
+  /// English: Moves a workspace to a new merged-tab index and immediately
+  /// persists the resulting restoration order.
+  func moveMergedWorkspace(
+    _ window: MainFlutterWindow,
+    to destinationIndex: Int
+  ) {
+    let windowIdentifier = ObjectIdentifier(window)
+    guard let sourceIndex = mergedWorkspaceOrder.firstIndex(
+      of: windowIdentifier
+    ),
+      mergedWorkspaceOrder.indices.contains(destinationIndex),
+      sourceIndex != destinationIndex else {
+      return
+    }
+    mergedWorkspaceOrder = gitDesktopMovingItem(
+      in: mergedWorkspaceOrder,
+      from: sourceIndex,
+      to: destinationIndex
+    )
+    refreshMergedWorkspaceTabStrips()
+    persistOpenWorkspaces()
+  }
+
   /// 中文：激活合并组中的一个工作区，并复用当前可见窗口的位置与尺寸。
   ///
   /// English: Activates one workspace in the merged set while reusing the
@@ -955,10 +1060,14 @@ final class WindowCoordinator {
     windows.forEach { candidate in
       candidate.configureWorkspaceTabStrip(
         windows: windows,
-        selectedWindow: selectedWindow
-      ) { [weak self] requestedWindow in
-        self?.activateMergedWorkspace(requestedWindow)
-      }
+        selectedWindow: selectedWindow,
+        selectionHandler: { [weak self] requestedWindow in
+          self?.activateMergedWorkspace(requestedWindow)
+        },
+        reorderHandler: { [weak self] movedWindow, destinationIndex in
+          self?.moveMergedWorkspace(movedWindow, to: destinationIndex)
+        }
+      )
     }
   }
 
@@ -1185,8 +1294,25 @@ final class WindowCoordinator {
     guard !workspaceRestorationGate.isWaiting else {
       return
     }
+    let controllers = workspaceIndex.allHosts
+    let controllerByWindowIdentifier = Dictionary(
+      uniqueKeysWithValues: controllers.compactMap { controller in
+        controller.window.map {
+          (ObjectIdentifier($0), controller)
+        }
+      }
+    )
+    let mergedControllers = mergedWorkspaceOrder.compactMap {
+      controllerByWindowIdentifier[$0]
+    }
+    let mergedControllerIdentifiers = Set(
+      mergedControllers.map(ObjectIdentifier.init)
+    )
+    let controllersInRestoreOrder = mergedControllers + controllers.filter {
+      !mergedControllerIdentifiers.contains(ObjectIdentifier($0))
+    }
     workspaceRestoreStore.save(
-      paths: workspaceIndex.allHosts.compactMap(\.repositoryPath),
+      paths: controllersInRestoreOrder.compactMap(\.repositoryPath),
       restoresMergedWorkspaces: areAllWorkspaceWindowsMerged
     )
   }
@@ -1325,6 +1451,13 @@ class AppDelegate: FlutterAppDelegate {
     windowCoordinator.performWorkspaceAction("repositoryFeaturePending")
   }
 
+  /// 中文：将原生“停止追踪”动作投递到当前 key workspace 的 Flutter Engine。
+  /// English: Delivers the native Stop Tracking action to the current key
+  /// workspace's Flutter Engine.
+  @IBAction func stopTrackingFromMenu(_ sender: Any?) {
+    windowCoordinator.performWorkspaceAction("stopTracking")
+  }
+
   /// 中文：在当前应用窗口中显示尚未交付的窗口菜单提示，不依赖仓库工作区。
   ///
   /// English: Shows a pending window-menu notice in the current app window
@@ -1359,6 +1492,9 @@ class AppDelegate: FlutterAppDelegate {
        menuItem.action == #selector(repositoryDetailsFromMenu(_:)) ||
        menuItem.action == #selector(repositoryFeaturePendingFromMenu(_:)) {
       return windowCoordinator.canPerformWorkspaceAction
+    }
+    if menuItem.action == #selector(stopTrackingFromMenu(_:)) {
+      return windowCoordinator.canStopTrackingFromMenu
     }
     return true
   }

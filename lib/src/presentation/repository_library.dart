@@ -454,12 +454,14 @@ class _RepositoryLibraryTile extends StatelessWidget {
         color: selected ? colors.secondaryContainer : Colors.transparent,
         borderRadius: BorderRadius.circular(7),
         child: InkWell(
-          onTap: onPressed,
+          onDoubleTap: onPressed,
           borderRadius: BorderRadius.circular(7),
           child: Semantics(
             button: true,
             selected: selected,
             label: '仓库 ${repository.label}',
+            hint: '双击打开仓库',
+            onTap: onPressed,
             child: Container(
               constraints: const BoxConstraints(minHeight: 62),
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),

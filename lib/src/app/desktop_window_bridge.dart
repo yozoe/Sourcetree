@@ -41,6 +41,16 @@ final class DesktopWindowBridge {
     });
   }
 
+  /// Updates native workspace-menu availability from Flutter's current state.
+  ///
+  /// 中文：将 Flutter 已校验的工作区菜单可用状态同步给当前 macOS 窗口；原生
+  /// 菜单只使用该快照控制可点击性，实际执行前仍由应用层重新校验 Git 状态。
+  static Future<void> setWorkspaceMenuState({required bool canStopTracking}) {
+    return _channel.invokeMethod<void>('setWorkspaceMenuState', <String, bool>{
+      'canStopTracking': canStopTracking,
+    });
+  }
+
   /// 中文：报告启动恢复的仓库已无法由 Git 验证，以便原生宿主清除恢复记录并关闭该窗口。
   /// English: Reports that a restored repository can no longer be verified so
   /// the native host removes its restore record and closes that workspace.

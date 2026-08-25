@@ -84,6 +84,47 @@ void main() {
     expect(restored.entries.single.kind, GitFileStatusKind.untracked);
   });
 
+  test(
+    'stops tracking a file while preserving its work-tree content',
+    () async {
+      await fixture.writeFile('config/local.json', '{"version": 1}\n');
+      await fixture.commit('Add local config');
+      await fixture.writeFile('config/local.json', '{"version": 2}\n');
+
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+      final before = await reader.readStatus(repository);
+
+      await writer.stopTrackingPaths(repository, [before.entries.single.path]);
+
+      final after = await reader.readStatus(repository);
+      expect(
+        after.entries.any(
+          (entry) =>
+              entry.path.display == 'config/local.json' &&
+              entry.indexStatus == GitChangeType.deleted,
+        ),
+        isTrue,
+      );
+      expect(
+        after.entries.any(
+          (entry) =>
+              entry.path.display == 'config/local.json' &&
+              entry.kind == GitFileStatusKind.untracked,
+        ),
+        isTrue,
+      );
+      expect(
+        await File(
+          '${fixture.workingDirectory.path}${Platform.pathSeparator}config'
+          '${Platform.pathSeparator}local.json',
+        ).readAsString(),
+        '{"version": 2}\n',
+      );
+    },
+  );
+
   test('resolves a conflicted file using the selected side', () async {
     final repository = await _createContentConflict(fixture, inspector);
     final conflicted = (await reader.readStatus(repository)).entries.single;

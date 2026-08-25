@@ -48,6 +48,69 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Staging file');
   }
 
+  /// Stops tracking paths while preserving their working-tree files.
+  ///
+  /// 中文：从 Git 索引移除指定路径，但保留工作区文件；调用方必须在执行前
+  /// 完成用户确认，并在执行后刷新状态以显示待提交的删除。
+  Future<void> stopTrackingPaths(
+    GitRepository repository,
+    List<GitPath> paths,
+  ) async {
+    final displayPaths = [for (final path in paths) _requireUtf8Path(path)];
+    if (displayPaths.isEmpty) return;
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          '--literal-pathspecs',
+          'rm',
+          '--cached',
+          '--force',
+          '--',
+          ...displayPaths,
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Stopping file tracking');
+  }
+
+  /// Restores tracked paths to their HEAD versions in both index and work tree.
+  ///
+  /// 中文：将指定已跟踪路径的索引和工作区同时恢复到 HEAD 版本；这会丢弃这些
+  /// 路径的已暂存和未暂存内容，调用方必须先取得用户的明确确认。
+  Future<void> resetPathsToHead(
+    GitRepository repository,
+    List<GitPath> paths,
+  ) async {
+    final displayPaths = [for (final path in paths) _requireUtf8Path(path)];
+    if (displayPaths.isEmpty) return;
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          '--literal-pathspecs',
+          'restore',
+          '--source=HEAD',
+          '--staged',
+          '--worktree',
+          '--',
+          ...displayPaths,
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Resetting files to HEAD');
+  }
+
   /// 中文：取消暂存指定路径。
   /// English: Unstages the specified path.
   Future<void> unstagePath(

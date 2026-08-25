@@ -74,6 +74,22 @@ enum RepositoryCommitContextAction {
   cherryPick,
 }
 
+/// Deferred actions shown in the context menu of a historical commit file.
+///
+/// 中文：历史提交文件右键菜单中展示的待实现动作；可见标签必须直接标注
+/// “（待实现）”，具体能力会在后续版本逐项交付。
+enum RepositoryCommitFileContextAction {
+  viewSelectedFileLog,
+  reviewSelectedItem,
+  resetToCommit,
+  openCurrentVersion,
+  openSelectedVersion,
+  revealInFinder,
+  copyPath,
+  quickLook,
+  externalDiff,
+}
+
 enum RepositoryChangeKind {
   modified,
   added,
@@ -705,6 +721,23 @@ final class RepositoryChangeViewData {
   final bool canToggleStage;
   final int? additions;
   final int? deletions;
+
+  /// Whether this change can be removed from Git's index while retaining its
+  /// working-tree file.
+  /// 中文：该变更是否可从 Git 索引移除，同时保留工作区文件。普通已追踪
+  /// 修改，以及已暂存但尚未提交的新增文件，都拥有可移除的索引条目。
+  bool get canStopTracking =>
+      kind == RepositoryChangeKind.modified ||
+      (isStaged && kind == RepositoryChangeKind.added);
+
+  /// Whether this staged tracked change can be restored to HEAD.
+  ///
+  /// 中文：该已暂存的已跟踪改动是否可恢复到 HEAD。新增文件没有 HEAD 版本，
+  /// 因此不通过此入口重置，避免把“恢复”误解为删除未提交的新文件。
+  bool get canResetToHead =>
+      isStaged &&
+      (kind == RepositoryChangeKind.modified ||
+          kind == RepositoryChangeKind.deleted);
 }
 
 /// A file changed by the selected historical commit.

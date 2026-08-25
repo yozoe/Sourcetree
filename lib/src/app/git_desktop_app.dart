@@ -361,6 +361,7 @@ class _RepositoryWorkspaceScreenState
   bool _isRebasePromptVisible = false;
   bool _isSequencerPromptVisible = false;
   bool _hasHandledInitialAction = false;
+  bool? _lastNativeStopTrackingAvailability;
 
   /// 中文：在窗口首次绘制后执行首页请求的仓库操作；恢复窗口打开失败时清除其原生恢复记录。
   /// English: Starts the repository action requested by the library after the
@@ -379,6 +380,10 @@ class _RepositoryWorkspaceScreenState
     super.dispose();
   }
 
+  /// Routes one native workspace-menu action to its Flutter use case.
+  ///
+  /// 中文：将当前前台工作区的原生菜单动作路由至 Flutter 用例；停止追踪优先
+  /// 使用历史文件选择，其余选择在进入会话写入流程前仍会重新校验。
   Future<void> _handleWorkspaceMenuAction(String action) async {
     if (!mounted) return;
     switch (action) {
@@ -392,6 +397,47 @@ class _RepositoryWorkspaceScreenState
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('该菜单功能待实现。')));
+      case 'stopTracking':
+        final session = ref.read(repositorySessionProvider);
+        if (session.selectedCommitFile?.file.path.isValidUtf8 == true) {
+          await _stopTrackingSelectedCommitFile();
+          return;
+        }
+        final selected = mapRepositoryOverview(
+          session,
+        ).repository?.selectedChange;
+        if (selected?.canStopTracking == true) {
+          await _stopTrackingChanges([selected!]);
+          return;
+        }
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('请选择一个可停止追踪的已跟踪或已暂存文件。')));
+    }
+  }
+
+  /// Synchronizes native Stop Tracking menu availability with Flutter state.
+  ///
+  /// 中文：仅将当前选中文件的可用性快照交给 macOS 菜单；实际执行仍通过
+  /// [_stopTrackingChanges] 重新读取 Git 状态并显示确认窗口。
+  Future<void> _syncNativeStopTrackingAvailability(
+    RepositorySessionState session,
+    RepositoryOverviewViewData overview,
+  ) async {
+    final selected = overview.repository?.selectedChange;
+    final canStopTracking =
+        session.phase == RepositorySessionPhase.ready &&
+        (selected?.canStopTracking == true ||
+            session.selectedCommitFile?.file.path.isValidUtf8 == true);
+    if (_lastNativeStopTrackingAvailability == canStopTracking) return;
+    _lastNativeStopTrackingAvailability = canStopTracking;
+    try {
+      await DesktopWindowBridge.setWorkspaceMenuState(
+        canStopTracking: canStopTracking,
+      );
+    } on Object {
+      // The Engine can be closing while a state notification is in flight.
+      // Engine 可能正在关闭，状态通知在传输途中失效时无需更新已销毁的窗口。
     }
   }
 
@@ -2663,6 +2709,182 @@ class _RepositoryWorkspaceScreenState
     ).showSnackBar(SnackBar(content: Text(message)));
   }
 
+  /// Confirms stopping Git tracking while retaining the selected local files.
+  ///
+  /// 中文：明确说明索引删除和后续提交的影响；实际执行前由应用层重新读取
+  /// Git 状态，确保确认窗口期间发生的外部改动不会作用到过期选择。
+  Future<void> _stopTrackingChanges(
+    List<RepositoryChangeViewData> changes,
+  ) async {
+    final supported =
+        changes.isNotEmpty && changes.every((change) => change.canStopTracking);
+    if (!supported) return;
+
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('停止追踪文件'),
+        content: Text(
+          '这会从 Git 索引移除以下 ${changes.length} 个文件，但保留本地文件。\n\n'
+          '${changes.map((change) => change.path).join('\n')}\n\n'
+          '对于已有提交的文件，操作后会留下待提交的删除记录；只有提交后才会停止版本追踪。'
+          '已暂存但尚未提交的新增文件会恢复为未追踪状态。\n\n'
+          '若不将路径加入 .gitignore，这些文件之后仍可能被再次添加。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('停止追踪'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+
+    final stopped = await ref
+        .read(repositorySessionProvider.notifier)
+        .stopTrackingChanges(changes);
+    if (!mounted) return;
+    if (stopped) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text('已从索引移除 ${changes.length} 个文件；已有提交的文件请提交暂存的删除记录。'),
+        ),
+      );
+      return;
+    }
+    if (ref.read(repositorySessionProvider).phase ==
+        RepositorySessionPhase.ready) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('选中的文件状态已变化，请刷新后重试。')));
+    }
+  }
+
+  /// Confirms stopping tracking for the selected historical file path.
+  ///
+  /// 中文：确认是否对历史提交文件列表中选择的路径停止追踪；执行时仍由会话层
+  /// 重读当前工作区和索引，避免将历史快照中的路径直接作为写入依据。
+  Future<void> _stopTrackingSelectedCommitFile() async {
+    final selected = ref.read(repositorySessionProvider).selectedCommitFile;
+    if (selected == null || !selected.file.path.isValidUtf8) return;
+    final selectedPath = selected.file.path.display;
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('停止追踪文件'),
+        content: Text(
+          '这会从当前工作区的 Git 索引移除以下历史文件，但保留本地文件。\n\n'
+          '$selectedPath\n\n'
+          '操作后会留下待提交的删除记录；只有提交后才会停止版本追踪。\n\n'
+          '若文件已不在当前索引中、已删除或状态不再安全，操作将不会执行。'
+          '若不将路径加入 .gitignore，文件之后仍可能被再次添加。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('停止追踪'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+
+    final stopped = await ref
+        .read(repositorySessionProvider.notifier)
+        .stopTrackingSelectedCommitFile();
+    if (!mounted) return;
+    if (stopped) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已从索引移除文件；请提交暂存的删除记录。')));
+      return;
+    }
+    if (ref.read(repositorySessionProvider).phase ==
+        RepositorySessionPhase.ready) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('历史文件未在当前工作区安全追踪，请刷新后重试。')));
+    }
+  }
+
+  /// Confirms resetting selected tracked files to HEAD in index and work tree.
+  ///
+  /// 中文：确认将所选已暂存已跟踪文件的索引和工作区同时恢复到 HEAD；执行前由
+  /// 应用层重新读取 Git 状态，避免确认期间的外部改动影响过期选择。
+  Future<void> _resetChangesToHead(
+    List<RepositoryChangeViewData> changes,
+  ) async {
+    final supported =
+        changes.isNotEmpty && changes.every((change) => change.canResetToHead);
+    if (!supported) return;
+
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('重置文件到 HEAD'),
+        content: Text(
+          '这会将以下 ${changes.length} 个文件的索引和工作区恢复到 HEAD 版本：\n\n'
+          '${changes.map((change) => change.path).join('\n')}\n\n'
+          '该文件的已暂存和未暂存改动都会永久丢失，无法通过提交恢复。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('重置文件'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+
+    final reset = await ref
+        .read(repositorySessionProvider.notifier)
+        .resetChangesToHead(changes);
+    if (!mounted) return;
+    if (reset) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已将 ${changes.length} 个文件重置到 HEAD。')),
+      );
+      return;
+    }
+    if (ref.read(repositorySessionProvider).phase ==
+        RepositorySessionPhase.ready) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('选中的文件状态已变化，请刷新后重试。')));
+    }
+  }
+
+  /// Reports a historical-file context-menu action that has no implementation.
+  ///
+  /// 中文：提示历史提交文件右键菜单中的占位动作尚未实现；不执行 Git、文件或
+  /// 外部应用操作，确保菜单结构可以先交付而不改变仓库状态。
+  void _showPendingCommitFileContextAction(
+    CommitFileViewData file,
+    RepositoryCommitFileContextAction action,
+  ) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text('“${file.path}”的该菜单功能待实现。')));
+  }
+
   String? _workspaceChangePath(String root, String changePath) {
     final target = path_utils.normalize(path_utils.join(root, changePath));
     return path_utils.isWithin(root, target) ? target : null;
@@ -2690,6 +2912,8 @@ class _RepositoryWorkspaceScreenState
     );
     final session = ref.watch(repositorySessionProvider);
     final controller = ref.read(repositorySessionProvider.notifier);
+    final overview = mapRepositoryOverview(session);
+    unawaited(_syncNativeStopTrackingAvailability(session, overview));
     return Scaffold(
       body: Column(
         children: [
@@ -2701,7 +2925,7 @@ class _RepositoryWorkspaceScreenState
           ),
           Expanded(
             child: RepositoryOverview(
-              data: mapRepositoryOverview(session),
+              data: overview,
               callbacks: RepositoryOverviewCallbacks(
                 onAction: _handleAction,
                 onRefSelected: (reference) {
@@ -2727,6 +2951,7 @@ class _RepositoryWorkspaceScreenState
                     controller.selectUncommittedChanges,
                 onCommitFileSelected: (file) =>
                     unawaited(controller.selectCommitFile(file)),
+                onCommitFileContextAction: _showPendingCommitFileContextAction,
                 onChangeSelected: controller.selectChange,
                 onChangeStageToggled: controller.toggleStage,
                 onChangeGroupStageToggled: (changes, stage) =>
@@ -2737,6 +2962,10 @@ class _RepositoryWorkspaceScreenState
                     unawaited(_revealChangesInFinder(changes)),
                 onChangeRemove: (changes) =>
                     unawaited(_removeUntrackedChanges(changes)),
+                onChangeStopTracking: (changes) =>
+                    unawaited(_stopTrackingChanges(changes)),
+                onChangeReset: (changes) =>
+                    unawaited(_resetChangesToHead(changes)),
               ),
             ),
           ),

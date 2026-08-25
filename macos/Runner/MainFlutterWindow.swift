@@ -20,6 +20,59 @@ func gitDesktopCanPerformWindowMenuAction(_ keyWindow: NSWindow?) -> Bool {
 private let gitDesktopWorkspaceTabbingIdentifier =
   "com.yeknom.git_desktop.workspace"
 let gitDesktopWorkspaceTabStripHeight: CGFloat = 29
+/// Internal pasteboard type that confines workspace-tab drags to this app.
+/// 中文：限制工作区标签拖动只在本应用标签条内识别的内部剪贴板类型。
+private let gitDesktopWorkspaceTabDragType = NSPasteboard.PasteboardType(
+  "com.yeknom.git-desktop.workspace-tab"
+)
+
+/// 中文：返回标签拖动松手位置对应的最终索引，索引按移除源标签后计算。
+///
+/// English: Returns the final tab index for a drop location, calculated after
+/// removing the source tab from the ordered collection.
+func gitDesktopWorkspaceTabDropIndex(
+  locationX: CGFloat,
+  stripWidth: CGFloat,
+  tabCount: Int,
+  sourceIndex: Int
+) -> Int? {
+  guard stripWidth > 0,
+        tabCount > 1,
+        sourceIndex >= 0,
+        sourceIndex < tabCount else {
+    return nil
+  }
+  let segmentWidth = stripWidth / CGFloat(tabCount)
+  let boundedX = min(max(0, locationX), stripWidth)
+  let insertionIndex = min(
+    tabCount,
+    max(0, Int(floor((boundedX / segmentWidth) + 0.5)))
+  )
+  let destinationIndex = insertionIndex > sourceIndex
+    ? insertionIndex - 1
+    : insertionIndex
+  return min(tabCount - 1, max(0, destinationIndex))
+}
+
+/// 中文：把一个有序集合中的元素移动到最终索引，无效索引保持原顺序。
+///
+/// English: Moves one element in an ordered collection to its final index,
+/// preserving the original order when either index is invalid.
+func gitDesktopMovingItem<Element>(
+  in elements: [Element],
+  from sourceIndex: Int,
+  to destinationIndex: Int
+) -> [Element] {
+  guard elements.indices.contains(sourceIndex),
+        elements.indices.contains(destinationIndex),
+        sourceIndex != destinationIndex else {
+    return elements
+  }
+  var result = elements
+  let element = result.remove(at: sourceIndex)
+  result.insert(element, at: destinationIndex)
+  return result
+}
 
 /// 中文：保存至多一个延迟窗口动作，并保证取消后的旧动作不会执行。
 ///
@@ -121,17 +174,20 @@ final class GitDesktopWorkspaceTabButton: NSButton {
   let drawsLeadingDivider: Bool
   private(set) var closeButton: GitDesktopWorkspaceTabCloseButton!
   private var isPointerInside = false
+  private let dragAction: ((NSEvent) -> Void)?
 
   init(
     title: String,
     isSelected: Bool,
     drawsLeadingDivider: Bool,
     closeAction: @escaping () -> Void,
+    dragAction: ((NSEvent) -> Void)? = nil,
     action: @escaping () -> Void
   ) {
     isSelectedTab = isSelected
     self.drawsLeadingDivider = drawsLeadingDivider
     self.actionHandler = action
+    self.dragAction = dragAction
     super.init(frame: .zero)
     self.title = title
     toolTip = title
@@ -168,6 +224,41 @@ final class GitDesktopWorkspaceTabButton: NSButton {
 
   @objc private func activateTab() {
     actionHandler()
+  }
+
+  /// 中文：区分普通点击和越过阈值的拖动，避免轻微抖动误触排序。
+  ///
+  /// English: Distinguishes a normal click from a threshold-crossing drag so
+  /// small pointer movement does not accidentally reorder tabs.
+  override func mouseDown(with event: NSEvent) {
+    guard let dragAction, let window else {
+      super.mouseDown(with: event)
+      return
+    }
+    let initialLocation = convert(event.locationInWindow, from: nil)
+    while let nextEvent = window.nextEvent(
+      matching: [.leftMouseUp, .leftMouseDragged]
+    ) {
+      let location = convert(nextEvent.locationInWindow, from: nil)
+      switch nextEvent.type {
+      case .leftMouseDragged:
+        let distance = hypot(
+          location.x - initialLocation.x,
+          location.y - initialLocation.y
+        )
+        if distance >= 4 {
+          dragAction(nextEvent)
+          return
+        }
+      case .leftMouseUp:
+        if bounds.contains(location) {
+          performClick(nil)
+        }
+        return
+      default:
+        return
+      }
+    }
   }
 
   /// 中文：原位更新标签选中态，避免切换仓库时重建视图层级。
@@ -288,28 +379,72 @@ final class GitDesktopWorkspaceTabButton: NSButton {
 ///
 /// English: Describes one rectangular tab's visible state and selection action
 /// without owning an NSWindow lifecycle.
+/// Describes one visible workspace tab and its selection, close and reorder
+/// callbacks.
+///
+/// 中文：描述一个可见工作区标签及其选中、关闭和排序回调；回调只引用当前存活的
+/// 窗口，避免旧标签条保留已关闭窗口。
 struct GitDesktopWorkspaceTabDefinition {
   let title: String
   let isSelected: Bool
   let closeAction: () -> Void
+  let moveAction: ((Int) -> Void)?
   let action: () -> Void
+
+  /// Creates an immutable tab definition for one workspace window snapshot.
+  ///
+  /// 中文：为一个工作区窗口快照创建不可变标签定义；未提供排序回调时该标签不
+  /// 接受拖动排序。
+  init(
+    title: String,
+    isSelected: Bool,
+    closeAction: @escaping () -> Void,
+    moveAction: ((Int) -> Void)? = nil,
+    action: @escaping () -> Void
+  ) {
+    self.title = title
+    self.isSelected = isSelected
+    self.closeAction = closeAction
+    self.moveAction = moveAction
+    self.action = action
+  }
+}
+
+/// Draws the non-interactive insertion marker for an in-strip tab drag.
+///
+/// 中文：绘制标签条内部拖动时的非交互插入标记，不参与命中测试或改变标签选择。
+private final class GitDesktopWorkspaceTabDropIndicatorView: NSView {
+  override func hitTest(_ point: NSPoint) -> NSView? {
+    nil
+  }
+
+  override func draw(_ dirtyRect: NSRect) {
+    NSColor.controlAccentColor.setFill()
+    bounds.fill()
+  }
 }
 
 /// 中文：按窗口组顺序等分整行宽度，组成与 Sourcetree 一致的矩形标签条。
 ///
 /// English: Divides the full row equally in merged-window order to match
 /// Sourcetree's compact rectangular workspace strip.
-final class GitDesktopWorkspaceTabStripView: NSView {
+final class GitDesktopWorkspaceTabStripView: NSView, NSDraggingSource {
   private(set) var tabButtons: [GitDesktopWorkspaceTabButton] = []
   private var windowIdentifiers: [ObjectIdentifier]?
+  private var moveActions: [((Int) -> Void)?] = []
+  private var draggedTabIndex: Int?
+  private var dropDestinationIndex: Int?
+  private let dragSessionIdentifier = UUID().uuidString
   private let stackView = NSStackView()
+  private let dropIndicatorView = GitDesktopWorkspaceTabDropIndicatorView()
 
   convenience init(
     windows: [MainFlutterWindow],
     selectedWindow: MainFlutterWindow,
     selectionHandler: @escaping (MainFlutterWindow) -> Void = { window in
       window.makeKeyAndOrderFront(nil)
-    }
+    },
+    reorderHandler: @escaping (MainFlutterWindow, Int) -> Void = { _, _ in }
   ) {
     let tabs = windows.map { window in
       GitDesktopWorkspaceTabDefinition(
@@ -317,6 +452,12 @@ final class GitDesktopWorkspaceTabStripView: NSView {
         isSelected: window === selectedWindow,
         closeAction: { [weak window] in
           window?.performClose(nil)
+        },
+        moveAction: { [weak window] destinationIndex in
+          guard let window else {
+            return
+          }
+          reorderHandler(window, destinationIndex)
         }
       ) { [weak window] in
         guard let window else {
@@ -339,6 +480,7 @@ final class GitDesktopWorkspaceTabStripView: NSView {
       )
     )
     wantsLayer = true
+    registerForDraggedTypes([gitDesktopWorkspaceTabDragType])
 
     stackView.orientation = .horizontal
     stackView.alignment = .height
@@ -354,17 +496,27 @@ final class GitDesktopWorkspaceTabStripView: NSView {
       heightAnchor.constraint(equalToConstant: gitDesktopWorkspaceTabStripHeight),
     ])
 
+    dropIndicatorView.isHidden = true
+    addSubview(dropIndicatorView)
+
     for (index, tab) in tabs.enumerated() {
+      let dragAction: ((NSEvent) -> Void)? = tab.moveAction == nil
+        ? nil
+        : { [weak self] event in
+          self?.beginDraggingTab(at: index, event: event)
+        }
       let button = GitDesktopWorkspaceTabButton(
         title: tab.title,
         isSelected: tab.isSelected,
         drawsLeadingDivider: index > 0,
-        closeAction: tab.closeAction
+        closeAction: tab.closeAction,
+        dragAction: dragAction
       ) {
         tab.action()
       }
       button.translatesAutoresizingMaskIntoConstraints = false
       tabButtons.append(button)
+      moveActions.append(tab.moveAction)
       stackView.addArrangedSubview(button)
       button.heightAnchor.constraint(equalTo: stackView.heightAnchor).isActive =
         true
@@ -403,6 +555,157 @@ final class GitDesktopWorkspaceTabStripView: NSView {
 
   required init?(coder: NSCoder) {
     nil
+  }
+
+  /// 中文：以当前标签快照开始原生拖动会话，只允许在本标签条内移动。
+  ///
+  /// English: Begins a native drag session with the current tab snapshot and
+  /// permits moves only inside this strip.
+  private func beginDraggingTab(at index: Int, event: NSEvent) {
+    guard tabButtons.indices.contains(index), moveActions[index] != nil else {
+      return
+    }
+    let button = tabButtons[index]
+    guard let representation = button.bitmapImageRepForCachingDisplay(
+      in: button.bounds
+    ) else {
+      return
+    }
+    button.cacheDisplay(in: button.bounds, to: representation)
+    let image = NSImage(size: button.bounds.size)
+    image.addRepresentation(representation)
+
+    let pasteboardItem = NSPasteboardItem()
+    pasteboardItem.setString(
+      dragSessionIdentifier,
+      forType: gitDesktopWorkspaceTabDragType
+    )
+    let draggingItem = NSDraggingItem(pasteboardWriter: pasteboardItem)
+    draggingItem.setDraggingFrame(
+      convert(button.bounds, from: button),
+      contents: image
+    )
+    draggedTabIndex = index
+    beginDraggingSession(with: [draggingItem], event: event, source: self)
+  }
+
+  /// 中文：声明标签拖动只执行移动，不复制工作区窗口。
+  ///
+  /// English: Declares that tab drags move rather than copy workspace windows.
+  func draggingSession(
+    _ session: NSDraggingSession,
+    sourceOperationMaskFor context: NSDraggingContext
+  ) -> NSDragOperation {
+    .move
+  }
+
+  /// 中文：拖动结束后清除暂存索引和插入位置提示。
+  ///
+  /// English: Clears the pending indices and insertion indicator when a drag
+  /// session ends.
+  func draggingSession(
+    _ session: NSDraggingSession,
+    endedAt screenPoint: NSPoint,
+    operation: NSDragOperation
+  ) {
+    clearDropState(clearSource: true)
+  }
+
+  /// 中文：拖动进入标签条时验证来源并计算插入位置。
+  /// English: Validates the source and calculates an insertion position when
+  /// a tab drag enters this strip.
+  override func draggingEntered(_ sender: NSDraggingInfo) -> NSDragOperation {
+    updateDropDestination(sender)
+  }
+
+  /// 中文：拖动在标签条内移动时更新插入提示。
+  /// English: Updates the insertion marker while the drag moves inside this
+  /// strip.
+  override func draggingUpdated(_ sender: NSDraggingInfo) -> NSDragOperation {
+    updateDropDestination(sender)
+  }
+
+  /// 中文：拖动离开标签条时隐藏插入提示，但保留来源用于可能的重新进入。
+  /// English: Hides the insertion marker when a drag leaves this strip while
+  /// retaining its source for a possible re-entry.
+  override func draggingExited(_ sender: NSDraggingInfo?) {
+    clearDropState(clearSource: false)
+  }
+
+  /// 中文：仅当来源和目标索引均有效且确实改变顺序时接受拖动。
+  /// English: Accepts a drag only when source and destination are valid and
+  /// would change the order.
+  override func prepareForDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    updateDropDestination(sender) == .move &&
+      dropDestinationIndex != draggedTabIndex
+  }
+
+  /// 中文：提交一次有效排序并将新索引交给窗口协调器持久化。
+  /// English: Commits one valid reorder and delegates its new index to the
+  /// window coordinator for persistence.
+  override func performDragOperation(_ sender: NSDraggingInfo) -> Bool {
+    guard updateDropDestination(sender) == .move,
+          let sourceIndex = draggedTabIndex,
+          let destinationIndex = dropDestinationIndex,
+          sourceIndex != destinationIndex,
+          moveActions.indices.contains(sourceIndex),
+          let moveAction = moveActions[sourceIndex] else {
+      clearDropState(clearSource: false)
+      return false
+    }
+    clearDropState(clearSource: false)
+    moveAction(destinationIndex)
+    return true
+  }
+
+  /// 中文：验证拖动来源并更新最终目标索引和可见插入线。
+  ///
+  /// English: Validates the drag source and updates the final destination index
+  /// and visible insertion marker.
+  private func updateDropDestination(
+    _ sender: NSDraggingInfo
+  ) -> NSDragOperation {
+    guard sender.draggingPasteboard.string(
+      forType: gitDesktopWorkspaceTabDragType
+    ) == dragSessionIdentifier,
+      let sourceIndex = draggedTabIndex,
+      let destinationIndex = gitDesktopWorkspaceTabDropIndex(
+        locationX: convert(sender.draggingLocation, from: nil).x,
+        stripWidth: bounds.width,
+        tabCount: tabButtons.count,
+        sourceIndex: sourceIndex
+      ) else {
+      clearDropState(clearSource: false)
+      return []
+    }
+    dropDestinationIndex = destinationIndex
+    let segmentWidth = bounds.width / CGFloat(tabButtons.count)
+    if destinationIndex == sourceIndex {
+      dropIndicatorView.isHidden = true
+    } else {
+      let indicatorX = destinationIndex > sourceIndex
+        ? CGFloat(destinationIndex + 1) * segmentWidth
+        : CGFloat(destinationIndex) * segmentWidth
+      dropIndicatorView.frame = NSRect(
+        x: min(max(0, indicatorX - 1), max(0, bounds.width - 2)),
+        y: 0,
+        width: 2,
+        height: bounds.height
+      )
+      dropIndicatorView.isHidden = false
+    }
+    return .move
+  }
+
+  /// 中文：清理插入提示；会话真正结束时同时丢弃来源索引。
+  /// English: Clears the insertion marker, dropping the source index only
+  /// when the drag session has actually ended.
+  private func clearDropState(clearSource: Bool) {
+    if clearSource {
+      draggedTabIndex = nil
+    }
+    dropDestinationIndex = nil
+    dropIndicatorView.isHidden = true
   }
 
   override func draw(_ dirtyRect: NSRect) {
@@ -649,6 +952,8 @@ class MainFlutterWindow: NSWindow {
       : ""
     // Workspaces remain separate until the user explicitly chooses the Window
     // menu action. The coordinator enables tabbing only for that merge.
+    // 工作区在用户从“窗口”菜单明确合并前始终彼此独立；仅协调器可为该合并启用
+    // 原生标签能力，避免系统自动合并不同 Flutter Engine。
     tabbingMode = .disallowed
     directoryDropContainer?.acceptsDirectoryDrops =
       role == .repositoryLibrary
@@ -657,13 +962,15 @@ class MainFlutterWindow: NSWindow {
   /// 中文：为当前合并窗口组安装等分、直角的工作区标签条。
   ///
   /// English: Installs an equal-width rectangular strip for the current merged
-  /// window set while preserving each workspace's independent Flutter Engine.
+  /// window set while preserving each workspace's independent Flutter Engine
+  /// and routing valid reorders back to the coordinator.
   func configureWorkspaceTabStrip(
     windows: [MainFlutterWindow],
     selectedWindow: MainFlutterWindow,
     selectionHandler: @escaping (MainFlutterWindow) -> Void = { window in
       window.makeKeyAndOrderFront(nil)
-    }
+    },
+    reorderHandler: @escaping (MainFlutterWindow, Int) -> Void = { _, _ in }
   ) {
     guard role == .workspace, windows.count > 1 else {
       removeWorkspaceTabStrip()
@@ -691,7 +998,8 @@ class MainFlutterWindow: NSWindow {
     let tabStripView = GitDesktopWorkspaceTabStripView(
       windows: windows,
       selectedWindow: selectedWindow,
-      selectionHandler: selectionHandler
+      selectionHandler: selectionHandler,
+      reorderHandler: reorderHandler
     )
     workspaceTabStripView = tabStripView
     directoryDropContainer?.workspaceTabStripView = tabStripView

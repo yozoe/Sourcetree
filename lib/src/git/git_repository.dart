@@ -519,6 +519,33 @@ final class GitRepositoryReader {
     );
   }
 
+  /// Returns whether [path] currently has an entry in Git's index.
+  ///
+  /// 中文：判断 [path] 当前是否仍在 Git 索引中。此检查适用于工作区状态
+  /// 干净、因而不会出现在 `git status` 输出中的已跟踪文件。
+  Future<bool> isPathTracked(GitRepository repository, GitPath path) async {
+    if (!path.isValidUtf8) return false;
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          '--no-optional-locks',
+          '--literal-pathspecs',
+          'ls-files',
+          '--error-unmatch',
+          '--',
+          path.display,
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 256 * 1024,
+        ),
+      ),
+    );
+    return result.isSuccess;
+  }
+
   /// 中文：判断未跟踪状态项是否实际对应目录；Sourcetree 不展示这类目录项。
   /// English: Checks whether an untracked status entry is a directory;
   /// Sourcetree omits these directory-only rows.
