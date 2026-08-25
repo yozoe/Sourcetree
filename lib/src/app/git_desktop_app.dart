@@ -6,11 +6,11 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as path_utils;
-import 'package:yeknom_ui_kit/yeknom_workbench.dart';
 
 import '../git/git.dart';
 import '../presentation/presentation.dart';
 import 'desktop_window_bridge.dart';
+import 'git_desktop_theme.dart';
 import 'git_askpass_prompt_coordinator.dart';
 import 'repository_session.dart';
 import 'repository_view_mapper.dart';
@@ -86,9 +86,6 @@ class _GitDesktopAppState extends State<GitDesktopApp> {
   void _setThemeMode(ThemeMode mode) =>
       _updateThemePreferences(_themePreferences.copyWith(mode: mode));
 
-  void _setThemePreset(YeknomColorPreset preset) =>
-      _updateThemePreferences(_themePreferences.copyWith(preset: preset));
-
   void _updateThemePreferences(GitDesktopThemePreferences next) {
     if (next == _themePreferences) return;
     setState(() => _themePreferences = next);
@@ -112,15 +109,14 @@ class _GitDesktopAppState extends State<GitDesktopApp> {
     final themeControl = GitDesktopThemeMenuButton(
       preferences: _themePreferences,
       onThemeModeChanged: _setThemeMode,
-      onThemePresetChanged: _setThemePreset,
     );
     return MaterialApp(
       title: 'Git Desktop',
       debugShowCheckedModeBanner: false,
       scaffoldMessengerKey: _messengerKey,
       themeMode: _themePreferences.mode,
-      theme: _theme(Brightness.light, _themePreferences.preset),
-      darkTheme: _theme(Brightness.dark, _themePreferences.preset),
+      theme: buildGitDesktopTheme(Brightness.light),
+      darkTheme: buildGitDesktopTheme(Brightness.dark),
       home: _isWorkspaceWindow
           ? RepositoryWorkspaceScreen(
               key: ValueKey<String>(
@@ -311,13 +307,6 @@ class _RepositoryLibraryWindowState
     );
   }
 }
-
-/// 中文：根据亮度创建 Git 桌面客户端的 Yeknom Workbench 主题，并使用 Cobalt 颜色组合。
-///
-/// English: Creates the Git desktop application's Yeknom Workbench theme for
-/// a brightness using the Cobalt color preset.
-ThemeData _theme(Brightness brightness, YeknomColorPreset preset) =>
-    YeknomWorkbenchTheme.build(brightness, preset: preset);
 
 /// Maps a route action name to the safe workspace action it requests.
 RepositoryAction? _repositoryActionFromName(String? name) => switch (name) {
@@ -2915,60 +2904,57 @@ class _RepositoryWorkspaceScreenState
     final overview = mapRepositoryOverview(session);
     unawaited(_syncNativeStopTrackingAvailability(session, overview));
     return Scaffold(
-      body: Column(
+      body: Stack(
         children: [
-          RepositoryTabStrip(
-            tabs: session.openRepositoryTabs,
-            activePath: session.activeRepositoryTabPath,
-            onSelected: controller.selectRepositoryTab,
-            trailing: widget.themeControl,
-          ),
-          Expanded(
-            child: RepositoryOverview(
-              data: overview,
-              callbacks: RepositoryOverviewCallbacks(
-                onAction: _handleAction,
-                onRefSelected: (reference) {
-                  unawaited(controller.selectReference(reference));
-                  if (reference.kind == RepositoryRefKind.stash) {
-                    if (reference.stashReference == null) {
-                      unawaited(_showCreateStashDialog());
-                    }
+          RepositoryOverview(
+            data: overview,
+            toolbarTrailing: widget.themeControl,
+            callbacks: RepositoryOverviewCallbacks(
+              onAction: _handleAction,
+              onRefSelected: (reference) {
+                unawaited(controller.selectReference(reference));
+                if (reference.kind == RepositoryRefKind.stash) {
+                  if (reference.stashReference == null) {
+                    unawaited(_showCreateStashDialog());
                   }
-                },
-                onRefActivated: _handleReferenceActivated,
-                onRefContextAction: _handleReferenceContextAction,
-                onSearchChanged: controller.setSearchQuery,
-                onLoadMoreHistory: () =>
-                    unawaited(controller.loadMoreHistory()),
-                onCommitSelected: (commit) =>
-                    unawaited(controller.selectCommit(commit.oid)),
-                onCommitActivated: (commit) =>
-                    unawaited(_confirmCheckoutCommit(commit)),
-                onCommitContextAction: (commit, action) =>
-                    unawaited(_handleCommitContextAction(commit, action)),
-                onUncommittedChangesSelected:
-                    controller.selectUncommittedChanges,
-                onCommitFileSelected: (file) =>
-                    unawaited(controller.selectCommitFile(file)),
-                onCommitFileContextAction: _showPendingCommitFileContextAction,
-                onChangeSelected: controller.selectChange,
-                onChangeStageToggled: controller.toggleStage,
-                onChangeGroupStageToggled: (changes, stage) =>
-                    controller.toggleStageGroup(changes, stage: stage),
-                onConflictAction: (change, action) =>
-                    unawaited(_handleConflictAction(change, action)),
-                onChangeRevealInFinder: (changes) =>
-                    unawaited(_revealChangesInFinder(changes)),
-                onChangeRemove: (changes) =>
-                    unawaited(_removeUntrackedChanges(changes)),
-                onChangeStopTracking: (changes) =>
-                    unawaited(_stopTrackingChanges(changes)),
-                onChangeReset: (changes) =>
-                    unawaited(_resetChangesToHead(changes)),
-              ),
+                }
+              },
+              onRefActivated: _handleReferenceActivated,
+              onRefContextAction: _handleReferenceContextAction,
+              onSearchChanged: controller.setSearchQuery,
+              onLoadMoreHistory: () => unawaited(controller.loadMoreHistory()),
+              onCommitSelected: (commit) =>
+                  unawaited(controller.selectCommit(commit.oid)),
+              onCommitActivated: (commit) =>
+                  unawaited(_confirmCheckoutCommit(commit)),
+              onCommitContextAction: (commit, action) =>
+                  unawaited(_handleCommitContextAction(commit, action)),
+              onUncommittedChangesSelected: controller.selectUncommittedChanges,
+              onCommitFileSelected: (file) =>
+                  unawaited(controller.selectCommitFile(file)),
+              onCommitFileContextAction: _showPendingCommitFileContextAction,
+              onChangeSelected: controller.selectChange,
+              onChangeStageToggled: controller.toggleStage,
+              onChangeGroupStageToggled: (changes, stage) =>
+                  controller.toggleStageGroup(changes, stage: stage),
+              onConflictAction: (change, action) =>
+                  unawaited(_handleConflictAction(change, action)),
+              onChangeRevealInFinder: (changes) =>
+                  unawaited(_revealChangesInFinder(changes)),
+              onChangeRemove: (changes) =>
+                  unawaited(_removeUntrackedChanges(changes)),
+              onChangeStopTracking: (changes) =>
+                  unawaited(_stopTrackingChanges(changes)),
+              onChangeReset: (changes) =>
+                  unawaited(_resetChangesToHead(changes)),
             ),
           ),
+          if (overview.repository == null && widget.themeControl != null)
+            Positioned(
+              top: 8,
+              right: 8,
+              child: SafeArea(child: widget.themeControl!),
+            ),
         ],
       ),
     );
@@ -4134,88 +4120,6 @@ Widget _dialogActions(
     ],
   ),
 );
-
-final class RepositoryTabStrip extends StatelessWidget {
-  const RepositoryTabStrip({
-    super.key,
-    required this.tabs,
-    required this.activePath,
-    required this.onSelected,
-    this.trailing,
-  });
-
-  final List<RepositoryTab> tabs;
-  final String? activePath;
-  final Future<void> Function(String path) onSelected;
-  final Widget? trailing;
-
-  /// 中文：构建当前组件的界面。
-  /// English: Builds the current component UI.
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Material(
-      color: colors.surfaceContainerHighest,
-      child: SizedBox(
-        height: 42,
-        child: Row(
-          children: [
-            Expanded(
-              child: ListView.separated(
-                key: const ValueKey<String>('repository-tab-strip'),
-                scrollDirection: Axis.horizontal,
-                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-                itemCount: tabs.length,
-                separatorBuilder: (context, index) => const SizedBox(width: 4),
-                itemBuilder: (context, index) {
-                  final tab = tabs[index];
-                  final selected = tab.path == activePath;
-                  return Semantics(
-                    button: true,
-                    selected: selected,
-                    label: '仓库标签 ${tab.label}',
-                    child: Tooltip(
-                      message: tab.path,
-                      child: TextButton.icon(
-                        onPressed: () => unawaited(onSelected(tab.path)),
-                        style: TextButton.styleFrom(
-                          backgroundColor: selected
-                              ? colors.secondaryContainer
-                              : Colors.transparent,
-                          foregroundColor: selected
-                              ? colors.onSecondaryContainer
-                              : colors.onSurfaceVariant,
-                          padding: const EdgeInsets.symmetric(horizontal: 12),
-                          shape: const RoundedRectangleBorder(
-                            borderRadius: BorderRadius.all(Radius.circular(8)),
-                          ),
-                        ),
-                        icon: const Icon(Icons.folder_outlined, size: 16),
-                        label: Text(tab.label, overflow: TextOverflow.ellipsis),
-                      ),
-                    ),
-                  );
-                },
-              ),
-            ),
-            if (trailing case final trailing?) ...[
-              VerticalDivider(
-                width: 1,
-                indent: 8,
-                endIndent: 8,
-                color: colors.outlineVariant,
-              ),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 4),
-                child: trailing,
-              ),
-            ],
-          ],
-        ),
-      ),
-    );
-  }
-}
 
 enum _StashManagerAction { create, apply, pop, drop }
 

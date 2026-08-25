@@ -108,11 +108,19 @@ class RepositoryOverview extends StatefulWidget {
     required this.data,
     this.callbacks = const RepositoryOverviewCallbacks(),
     this.initialLayout = const RepositoryOverviewLayout(),
+    this.toolbarTrailing,
   });
 
   final RepositoryOverviewViewData data;
   final RepositoryOverviewCallbacks callbacks;
   final RepositoryOverviewLayout initialLayout;
+
+  /// 中文：放在主操作栏末端的非 Git 控件，例如显示模式设置；不参与仓库状态。
+  ///
+  /// English: Optional non-Git control placed at the trailing edge of the main
+  /// toolbar, such as display settings; it does not participate in repository
+  /// state.
+  final Widget? toolbarTrailing;
 
   /// 中文：创建关联的状态对象。
   /// English: Creates the associated state object.
@@ -285,6 +293,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
             _RepositoryToolbar(
               repository: repository,
               callbacks: widget.callbacks,
+              trailing: widget.toolbarTrailing,
             ),
             if (widget.data.state == RepositoryOverviewState.error)
               _StaleDataErrorBanner(
@@ -592,13 +601,22 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
 }
 
 class _RepositoryToolbar extends StatelessWidget {
-  const _RepositoryToolbar({required this.repository, required this.callbacks});
+  const _RepositoryToolbar({
+    required this.repository,
+    required this.callbacks,
+    this.trailing,
+  });
 
   final RepositoryViewData repository;
   final RepositoryOverviewCallbacks callbacks;
+  final Widget? trailing;
 
-  /// 中文：构建当前组件的界面。
-  /// English: Builds the current component UI.
+  /// 中文：构建仓库操作栏，展示当前仓库、分支及可执行的 Git 操作。
+  /// 可选尾部控件不参与 Git 状态或操作。
+  ///
+  /// English: Builds the repository action bar with current repository,
+  /// branch, and executable Git actions. An optional trailing control does not
+  /// participate in Git state or operations.
   @override
   Widget build(BuildContext context) {
     final ThemeData theme = Theme.of(context);
@@ -798,6 +816,18 @@ class _RepositoryToolbar extends StatelessWidget {
                     ],
                   ),
                 ),
+                if (trailing case final trailing?) ...[
+                  VerticalDivider(
+                    width: 1,
+                    indent: 10,
+                    endIndent: 10,
+                    color: colors.outlineVariant,
+                  ),
+                  Padding(
+                    padding: const EdgeInsets.symmetric(horizontal: 4),
+                    child: trailing,
+                  ),
+                ],
                 const SizedBox(width: 10),
               ],
             );
@@ -2882,7 +2912,7 @@ final class _HistoryColumnHeader extends StatelessWidget {
             width: widths.date,
             child: Text(
               '日期',
-              textAlign: TextAlign.end,
+              textAlign: TextAlign.start,
               style: theme.textTheme.labelSmall,
             ),
           ),
@@ -3154,7 +3184,7 @@ class _CommitRow extends StatelessWidget {
                   width: widths.date,
                   child: Text(
                     commit.relativeDate,
-                    textAlign: TextAlign.end,
+                    textAlign: TextAlign.start,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: theme.textTheme.labelSmall?.copyWith(

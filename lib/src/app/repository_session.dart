@@ -231,6 +231,20 @@ final class SelectedCommitFile {
       file.path.display == change.path && objectId.isNotEmpty;
 }
 
+/// 中文：从提交改动中返回第一个路径可安全显示的文件。
+/// 非 UTF-8 路径会保留在 Git 数据模型中，但不能安全传入文本 Diff。
+///
+/// English: Returns the first commit change whose path is safe to display.
+/// Non-UTF-8 paths remain in the Git model but cannot safely enter text Diff.
+GitCommitFileChange? firstPreviewableCommitFile(
+  Iterable<GitCommitFileChange> files,
+) {
+  for (final file in files) {
+    if (file.path.isValidUtf8) return file;
+  }
+  return null;
+}
+
 final class RepositorySessionState {
   const RepositorySessionState({
     required this.phase,
@@ -710,8 +724,18 @@ final class RepositorySessionController
         : RepositoryOperationOutcome.failed;
   }
 
-  /// 中文：打开目标资源。
-  /// English: Opens the target resource.
+  /// 中文：打开目标仓库、读取初始状态和首屏历史，并自动选中最新提交。
+  ///
+  /// 输入为用户选择的仓库路径；成功后状态切换为 ready，最新提交的详情与首个
+  /// 可预览文件差异会异步填充。仓库切换、刷新或控制器销毁会使过期读取失效。
+  ///
+  /// English: Opens a repository, loads its initial state and first history
+  /// page, then selects the newest commit automatically.
+  ///
+  /// The input is a user-selected repository path. On success it moves the
+  /// state to ready, then asynchronously fills the newest commit's details
+  /// and first previewable file diff. Repository switches, refreshes and
+  /// controller disposal invalidate stale reads.
   Future<void> openRepository(String path) async {
     final normalizedPath = path.trim();
     if (normalizedPath.isEmpty) {
@@ -801,9 +825,9 @@ final class RepositorySessionController
         historyRevisionSnapshot: historyRevisionSnapshot,
         historyOffset: commits.length,
         hasMoreHistory: loadedHistory.length > _historyPageSize,
-        // Keep the working-tree inspector visible until the user chooses a
-        // historical commit. Selecting a commit then replaces it with that
-        // commit's file list and Diff.
+        // A repository with history opens on its newest commit. Selecting it
+        // below replaces the working-tree inspector with that commit's file
+        // list and first available Diff.
         selectedCommitId: null,
         operations: state.operations,
         openRepositoryTabs: _disambiguateRepositoryTabLabels(
@@ -814,6 +838,9 @@ final class RepositorySessionController
         searchQuery: state.searchQuery,
       );
       _persistRepositorySession();
+      if (commits.isNotEmpty) {
+        await selectCommit(commits.first.objectId);
+      }
     } on Object catch (error, stackTrace) {
       if (generation != _repositoryGeneration) {
         return;
@@ -2031,8 +2058,18 @@ final class RepositorySessionController
       for (final tag in state.tags) {
         if (tag.name == reference.label) {
           if (!tag.hasCommitTarget) {
+            _commitGeneration++;
+            _commitDiffGeneration++;
             state = state.copyWith(
               selectedRefId: 'refs/tags/${tag.name}',
+              clearSelectedCommit: true,
+              commitChanges: const [],
+              commitAdditions: 0,
+              commitDeletions: 0,
+              isCommitLoading: false,
+              isCommitDiffLoading: false,
+              clearSelectedCommitFile: true,
+              clearCommitDiff: true,
               clearMessage: true,
             );
             return;
@@ -2075,8 +2112,17 @@ final class RepositorySessionController
     );
   }
 
-  /// 中文：更新当前选择。
-  /// English: Updates the current selection.
+  /// 中文：选中指定提交，读取其文件摘要，并自动预览首个可安全显示的文件。
+  ///
+  /// 输入为已加载或可按对象 ID 读取的提交；读取期间更新提交详情加载状态。仓库切换、
+  /// 其他提交选择或控制器销毁会使该次异步读取失效。
+  ///
+  /// English: Selects a commit, reads its file summary, and automatically
+  /// previews the first safely displayable file.
+  ///
+  /// The input may be a loaded commit or an object ID that can be read. It
+  /// updates commit-detail loading state, while repository switches, another
+  /// commit selection, or controller disposal invalidate the async read.
   Future<void> selectCommit(String objectId) async {
     final repository = state.repository;
     if (repository == null) return;
@@ -2132,8 +2178,9 @@ final class RepositorySessionController
         commitDeletions: summary.deletions,
         isCommitLoading: false,
       );
-      if (summary.files.isNotEmpty) {
-        await selectCommitFileByPath(summary.files.first.path.display);
+      final firstPreviewableFile = firstPreviewableCommitFile(summary.files);
+      if (firstPreviewableFile != null) {
+        await selectCommitFileByPath(firstPreviewableFile.path.display);
       }
     } on Object catch (error, stackTrace) {
       if (!ref.mounted || generation != _commitGeneration) return;

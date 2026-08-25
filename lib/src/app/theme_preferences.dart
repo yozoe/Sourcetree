@@ -5,33 +5,32 @@ import 'dart:math';
 
 import 'package:flutter/material.dart';
 import 'package:path/path.dart' as path_utils;
-import 'package:yeknom_ui_kit/yeknom_workbench.dart';
 
 @immutable
 final class GitDesktopThemePreferences {
-  const GitDesktopThemePreferences({required this.mode, required this.preset});
+  const GitDesktopThemePreferences({required this.mode});
 
-  static const defaults = GitDesktopThemePreferences(
-    mode: ThemeMode.system,
-    preset: YeknomColorPreset.cobalt,
-  );
+  static const defaults = GitDesktopThemePreferences(mode: ThemeMode.system);
 
   final ThemeMode mode;
-  final YeknomColorPreset preset;
 
-  GitDesktopThemePreferences copyWith({
-    ThemeMode? mode,
-    YeknomColorPreset? preset,
-  }) => GitDesktopThemePreferences(
-    mode: mode ?? this.mode,
-    preset: preset ?? this.preset,
-  );
+  /// 中文：复制偏好并可替换显示模式；不保留已移除的旧主题色字段。
+  ///
+  /// English: Copies preferences while optionally replacing the display mode;
+  /// removed legacy color-preset fields are not retained.
+  GitDesktopThemePreferences copyWith({ThemeMode? mode}) =>
+      GitDesktopThemePreferences(mode: mode ?? this.mode);
 
-  Map<String, Object> toJson() => <String, Object>{
-    'themeMode': mode.name,
-    'colorPreset': preset.name,
-  };
+  /// 中文：将当前偏好转换为可原子写入本地文件的 JSON 数据。
+  ///
+  /// English: Converts the current preferences to JSON data for atomic local
+  /// persistence.
+  Map<String, Object> toJson() => <String, Object>{'themeMode': mode.name};
 
+  /// 中文：从本地 JSON 恢复显示模式，忽略已废弃的颜色预设字段。
+  ///
+  /// English: Restores the display mode from local JSON and ignores the
+  /// retired color-preset field.
   factory GitDesktopThemePreferences.fromJson(Object? value) {
     if (value is! Map) return defaults;
     return GitDesktopThemePreferences(
@@ -39,21 +38,15 @@ final class GitDesktopThemePreferences {
         (candidate) => candidate.name == value['themeMode'],
         orElse: () => defaults.mode,
       ),
-      preset: YeknomColorPreset.values.firstWhere(
-        (candidate) => candidate.name == value['colorPreset'],
-        orElse: () => defaults.preset,
-      ),
     );
   }
 
   @override
   bool operator ==(Object other) =>
-      other is GitDesktopThemePreferences &&
-      other.mode == mode &&
-      other.preset == preset;
+      other is GitDesktopThemePreferences && other.mode == mode;
 
   @override
-  int get hashCode => Object.hash(mode, preset);
+  int get hashCode => mode.hashCode;
 }
 
 abstract interface class GitDesktopThemePreferencesStore {
@@ -173,24 +166,25 @@ class GitDesktopThemeMenuButton extends StatelessWidget {
     super.key,
     required this.preferences,
     required this.onThemeModeChanged,
-    required this.onThemePresetChanged,
   });
 
   final GitDesktopThemePreferences preferences;
   final ValueChanged<ThemeMode> onThemeModeChanged;
-  final ValueChanged<YeknomColorPreset> onThemePresetChanged;
 
+  /// 中文：构建只提供系统、浅色和深色模式的主题菜单。
+  /// 用户选择后立即回调，不持有或写入任何窗口状态。
+  ///
+  /// English: Builds the theme menu containing only system, light, and dark
+  /// modes. Selection is reported immediately without owning window state.
   @override
   Widget build(BuildContext context) {
     return PopupMenuButton<_ThemeAction>(
       key: const ValueKey('theme-menu-button'),
-      tooltip: '主题：${preferences.mode.label} · ${preferences.preset.label}',
+      tooltip: '显示模式：${preferences.mode.label}',
       icon: Icon(preferences.mode.icon, size: 20),
       onSelected: (action) {
         final mode = action.mode;
         if (mode != null) onThemeModeChanged(mode);
-        final preset = action.preset;
-        if (preset != null) onThemePresetChanged(preset);
       },
       itemBuilder: (context) => <PopupMenuEntry<_ThemeAction>>[
         const PopupMenuItem(enabled: false, child: Text('显示模式')),
@@ -203,17 +197,6 @@ class GitDesktopThemeMenuButton extends StatelessWidget {
             checked: action.mode == preferences.mode,
             child: Text(action.mode!.label),
           ),
-        const PopupMenuDivider(),
-        const PopupMenuItem(enabled: false, child: Text('主题色')),
-        for (final action in _ThemeAction.values.where(
-          (action) => action.preset != null,
-        ))
-          CheckedPopupMenuItem(
-            key: ValueKey('theme-preset-${action.preset!.name}'),
-            value: action,
-            checked: action.preset == preferences.preset,
-            child: Text(action.preset!.label),
-          ),
       ],
     );
   }
@@ -222,20 +205,11 @@ class GitDesktopThemeMenuButton extends StatelessWidget {
 enum _ThemeAction {
   system(mode: ThemeMode.system),
   light(mode: ThemeMode.light),
-  dark(mode: ThemeMode.dark),
-  workbench(preset: YeknomColorPreset.workbench),
-  cobalt(preset: YeknomColorPreset.cobalt),
-  orchid(preset: YeknomColorPreset.orchid),
-  graphite(preset: YeknomColorPreset.graphite),
-  obsidian(preset: YeknomColorPreset.obsidian),
-  midnight(preset: YeknomColorPreset.midnight),
-  blackberry(preset: YeknomColorPreset.blackberry),
-  sage(preset: YeknomColorPreset.sage);
+  dark(mode: ThemeMode.dark);
 
-  const _ThemeAction({this.mode, this.preset});
+  const _ThemeAction({this.mode});
 
   final ThemeMode? mode;
-  final YeknomColorPreset? preset;
 }
 
 extension on ThemeMode {
@@ -249,18 +223,5 @@ extension on ThemeMode {
     ThemeMode.system => Icons.brightness_auto_outlined,
     ThemeMode.light => Icons.light_mode_outlined,
     ThemeMode.dark => Icons.dark_mode_outlined,
-  };
-}
-
-extension on YeknomColorPreset {
-  String get label => switch (this) {
-    YeknomColorPreset.workbench => '工作台',
-    YeknomColorPreset.cobalt => '钴蓝',
-    YeknomColorPreset.orchid => '兰紫',
-    YeknomColorPreset.graphite => '石墨',
-    YeknomColorPreset.obsidian => '黑曜',
-    YeknomColorPreset.midnight => '午夜',
-    YeknomColorPreset.blackberry => '黑莓',
-    YeknomColorPreset.sage => '鼠尾草',
   };
 }

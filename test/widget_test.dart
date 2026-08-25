@@ -11,7 +11,6 @@ import 'package:git_desktop/src/app/repository_session_store.dart';
 import 'package:git_desktop/src/app/theme_preferences.dart';
 import 'package:git_desktop/src/git/git.dart';
 import 'package:git_desktop/src/presentation/presentation.dart';
-import 'package:yeknom_ui_kit/yeknom_workbench.dart';
 
 final class _MemoryThemePreferencesStore
     implements GitDesktopThemePreferencesStore {
@@ -111,6 +110,7 @@ void main() {
       container.read(repositorySessionProvider).openRepositoryTabs,
       isEmpty,
     );
+    expect(find.byKey(const ValueKey('theme-menu-button')), findsOneWidget);
   });
 
   testWidgets('switches and persists shared theme preferences', (tester) async {
@@ -128,14 +128,9 @@ void main() {
     await tester.pumpAndSettle();
     await tester.tap(find.byKey(const ValueKey('theme-mode-dark')));
     await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('theme-menu-button')));
-    await tester.pumpAndSettle();
-    await tester.tap(find.byKey(const ValueKey('theme-preset-obsidian')));
-    await tester.pumpAndSettle();
-
     final materialApp = tester.widget<MaterialApp>(find.byType(MaterialApp));
     expect(materialApp.themeMode, ThemeMode.dark);
-    expect(store.saved.last.preset, YeknomColorPreset.obsidian);
+    expect(store.saved.last.mode, ThemeMode.dark);
   });
 
   testWidgets('groups, filters and opens local repositories on double-click', (
@@ -304,32 +299,30 @@ void main() {
   });
 
   testWidgets(
-    'switches between opened repositories by clicking workspace tabs',
+    'keeps workspace controls in the Git toolbar without a tab strip',
     (tester) async {
-      String? selectedPath;
       await tester.pumpWidget(
         MaterialApp(
-          home: Scaffold(
-            body: RepositoryTabStrip(
-              tabs: const [
-                RepositoryTab(path: '/tmp/alpha', label: 'alpha'),
-                RepositoryTab(path: '/tmp/beta', label: 'beta'),
-              ],
-              activePath: '/tmp/beta',
-              onSelected: (path) async => selectedPath = path,
+          home: RepositoryOverview(
+            data: RepositoryOverviewViewData.ready(
+              const RepositoryViewData(
+                name: 'example',
+                path: '/tmp/example',
+                currentBranch: 'main',
+              ),
+            ),
+            toolbarTrailing: IconButton(
+              key: const ValueKey('workspace-settings'),
+              onPressed: () {},
+              icon: const Icon(Icons.settings_outlined),
             ),
           ),
         ),
       );
-      expect(
-        find.byKey(const ValueKey<String>('repository-tab-strip')),
-        findsOneWidget,
-      );
 
-      await tester.tap(find.text('alpha'));
-      await tester.pump();
-
-      expect(selectedPath, '/tmp/alpha');
+      expect(find.byKey(const ValueKey('repository-toolbar')), findsOneWidget);
+      expect(find.byKey(const ValueKey('workspace-settings')), findsOneWidget);
+      expect(find.byKey(const ValueKey('repository-tab-strip')), findsNothing);
     },
   );
 
@@ -1004,6 +997,15 @@ void main() {
           findsOneWidget,
         );
       }
+      expect(
+        tester
+            .widget<Text>(
+              find.descendant(of: historyHeader, matching: find.text('日期')),
+            )
+            .textAlign,
+        TextAlign.start,
+      );
+      expect(tester.widget<Text>(find.text('今天')).textAlign, TextAlign.start);
 
       final graphCanvas = find.byKey(
         const ValueKey<String>('commit-graph-canvas'),

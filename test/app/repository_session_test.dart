@@ -32,32 +32,46 @@ void main() {
     );
   });
 
-  test('loads selected commit files, statistics and file diff', () async {
-    final repository = await GitTestRepository.create();
-    addTearDown(repository.dispose);
-    await repository.writeFile('lib/example.dart', 'void main() {}\n');
-    await repository.commit('add example');
+  test(
+    'automatically selects the latest commit and its first file diff',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', '# Base\n');
+      await repository.commit('base');
+      await repository.writeFile('lib/example.dart', 'void main() {}\n');
+      await repository.commit('add example');
 
-    final container = ProviderContainer();
-    addTearDown(container.dispose);
-    final controller = container.read(repositorySessionProvider.notifier);
-    await controller.openRepository(repository.workingDirectory.path);
-    final commit = container
-        .read(repositorySessionProvider)
-        .commits
-        .singleWhere((entry) => entry.subject == 'add example');
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
 
-    await controller.selectCommit(commit.objectId);
+      final overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      );
+      final selected = overview.repository!;
+      expect(selected.selectedCommit!.subject, 'add example');
+      expect(selected.selectedCommit!.changedFiles, 1);
+      expect(selected.selectedCommit!.additions, 1);
+      expect(selected.commitChanges.single.path, 'lib/example.dart');
+      expect(selected.selectedCommitFile!.path, 'lib/example.dart');
+      expect(selected.commitDiff.lines, isNotEmpty);
+    },
+  );
 
-    final overview = mapRepositoryOverview(
-      container.read(repositorySessionProvider),
+  test('chooses the first UTF-8 commit path for the initial file diff', () {
+    final invalid = GitCommitFileChange(
+      path: GitPath(<int>[0x69, 0x6e, 0x76, 0x61, 0x6c, 0x69, 0x64, 0xff]),
+      kind: GitCommitChangeKind.added,
     );
-    final selected = overview.repository!;
-    expect(selected.selectedCommit!.changedFiles, 1);
-    expect(selected.selectedCommit!.additions, 1);
-    expect(selected.commitChanges.single.path, 'lib/example.dart');
-    expect(selected.selectedCommitFile!.path, 'lib/example.dart');
-    expect(selected.commitDiff.lines, isNotEmpty);
+    final visible = GitCommitFileChange(
+      path: GitPath.fromString('visible.txt'),
+      kind: GitCommitChangeKind.added,
+    );
+
+    expect(firstPreviewableCommitFile([invalid, visible]), same(visible));
+    expect(firstPreviewableCommitFile([invalid]), isNull);
   });
 
   test('patch dry-run returns the session to ready state', () async {
