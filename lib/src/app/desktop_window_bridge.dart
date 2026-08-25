@@ -41,6 +41,14 @@ final class DesktopWindowBridge {
     });
   }
 
+  /// Confirms that the home Engine can receive deferred repository
+  /// registrations from active workspace windows.
+  ///
+  /// 中文：首页 Engine 已安装仓库回调，可接收工作区延迟登记的仓库。
+  static Future<void> repositoryLibraryReady() {
+    return _channel.invokeMethod<void>('repositoryLibraryReady');
+  }
+
   /// Updates native workspace-menu availability from Flutter's current state.
   ///
   /// 中文：将 Flutter 已校验的工作区菜单可用状态同步给当前 macOS 窗口；原生

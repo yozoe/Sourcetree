@@ -6,7 +6,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:git_desktop/src/app/git_askpass_prompt_coordinator.dart';
 import 'package:git_desktop/src/app/git_desktop_app.dart';
-import 'package:git_desktop/src/app/repository_session.dart';
+import 'package:git_desktop/src/app/repository_library_controller.dart';
 import 'package:git_desktop/src/app/repository_session_store.dart';
 import 'package:git_desktop/src/app/theme_preferences.dart';
 import 'package:git_desktop/src/git/git.dart';
@@ -106,21 +106,22 @@ void main() {
     await tester.pump();
 
     expect(store.loadCount, 0);
-    expect(
-      container.read(repositorySessionProvider).openRepositoryTabs,
-      isEmpty,
-    );
+    expect(container.read(repositoryLibraryProvider).repositories, isEmpty);
     expect(find.byKey(const ValueKey('theme-menu-button')), findsOneWidget);
   });
 
   testWidgets('switches and persists shared theme preferences', (tester) async {
     final store = _MemoryThemePreferencesStore();
-    final container = ProviderContainer();
+    final container = ProviderContainer(
+      overrides: [
+        gitDesktopThemePreferencesStoreProvider.overrideWithValue(store),
+      ],
+    );
     addTearDown(container.dispose);
     await tester.pumpWidget(
       UncontrolledProviderScope(
         container: container,
-        child: GitDesktopApp(themePreferencesStore: store),
+        child: const GitDesktopApp(),
       ),
     );
 

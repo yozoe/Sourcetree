@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:git_desktop/src/app/repository_session.dart';
+import 'package:git_desktop/src/app/repository_library_controller.dart';
 import 'package:git_desktop/src/app/repository_session_store.dart';
 import 'package:git_desktop/src/app/repository_view_mapper.dart';
 import 'package:git_desktop/src/git/git.dart';
@@ -888,7 +889,7 @@ void main() {
     },
   );
 
-  test('restores opened repository tabs and the active repository', () async {
+  test('restores the home library and its active repository', () async {
     final firstRepository = await GitTestRepository.create();
     addTearDown(firstRepository.dispose);
     final secondRepository = await GitTestRepository.create();
@@ -899,37 +900,29 @@ void main() {
     );
     addTearDown(firstContainer.dispose);
     final firstController = firstContainer.read(
-      repositorySessionProvider.notifier,
+      repositoryLibraryProvider.notifier,
     );
 
-    await firstController.restoreSession();
-    await firstController.openRepository(firstRepository.workingDirectory.path);
-    await firstController.openRepository(
-      secondRepository.workingDirectory.path,
-    );
+    await firstController.restore();
+    await firstController.add(firstRepository.workingDirectory.path);
+    await firstController.add(secondRepository.workingDirectory.path);
     final firstPath = firstContainer
-        .read(repositorySessionProvider)
-        .openRepositoryTabs
+        .read(repositoryLibraryProvider)
+        .repositories
         .first
         .path;
-    await firstController.selectRepositoryTab(firstPath);
-    await firstContainer
-        .read(repositorySessionProvider.notifier)
-        .restoreSession();
+    firstController.select(firstPath);
+    await Future<void>.delayed(Duration.zero);
 
     final restoredContainer = ProviderContainer(
       overrides: [repositorySessionStoreProvider.overrideWithValue(store)],
     );
     addTearDown(restoredContainer.dispose);
-    await restoredContainer
-        .read(repositorySessionProvider.notifier)
-        .restoreSession();
+    await restoredContainer.read(repositoryLibraryProvider.notifier).restore();
 
-    final restoredState = restoredContainer.read(repositorySessionProvider);
-    expect(restoredState.phase, RepositorySessionPhase.ready);
-    expect(restoredState.openRepositoryTabs, hasLength(2));
-    expect(restoredState.activeRepositoryTabPath, firstPath);
-    expect(restoredState.repository!.commandDirectory, firstPath);
+    final restoredState = restoredContainer.read(repositoryLibraryProvider);
+    expect(restoredState.repositories, hasLength(2));
+    expect(restoredState.activeRepositoryPath, firstPath);
   });
 
   test('adds inspected roots and persists repository library ordering', () async {
@@ -943,13 +936,11 @@ void main() {
       overrides: [repositorySessionStoreProvider.overrideWithValue(store)],
     );
     addTearDown(container.dispose);
-    final controller = container.read(repositorySessionProvider.notifier);
+    final controller = container.read(repositoryLibraryProvider.notifier);
 
-    await controller.restoreSession();
+    await controller.restore();
     expect(
-      await controller.addRepositoryToLibrary(
-        firstRepository.workingDirectory.path,
-      ),
+      await controller.add(firstRepository.workingDirectory.path),
       RepositoryLibraryRegistrationResult.added,
     );
     final nestedDirectory = Directory(
@@ -957,39 +948,37 @@ void main() {
     );
     await nestedDirectory.create();
     expect(
-      await controller.addRepositoryToLibrary(nestedDirectory.path),
+      await controller.add(nestedDirectory.path),
       RepositoryLibraryRegistrationResult.alreadyRegistered,
     );
     expect(
-      await controller.addRepositoryToLibrary(
-        secondRepository.workingDirectory.path,
-      ),
+      await controller.add(secondRepository.workingDirectory.path),
       RepositoryLibraryRegistrationResult.added,
     );
 
     final firstPath = container
-        .read(repositorySessionProvider)
-        .openRepositoryTabs
+        .read(repositoryLibraryProvider)
+        .repositories
         .first
         .path;
     final secondPath = container
-        .read(repositorySessionProvider)
-        .openRepositoryTabs
+        .read(repositoryLibraryProvider)
+        .repositories
         .last
         .path;
     final firstTab = container
-        .read(repositorySessionProvider)
-        .openRepositoryTabs
+        .read(repositoryLibraryProvider)
+        .repositories
         .first;
     expect(firstTab.hasStatus, isTrue);
     expect(firstTab.branchName, firstRepository.initialBranch);
     expect(firstTab.changedFileCount, 1);
     expect(firstTab.isUnborn, isTrue);
-    controller.reorderRepositoryLibrary([secondPath, firstPath]);
+    controller.reorder([secondPath, firstPath]);
     expect(
       container
-          .read(repositorySessionProvider)
-          .openRepositoryTabs
+          .read(repositoryLibraryProvider)
+          .repositories
           .map((tab) => tab.path),
       [secondPath, firstPath],
     );
@@ -1006,16 +995,14 @@ void main() {
       await repository.writeFile('uncommitted.txt', 'pending\n');
       final container = ProviderContainer();
       addTearDown(container.dispose);
-      final controller = container.read(repositorySessionProvider.notifier);
+      final controller = container.read(repositoryLibraryProvider.notifier);
 
       expect(
-        await controller.addRepositoryToLibrary(
-          repository.workingDirectory.path,
-        ),
+        await controller.add(repository.workingDirectory.path),
         RepositoryLibraryRegistrationResult.added,
       );
       expect(
-        container.read(repositorySessionProvider).openRepositoryTabs.single,
+        container.read(repositoryLibraryProvider).repositories.single,
         isA<RepositoryTab>()
             .having((tab) => tab.changedFileCount, 'changedFileCount', 1)
             .having((tab) => tab.isUnborn, 'isUnborn', isTrue),
@@ -1023,13 +1010,11 @@ void main() {
 
       await repository.commit('initial');
       expect(
-        await controller.addRepositoryToLibrary(
-          repository.workingDirectory.path,
-        ),
+        await controller.add(repository.workingDirectory.path),
         RepositoryLibraryRegistrationResult.alreadyRegistered,
       );
       expect(
-        container.read(repositorySessionProvider).openRepositoryTabs.single,
+        container.read(repositoryLibraryProvider).repositories.single,
         isA<RepositoryTab>()
             .having((tab) => tab.changedFileCount, 'changedFileCount', 0)
             .having((tab) => tab.isUnborn, 'isUnborn', isFalse),
@@ -1070,38 +1055,28 @@ void main() {
     },
   );
 
-  test(
-    'reopens an existing repository when its workspace tab is selected',
-    () async {
-      final firstRepository = await GitTestRepository.create();
-      addTearDown(firstRepository.dispose);
-      final secondRepository = await GitTestRepository.create();
-      addTearDown(secondRepository.dispose);
-      final container = ProviderContainer();
-      addTearDown(container.dispose);
-      final controller = container.read(repositorySessionProvider.notifier);
+  test('records the selected repository in the persistent library', () async {
+    final firstRepository = await GitTestRepository.create();
+    addTearDown(firstRepository.dispose);
+    final secondRepository = await GitTestRepository.create();
+    addTearDown(secondRepository.dispose);
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositoryLibraryProvider.notifier);
 
-      await controller.openRepository(firstRepository.workingDirectory.path);
-      await controller.openRepository(secondRepository.workingDirectory.path);
-      final initialTabs = container
-          .read(repositorySessionProvider)
-          .openRepositoryTabs;
-      final firstTab = initialTabs.first;
-      final initialLabels = initialTabs.map((tab) => tab.label).toList();
+    await controller.add(firstRepository.workingDirectory.path);
+    await controller.add(secondRepository.workingDirectory.path);
+    final initialTabs = container.read(repositoryLibraryProvider).repositories;
+    final firstTab = initialTabs.first;
+    final initialLabels = initialTabs.map((tab) => tab.label).toList();
 
-      await controller.selectRepositoryTab(firstTab.path);
+    controller.select(firstTab.path);
 
-      final state = container.read(repositorySessionProvider);
-      expect(state.phase, RepositorySessionPhase.ready);
-      expect(state.activeRepositoryTabPath, firstTab.path);
-      expect(state.repository!.commandDirectory, firstTab.path);
-      expect(state.openRepositoryTabs, hasLength(2));
-      expect(
-        state.openRepositoryTabs.map((tab) => tab.label).toList(),
-        initialLabels,
-      );
-    },
-  );
+    final state = container.read(repositoryLibraryProvider);
+    expect(state.activeRepositoryPath, firstTab.path);
+    expect(state.repositories, hasLength(2));
+    expect(state.repositories.map((tab) => tab.label).toList(), initialLabels);
+  });
 
   test('maps sibling branches to persistent graph lanes', () async {
     final repository = await GitTestRepository.create();
@@ -1186,7 +1161,7 @@ void main() {
   );
 
   test(
-    'keeps the previously active tab when a selected repository is unavailable',
+    'keeps the existing library when a reported repository is unavailable',
     () async {
       final firstRepository = await GitTestRepository.create();
       addTearDown(firstRepository.dispose);
@@ -1194,22 +1169,27 @@ void main() {
       addTearDown(secondRepository.dispose);
       final container = ProviderContainer();
       addTearDown(container.dispose);
-      final controller = container.read(repositorySessionProvider.notifier);
+      final controller = container.read(repositoryLibraryProvider.notifier);
 
-      await controller.openRepository(firstRepository.workingDirectory.path);
-      await controller.openRepository(secondRepository.workingDirectory.path);
-      final stateBeforeSelection = container.read(repositorySessionProvider);
-      final unavailableTab = stateBeforeSelection.openRepositoryTabs.first;
+      await controller.add(firstRepository.workingDirectory.path);
+      await controller.add(secondRepository.workingDirectory.path);
+      controller.select(secondRepository.workingDirectory.path);
+      final stateBeforeReport = container.read(repositoryLibraryProvider);
 
       await firstRepository.workingDirectory.delete(recursive: true);
-      await controller.selectRepositoryTab(unavailableTab.path);
 
-      final state = container.read(repositorySessionProvider);
-      expect(state.phase, RepositorySessionPhase.error);
-      expect(state.requestedPath, unavailableTab.path);
       expect(
-        state.activeRepositoryTabPath,
-        stateBeforeSelection.activeRepositoryTabPath,
+        await controller.add(firstRepository.workingDirectory.path),
+        anyOf(
+          RepositoryLibraryRegistrationResult.notRepository,
+          RepositoryLibraryRegistrationResult.failed,
+        ),
+      );
+      final state = container.read(repositoryLibraryProvider);
+      expect(state.repositories, stateBeforeReport.repositories);
+      expect(
+        state.activeRepositoryPath,
+        stateBeforeReport.activeRepositoryPath,
       );
     },
   );

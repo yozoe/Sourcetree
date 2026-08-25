@@ -255,6 +255,51 @@ final class GitDesktopWorkspaceRestoreStore {
   }
 }
 
+/// Retains repository registrations until the home Engine confirms it has
+/// added them to its own persistent library.
+///
+/// The native coordinator owns this cross-Engine handoff because the home
+/// window may be closed while a workspace finishes opening a repository. A
+/// successful Dart method reply removes the path; otherwise it is replayed
+/// when a replacement home Engine becomes ready.
+final class GitDesktopRepositoryLibraryPendingStore {
+  private static let pathsKey = "gitDesktopPendingRepositoryLibraryPaths"
+
+  private let defaults: UserDefaults
+
+  init(defaults: UserDefaults = .standard) {
+    self.defaults = defaults
+  }
+
+  var paths: [String] {
+    normalizedPaths(defaults.array(forKey: Self.pathsKey) as? [String] ?? [])
+  }
+
+  func add(_ path: String) {
+    defaults.set(normalizedPaths(paths + [path]), forKey: Self.pathsKey)
+  }
+
+  func remove(_ path: String) {
+    guard let canonicalPath = gitDesktopCanonicalRepositoryPath(path) else {
+      return
+    }
+    defaults.set(paths.filter { $0 != canonicalPath }, forKey: Self.pathsKey)
+  }
+
+  private func normalizedPaths(_ candidates: [String]) -> [String] {
+    var result: [String] = []
+    var seen: Set<String> = []
+    for candidate in candidates {
+      guard let path = gitDesktopCanonicalRepositoryPath(candidate),
+            seen.insert(path).inserted else {
+        continue
+      }
+      result.append(path)
+    }
+    return result
+  }
+}
+
 /// 中文：返回追加新工作区后的实时合并窗口顺序；当前不存在合并组时返回 nil。
 ///
 /// English: Returns the live merged-window order after adding a newly opened
@@ -557,6 +602,8 @@ final class WindowCoordinator {
     GitDesktopWorkspaceHistory<WorkspaceFlutterWindowController>()
   private let windowFocusHistory = GitDesktopWindowFocusHistory<MainFlutterWindow>()
   private let workspaceRestoreStore: GitDesktopWorkspaceRestoreStore
+  private let repositoryLibraryPendingStore:
+    GitDesktopRepositoryLibraryPendingStore
   private var unregisteredWorkspaces: [
     ObjectIdentifier: WorkspaceFlutterWindowController
   ] = [:]
@@ -571,9 +618,12 @@ final class WindowCoordinator {
 
   init(
     workspaceRestoreStore: GitDesktopWorkspaceRestoreStore =
-      GitDesktopWorkspaceRestoreStore()
+      GitDesktopWorkspaceRestoreStore(),
+    repositoryLibraryPendingStore: GitDesktopRepositoryLibraryPendingStore =
+      GitDesktopRepositoryLibraryPendingStore()
   ) {
     self.workspaceRestoreStore = workspaceRestoreStore
+    self.repositoryLibraryPendingStore = repositoryLibraryPendingStore
   }
 
   func attachRepositoryLibrary(
@@ -630,6 +680,9 @@ final class WindowCoordinator {
             result(nil)
           }
         }
+      case "repositoryLibraryReady":
+        self.flushPendingRepositoryLibraryRegistrations()
+        result(nil)
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -718,7 +771,7 @@ final class WindowCoordinator {
        existing !== controller {
       workspaceHistory.markRecent(existing)
       existing.showAndActivate()
-      notifyRepositoryLibrary(repositoryPath: repositoryPath)
+      reportRepositoryOpenedToLibrary(repositoryPath: repositoryPath)
       // Let the reporting MethodChannel reply before shutting down its Engine.
       DispatchQueue.main.async {
         controller.requestClose()
@@ -739,7 +792,7 @@ final class WindowCoordinator {
     if !resolveRestoredRepository(repositoryPath) {
       persistOpenWorkspaces()
     }
-    notifyRepositoryLibrary(repositoryPath: repositoryPath)
+    reportRepositoryOpenedToLibrary(repositoryPath: repositoryPath)
   }
 
   /// Removes a restored path that Flutter could no longer verify as a Git
@@ -1355,11 +1408,33 @@ final class WindowCoordinator {
     )
   }
 
+  /// Persists an unacknowledged registration before delivering it to Dart.
+  ///
+  /// 中文：首页窗口不可用时保留工作区的仓库登记；首页再次就绪后会重放，直到
+  /// Dart 成功确认已处理。
+  private func reportRepositoryOpenedToLibrary(repositoryPath: String) {
+    repositoryLibraryPendingStore.add(repositoryPath)
+    notifyRepositoryLibrary(repositoryPath: repositoryPath)
+  }
+
+  /// Replays every registration not yet confirmed by the home Engine. The
+  /// pending store remains unchanged until the MethodChannel reply succeeds.
+  private func flushPendingRepositoryLibraryRegistrations() {
+    for repositoryPath in repositoryLibraryPendingStore.paths {
+      notifyRepositoryLibrary(repositoryPath: repositoryPath)
+    }
+  }
+
   private func notifyRepositoryLibrary(repositoryPath: String) {
     repositoryLibraryChannel?.invokeMethod(
       "repositoryOpened",
       arguments: ["repositoryPath": repositoryPath]
-    )
+    ) { [weak self] result in
+      guard result == nil else {
+        return
+      }
+      self?.repositoryLibraryPendingStore.remove(repositoryPath)
+    }
   }
 }
 

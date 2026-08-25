@@ -34,9 +34,16 @@ Future<void> _runGitDesktop({
   required bool restoresPreviouslyOpenWorkspace,
 }) async {
   WidgetsFlutterBinding.ensureInitialized();
-  final container = ProviderContainer();
   final themeStore = FileGitDesktopThemePreferencesStore();
   final themePreferences = await themeStore.load();
+  final container = ProviderContainer(
+    overrides: [
+      gitDesktopThemePreferencesStoreProvider.overrideWithValue(themeStore),
+      initialGitDesktopThemePreferencesProvider.overrideWithValue(
+        themePreferences,
+      ),
+    ],
+  );
   Future<void>? shutdownFuture;
   DesktopWindowBridge.setPrepareToCloseHandler(
     () => shutdownFuture ??= _prepareEngineToClose(container),
@@ -49,8 +56,6 @@ Future<void> _runGitDesktop({
         initialRepositoryPath: initialRepositoryPath,
         initialWorkspaceAction: initialWorkspaceAction,
         restoresPreviouslyOpenWorkspace: restoresPreviouslyOpenWorkspace,
-        initialThemePreferences: themePreferences,
-        themePreferencesStore: themeStore,
       ),
     ),
   );

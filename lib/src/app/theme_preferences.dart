@@ -4,6 +4,7 @@ import 'dart:io';
 import 'dart:math';
 
 import 'package:flutter/material.dart';
+import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as path_utils;
 
 @immutable
@@ -58,6 +59,114 @@ abstract interface class GitDesktopThemePreferencesStore {
 abstract interface class WatchableGitDesktopThemePreferencesStore
     implements GitDesktopThemePreferencesStore {
   Stream<GitDesktopThemePreferences> watch();
+}
+
+/// The persistent theme store supplied by the current Flutter Engine.
+///
+/// 中文：当前 Flutter Engine 注入的主题持久化存储。
+final gitDesktopThemePreferencesStoreProvider =
+    Provider<GitDesktopThemePreferencesStore?>((Ref ref) => null);
+
+/// The theme value loaded before the current Flutter Engine renders.
+///
+/// 中文：当前 Flutter Engine 首次渲染前读取的主题偏好。
+final initialGitDesktopThemePreferencesProvider =
+    Provider<GitDesktopThemePreferences>(
+      (Ref ref) => GitDesktopThemePreferences.defaults,
+    );
+
+/// Exposes the current Engine's theme and any failed persistence attempt.
+///
+/// 中文：暴露当前 Engine 的主题及最近一次持久化失败的序号。
+final gitDesktopThemePreferencesProvider =
+    NotifierProvider<
+      GitDesktopThemePreferencesController,
+      GitDesktopThemePreferencesState
+    >(GitDesktopThemePreferencesController.new);
+
+@immutable
+final class GitDesktopThemePreferencesState {
+  const GitDesktopThemePreferencesState({
+    required this.preferences,
+    this.saveFailureCount = 0,
+  });
+
+  final GitDesktopThemePreferences preferences;
+  final int saveFailureCount;
+
+  GitDesktopThemePreferencesState copyWith({
+    GitDesktopThemePreferences? preferences,
+    int? saveFailureCount,
+  }) => GitDesktopThemePreferencesState(
+    preferences: preferences ?? this.preferences,
+    saveFailureCount: saveFailureCount ?? this.saveFailureCount,
+  );
+}
+
+/// Owns one Flutter Engine's theme subscription and ordered preference writes.
+///
+/// 中文：管理一个 Flutter Engine 的主题监听和顺序化偏好写入。
+///
+/// English: Owns one Flutter Engine's theme subscription and serializes its
+/// preference writes. The native coordinator and preference file remain the
+/// cross-Engine synchronization boundary.
+final class GitDesktopThemePreferencesController
+    extends Notifier<GitDesktopThemePreferencesState> {
+  StreamSubscription<GitDesktopThemePreferences>? _subscription;
+  Future<void> _saveTail = Future<void>.value();
+
+  @override
+  GitDesktopThemePreferencesState build() {
+    _dispose();
+    final initial = ref.watch(initialGitDesktopThemePreferencesProvider);
+    final store = ref.watch(gitDesktopThemePreferencesStoreProvider);
+    if (store is WatchableGitDesktopThemePreferencesStore) {
+      _subscription = store.watch().listen(
+        _receiveExternalPreference,
+        onError: (_) {},
+      );
+    }
+    ref.onDispose(_dispose);
+    return GitDesktopThemePreferencesState(preferences: initial);
+  }
+
+  /// Updates the local theme immediately and persists it without reordering
+  /// concurrent selections.
+  ///
+  /// 中文：立即更新本地主题，并顺序持久化并发的用户选择。
+  void setThemeMode(ThemeMode mode) {
+    final next = state.preferences.copyWith(mode: mode);
+    if (next == state.preferences) return;
+    state = state.copyWith(preferences: next);
+    final store = ref.read(gitDesktopThemePreferencesStoreProvider);
+    if (store == null) return;
+    _saveTail = _saveTail.then((_) async {
+      try {
+        await store.save(next);
+      } on Object {
+        if (ref.mounted) {
+          state = state.copyWith(saveFailureCount: state.saveFailureCount + 1);
+        }
+      }
+    });
+  }
+
+  /// Accepts a preference persisted by another Engine without writing it back.
+  ///
+  /// 中文：接收其他 Engine 持久化的偏好，不回写到文件。
+  void _receiveExternalPreference(GitDesktopThemePreferences next) {
+    if (!ref.mounted || next == state.preferences) return;
+    state = state.copyWith(preferences: next);
+  }
+
+  /// Releases the file watcher owned by this Provider.
+  ///
+  /// 中文：释放当前 Provider 持有的文件监听。
+  void _dispose() {
+    final subscription = _subscription;
+    _subscription = null;
+    if (subscription != null) unawaited(subscription.cancel());
+  }
 }
 
 final class FileGitDesktopThemePreferencesStore

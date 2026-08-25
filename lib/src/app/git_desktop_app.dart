@@ -12,19 +12,18 @@ import '../presentation/presentation.dart';
 import 'desktop_window_bridge.dart';
 import 'git_desktop_theme.dart';
 import 'git_askpass_prompt_coordinator.dart';
+import 'repository_library_controller.dart';
 import 'repository_session.dart';
 import 'repository_view_mapper.dart';
 import 'theme_preferences.dart';
 
-class GitDesktopApp extends StatefulWidget {
+class GitDesktopApp extends ConsumerStatefulWidget {
   const GitDesktopApp({
     super.key,
     this.isWorkspaceWindow = false,
     this.initialRepositoryPath,
     this.initialWorkspaceAction,
     this.restoresPreviouslyOpenWorkspace = false,
-    this.initialThemePreferences = GitDesktopThemePreferences.defaults,
-    this.themePreferencesStore,
   });
 
   /// Whether this Flutter engine is hosted by a repository workspace window.
@@ -38,92 +37,52 @@ class GitDesktopApp extends StatefulWidget {
 
   /// Whether this workspace was reopened automatically from the last launch.
   final bool restoresPreviouslyOpenWorkspace;
-  final GitDesktopThemePreferences initialThemePreferences;
-  final GitDesktopThemePreferencesStore? themePreferencesStore;
 
   @override
-  State<GitDesktopApp> createState() => _GitDesktopAppState();
+  ConsumerState<GitDesktopApp> createState() => _GitDesktopAppState();
 }
 
-class _GitDesktopAppState extends State<GitDesktopApp> {
-  late bool _isWorkspaceWindow;
-  String? _initialRepositoryPath;
-  String? _initialWorkspaceAction;
-  late GitDesktopThemePreferences _themePreferences;
+class _GitDesktopAppState extends ConsumerState<GitDesktopApp> {
   final _messengerKey = GlobalKey<ScaffoldMessengerState>();
-  Future<void> _themeSaveTail = Future<void>.value();
-  StreamSubscription<GitDesktopThemePreferences>? _themeSubscription;
-
-  /// 中文：注册原生窗口传入的工作区配置。
-  /// English: Registers workspace configuration sent by the native window
-  /// host after its Flutter engine becomes ready.
-  @override
-  void initState() {
-    super.initState();
-    _isWorkspaceWindow = widget.isWorkspaceWindow;
-    _initialRepositoryPath = widget.initialRepositoryPath;
-    _initialWorkspaceAction = widget.initialWorkspaceAction;
-    _themePreferences = widget.initialThemePreferences;
-    final store = widget.themePreferencesStore;
-    if (store is WatchableGitDesktopThemePreferencesStore) {
-      _themeSubscription = store.watch().listen((next) {
-        if (mounted && next != _themePreferences) {
-          setState(() => _themePreferences = next);
-        }
-      }, onError: (_) {});
-    }
-  }
-
-  /// 中文：释放当前对象持有的资源。
-  /// English: Releases resources held by the current object.
-  @override
-  void dispose() {
-    final themeSubscription = _themeSubscription;
-    if (themeSubscription != null) unawaited(themeSubscription.cancel());
-    super.dispose();
-  }
-
-  void _setThemeMode(ThemeMode mode) =>
-      _updateThemePreferences(_themePreferences.copyWith(mode: mode));
-
-  void _updateThemePreferences(GitDesktopThemePreferences next) {
-    if (next == _themePreferences) return;
-    setState(() => _themePreferences = next);
-    final store = widget.themePreferencesStore;
-    if (store == null) return;
-    _themeSaveTail = _themeSaveTail.then((_) async {
-      try {
-        await store.save(next);
-      } on Object {
-        _messengerKey.currentState
-          ?..hideCurrentSnackBar()
-          ..showSnackBar(const SnackBar(content: Text('主题偏好保存失败；本次切换仍然有效。')));
-      }
-    });
-  }
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
+    ref.listen<int>(
+      gitDesktopThemePreferencesProvider.select(
+        (state) => state.saveFailureCount,
+      ),
+      (previous, next) {
+        if (previous == null || next <= previous) return;
+        _messengerKey.currentState
+          ?..hideCurrentSnackBar()
+          ..showSnackBar(const SnackBar(content: Text('主题偏好保存失败；本次切换仍然有效。')));
+      },
+    );
+    final themePreferences = ref.watch(
+      gitDesktopThemePreferencesProvider.select((state) => state.preferences),
+    );
     final themeControl = GitDesktopThemeMenuButton(
-      preferences: _themePreferences,
-      onThemeModeChanged: _setThemeMode,
+      preferences: themePreferences,
+      onThemeModeChanged: ref
+          .read(gitDesktopThemePreferencesProvider.notifier)
+          .setThemeMode,
     );
     return MaterialApp(
       title: 'Git Desktop',
       debugShowCheckedModeBanner: false,
       scaffoldMessengerKey: _messengerKey,
-      themeMode: _themePreferences.mode,
+      themeMode: themePreferences.mode,
       theme: buildGitDesktopTheme(Brightness.light),
       darkTheme: buildGitDesktopTheme(Brightness.dark),
-      home: _isWorkspaceWindow
+      home: widget.isWorkspaceWindow
           ? RepositoryWorkspaceScreen(
               key: ValueKey<String>(
-                '${_initialRepositoryPath ?? ''}|${_initialWorkspaceAction ?? ''}',
+                '${widget.initialRepositoryPath ?? ''}|${widget.initialWorkspaceAction ?? ''}',
               ),
-              initialRepositoryPath: _initialRepositoryPath,
-              initialAction: _initialWorkspaceAction,
+              initialRepositoryPath: widget.initialRepositoryPath,
+              initialAction: widget.initialWorkspaceAction,
               isRestoredWorkspace: widget.restoresPreviouslyOpenWorkspace,
               themeControl: themeControl,
             )
@@ -157,14 +116,13 @@ class _RepositoryLibraryWindowState
   @override
   void initState() {
     super.initState();
-    _restoreFuture = ref
-        .read(repositorySessionProvider.notifier)
-        .restoreSession();
+    _restoreFuture = ref.read(repositoryLibraryProvider.notifier).restore();
     DesktopWindowBridge.setRepositoryOpenedHandler(_recordRepositoryOpened);
     DesktopWindowBridge.setRepositoryDirectoryDropHandlers(
       onDirectoriesDropped: _registerDroppedDirectories,
       onDragStateChanged: _updateDirectoryDropState,
     );
+    unawaited(DesktopWindowBridge.repositoryLibraryReady().catchError((_) {}));
   }
 
   @override
@@ -192,9 +150,9 @@ class _RepositoryLibraryWindowState
   /// persisted repository list.
   Future<void> _recordRepositoryOpened(String repositoryPath) {
     return _enqueueRepositoryRegistration(() async {
-      await ref
-          .read(repositorySessionProvider.notifier)
-          .addRepositoryToLibrary(repositoryPath);
+      final controller = ref.read(repositoryLibraryProvider.notifier);
+      await controller.add(repositoryPath);
+      controller.select(repositoryPath);
     });
   }
 
@@ -207,9 +165,9 @@ class _RepositoryLibraryWindowState
     var alreadyRegistered = 0;
     var rejected = 0;
     await _enqueueRepositoryRegistration(() async {
-      final controller = ref.read(repositorySessionProvider.notifier);
+      final controller = ref.read(repositoryLibraryProvider.notifier);
       for (final directoryPath in directoryPaths) {
-        switch (await controller.addRepositoryToLibrary(directoryPath)) {
+        switch (await controller.add(directoryPath)) {
           case RepositoryLibraryRegistrationResult.added:
             added++;
           case RepositoryLibraryRegistrationResult.alreadyRegistered:
@@ -274,10 +232,12 @@ class _RepositoryLibraryWindowState
   /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
-    final session = ref.watch(repositorySessionProvider);
+    final repositories = ref.watch(
+      repositoryLibraryProvider.select((state) => state.repositories),
+    );
     return Scaffold(
       body: RepositoryLibraryPage(
-        repositories: session.openRepositoryTabs
+        repositories: repositories
             .map(
               (RepositoryTab tab) => RepositoryLibraryItem(
                 path: tab.path,
@@ -291,7 +251,10 @@ class _RepositoryLibraryWindowState
             )
             .toList(growable: false),
         activePath: null,
-        onRepositorySelected: (String path) => _openWorkspace(path),
+        onRepositorySelected: (String path) {
+          ref.read(repositoryLibraryProvider.notifier).select(path);
+          return _openWorkspace(path);
+        },
         onOpenRepository: () => unawaited(_pickRepositoryAndOpen()),
         onCloneRepository: () =>
             unawaited(_openWorkspace(null, initialAction: 'cloneRepository')),
@@ -299,8 +262,8 @@ class _RepositoryLibraryWindowState
           _openWorkspace(null, initialAction: 'initializeRepository'),
         ),
         onRepositoriesReordered: ref
-            .read(repositorySessionProvider.notifier)
-            .reorderRepositoryLibrary,
+            .read(repositoryLibraryProvider.notifier)
+            .reorder,
         isDirectoryDropActive: _isDirectoryDropActive,
         trailing: widget.themeControl,
       ),

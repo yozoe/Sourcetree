@@ -7,7 +7,6 @@ import 'package:path/path.dart' as path_utils;
 import '../git/git.dart';
 import '../presentation/presentation.dart';
 import 'git_askpass_prompt_coordinator.dart';
-import 'repository_session_store.dart';
 import 'git_sensitive_text_redactor.dart';
 
 final gitRunnerProvider = Provider<GitRunner>((Ref ref) => GitRunner());
@@ -24,10 +23,6 @@ final gitRepositoryWriterProvider = Provider<GitRepositoryWriter>(
   (Ref ref) => GitRepositoryWriter(ref.watch(gitRunnerProvider)),
 );
 
-final repositorySessionStoreProvider = Provider<RepositorySessionStore>(
-  (Ref ref) => FileRepositorySessionStore(),
-);
-
 final repositorySessionProvider =
     NotifierProvider<RepositorySessionController, RepositorySessionState>(
       RepositorySessionController.new,
@@ -38,14 +33,6 @@ enum RepositorySessionPhase { empty, loading, ready, error }
 enum RepositoryOperationKind { clone, fetch, pull, push, stash, history }
 
 enum RepositoryOperationOutcome { running, succeeded, cancelled, failed }
-
-/// The result of adding a directory to the repository library.
-enum RepositoryLibraryRegistrationResult {
-  added,
-  alreadyRegistered,
-  notRepository,
-  failed,
-}
 
 /// Returns the directory name Git would conventionally use for [remoteUrl].
 ///
@@ -92,43 +79,6 @@ String cloneRepositoryNameFromRemote(String remoteUrl) {
     throw const GitException('无法从远端地址确定仓库目录名。');
   }
   return name;
-}
-
-/// A workspace tab for a successfully opened repository or linked worktree.
-final class RepositoryTab {
-  const RepositoryTab({
-    required this.path,
-    required this.label,
-    String? baseLabel,
-    this.branchName,
-    this.changedFileCount = 0,
-    this.isDetached = false,
-    this.isUnborn = false,
-    this.hasStatus = false,
-  }) : baseLabel = baseLabel ?? label;
-
-  final String path;
-
-  /// The current label rendered in the tab strip.
-  final String label;
-
-  /// The repository directory name before duplicate-name disambiguation.
-  final String baseLabel;
-
-  /// Current local branch name reported by Git, when status is available.
-  final String? branchName;
-
-  /// Number of changed files reported by the latest Git status read.
-  final int changedFileCount;
-
-  /// Whether the repository is currently checked out at a detached HEAD.
-  final bool isDetached;
-
-  /// Whether the current branch has no commits yet.
-  final bool isUnborn;
-
-  /// Whether the branch and change summary was read successfully from Git.
-  final bool hasStatus;
 }
 
 final class RepositoryOperationRecord {
@@ -284,8 +234,6 @@ final class RepositorySessionState {
     this.isPushRunning = false,
     this.isStashRunning = false,
     this.operations = const [],
-    this.openRepositoryTabs = const [],
-    this.activeRepositoryTabPath,
     this.searchQuery = '',
     this.gitVersion,
     this.message,
@@ -340,8 +288,6 @@ final class RepositorySessionState {
   final bool isPushRunning;
   final bool isStashRunning;
   final List<RepositoryOperationRecord> operations;
-  final List<RepositoryTab> openRepositoryTabs;
-  final String? activeRepositoryTabPath;
   final String searchQuery;
   final String? gitVersion;
   final String? message;
@@ -390,8 +336,6 @@ final class RepositorySessionState {
     bool? isPushRunning,
     bool? isStashRunning,
     List<RepositoryOperationRecord>? operations,
-    List<RepositoryTab>? openRepositoryTabs,
-    String? activeRepositoryTabPath,
     String? searchQuery,
     String? gitVersion,
     String? message,
@@ -451,9 +395,6 @@ final class RepositorySessionState {
       isPushRunning: isPushRunning ?? this.isPushRunning,
       isStashRunning: isStashRunning ?? this.isStashRunning,
       operations: operations ?? this.operations,
-      openRepositoryTabs: openRepositoryTabs ?? this.openRepositoryTabs,
-      activeRepositoryTabPath:
-          activeRepositoryTabPath ?? this.activeRepositoryTabPath,
       searchQuery: searchQuery ?? this.searchQuery,
       gitVersion: gitVersion ?? this.gitVersion,
       message: clearMessage ? null : message ?? this.message,
@@ -499,7 +440,6 @@ final class RepositorySessionController
   late GitRepositoryInspector _inspector;
   late GitRepositoryReader _reader;
   late GitRepositoryWriter _writer;
-  late RepositorySessionStore _sessionStore;
   int _repositoryGeneration = 0;
   int _historyGeneration = 0;
   int _diffGeneration = 0;
@@ -514,9 +454,6 @@ final class RepositorySessionController
   GitCancellationToken? _stashCancellation;
   GitCancellationToken? _historyMutationCancellation;
   GitCancellationToken? _repositoryDetailsCancellation;
-  Future<void> _sessionWriteChain = Future<void>.value();
-  bool _isRestoringSession = false;
-  bool _sessionPersistenceEnabled = false;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -526,7 +463,6 @@ final class RepositorySessionController
     _inspector = ref.watch(gitRepositoryInspectorProvider);
     _reader = ref.watch(gitRepositoryReaderProvider);
     _writer = ref.watch(gitRepositoryWriterProvider);
-    _sessionStore = ref.watch(repositorySessionStoreProvider);
     ref.onDispose(_cancelActiveGitOperations);
     return const RepositorySessionState.empty();
   }
@@ -609,66 +545,6 @@ final class RepositorySessionController
   /// closes, releasing Git and file traversal work promptly.
   void cancelRepositoryDetailsRead() {
     _repositoryDetailsCancellation?.cancel();
-  }
-
-  /// 中文：恢复上次成功打开的仓库和活动标签，不保存凭据或运行中的操作；失效路径会被丢弃。
-  ///
-  /// English: Restores previously opened repositories and the active tab
-  /// without credentials or running operations, dropping invalid paths.
-  Future<void> restoreSession() async {
-    if (_isRestoringSession || _sessionPersistenceEnabled) {
-      return;
-    }
-    _isRestoringSession = true;
-    _sessionPersistenceEnabled = true;
-    try {
-      final saved = await _sessionStore.load();
-      for (final path in saved.openRepositoryPaths) {
-        final stateBeforeAttempt = state;
-        await openRepository(path);
-        if (state.phase != RepositorySessionPhase.ready) {
-          state = stateBeforeAttempt;
-        }
-      }
-
-      final activePath = saved.activeRepositoryPath;
-      if (activePath != null &&
-          activePath != state.activeRepositoryTabPath &&
-          state.openRepositoryTabs.any((tab) => tab.path == activePath)) {
-        final stateBeforeSelection = state;
-        await selectRepositoryTab(activePath);
-        if (state.phase != RepositorySessionPhase.ready) {
-          state = stateBeforeSelection;
-        }
-      }
-    } finally {
-      _isRestoringSession = false;
-      _persistRepositorySession();
-    }
-  }
-
-  /// 中文：将当前已打开标签和活动路径串行写入本地会话存储，且写入失败不影响 Git 操作。
-  ///
-  /// English: Serializes the current tabs and active path to local session
-  /// storage without letting write failures affect Git operations.
-  void _persistRepositorySession() {
-    if (!_sessionPersistenceEnabled || _isRestoringSession) {
-      return;
-    }
-    final snapshot = RepositorySessionSnapshot(
-      openRepositoryPaths: List<String>.unmodifiable(
-        state.openRepositoryTabs.map((tab) => tab.path),
-      ),
-      activeRepositoryPath: state.activeRepositoryTabPath,
-    );
-    _sessionWriteChain = _sessionWriteChain.then((_) async {
-      try {
-        await _sessionStore.save(snapshot);
-      } on Object {
-        // A local preference write must not turn a successful Git operation
-        // into an application error.
-      }
-    });
   }
 
   /// 中文：启动当前流程。
@@ -806,7 +682,6 @@ final class RepositorySessionController
       final stashes = results[7] as List<GitStashEntry>;
       final loadedHistory = results[8] as List<GitCommit>;
       final commits = loadedHistory.take(_historyPageSize).toList();
-      final tab = _repositoryTab(repository, status: status);
       state = RepositorySessionState(
         phase: RepositorySessionPhase.ready,
         requestedPath: normalizedPath,
@@ -830,14 +705,9 @@ final class RepositorySessionController
         // list and first available Diff.
         selectedCommitId: null,
         operations: state.operations,
-        openRepositoryTabs: _disambiguateRepositoryTabLabels(
-          _upsertRepositoryTab(state.openRepositoryTabs, tab),
-        ),
-        activeRepositoryTabPath: tab.path,
         gitVersion: results[9] as String,
         searchQuery: state.searchQuery,
       );
-      _persistRepositorySession();
       if (commits.isNotEmpty) {
         await selectCommit(commits.first.objectId);
       }
@@ -852,186 +722,6 @@ final class RepositorySessionController
         technicalDetails: '$error\n$stackTrace',
       );
     }
-  }
-
-  /// Selects an already opened repository tab. Switching is intentionally
-  /// unavailable while Git is mutating a repository so an in-flight operation
-  /// cannot be mistaken for work in another tab.
-  /// 中文：更新当前选择。
-  /// English: Updates the current selection.
-  Future<void> selectRepositoryTab(String repositoryPath) async {
-    if (repositoryPath == state.activeRepositoryTabPath ||
-        state.phase == RepositorySessionPhase.loading ||
-        state.isCloneRunning ||
-        state.isFetchRunning ||
-        state.isPullRunning ||
-        state.isPushRunning ||
-        state.isStashRunning ||
-        !state.openRepositoryTabs.any((tab) => tab.path == repositoryPath)) {
-      return;
-    }
-    await openRepository(repositoryPath);
-  }
-
-  /// 中文：检查 [directoryPath] 指向的 Git 仓库，并将其根目录加入首页清单。
-  ///
-  /// English: Inspects [directoryPath] and adds its canonical Git repository
-  /// root to the library without opening or changing the current workspace.
-  Future<RepositoryLibraryRegistrationResult> addRepositoryToLibrary(
-    String directoryPath,
-  ) async {
-    final normalizedPath = directoryPath.trim();
-    if (normalizedPath.isEmpty) {
-      return RepositoryLibraryRegistrationResult.notRepository;
-    }
-    try {
-      final repository = await _inspector.inspect(normalizedPath);
-      if (repository == null) {
-        return RepositoryLibraryRegistrationResult.notRepository;
-      }
-      final tab = _repositoryTab(
-        repository,
-        status: await _tryReadRepositoryStatus(repository),
-      );
-      final existingTab = state.openRepositoryTabs
-          .where((item) => item.path == tab.path)
-          .firstOrNull;
-      if (existingTab != null) {
-        if (tab.hasStatus) {
-          state = state.copyWith(
-            openRepositoryTabs: _disambiguateRepositoryTabLabels([
-              for (final item in state.openRepositoryTabs)
-                if (item.path == tab.path) tab else item,
-            ]),
-          );
-        }
-        return RepositoryLibraryRegistrationResult.alreadyRegistered;
-      }
-      state = state.copyWith(
-        openRepositoryTabs: _disambiguateRepositoryTabLabels([
-          ...state.openRepositoryTabs,
-          tab,
-        ]),
-      );
-      _persistRepositorySession();
-      return RepositoryLibraryRegistrationResult.added;
-    } on Object {
-      return RepositoryLibraryRegistrationResult.failed;
-    }
-  }
-
-  /// 中文：按首页显示顺序重新排列已登记仓库，并持久化完整且无重复的路径序列。
-  ///
-  /// English: Reorders registered repositories using a complete, duplicate-free
-  /// library path sequence and persists the resulting display order.
-  void reorderRepositoryLibrary(List<String> repositoryPaths) {
-    if (repositoryPaths.length != state.openRepositoryTabs.length ||
-        repositoryPaths.toSet().length != repositoryPaths.length) {
-      return;
-    }
-    final existingByPath = <String, RepositoryTab>{
-      for (final tab in state.openRepositoryTabs) tab.path: tab,
-    };
-    if (!repositoryPaths.every(existingByPath.containsKey)) {
-      return;
-    }
-    state = state.copyWith(
-      openRepositoryTabs: _disambiguateRepositoryTabLabels([
-        for (final repositoryPath in repositoryPaths)
-          existingByPath[repositoryPath]!,
-      ]),
-    );
-    _persistRepositorySession();
-  }
-
-  /// 中文：按路径替换已有标签，或在路径首次出现时追加标签，并保持列表不可变。
-  ///
-  /// English: Replaces an existing tab by path or appends a first-seen tab,
-  /// returning an immutable list.
-  List<RepositoryTab> _upsertRepositoryTab(
-    List<RepositoryTab> existingTabs,
-    RepositoryTab nextTab,
-  ) {
-    final result = <RepositoryTab>[];
-    var replaced = false;
-    for (final tab in existingTabs) {
-      if (tab.path == nextTab.path) {
-        result.add(nextTab);
-        replaced = true;
-      } else {
-        result.add(tab);
-      }
-    }
-    if (!replaced) {
-      result.add(nextTab);
-    }
-    return List<RepositoryTab>.unmodifiable(result);
-  }
-
-  /// 中文：将 Git 仓库和最近读取的状态转换为首页可持久化的仓库条目。
-  /// English: Converts a Git repository and its latest status into a library
-  /// entry that can be persisted with the repository list.
-  RepositoryTab _repositoryTab(
-    GitRepository repository, {
-    GitStatusSnapshot? status,
-  }) {
-    final branch = status?.branch;
-    return RepositoryTab(
-      path: repository.commandDirectory,
-      label: path_utils.basename(
-        repository.workTreeRoot ?? repository.commonDirectory,
-      ),
-      branchName: branch?.head,
-      changedFileCount: status?.entries.length ?? 0,
-      isDetached: branch?.isDetached ?? false,
-      isUnborn: branch?.isUnborn ?? false,
-      hasStatus: status != null,
-    );
-  }
-
-  /// 中文：尽力读取仓库状态；首页仍可登记状态读取失败的有效 Git 仓库。
-  /// English: Tries to read repository status while still allowing a valid Git
-  /// repository to be added to the library when its status cannot be read.
-  Future<GitStatusSnapshot?> _tryReadRepositoryStatus(
-    GitRepository repository,
-  ) async {
-    try {
-      return await _reader.readStatus(repository);
-    } on Object {
-      return null;
-    }
-  }
-
-  /// 中文：为重名仓库标签添加父目录前缀，避免标签栏中出现无法区分的名称。
-  ///
-  /// English: Prefixes duplicate repository labels with their parent directory
-  /// so the tab strip remains unambiguous.
-  List<RepositoryTab> _disambiguateRepositoryTabLabels(
-    List<RepositoryTab> tabs,
-  ) {
-    final labelCounts = <String, int>{};
-    for (final tab in tabs) {
-      labelCounts.update(
-        tab.baseLabel,
-        (count) => count + 1,
-        ifAbsent: () => 1,
-      );
-    }
-    return List<RepositoryTab>.unmodifiable([
-      for (final tab in tabs)
-        RepositoryTab(
-          path: tab.path,
-          baseLabel: tab.baseLabel,
-          label: labelCounts[tab.baseLabel] == 1
-              ? tab.baseLabel
-              : '${path_utils.basename(path_utils.dirname(tab.path))}/${tab.baseLabel}',
-          branchName: tab.branchName,
-          changedFileCount: tab.changedFileCount,
-          isDetached: tab.isDetached,
-          isUnborn: tab.isUnborn,
-          hasStatus: tab.hasStatus,
-        ),
-    ]);
   }
 
   /// Initializes only an empty directory, then opens the new repository.

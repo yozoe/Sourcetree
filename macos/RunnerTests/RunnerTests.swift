@@ -375,6 +375,25 @@ class RunnerTests: XCTestCase {
     XCTAssertFalse(store.snapshot.restoresMergedWorkspaces)
   }
 
+  func testPendingRepositoryLibraryStoreRetainsPathsUntilAcknowledged() {
+    let suiteName = "git-desktop-pending-library-test-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer {
+      defaults.removePersistentDomain(forName: suiteName)
+    }
+    let store = GitDesktopRepositoryLibraryPendingStore(defaults: defaults)
+
+    store.add("/tmp/example")
+    store.add("/tmp/example/")
+    store.add("/tmp/other")
+
+    XCTAssertEqual(store.paths, ["/tmp/example", "/tmp/other"])
+
+    store.remove("/tmp/example/")
+
+    XCTAssertEqual(store.paths, ["/tmp/other"])
+  }
+
   func testNewWorkspaceJoinsAnExistingMergedWindowOrder() {
     let first = NSObject()
     let second = NSObject()
