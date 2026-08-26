@@ -7,6 +7,115 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:git_desktop/src/presentation/presentation.dart';
 
 void main() {
+  testWidgets('shows a three-pane skeleton while initially loading', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.loading(
+            title: '正在读取仓库',
+            message: '/tmp/playground',
+          ),
+        ),
+      ),
+    );
+
+    expect(
+      find.byKey(const ValueKey<String>('repository-loading-skeleton')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('loading-skeleton-navigation')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('loading-skeleton-history')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('loading-skeleton-details')),
+      findsOneWidget,
+    );
+    expect(find.text('正在读取仓库'), findsOneWidget);
+    expect(find.text('/tmp/playground'), findsOneWidget);
+    expect(find.byType(Card), findsNothing);
+    expect(find.byType(CircularProgressIndicator), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('uses a compact loading skeleton in a narrow dark window', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(700, 520));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        theme: ThemeData.dark(),
+        home: const RepositoryOverview(
+          data: RepositoryOverviewViewData.loading(message: '/tmp/playground'),
+        ),
+      ),
+    );
+
+    expect(
+      find.byKey(const ValueKey<String>('loading-skeleton-history')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('loading-skeleton-navigation')),
+      findsNothing,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('loading-skeleton-details')),
+      findsNothing,
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('keeps cancel clone available from the loading skeleton', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(900, 640));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    RepositoryAction? action;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.loading(
+            message: '/tmp/playground',
+            canCancelOperation: true,
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onAction: (RepositoryAction value) => action = value,
+          ),
+        ),
+      ),
+    );
+
+    final Finder cancel = find.byKey(
+      const ValueKey<String>('loading-skeleton-cancel'),
+    );
+    expect(cancel, findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('loading-skeleton-navigation')),
+      findsOneWidget,
+    );
+    expect(
+      find.byKey(const ValueKey<String>('loading-skeleton-details')),
+      findsNothing,
+    );
+
+    await tester.tap(cancel);
+
+    expect(action, RepositoryAction.cancelClone);
+  });
+
   testWidgets('shows every toolbar action vertically without scrolling', (
     tester,
   ) async {
@@ -242,6 +351,60 @@ void main() {
     await tester.pump();
 
     expect(toggled?.path, 'hello.py');
+  });
+
+  testWidgets('shows staging progress without greying a checked checkbox', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              isWorkingTreeBusy: true,
+              changes: [
+                RepositoryChangeViewData(
+                  path: 'staged.txt',
+                  kind: RepositoryChangeKind.modified,
+                  isStaged: true,
+                  canToggleStage: false,
+                  isActionEnabled: false,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final stagedHeader = find.byKey(const ValueKey('staged-files-header'));
+    final checkbox = tester.widget<Checkbox>(
+      find.descendant(of: stagedHeader, matching: find.byType(Checkbox)),
+    );
+    final colors = Theme.of(tester.element(stagedHeader)).colorScheme;
+
+    expect(checkbox.value, isTrue);
+    expect(checkbox.onChanged, isNull);
+    expect(
+      checkbox.fillColor?.resolve(const {
+        WidgetState.disabled,
+        WidgetState.selected,
+      }),
+      colors.primary,
+    );
+    expect(
+      find.byKey(const ValueKey('working-tree-status-progress')),
+      findsOneWidget,
+    );
+    expect(find.text('正在更新'), findsOneWidget);
+    expect(find.text('1 已暂存 · 0 未暂存'), findsNothing);
   });
 
   testWidgets('keeps empty staged group unchecked and resizable', (

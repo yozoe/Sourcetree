@@ -613,6 +613,7 @@ void main() {
       emitted.where((state) => state.isWorkingTreeBusy).every((state) {
         final view = mapRepositoryOverview(state);
         return view.state == RepositoryOverviewState.ready &&
+            view.repository!.isWorkingTreeBusy &&
             view.repository!.changes.isNotEmpty;
       }),
       isTrue,

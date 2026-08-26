@@ -4153,6 +4153,7 @@ class _ChangesPaneState extends State<_ChangesPane> {
           _PaneHeader(
             title: '文件状态',
             icon: Icons.difference_outlined,
+            isBusy: repository.isWorkingTreeBusy,
             trailing:
                 '${repository.stagedChangeCount} 已暂存 · ${repository.unstagedChangeCount} 未暂存',
           ),
@@ -4163,6 +4164,7 @@ class _ChangesPaneState extends State<_ChangesPane> {
                   return repository.selectedChange == null
                       ? _ChangeList(
                           changes: repository.changes,
+                          isWorkingTreeBusy: repository.isWorkingTreeBusy,
                           onSelected: widget.onSelected,
                           onStageToggled: widget.onStageToggled,
                           onGroupStageToggled: widget.onGroupStageToggled,
@@ -4198,6 +4200,7 @@ class _ChangesPaneState extends State<_ChangesPane> {
                       width: fileListWidth,
                       child: _ChangeList(
                         changes: repository.changes,
+                        isWorkingTreeBusy: repository.isWorkingTreeBusy,
                         onSelected: widget.onSelected,
                         onStageToggled: widget.onStageToggled,
                         onGroupStageToggled: widget.onGroupStageToggled,
@@ -4322,6 +4325,7 @@ class _WorkspaceChangesView extends StatelessWidget {
 class _ChangeList extends StatefulWidget {
   const _ChangeList({
     required this.changes,
+    required this.isWorkingTreeBusy,
     required this.onSelected,
     required this.onStageToggled,
     required this.onGroupStageToggled,
@@ -4334,6 +4338,7 @@ class _ChangeList extends StatefulWidget {
   });
 
   final List<RepositoryChangeViewData> changes;
+  final bool isWorkingTreeBusy;
   final RepositoryChangeCallback? onSelected;
   final RepositoryChangeStageCallback? onStageToggled;
   final RepositoryChangeGroupStageCallback? onGroupStageToggled;
@@ -4436,6 +4441,7 @@ class _ChangeListState extends State<_ChangeList> {
       title: title,
       isChecked: isChecked,
       changes: changes,
+      isWorkingTreeBusy: widget.isWorkingTreeBusy,
       selectedKeys: _selectedKeys,
       selectedChanges: () => _selectedChanges,
       onSelected: _selectChange,
@@ -4530,6 +4536,7 @@ class _ChangeGroup extends StatelessWidget {
     required this.title,
     required this.isChecked,
     required this.changes,
+    required this.isWorkingTreeBusy,
     required this.selectedKeys,
     required this.selectedChanges,
     required this.onSelected,
@@ -4548,6 +4555,7 @@ class _ChangeGroup extends StatelessWidget {
   final String title;
   final bool isChecked;
   final List<RepositoryChangeViewData> changes;
+  final bool isWorkingTreeBusy;
   final Set<String> selectedKeys;
   final ValueGetter<List<RepositoryChangeViewData>> selectedChanges;
   final ValueChanged<RepositoryChangeViewData> onSelected;
@@ -4607,6 +4615,10 @@ class _ChangeGroup extends StatelessWidget {
                 ),
                 materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                 side: BorderSide(color: colors.onSurfaceVariant),
+                fillColor: isWorkingTreeBusy && isChecked && changes.isNotEmpty
+                    ? WidgetStatePropertyAll(colors.primary)
+                    : null,
+                checkColor: isWorkingTreeBusy ? colors.onPrimary : null,
               ),
               const SizedBox(width: 2),
               Expanded(
@@ -4757,6 +4769,12 @@ class _ChangeTile extends StatelessWidget {
                       ),
                       materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
                       side: BorderSide(color: colors.onSurfaceVariant),
+                      fillColor: !change.isActionEnabled && change.isStaged
+                          ? WidgetStatePropertyAll(colors.primary)
+                          : null,
+                      checkColor: !change.isActionEnabled
+                          ? colors.onPrimary
+                          : null,
                     ),
                   ),
                 ),
@@ -5630,11 +5648,17 @@ class _DenseTabBar<T> extends StatelessWidget {
 }
 
 class _PaneHeader extends StatelessWidget {
-  const _PaneHeader({required this.title, required this.icon, this.trailing});
+  const _PaneHeader({
+    required this.title,
+    required this.icon,
+    this.trailing,
+    this.isBusy = false,
+  });
 
   final String title;
   final IconData icon;
   final String? trailing;
+  final bool isBusy;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -5660,7 +5684,24 @@ class _PaneHeader extends StatelessWidget {
             ),
           ),
           const Spacer(),
-          if (trailing != null)
+          if (isBusy) ...[
+            SizedBox(
+              key: const ValueKey<String>('working-tree-status-progress'),
+              width: 12,
+              height: 12,
+              child: CircularProgressIndicator(
+                strokeWidth: 1.5,
+                color: colors.primary,
+              ),
+            ),
+            const SizedBox(width: 6),
+            Text(
+              '正在更新',
+              style: theme.textTheme.labelSmall?.copyWith(
+                color: colors.onSurfaceVariant,
+              ),
+            ),
+          ] else if (trailing != null)
             Text(
               trailing!,
               style: theme.textTheme.labelSmall?.copyWith(
@@ -6005,20 +6046,453 @@ class _LoadingView extends StatelessWidget {
   /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
-    return _StandaloneStateView(
-      progress: true,
-      icon: Icons.folder_open_outlined,
+    return _RepositoryLoadingSkeleton(
       title: data.title ?? '正在读取仓库',
       message: data.message ?? '正在识别仓库并加载状态与提交历史…',
-      actions: [
-        if (data.canCancelOperation)
-          const _StateAction(
-            label: '取消克隆',
-            icon: Icons.cancel_outlined,
-            action: RepositoryAction.cancelClone,
+      canCancel: data.canCancelOperation,
+      onCancel: onAction == null
+          ? null
+          : () => onAction!(RepositoryAction.cancelClone),
+    );
+  }
+}
+
+class _RepositoryLoadingSkeleton extends StatelessWidget {
+  const _RepositoryLoadingSkeleton({
+    required this.title,
+    required this.message,
+    required this.canCancel,
+    required this.onCancel,
+  });
+
+  final String title;
+  final String message;
+  final bool canCancel;
+  final VoidCallback? onCancel;
+
+  /// 中文：构建预告仓库工作台真实分栏的首次加载骨架屏。
+  /// English: Builds the initial-loading skeleton that previews the workspace panes.
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    return ColoredBox(
+      key: const ValueKey<String>('repository-loading-skeleton'),
+      color: colors.surface,
+      child: SafeArea(
+        child: Semantics(
+          container: true,
+          liveRegion: true,
+          child: Column(
+            children: [
+              _LoadingSkeletonToolbar(
+                title: title,
+                message: message,
+                canCancel: canCancel,
+                onCancel: onCancel,
+              ),
+              Expanded(
+                child: LayoutBuilder(
+                  builder: (BuildContext context, BoxConstraints constraints) {
+                    if (constraints.maxWidth >= 1180) {
+                      return const Row(
+                        children: [
+                          SizedBox(
+                            width: 232,
+                            child: _LoadingSkeletonNavigationPane(),
+                          ),
+                          VerticalDivider(width: 1),
+                          Expanded(child: _LoadingSkeletonHistoryPane()),
+                          VerticalDivider(width: 1),
+                          SizedBox(
+                            width: 330,
+                            child: _LoadingSkeletonDetailsPane(),
+                          ),
+                        ],
+                      );
+                    }
+                    if (constraints.maxWidth >= 760) {
+                      return const Row(
+                        children: [
+                          SizedBox(
+                            width: 216,
+                            child: _LoadingSkeletonNavigationPane(),
+                          ),
+                          VerticalDivider(width: 1),
+                          Expanded(child: _LoadingSkeletonHistoryPane()),
+                        ],
+                      );
+                    }
+                    return const _LoadingSkeletonHistoryPane(compact: true);
+                  },
+                ),
+              ),
+            ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _LoadingSkeletonToolbar extends StatelessWidget {
+  const _LoadingSkeletonToolbar({
+    required this.title,
+    required this.message,
+    required this.canCancel,
+    required this.onCancel,
+  });
+
+  final String title;
+  final String message;
+  final bool canCancel;
+  final VoidCallback? onCancel;
+
+  /// 中文：构建带有实时加载说明和可选取消入口的紧凑骨架工具栏。
+  /// English: Builds the compact skeleton toolbar with live loading context and cancellation.
+  @override
+  Widget build(BuildContext context) {
+    final ThemeData theme = Theme.of(context);
+    final ColorScheme colors = theme.colorScheme;
+    return Container(
+      height: 64,
+      padding: const EdgeInsets.symmetric(horizontal: 14),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerLow,
+        border: Border(bottom: BorderSide(color: colors.outlineVariant)),
+      ),
+      child: Row(
+        children: [
+          _SkeletonBlock(width: 34, height: 34, radius: 8),
+          const SizedBox(width: 11),
+          Expanded(
+            child: Column(
+              mainAxisAlignment: MainAxisAlignment.center,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelLarge?.copyWith(
+                    fontWeight: FontWeight.w600,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  message,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: theme.textTheme.labelSmall?.copyWith(
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          if (canCancel)
+            OutlinedButton.icon(
+              key: const ValueKey<String>('loading-skeleton-cancel'),
+              onPressed: onCancel,
+              icon: const Icon(Icons.close, size: 16),
+              label: const Text('取消克隆'),
+            )
+          else ...[
+            const _SkeletonBlock(width: 48, height: 28, radius: 6),
+            const SizedBox(width: 7),
+            const _SkeletonBlock(width: 48, height: 28, radius: 6),
+            const SizedBox(width: 7),
+            const _SkeletonBlock(width: 48, height: 28, radius: 6),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _LoadingSkeletonNavigationPane extends StatelessWidget {
+  const _LoadingSkeletonNavigationPane();
+
+  /// 中文：构建左侧引用导航的骨架占位。
+  /// English: Builds skeleton placeholders for the repository reference navigation.
+  @override
+  Widget build(BuildContext context) {
+    return ListView(
+      key: const ValueKey<String>('loading-skeleton-navigation'),
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 20),
+      physics: const NeverScrollableScrollPhysics(),
+      children: const [
+        _SkeletonLine(widthFactor: .42, height: 10),
+        SizedBox(height: 13),
+        _SkeletonNavigationRow(widthFactor: .62),
+        _SkeletonNavigationRow(widthFactor: .48),
+        SizedBox(height: 20),
+        _SkeletonLine(widthFactor: .34, height: 10),
+        SizedBox(height: 13),
+        _SkeletonNavigationRow(widthFactor: .74),
+        _SkeletonNavigationRow(widthFactor: .58),
+        _SkeletonNavigationRow(widthFactor: .67),
+        SizedBox(height: 20),
+        _SkeletonLine(widthFactor: .30, height: 10),
+        SizedBox(height: 13),
+        _SkeletonNavigationRow(widthFactor: .53),
+        _SkeletonNavigationRow(widthFactor: .69),
       ],
-      onAction: onAction,
+    );
+  }
+}
+
+class _LoadingSkeletonHistoryPane extends StatelessWidget {
+  const _LoadingSkeletonHistoryPane({this.compact = false});
+
+  final bool compact;
+
+  /// 中文：构建提交 Graph、历史列和文件状态的响应式骨架。
+  /// English: Builds a responsive skeleton for the graph, history, and file-status content.
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    return Column(
+      key: const ValueKey<String>('loading-skeleton-history'),
+      children: [
+        Container(
+          height: 38,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          decoration: BoxDecoration(
+            color: colors.surfaceContainerLow,
+            border: Border(bottom: BorderSide(color: colors.outlineVariant)),
+          ),
+          child: const Row(
+            children: [
+              _SkeletonBlock(width: 72, height: 9),
+              SizedBox(width: 18),
+              Expanded(child: _SkeletonBlock(height: 9)),
+              SizedBox(width: 22),
+              _SkeletonBlock(width: 66, height: 9),
+            ],
+          ),
+        ),
+        Expanded(
+          flex: compact ? 5 : 6,
+          child: ListView.separated(
+            padding: const EdgeInsets.symmetric(vertical: 8),
+            physics: const NeverScrollableScrollPhysics(),
+            itemCount: compact ? 9 : 11,
+            separatorBuilder: (_, _) => const SizedBox(height: 2),
+            itemBuilder: (BuildContext context, int index) =>
+                _SkeletonHistoryRow(index: index, compact: compact),
+          ),
+        ),
+        Divider(height: 1, color: colors.outlineVariant),
+        Expanded(
+          flex: compact ? 4 : 3,
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Row(
+                  children: [
+                    _SkeletonBlock(width: 88, height: 10),
+                    Spacer(),
+                    _SkeletonBlock(width: 52, height: 20, radius: 5),
+                  ],
+                ),
+                const SizedBox(height: 13),
+                const _SkeletonLine(widthFactor: .76),
+                const SizedBox(height: 9),
+                const _SkeletonLine(widthFactor: .58),
+                const SizedBox(height: 9),
+                const _SkeletonLine(widthFactor: .69),
+                const Spacer(),
+                Row(
+                  children: const [
+                    Expanded(child: _SkeletonBlock(height: 30, radius: 6)),
+                    SizedBox(width: 8),
+                    _SkeletonBlock(width: 82, height: 30, radius: 6),
+                  ],
+                ),
+              ],
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _LoadingSkeletonDetailsPane extends StatelessWidget {
+  const _LoadingSkeletonDetailsPane();
+
+  /// 中文：构建右侧提交详情与 Diff 的骨架占位。
+  /// English: Builds skeleton placeholders for commit details and diff content.
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    return ListView(
+      key: const ValueKey<String>('loading-skeleton-details'),
+      padding: EdgeInsets.zero,
+      physics: const NeverScrollableScrollPhysics(),
+      children: [
+        Container(
+          height: 38,
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          alignment: Alignment.centerLeft,
+          decoration: BoxDecoration(
+            color: colors.surfaceContainerLow,
+            border: Border(bottom: BorderSide(color: colors.outlineVariant)),
+          ),
+          child: const _SkeletonBlock(width: 82, height: 9),
+        ),
+        const Padding(
+          padding: EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              _SkeletonLine(widthFactor: .72, height: 12),
+              SizedBox(height: 10),
+              _SkeletonLine(widthFactor: .46),
+              SizedBox(height: 18),
+              Row(
+                children: [
+                  _SkeletonBlock(width: 28, height: 28, radius: 14),
+                  SizedBox(width: 9),
+                  Expanded(child: _SkeletonLine(widthFactor: .55)),
+                ],
+              ),
+              SizedBox(height: 22),
+              _SkeletonLine(widthFactor: .91),
+              SizedBox(height: 9),
+              _SkeletonLine(widthFactor: .78),
+              SizedBox(height: 9),
+              _SkeletonLine(widthFactor: .84),
+              SizedBox(height: 24),
+              _SkeletonBlock(height: 1),
+              SizedBox(height: 18),
+              _SkeletonLine(widthFactor: .38, height: 10),
+              SizedBox(height: 14),
+              _SkeletonLine(widthFactor: .93),
+              SizedBox(height: 8),
+              _SkeletonLine(widthFactor: .87),
+              SizedBox(height: 8),
+              _SkeletonLine(widthFactor: .71),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SkeletonNavigationRow extends StatelessWidget {
+  const _SkeletonNavigationRow({required this.widthFactor});
+
+  final double widthFactor;
+
+  /// 中文：构建一行引用导航占位。
+  /// English: Builds one reference-navigation placeholder row.
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 6),
+      child: Row(
+        children: [
+          const _SkeletonBlock(width: 13, height: 13, radius: 3),
+          const SizedBox(width: 9),
+          Expanded(child: _SkeletonLine(widthFactor: widthFactor)),
+        ],
+      ),
+    );
+  }
+}
+
+class _SkeletonHistoryRow extends StatelessWidget {
+  const _SkeletonHistoryRow({required this.index, required this.compact});
+
+  final int index;
+  final bool compact;
+
+  /// 中文：构建一行带 Graph 节点的提交历史占位。
+  /// English: Builds one commit-history placeholder row with a graph node.
+  @override
+  Widget build(BuildContext context) {
+    final double descriptionWidth = <double>[.62, .78, .49, .70][index % 4];
+    return SizedBox(
+      height: 24,
+      child: Row(
+        children: [
+          SizedBox(
+            width: compact ? 42 : 58,
+            child: Center(
+              child: _SkeletonBlock(
+                width: index.isEven ? 8 : 6,
+                height: index.isEven ? 8 : 6,
+                radius: 4,
+                strong: index == 0,
+              ),
+            ),
+          ),
+          Expanded(child: _SkeletonLine(widthFactor: descriptionWidth)),
+          if (!compact) ...[
+            const SizedBox(width: 16),
+            const _SkeletonBlock(width: 46, height: 8),
+            const SizedBox(width: 16),
+            const _SkeletonBlock(width: 54, height: 8),
+            const SizedBox(width: 12),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _SkeletonLine extends StatelessWidget {
+  const _SkeletonLine({required this.widthFactor, this.height = 8});
+
+  final double widthFactor;
+  final double height;
+
+  /// 中文：按父容器比例构建文本行占位。
+  /// English: Builds a text-line placeholder sized as a fraction of its parent.
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: FractionallySizedBox(
+        widthFactor: widthFactor,
+        child: _SkeletonBlock(height: height),
+      ),
+    );
+  }
+}
+
+class _SkeletonBlock extends StatelessWidget {
+  const _SkeletonBlock({
+    this.width,
+    required this.height,
+    this.radius = 4,
+    this.strong = false,
+  });
+
+  final double? width;
+  final double height;
+  final double radius;
+  final bool strong;
+
+  /// 中文：使用当前主题构建低对比度骨架块。
+  /// English: Builds a low-contrast skeleton block from the active theme.
+  @override
+  Widget build(BuildContext context) {
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    return ExcludeSemantics(
+      child: Container(
+        width: width,
+        height: height,
+        decoration: BoxDecoration(
+          color: colors.onSurfaceVariant.withValues(alpha: strong ? .18 : .10),
+          borderRadius: BorderRadius.circular(radius),
+        ),
+      ),
     );
   }
 }
@@ -6078,7 +6552,6 @@ class _StandaloneStateView extends StatelessWidget {
     required this.message,
     required this.actions,
     this.details,
-    this.progress = false,
     this.onAction,
   });
 
@@ -6086,7 +6559,6 @@ class _StandaloneStateView extends StatelessWidget {
   final String title;
   final String message;
   final String? details;
-  final bool progress;
   final List<_StateAction> actions;
   final RepositoryActionCallback? onAction;
 
@@ -6105,106 +6577,97 @@ class _StandaloneStateView extends StatelessWidget {
             padding: const EdgeInsets.all(24),
             child: ConstrainedBox(
               constraints: const BoxConstraints(maxWidth: 520),
-              child: Semantics(
-                liveRegion: progress,
-                child: Card(
-                  elevation: 0,
-                  color: colors.surfaceContainerLow,
-                  shape: RoundedRectangleBorder(
-                    borderRadius: BorderRadius.circular(16),
-                    side: BorderSide(color: colors.outlineVariant),
-                  ),
-                  child: Padding(
-                    padding: const EdgeInsets.all(28),
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      children: [
-                        if (progress)
-                          const SizedBox.square(
-                            dimension: 34,
-                            child: CircularProgressIndicator(strokeWidth: 3),
-                          )
-                        else
-                          Container(
-                            width: 54,
-                            height: 54,
-                            decoration: BoxDecoration(
-                              color: colors.primaryContainer,
-                              borderRadius: BorderRadius.circular(14),
-                            ),
-                            child: Icon(
-                              icon,
-                              size: 28,
-                              color: colors.onPrimaryContainer,
-                            ),
-                          ),
-                        const SizedBox(height: 18),
-                        Text(
-                          title,
-                          textAlign: TextAlign.center,
-                          style: theme.textTheme.headlineSmall?.copyWith(
-                            fontWeight: FontWeight.w600,
-                          ),
+              child: Card(
+                elevation: 0,
+                color: colors.surfaceContainerLow,
+                shape: RoundedRectangleBorder(
+                  borderRadius: BorderRadius.circular(16),
+                  side: BorderSide(color: colors.outlineVariant),
+                ),
+                child: Padding(
+                  padding: const EdgeInsets.all(28),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 54,
+                        height: 54,
+                        decoration: BoxDecoration(
+                          color: colors.primaryContainer,
+                          borderRadius: BorderRadius.circular(14),
                         ),
-                        const SizedBox(height: 8),
-                        Text(
-                          message,
-                          textAlign: TextAlign.center,
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            color: colors.onSurfaceVariant,
-                            height: 1.45,
-                          ),
+                        child: Icon(
+                          icon,
+                          size: 28,
+                          color: colors.onPrimaryContainer,
                         ),
-                        if (details != null) ...[
-                          const SizedBox(height: 14),
-                          Container(
-                            width: double.infinity,
-                            constraints: const BoxConstraints(maxHeight: 120),
-                            padding: const EdgeInsets.all(10),
-                            decoration: BoxDecoration(
-                              color: colors.surfaceContainerHighest,
-                              borderRadius: BorderRadius.circular(7),
-                            ),
-                            child: SelectionArea(
-                              child: SingleChildScrollView(
-                                child: Text(
-                                  details!,
-                                  style: theme.textTheme.labelSmall?.copyWith(
-                                    fontFamily: 'monospace',
-                                  ),
+                      ),
+                      const SizedBox(height: 18),
+                      Text(
+                        title,
+                        textAlign: TextAlign.center,
+                        style: theme.textTheme.headlineSmall?.copyWith(
+                          fontWeight: FontWeight.w600,
+                        ),
+                      ),
+                      const SizedBox(height: 8),
+                      Text(
+                        message,
+                        textAlign: TextAlign.center,
+                        style: theme.textTheme.bodyMedium?.copyWith(
+                          color: colors.onSurfaceVariant,
+                          height: 1.45,
+                        ),
+                      ),
+                      if (details != null) ...[
+                        const SizedBox(height: 14),
+                        Container(
+                          width: double.infinity,
+                          constraints: const BoxConstraints(maxHeight: 120),
+                          padding: const EdgeInsets.all(10),
+                          decoration: BoxDecoration(
+                            color: colors.surfaceContainerHighest,
+                            borderRadius: BorderRadius.circular(7),
+                          ),
+                          child: SelectionArea(
+                            child: SingleChildScrollView(
+                              child: Text(
+                                details!,
+                                style: theme.textTheme.labelSmall?.copyWith(
+                                  fontFamily: 'monospace',
                                 ),
                               ),
                             ),
                           ),
-                        ],
-                        if (actions.isNotEmpty) ...[
-                          const SizedBox(height: 22),
-                          Wrap(
-                            alignment: WrapAlignment.center,
-                            spacing: 9,
-                            runSpacing: 9,
-                            children: [
-                              for (final _StateAction action in actions)
-                                action.primary
-                                    ? FilledButton.icon(
-                                        onPressed: onAction == null
-                                            ? null
-                                            : () => onAction!(action.action),
-                                        icon: Icon(action.icon, size: 18),
-                                        label: Text(action.label),
-                                      )
-                                    : OutlinedButton.icon(
-                                        onPressed: onAction == null
-                                            ? null
-                                            : () => onAction!(action.action),
-                                        icon: Icon(action.icon, size: 18),
-                                        label: Text(action.label),
-                                      ),
-                            ],
-                          ),
-                        ],
+                        ),
                       ],
-                    ),
+                      if (actions.isNotEmpty) ...[
+                        const SizedBox(height: 22),
+                        Wrap(
+                          alignment: WrapAlignment.center,
+                          spacing: 9,
+                          runSpacing: 9,
+                          children: [
+                            for (final _StateAction action in actions)
+                              action.primary
+                                  ? FilledButton.icon(
+                                      onPressed: onAction == null
+                                          ? null
+                                          : () => onAction!(action.action),
+                                      icon: Icon(action.icon, size: 18),
+                                      label: Text(action.label),
+                                    )
+                                  : OutlinedButton.icon(
+                                      onPressed: onAction == null
+                                          ? null
+                                          : () => onAction!(action.action),
+                                      icon: Icon(action.icon, size: 18),
+                                      label: Text(action.label),
+                                    ),
+                          ],
+                        ),
+                      ],
+                    ],
                   ),
                 ),
               ),

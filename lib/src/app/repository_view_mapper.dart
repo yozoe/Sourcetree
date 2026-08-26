@@ -158,6 +158,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     isRefreshing:
         state.phase == RepositorySessionPhase.loading ||
         state.isWorkingTreeBusy,
+    isWorkingTreeBusy: state.isWorkingTreeBusy,
     isFetching: state.isFetchRunning,
     isPulling: state.isPullRunning,
     isPushing: state.isPushRunning,

@@ -179,6 +179,7 @@ final class RepositoryViewData {
     this.behind = 0,
     this.isDetachedHead = false,
     this.isRefreshing = false,
+    this.isWorkingTreeBusy = false,
     this.isFetching = false,
     this.isPulling = false,
     this.isPushing = false,
@@ -216,6 +217,10 @@ final class RepositoryViewData {
   final int behind;
   final bool isDetachedHead;
   final bool isRefreshing;
+
+  /// Whether a staging or working-tree write is awaiting Git status refresh.
+  /// 中文：暂存或工作区写入是否正在等待 Git 状态刷新。
+  final bool isWorkingTreeBusy;
   final bool isFetching;
   final bool isPulling;
   final bool isPushing;
