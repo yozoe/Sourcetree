@@ -88,19 +88,89 @@ class RunnerTests: XCTestCase {
     )
   }
 
-  func testWorkspaceEngineStartsAfterItsViewControllerIsAttached() throws {
+  func testWorkspaceEngineRestoresSavedContentSizeAfterAttachment() throws {
+    let suiteName = "git-desktop-window-controller-test-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer {
+      defaults.removePersistentDomain(forName: suiteName)
+    }
+    let sizeStore = GitDesktopWindowSizeStore(defaults: defaults)
+    sizeStore.save(NSSize(width: 1110, height: 710), for: .workspace)
+    let coordinator = WindowCoordinator(windowSizeStore: sizeStore)
     let controller = try WorkspaceFlutterWindowController(
       repositoryPath: nil,
       initialAction: nil,
-      coordinator: WindowCoordinator()
+      coordinator: coordinator
     )
     defer {
       controller.close()
     }
 
     let contentSize = try XCTUnwrap(controller.window).contentLayoutRect.size
-    XCTAssertEqual(contentSize.width, 1280, accuracy: 1)
-    XCTAssertEqual(contentSize.height, 800, accuracy: 1)
+    XCTAssertEqual(contentSize.width, 1110, accuracy: 1)
+    XCTAssertEqual(contentSize.height, 710, accuracy: 1)
+
+    let window = try XCTUnwrap(controller.window)
+    window.setContentSize(NSSize(width: 1180, height: 740))
+    controller.windowDidEndLiveResize(
+      Notification(name: NSWindow.didEndLiveResizeNotification, object: window)
+    )
+    XCTAssertEqual(
+      sizeStore.restoredSize(
+        for: .workspace,
+        default: NSSize(width: 1280, height: 800),
+        minimum: NSSize(width: 900, height: 600)
+      ),
+      NSSize(width: 1180, height: 740)
+    )
+  }
+
+  func testClosingOlderWorkspaceDoesNotOverwriteMostRecentResize() throws {
+    let suiteName = "git-desktop-window-close-size-test-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer {
+      defaults.removePersistentDomain(forName: suiteName)
+    }
+    let sizeStore = GitDesktopWindowSizeStore(defaults: defaults)
+    let coordinator = WindowCoordinator(windowSizeStore: sizeStore)
+    let olderController = try WorkspaceFlutterWindowController(
+      repositoryPath: nil,
+      initialAction: nil,
+      coordinator: coordinator
+    )
+    let recentController = try WorkspaceFlutterWindowController(
+      repositoryPath: nil,
+      initialAction: nil,
+      coordinator: coordinator
+    )
+    defer {
+      olderController.close()
+      recentController.close()
+    }
+
+    let olderWindow = try XCTUnwrap(olderController.window)
+    olderWindow.setContentSize(NSSize(width: 1000, height: 650))
+    let recentWindow = try XCTUnwrap(recentController.window)
+    recentWindow.setContentSize(NSSize(width: 1200, height: 760))
+    recentController.windowDidEndLiveResize(
+      Notification(
+        name: NSWindow.didEndLiveResizeNotification,
+        object: recentWindow
+      )
+    )
+
+    olderController.windowWillClose(
+      Notification(name: NSWindow.willCloseNotification, object: olderWindow)
+    )
+
+    XCTAssertEqual(
+      sizeStore.restoredSize(
+        for: .workspace,
+        default: NSSize(width: 1280, height: 800),
+        minimum: NSSize(width: 900, height: 600)
+      ),
+      NSSize(width: 1200, height: 760)
+    )
   }
 
   func testWorkspaceWindowsUseOneNativeTabbingIdentifier() throws {
@@ -292,20 +362,16 @@ class RunnerTests: XCTestCase {
 
   func testCancelledDelayedWindowActivationDoesNotRun() {
     let activation = GitDesktopDelayedWindowActivation()
-    var didRun = false
+    let activationExpectation = expectation(
+      description: "cancelled activation does not run"
+    )
+    activationExpectation.isInverted = true
     activation.schedule(after: 0.01) {
-      didRun = true
+      activationExpectation.fulfill()
     }
     activation.cancel()
 
-    let focusExpectation = expectation(
-      description: "activation stays cancelled"
-    )
-    DispatchQueue.main.asyncAfter(deadline: .now() + 0.05) {
-      focusExpectation.fulfill()
-    }
-    wait(for: [focusExpectation], timeout: 1)
-    XCTAssertFalse(didRun)
+    wait(for: [activationExpectation], timeout: 0.1)
   }
 
   func testWorkspaceIndexReplacesAndRemovesOnlyTheOwnedHost() {
@@ -392,6 +458,75 @@ class RunnerTests: XCTestCase {
     store.remove("/tmp/example/")
 
     XCTAssertEqual(store.paths, ["/tmp/other"])
+  }
+
+  func testWindowSizeStoreKeepsLibraryAndWorkspacePreferencesSeparate() {
+    let suiteName = "git-desktop-window-size-test-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer {
+      defaults.removePersistentDomain(forName: suiteName)
+    }
+    let store = GitDesktopWindowSizeStore(defaults: defaults)
+    store.save(NSSize(width: 1024, height: 700), for: .repositoryLibrary)
+    store.save(NSSize(width: 1400, height: 900), for: .workspace)
+
+    XCTAssertEqual(
+      store.restoredSize(
+        for: .repositoryLibrary,
+        default: NSSize(width: 1280, height: 800),
+        minimum: NSSize(width: 900, height: 600)
+      ),
+      NSSize(width: 1024, height: 700)
+    )
+    XCTAssertEqual(
+      store.restoredSize(
+        for: .workspace,
+        default: NSSize(width: 1280, height: 800),
+        minimum: NSSize(width: 900, height: 600)
+      ),
+      NSSize(width: 1400, height: 900)
+    )
+  }
+
+  func testWindowSizeRestoreRejectsInvalidValuesAndStaysVisible() {
+    let suiteName = "git-desktop-window-size-invalid-test-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer {
+      defaults.removePersistentDomain(forName: suiteName)
+    }
+    let store = GitDesktopWindowSizeStore(defaults: defaults)
+    defaults.set(
+      ["width": -1.0, "height": 720.0],
+      forKey: "gitDesktopWorkspaceWindowContentSize"
+    )
+
+    XCTAssertEqual(
+      store.restoredSize(
+        for: .workspace,
+        default: NSSize(width: 1280, height: 800),
+        minimum: NSSize(width: 900, height: 600),
+        maximum: NSSize(width: 1440, height: 900)
+      ),
+      NSSize(width: 1280, height: 800)
+    )
+    XCTAssertEqual(
+      gitDesktopConstrainedWindowContentSize(
+        NSSize(width: 400, height: 300),
+        default: NSSize(width: 1280, height: 800),
+        minimum: NSSize(width: 900, height: 600),
+        maximum: NSSize(width: 1200, height: 700)
+      ),
+      NSSize(width: 900, height: 600)
+    )
+    XCTAssertEqual(
+      gitDesktopConstrainedWindowContentSize(
+        NSSize(width: 1800, height: 1200),
+        default: NSSize(width: 1280, height: 800),
+        minimum: NSSize(width: 900, height: 600),
+        maximum: NSSize(width: 1200, height: 700)
+      ),
+      NSSize(width: 1200, height: 700)
+    )
   }
 
   func testNewWorkspaceJoinsAnExistingMergedWindowOrder() {

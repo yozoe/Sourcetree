@@ -1938,6 +1938,100 @@ final class RepositorySessionController
     }
   }
 
+  /// Reads a focused, read-only history for a selected historical file.
+  ///
+  /// The result belongs to the repository that was active when the request
+  /// began. If the workspace closes or opens another repository while Git is
+  /// reading, this method rejects the stale result instead of letting a dialog
+  /// render history from the previous workspace.
+  ///
+  /// 中文：读取历史提交中所选文件的聚焦只读历史。它沿用当前已加载的多分支
+  /// 历史快照，并补入 [sourceCommitId] 以覆盖贮藏等临时预览；结果只属于请求
+  /// 开始时的仓库，若读取期间工作区关闭或切换了仓库，会拒绝过期结果。
+  Future<List<GitFileHistoryEntry>> readFileHistory(
+    String path, {
+    String? sourceCommitId,
+    required GitCancellationToken cancellationToken,
+  }) async {
+    final repository = state.repository;
+    if (repository == null || state.phase != RepositorySessionPhase.ready) {
+      throw StateError('当前没有可读取文件历史的仓库。');
+    }
+    final revisions = <String>{
+      ...state.historyRevisionSnapshot,
+      ?sourceCommitId,
+    };
+    final history = await _reader.readFileHistory(
+      repository,
+      path: path,
+      revisionSnapshot: revisions.isEmpty ? null : revisions.toList(),
+      cancellationToken: cancellationToken,
+    );
+    if (cancellationToken.isCancelled) {
+      throw const GitCancelledException();
+    }
+    if (!ref.mounted || state.repository?.id != repository.id) {
+      throw StateError('仓库已切换，无法继续读取文件历史。');
+    }
+    return history;
+  }
+
+  /// Reads the changed-file summary for one entry in a focused file history.
+  ///
+  /// 中文：读取聚焦文件历史中某个提交的改动文件和行统计；仅执行只读 Git 查询，
+  /// 且在仓库切换后拒绝过期结果。
+  Future<GitCommitChangeSummary> readFileHistoryCommitChanges(
+    GitCommit commit, {
+    required GitCancellationToken cancellationToken,
+  }) async {
+    final repository = state.repository;
+    if (repository == null || state.phase != RepositorySessionPhase.ready) {
+      throw StateError('当前没有可读取提交改动的仓库。');
+    }
+    final summary = await _reader.readCommitChanges(
+      repository,
+      objectId: commit.objectId,
+      parentObjectId: commit.parentIds.firstOrNull,
+      cancellationToken: cancellationToken,
+    );
+    if (cancellationToken.isCancelled) {
+      throw const GitCancelledException();
+    }
+    if (!ref.mounted || state.repository?.id != repository.id) {
+      throw StateError('仓库已切换，无法继续读取提交改动。');
+    }
+    return summary;
+  }
+
+  /// Reads the selected file's unified diff for one focused-history commit.
+  ///
+  /// 中文：读取聚焦文件历史中指定提交和文件的 Unified Diff；不写入 Git，仓库
+  /// 切换后不会返回可能过期的 Diff。
+  Future<GitUnifiedDiff> readFileHistoryCommitDiff(
+    GitCommit commit, {
+    required String path,
+    required GitCancellationToken cancellationToken,
+  }) async {
+    final repository = state.repository;
+    if (repository == null || state.phase != RepositorySessionPhase.ready) {
+      throw StateError('当前没有可读取提交差异的仓库。');
+    }
+    final diff = await _reader.readCommitUnifiedDiff(
+      repository,
+      objectId: commit.objectId,
+      parentObjectId: commit.parentIds.firstOrNull,
+      path: path,
+      cancellationToken: cancellationToken,
+    );
+    if (cancellationToken.isCancelled) {
+      throw const GitCancelledException();
+    }
+    if (!ref.mounted || state.repository?.id != repository.id) {
+      throw StateError('仓库已切换，无法继续读取提交差异。');
+    }
+    return diff;
+  }
+
   /// 中文：更新提交历史的筛选查询，不触发新的 Git 读取。
   ///
   /// English: Updates the commit-history filter query without starting another
@@ -2358,6 +2452,228 @@ final class RepositorySessionController
       );
       return false;
     }
+  }
+
+  /// Stages one selected working-tree text hunk and refreshes Git-backed state.
+  ///
+  /// 中文：暂存当前选中的一个未暂存文本区块并刷新 Git 状态。仅支持普通已跟踪
+  /// 文件；补丁必须仍与索引匹配，刷新后恢复原工作区入口及最接近的文件选择。
+  Future<bool> stageSelectedDiffHunk(int hunkIndex) async {
+    final repository = state.repository;
+    final selected = state.selectedChange;
+    final diff = state.diff;
+    final selectedRefId = state.selectedRefId;
+    if (repository == null ||
+        selected == null ||
+        diff == null ||
+        state.phase != RepositorySessionPhase.ready ||
+        state.operationState != GitRepositoryOperationState.none ||
+        state.isDiffLoading ||
+        selected.source != GitDiffSource.workingTree ||
+        selected.kind != RepositoryChangeKind.modified ||
+        selected.entry.isConflicted ||
+        !selected.entry.path.isValidUtf8 ||
+        diff.path != selected.entry.path ||
+        diff.source != selected.source ||
+        diff.isTruncated ||
+        diff.changesFileMode ||
+        hunkIndex < 0) {
+      return false;
+    }
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearMessage: true,
+    );
+    try {
+      await _writer.stageDiffHunk(repository, diff: diff, hunkIndex: hunkIndex);
+      await refresh();
+      await _restoreDiffSelectionAfterRefresh(
+        previousSelection: selected,
+        previousRefId: selectedRefId,
+      );
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
+  /// Discards or unstages one selected text hunk and refreshes Git-backed state.
+  ///
+  /// 中文：放弃或取消暂存当前选中文件 Diff 的一个文本区块并刷新 Git 状态。仅
+  /// 支持普通已跟踪文件；未暂存区块恢复到索引版本，已暂存区块只修改索引并保留
+  /// 工作区内容。上下文变化时 Git 会拒绝补丁。
+  Future<bool> revertSelectedDiffHunk(int hunkIndex) async {
+    final repository = state.repository;
+    final selected = state.selectedChange;
+    final diff = state.diff;
+    final selectedRefId = state.selectedRefId;
+    if (repository == null ||
+        selected == null ||
+        diff == null ||
+        state.phase != RepositorySessionPhase.ready ||
+        state.operationState != GitRepositoryOperationState.none ||
+        state.isDiffLoading ||
+        selected.kind != RepositoryChangeKind.modified ||
+        selected.entry.isConflicted ||
+        !selected.entry.path.isValidUtf8 ||
+        diff.path != selected.entry.path ||
+        diff.source != selected.source ||
+        diff.isTruncated ||
+        diff.changesFileMode ||
+        hunkIndex < 0) {
+      return false;
+    }
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearMessage: true,
+    );
+    try {
+      await _writer.revertDiffHunk(
+        repository,
+        diff: diff,
+        hunkIndex: hunkIndex,
+      );
+      await refresh();
+      await _restoreDiffSelectionAfterRefresh(
+        previousSelection: selected,
+        previousRefId: selectedRefId,
+      );
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
+  /// Reverse-applies one selected committed hunk into the current working tree.
+  ///
+  /// The immutable commit remains unchanged. After Git accepts the patch, all
+  /// repository state is refreshed and the same commit and file are selected
+  /// again so the historical context remains visible.
+  ///
+  /// 中文：将当前选中的已提交区块反向应用到工作区，不修改原提交。Git 接受补丁
+  /// 后刷新完整仓库状态，并重新选中原提交和文件，使历史上下文保持可见。
+  Future<bool> revertSelectedCommitDiffHunk(int hunkIndex) async {
+    final repository = state.repository;
+    final selected = state.selectedCommitFile;
+    final diff = state.commitDiff;
+    final selectedRefId = state.selectedRefId;
+    final selectedCommitId = state.selectedCommitId;
+    final supportedKind = switch (selected?.file.kind) {
+      GitCommitChangeKind.added ||
+      GitCommitChangeKind.modified ||
+      GitCommitChangeKind.deleted => true,
+      _ => false,
+    };
+    if (repository == null ||
+        selected == null ||
+        diff == null ||
+        selectedCommitId == null ||
+        state.phase != RepositorySessionPhase.ready ||
+        state.operationState != GitRepositoryOperationState.none ||
+        state.isCommitDiffLoading ||
+        state.selectedRefId.startsWith('refs/stash/') ||
+        selected.objectId != selectedCommitId ||
+        !selected.file.path.isValidUtf8 ||
+        !supportedKind ||
+        diff.path != selected.file.path ||
+        diff.source != GitDiffSource.commit ||
+        diff.isTruncated ||
+        diff.changesFileMode ||
+        hunkIndex < 0) {
+      return false;
+    }
+
+    final selectedPath = selected.file.path.display;
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      clearMessage: true,
+    );
+    try {
+      await _writer.revertDiffHunk(
+        repository,
+        diff: diff,
+        hunkIndex: hunkIndex,
+      );
+      await refresh();
+      if (state.phase != RepositorySessionPhase.ready) return false;
+      state = state.copyWith(selectedRefId: selectedRefId);
+      await selectCommit(selectedCommitId);
+      if (state.commitChanges.any(
+        (candidate) => candidate.path.display == selectedPath,
+      )) {
+        await selectCommitFileByPath(selectedPath);
+      }
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isCommitDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: '$error\n$stackTrace',
+      );
+      return false;
+    }
+  }
+
+  /// Restores the uncommitted surface and closest surviving file selection.
+  ///
+  /// 中文：区块写入后的完整 Git 刷新会默认选中最新提交；此方法恢复操作前的
+  /// “文件状态”或未提交行，并优先重新选择同一路径、同一暂存来源，来源已消失时
+  /// 再选择另一侧仍存在的改动。
+  Future<void> _restoreDiffSelectionAfterRefresh({
+    required SelectedRepositoryChange previousSelection,
+    required String previousRefId,
+  }) async {
+    if (state.phase != RepositorySessionPhase.ready) return;
+    if (previousRefId == 'workspace') {
+      _commitGeneration++;
+      _commitDiffGeneration++;
+      state = state.copyWith(
+        selectedRefId: 'workspace',
+        clearSelectedCommit: true,
+        commitChanges: const [],
+        commitAdditions: 0,
+        commitDeletions: 0,
+        isCommitLoading: false,
+        isCommitDiffLoading: false,
+        clearSelectedCommitFile: true,
+        clearCommitDiff: true,
+        clearMessage: true,
+      );
+    } else {
+      selectUncommittedChanges();
+    }
+
+    final entry = state.status?.entries
+        .where((candidate) => candidate.path == previousSelection.entry.path)
+        .firstOrNull;
+    if (entry == null || entry.isConflicted || !entry.path.isValidUtf8) return;
+    final preferred = _changeAfterStageToggle(
+      entry,
+      isStaged: previousSelection.isStaged,
+    );
+    final fallback = _changeAfterStageToggle(
+      entry,
+      isStaged: !previousSelection.isStaged,
+    );
+    final nextSelection = preferred ?? fallback;
+    if (nextSelection != null) await selectChange(nextSelection);
   }
 
   /// Executes one explicit conflict-resolution action for an unmerged file.

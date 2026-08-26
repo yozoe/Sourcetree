@@ -660,6 +660,81 @@ final class GitRepositoryReader {
     return historyParser.parse(result.stdoutBytes).commits;
   }
 
+  /// Reads the committed history for one repository-relative file path.
+  ///
+  /// Git's `--follow` option keeps a single-file history useful after a rename
+  /// and each result retains the path valid at that revision. The optional
+  /// [revisionSnapshot] can match the workspace's multi-branch history scope.
+  /// The path is passed after `--` with literal pathspec handling, so it cannot
+  /// be interpreted as a revision or another Git option.
+  ///
+  /// 中文：读取一个仓库相对文件路径的已提交历史。单文件查询使用 Git 的
+  /// `--follow` 跟踪重命名，并为每条结果保留该提交有效的路径；可选
+  /// [revisionSnapshot] 会与工作区的多分支历史范围保持一致。路径始终位于
+  /// `--` 之后并启用 literal pathspec，不会被解释为提交引用或 Git 选项。
+  Future<List<GitFileHistoryEntry>> readFileHistory(
+    GitRepository repository, {
+    required String path,
+    int limit = 100,
+    List<String>? revisionSnapshot,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    if (path.isEmpty || path.contains('\u0000')) {
+      throw ArgumentError.value(path, 'path', 'Expected a non-empty Git path.');
+    }
+    if (limit <= 0 || limit > 10000) {
+      throw RangeError.range(limit, 1, 10000, 'limit');
+    }
+    final revisions = revisionSnapshot;
+    if (revisions != null) {
+      for (final revision in revisions) {
+        _validateObjectId(revision);
+      }
+      if (revisions.isEmpty) return const [];
+    } else if (!await _hasResolvableHead(
+      repository,
+      cancellationToken: cancellationToken,
+    )) {
+      return const [];
+    }
+
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          '--no-optional-locks',
+          '--literal-pathspecs',
+          '-c',
+          'color.ui=false',
+          'log',
+          '--follow',
+          '--name-status',
+          '-z',
+          '--encoding=UTF-8',
+          '--max-count=$limit',
+          '--format=$gitFileHistoryFormat',
+          ...?revisions,
+          if (revisions == null) ...['--branches', 'HEAD'],
+          '--',
+          path,
+        ],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 32 * 1024 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Reading file history');
+    if (result.stdoutTruncated) {
+      throw const GitParseException(
+        'File history exceeded the configured output limit.',
+      );
+    }
+    return historyParser.parseFileHistory(result.stdoutBytes).entries;
+  }
+
   /// Reads the current branch commits that an interactive rebase will replay
   /// after [upstreamObjectId], oldest first.
   /// 中文：读取交互式变基将在 [upstreamObjectId] 之后重放的当前分支提交，按从旧到新排序。
@@ -715,10 +790,15 @@ final class GitRepositoryReader {
     ]);
   }
 
-  /// 中文：确认仓库已经有可解析的 HEAD；未首次提交的仓库返回 `false`。
+  /// 中文：确认仓库已经有可解析的 HEAD；未首次提交的仓库返回 `false`，并将
+  /// 可选取消令牌传递给唯一的只读 Git 子进程。
   /// English: Returns whether the repository has a resolvable HEAD, treating an
-  /// unborn repository as an empty history rather than an error.
-  Future<bool> _hasResolvableHead(GitRepository repository) async {
+  /// unborn repository as an empty history rather than an error and forwarding
+  /// the optional cancellation token to its single read-only Git process.
+  Future<bool> _hasResolvableHead(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+  }) async {
     final head = await runner.run(
       GitInvocation(
         arguments: const [
@@ -729,6 +809,7 @@ final class GitRepositoryReader {
           'HEAD',
         ],
         workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
         outputLimit: const GitOutputLimit(
           stdoutBytes: 1024,
           stderrBytes: 64 * 1024,
@@ -839,8 +920,11 @@ final class GitRepositoryReader {
   }
 
   /// Reads local branches without parsing human-oriented `git branch` output.
-  /// 中文：读取所需的数据。
-  /// English: Reads the required data.
+  /// 中文：读取一个提交相对指定父提交的文件状态与行统计；两个只读 Git 查询
+  /// 共享可选取消令牌，全部成功后才返回合并结果。
+  /// English: Reads file statuses and line statistics for one commit relative
+  /// to the selected parent. Both read-only Git queries share the optional
+  /// cancellation token, and results are combined only after both succeed.
   Future<List<GitLocalBranch>> readLocalBranches(
     GitRepository repository,
   ) async {
@@ -1116,12 +1200,16 @@ final class GitRepositoryReader {
   /// The revision comes from [readRecentHistory], but is still constrained to
   /// an object-id shaped value before it is passed to Git as a revision. Merge
   /// commits are compared with [parentObjectId], normally their first parent.
-  /// 中文：读取所需的数据。
-  /// English: Reads the required data.
+  /// 中文：读取一个提交中指定路径的 Unified Diff；路径按字面值传递，可选取消
+  /// 令牌控制唯一的只读 Git 子进程，输出超限时结果会明确标记为截断。
+  /// English: Reads one path's unified diff at a commit, passing the path
+  /// literally and forwarding the optional cancellation token to the single
+  /// read-only Git process. Oversized output is returned as truncated.
   Future<GitCommitChangeSummary> readCommitChanges(
     GitRepository repository, {
     required String objectId,
     String? parentObjectId,
+    GitCancellationToken? cancellationToken,
   }) async {
     _validateObjectId(objectId);
     if (parentObjectId != null) _validateObjectId(parentObjectId);
@@ -1145,6 +1233,7 @@ final class GitRepositoryReader {
             objectId,
           ],
           workingDirectory: repository.commandDirectory,
+          cancellationToken: cancellationToken,
           outputLimit: const GitOutputLimit(
             stdoutBytes: 8 * 1024 * 1024,
             stderrBytes: 512 * 1024,
@@ -1170,6 +1259,7 @@ final class GitRepositoryReader {
             objectId,
           ],
           workingDirectory: repository.commandDirectory,
+          cancellationToken: cancellationToken,
           outputLimit: const GitOutputLimit(
             stdoutBytes: 8 * 1024 * 1024,
             stderrBytes: 512 * 1024,
@@ -1206,6 +1296,7 @@ final class GitRepositoryReader {
     String? parentObjectId,
     int contextLines = 3,
     int maxOutputBytes = 4 * 1024 * 1024,
+    GitCancellationToken? cancellationToken,
   }) async {
     _validateObjectId(objectId);
     if (parentObjectId != null) _validateObjectId(parentObjectId);
@@ -1243,6 +1334,7 @@ final class GitRepositoryReader {
           path,
         ],
         workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
         outputLimit: GitOutputLimit(
           stdoutBytes: maxOutputBytes,
           stderrBytes: 512 * 1024,

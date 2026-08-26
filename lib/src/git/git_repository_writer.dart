@@ -111,6 +111,105 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Resetting files to HEAD');
   }
 
+  /// Stages one text hunk from a previously read working-tree diff.
+  ///
+  /// The original byte patch is applied directly to Git's index. Git rejects
+  /// it if the index changed after the Diff was read, while the working-tree
+  /// file remains untouched.
+  ///
+  /// 中文：暂存先前读取的工作区文本 Diff 中的一个区块。原始字节补丁会直接
+  /// 应用到 Git 索引；若读取 Diff 后索引发生变化，Git 会拒绝应用，工作区文件
+  /// 始终保持不变。
+  Future<void> stageDiffHunk(
+    GitRepository repository, {
+    required GitUnifiedDiff diff,
+    required int hunkIndex,
+  }) async {
+    if (diff.source != GitDiffSource.workingTree) {
+      throw ArgumentError.value(
+        diff,
+        'diff',
+        'Only working-tree diff hunks can be staged.',
+      );
+    }
+    if (diff.isTruncated) {
+      throw ArgumentError.value(
+        diff,
+        'diff',
+        'A truncated diff cannot be safely staged.',
+      );
+    }
+    if (diff.changesFileMode) {
+      throw ArgumentError.value(
+        diff,
+        'diff',
+        'A diff that changes file mode cannot be safely staged by hunk.',
+      );
+    }
+    final patch = _singleHunkPatch(diff.bytes, hunkIndex);
+    final result = await runner.run(
+      GitInvocation(
+        arguments: const ['--no-pager', 'apply', '--cached'],
+        workingDirectory: repository.commandDirectory,
+        stdinBytes: patch,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Staging diff hunk');
+  }
+
+  /// Reverse-applies one text hunk from a previously read Diff.
+  ///
+  /// A working-tree hunk is discarded, a staged hunk is removed only from the
+  /// index, and a committed hunk is reverse-applied into the current working
+  /// tree without rewriting history. Git rejects stale or incompatible patch
+  /// context.
+  ///
+  /// 中文：反向应用先前读取的文本 Diff 区块。未暂存区块会被放弃，已暂存区块
+  /// 只从索引移除，已提交区块会反向应用到当前工作区且不改写历史；上下文过期或
+  /// 不兼容时由 Git 拒绝补丁。
+  Future<void> revertDiffHunk(
+    GitRepository repository, {
+    required GitUnifiedDiff diff,
+    required int hunkIndex,
+  }) async {
+    if (diff.isTruncated) {
+      throw ArgumentError.value(
+        diff,
+        'diff',
+        'A truncated diff cannot be safely reverted.',
+      );
+    }
+    if (diff.changesFileMode) {
+      throw ArgumentError.value(
+        diff,
+        'diff',
+        'A diff that changes file mode cannot be safely reverted by hunk.',
+      );
+    }
+    final patch = _singleHunkPatch(diff.bytes, hunkIndex);
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          'apply',
+          '--reverse',
+          if (diff.source == GitDiffSource.staged) '--cached',
+        ],
+        workingDirectory: repository.commandDirectory,
+        stdinBytes: patch,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Reverting diff hunk');
+  }
+
   /// 中文：取消暂存指定路径。
   /// English: Unstages the specified path.
   Future<void> unstagePath(
@@ -2238,4 +2337,71 @@ final class _GitPushTarget {
   final String remoteRef;
   final String refspec;
   final bool setUpstream;
+}
+
+/// Returns a complete single-file patch containing exactly one unified hunk.
+///
+/// Git emits byte-oriented patches, so this deliberately never round-trips
+/// through UTF-8. The caller has already limited the feature to text diffs;
+/// retaining the original bytes prevents a displayed replacement character
+/// from silently changing what `git apply` receives.
+///
+/// 中文：从 Git 原始字节 Diff 中提取只含指定区块的完整单文件补丁。该过程不做
+/// UTF-8 往返转换，避免界面替换字符悄悄改变最终传给 `git apply` 的内容。
+List<int> _singleHunkPatch(List<int> diff, int hunkIndex) {
+  if (hunkIndex < 0) {
+    throw RangeError.range(hunkIndex, 0, null, 'hunkIndex');
+  }
+  final hunkOffsets = <int>[];
+  var hasOldPath = false;
+  var hasNewPath = false;
+  var lineStart = 0;
+  for (var index = 0; index <= diff.length; index++) {
+    if (index != diff.length && diff[index] != 10) continue;
+    if (_patchLineStartsWith(diff, lineStart, index, const [64, 64, 32])) {
+      hunkOffsets.add(lineStart);
+    } else if (_patchLineStartsWith(diff, lineStart, index, const [
+      45,
+      45,
+      45,
+      32,
+    ])) {
+      hasOldPath = true;
+    } else if (_patchLineStartsWith(diff, lineStart, index, const [
+      43,
+      43,
+      43,
+      32,
+    ])) {
+      hasNewPath = true;
+    }
+    lineStart = index + 1;
+  }
+  if (!hasOldPath || !hasNewPath || hunkIndex >= hunkOffsets.length) {
+    throw ArgumentError.value(hunkIndex, 'hunkIndex', 'Unknown diff hunk.');
+  }
+  final hunkStart = hunkOffsets[hunkIndex];
+  final hunkEnd = hunkIndex + 1 < hunkOffsets.length
+      ? hunkOffsets[hunkIndex + 1]
+      : diff.length;
+  return List<int>.unmodifiable([
+    ...diff.sublist(0, hunkStart),
+    ...diff.sublist(hunkStart, hunkEnd),
+  ]);
+}
+
+/// Checks whether one byte-delimited patch line starts with [prefix].
+///
+/// 中文：判断一个由字节边界确定的补丁行是否以 [prefix] 开头，不解码路径或内容。
+bool _patchLineStartsWith(
+  List<int> bytes,
+  int start,
+  int end,
+  List<int> prefix,
+) {
+  if (end - start < prefix.length) return false;
+  for (var offset = 0; offset < prefix.length; offset++) {
+    if (bytes[start + offset] != prefix[offset]) return false;
+  }
+  return true;
 }

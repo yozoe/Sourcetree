@@ -74,10 +74,10 @@ enum RepositoryCommitContextAction {
   cherryPick,
 }
 
-/// Deferred actions shown in the context menu of a historical commit file.
+/// Actions shown in the context menu of a historical commit file.
 ///
-/// 中文：历史提交文件右键菜单中展示的待实现动作；可见标签必须直接标注
-/// “（待实现）”，具体能力会在后续版本逐项交付。
+/// 中文：历史提交文件右键菜单中展示的动作。已交付动作由应用层执行只读 Git
+/// 查询；尚未交付的动作必须在可见标签中直接标注“（待实现）”。
 enum RepositoryCommitFileContextAction {
   viewSelectedFileLog,
   reviewSelectedItem,
@@ -747,6 +747,7 @@ final class CommitFileViewData {
     required this.kind,
     this.previousPath,
     this.isSelected = false,
+    this.isPathValidUtf8 = true,
     this.isBinary = false,
     this.additions,
     this.deletions,
@@ -756,10 +757,22 @@ final class CommitFileViewData {
   final String? previousPath;
   final RepositoryChangeKind kind;
   final bool isSelected;
+  final bool isPathValidUtf8;
   final bool isBinary;
   final int? additions;
   final int? deletions;
 }
+
+/// One explicit operation offered for a unified-diff hunk.
+///
+/// The available set is derived from the Diff source: working-tree hunks can
+/// be staged or discarded, staged hunks can be unstaged, and committed hunks
+/// can be reverse-applied into the current working tree.
+///
+/// 中文：Unified Diff 区块可执行的一项明确操作。可用集合由 Diff 来源决定：
+/// 未暂存区块可以暂存或放弃，已暂存区块可以取消暂存，已提交区块可以反向应用
+/// 到当前工作区。
+enum RepositoryDiffHunkAction { stage, discard, unstage, revertCommitted }
 
 final class DiffViewData {
   const DiffViewData({
@@ -768,6 +781,7 @@ final class DiffViewData {
     this.lines = const [],
     this.isBinary = false,
     this.isTooLarge = false,
+    this.hunkActions = const [],
     this.notice,
   });
 
@@ -777,6 +791,7 @@ final class DiffViewData {
       lines = const [],
       isBinary = false,
       isTooLarge = false,
+      hunkActions = const [],
       notice = null;
 
   final String? path;
@@ -784,6 +799,7 @@ final class DiffViewData {
   final List<DiffLineViewData> lines;
   final bool isBinary;
   final bool isTooLarge;
+  final List<RepositoryDiffHunkAction> hunkActions;
   final String? notice;
 }
 
@@ -793,12 +809,14 @@ final class DiffLineViewData {
     required this.text,
     this.oldLineNumber,
     this.newLineNumber,
+    this.hunkIndex,
   });
 
   final DiffLineKind kind;
   final String text;
   final int? oldLineNumber;
   final int? newLineNumber;
+  final int? hunkIndex;
 }
 
 final class RepositoryFooterViewData {

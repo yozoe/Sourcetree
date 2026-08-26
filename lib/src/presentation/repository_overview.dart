@@ -27,6 +27,8 @@ typedef RepositoryChangeFilesCallback =
     FutureOr<void> Function(List<RepositoryChangeViewData> changes);
 typedef RepositoryChangeGroupStageCallback =
     FutureOr<void> Function(List<RepositoryChangeViewData> changes, bool stage);
+typedef RepositoryDiffHunkActionCallback =
+    FutureOr<void> Function(RepositoryDiffHunkAction action, int hunkIndex);
 typedef RepositoryConflictActionCallback =
     void Function(
       RepositoryChangeViewData change,
@@ -34,10 +36,10 @@ typedef RepositoryConflictActionCallback =
     );
 typedef RepositoryCommitFileCallback = void Function(CommitFileViewData? file);
 
-/// Delivers a deferred context-menu choice for one historical commit file.
+/// Delivers a context-menu choice for one historical commit file.
 ///
-/// 中文：传递历史提交文件的一项待实现右键菜单选择；视图层不执行 Git、文件或
-/// 外部应用操作，由上层决定如何提供无副作用提示。
+/// 中文：传递历史提交文件的一项右键菜单选择；视图层不执行 Git、文件或外部
+/// 应用操作，由应用层决定如何处理已交付能力或安全提示待实现动作。
 typedef RepositoryCommitFileContextActionCallback =
     void Function(
       CommitFileViewData file,
@@ -68,6 +70,7 @@ final class RepositoryOverviewCallbacks {
     this.onChangeRemove,
     this.onChangeStopTracking,
     this.onChangeReset,
+    this.onDiffHunkAction,
     this.onCommitFileSelected,
     this.onCommitFileContextAction,
     this.onLayoutChanged,
@@ -91,6 +94,7 @@ final class RepositoryOverviewCallbacks {
   final RepositoryChangeFilesCallback? onChangeRemove;
   final RepositoryChangeFilesCallback? onChangeStopTracking;
   final RepositoryChangeFilesCallback? onChangeReset;
+  final RepositoryDiffHunkActionCallback? onDiffHunkAction;
   final RepositoryCommitFileCallback? onCommitFileSelected;
   final RepositoryCommitFileContextActionCallback? onCommitFileContextAction;
   final ValueChanged<RepositoryOverviewLayout>? onLayoutChanged;
@@ -242,6 +246,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         onRemove: widget.callbacks.onChangeRemove,
         onStopTracking: widget.callbacks.onChangeStopTracking,
         onReset: widget.callbacks.onChangeReset,
+        onHunkAction: widget.callbacks.onDiffHunkAction,
         onCommit: widget.callbacks.onAction == null
             ? null
             : () => widget.callbacks.onAction!(RepositoryAction.commit),
@@ -416,6 +421,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                               onStopTracking:
                                   widget.callbacks.onChangeStopTracking,
                               onReset: widget.callbacks.onChangeReset,
+                              onHunkAction: widget.callbacks.onDiffHunkAction,
                               onCommitFileSelected:
                                   widget.callbacks.onCommitFileSelected,
                               onCommitFileContextAction:
@@ -528,6 +534,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                         onRemove: widget.callbacks.onChangeRemove,
                         onStopTracking: widget.callbacks.onChangeStopTracking,
                         onReset: widget.callbacks.onChangeReset,
+                        onHunkAction: widget.callbacks.onDiffHunkAction,
                         onCommitFileSelected:
                             widget.callbacks.onCommitFileSelected,
                         onCommitFileContextAction:
@@ -577,6 +584,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         onRemove: widget.callbacks.onChangeRemove,
         onStopTracking: widget.callbacks.onChangeStopTracking,
         onReset: widget.callbacks.onChangeReset,
+        onHunkAction: widget.callbacks.onDiffHunkAction,
         onCommitFileSelected: widget.callbacks.onCommitFileSelected,
         onCommitFileContextAction: widget.callbacks.onCommitFileContextAction,
       ),
@@ -3742,6 +3750,7 @@ class _SelectedChangesPane extends StatelessWidget {
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
+    required this.onHunkAction,
     required this.onCommitFileSelected,
     required this.onCommitFileContextAction,
   });
@@ -3755,6 +3764,7 @@ class _SelectedChangesPane extends StatelessWidget {
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
+  final RepositoryDiffHunkActionCallback? onHunkAction;
   final RepositoryCommitFileCallback? onCommitFileSelected;
   final RepositoryCommitFileContextActionCallback? onCommitFileContextAction;
 
@@ -3767,6 +3777,7 @@ class _SelectedChangesPane extends StatelessWidget {
         repository: repository,
         onSelected: onCommitFileSelected,
         onContextAction: onCommitFileContextAction,
+        onHunkAction: onHunkAction,
       );
     }
     return _ChangesPane(
@@ -3779,27 +3790,30 @@ class _SelectedChangesPane extends StatelessWidget {
       onRemove: onRemove,
       onStopTracking: onStopTracking,
       onReset: onReset,
+      onHunkAction: onHunkAction,
     );
   }
 }
 
 /// Reuses the workspace's selected-commit file list, Diff preview and
-/// deferred context-menu callback.
+/// context-menu callback.
 ///
-/// 中文：复用工作区中所选提交的文件列表、Diff 预览和待实现右键菜单回调；
-/// 回调为空时仍展示菜单结构，但不会执行文件操作。
+/// 中文：复用工作区中所选提交的文件列表、Diff 预览和右键菜单回调；回调为空时
+/// 仍展示菜单结构，但不会执行文件操作。
 class RepositoryCommitChangesPane extends StatelessWidget {
   const RepositoryCommitChangesPane({
     super.key,
     required this.repository,
     required this.onSelected,
     this.onContextAction,
+    this.onHunkAction,
     this.title = '提交改动',
   });
 
   final RepositoryViewData repository;
   final RepositoryCommitFileCallback? onSelected;
   final RepositoryCommitFileContextActionCallback? onContextAction;
+  final RepositoryDiffHunkActionCallback? onHunkAction;
   final String title;
 
   @override
@@ -3807,6 +3821,7 @@ class RepositoryCommitChangesPane extends StatelessWidget {
     repository: repository,
     onSelected: onSelected,
     onContextAction: onContextAction,
+    onHunkAction: onHunkAction,
     title: title,
   );
 }
@@ -3816,12 +3831,14 @@ class _CommitChangesPane extends StatelessWidget {
     required this.repository,
     required this.onSelected,
     this.onContextAction,
+    this.onHunkAction,
     this.title = '提交改动',
   });
 
   final RepositoryViewData repository;
   final RepositoryCommitFileCallback? onSelected;
   final RepositoryCommitFileContextActionCallback? onContextAction;
+  final RepositoryDiffHunkActionCallback? onHunkAction;
   final String title;
 
   /// 中文：构建当前组件的界面。
@@ -3855,6 +3872,7 @@ class _CommitChangesPane extends StatelessWidget {
                             ? list
                             : _DiffPreview(
                                 diff: repository.commitDiff,
+                                onHunkAction: onHunkAction,
                                 onBack: onSelected == null
                                     ? null
                                     : () => onSelected!(null),
@@ -3871,7 +3889,10 @@ class _CommitChangesPane extends StatelessWidget {
                             color: Theme.of(context).colorScheme.outlineVariant,
                           ),
                           Expanded(
-                            child: _DiffPreview(diff: repository.commitDiff),
+                            child: _DiffPreview(
+                              diff: repository.commitDiff,
+                              onHunkAction: onHunkAction,
+                            ),
                           ),
                         ],
                       );
@@ -3948,9 +3969,10 @@ class _CommitFileTile extends StatelessWidget {
       useRootOverlay: true,
       menuChildren: [
         _commitFileContextMenuItem(
-          '查看选中的修改日志…（待实现）',
+          file.isPathValidUtf8 ? '查看选中的修改日志…' : '查看选中的修改日志…（待实现）',
           RepositoryCommitFileContextAction.viewSelectedFileLog,
           invoke,
+          enabled: file.isPathValidUtf8,
         ),
         _commitFileContextMenuItem(
           '审查选定的项目（待实现）',
@@ -4065,15 +4087,19 @@ class _CommitFileTile extends StatelessWidget {
   }
 }
 
-/// Builds one labelled deferred action in the historical-file context menu.
+/// Builds one labelled action in the historical-file context menu.
 ///
-/// 中文：构建历史文件右键菜单中的一个带“（待实现）”标签的动作；菜单结构先
-/// 与桌面 Git 客户端对齐，具体业务操作由上层在后续版本交付。
+/// 中文：构建历史文件右键菜单中的一个动作；视图层仅传递选择，具体业务操作
+/// 始终由应用层处理。
 MenuItemButton _commitFileContextMenuItem(
   String label,
   RepositoryCommitFileContextAction action,
-  ValueChanged<RepositoryCommitFileContextAction> onPressed,
-) => MenuItemButton(onPressed: () => onPressed(action), child: Text(label));
+  ValueChanged<RepositoryCommitFileContextAction> onPressed, {
+  bool enabled = true,
+}) => MenuItemButton(
+  onPressed: enabled ? () => onPressed(action) : null,
+  child: Text(label),
+);
 
 class _ChangesPane extends StatefulWidget {
   const _ChangesPane({
@@ -4086,6 +4112,7 @@ class _ChangesPane extends StatefulWidget {
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
+    required this.onHunkAction,
   });
 
   final RepositoryViewData repository;
@@ -4097,6 +4124,7 @@ class _ChangesPane extends StatefulWidget {
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
+  final RepositoryDiffHunkActionCallback? onHunkAction;
 
   @override
   State<_ChangesPane> createState() => _ChangesPaneState();
@@ -4139,6 +4167,7 @@ class _ChangesPaneState extends State<_ChangesPane> {
                         )
                       : _DiffPreview(
                           diff: repository.diff,
+                          onHunkAction: widget.onHunkAction,
                           onBack: widget.onSelected == null
                               ? null
                               : () => widget.onSelected!(null),
@@ -4179,7 +4208,12 @@ class _ChangesPaneState extends State<_ChangesPane> {
                         _fileListWidth = fileListWidth + delta;
                       }),
                     ),
-                    Expanded(child: _DiffPreview(diff: repository.diff)),
+                    Expanded(
+                      child: _DiffPreview(
+                        diff: repository.diff,
+                        onHunkAction: widget.onHunkAction,
+                      ),
+                    ),
                   ],
                 );
               },
@@ -4206,6 +4240,7 @@ class _WorkspaceChangesView extends StatelessWidget {
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
+    required this.onHunkAction,
     required this.onCommit,
   });
 
@@ -4218,6 +4253,7 @@ class _WorkspaceChangesView extends StatelessWidget {
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
+  final RepositoryDiffHunkActionCallback? onHunkAction;
   final VoidCallback? onCommit;
 
   /// 中文：构建工作区文件、Diff 和提交信息入口。
@@ -4241,6 +4277,7 @@ class _WorkspaceChangesView extends StatelessWidget {
             onRemove: onRemove,
             onStopTracking: onStopTracking,
             onReset: onReset,
+            onHunkAction: onHunkAction,
           ),
         ),
         Material(
@@ -4946,10 +4983,11 @@ class _ChangeStatusBadge extends StatelessWidget {
 }
 
 class _DiffPreview extends StatelessWidget {
-  const _DiffPreview({required this.diff, this.onBack});
+  const _DiffPreview({required this.diff, this.onBack, this.onHunkAction});
 
   final DiffViewData diff;
   final VoidCallback? onBack;
+  final RepositoryDiffHunkActionCallback? onHunkAction;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -5021,10 +5059,22 @@ class _DiffPreview extends StatelessWidget {
                   message: 'Git 没有返回可显示的补丁。',
                 )
               : ListView.builder(
-                  itemExtent: 20,
                   itemCount: diff.lines.length,
                   itemBuilder: (BuildContext context, int index) {
-                    return _DiffLine(line: diff.lines[index]);
+                    final line = diff.lines[index];
+                    final canAct =
+                        line.kind == DiffLineKind.hunkHeader &&
+                        line.hunkIndex != null &&
+                        diff.hunkActions.isNotEmpty &&
+                        onHunkAction != null;
+                    return SizedBox(
+                      height: line.kind == DiffLineKind.hunkHeader ? 26 : 20,
+                      child: _DiffLine(
+                        line: line,
+                        hunkActions: canAct ? diff.hunkActions : const [],
+                        onHunkAction: canAct ? onHunkAction : null,
+                      ),
+                    );
                   },
                 ),
         ),
@@ -5034,9 +5084,15 @@ class _DiffPreview extends StatelessWidget {
 }
 
 class _DiffLine extends StatelessWidget {
-  const _DiffLine({required this.line});
+  const _DiffLine({
+    required this.line,
+    this.hunkActions = const [],
+    this.onHunkAction,
+  });
 
   final DiffLineViewData line;
+  final List<RepositoryDiffHunkAction> hunkActions;
+  final RepositoryDiffHunkActionCallback? onHunkAction;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -5077,6 +5133,36 @@ class _DiffLine extends StatelessWidget {
               ),
             ),
           ),
+          if (onHunkAction != null && line.hunkIndex != null)
+            for (final action in hunkActions)
+              Tooltip(
+                message: switch (action) {
+                  RepositoryDiffHunkAction.stage => '只将这个未暂存区块加入索引',
+                  RepositoryDiffHunkAction.discard => '放弃这个区块并恢复到索引版本',
+                  RepositoryDiffHunkAction.unstage => '从索引中移除这个区块，保留工作区内容',
+                  RepositoryDiffHunkAction.revertCommitted =>
+                    '将已提交区块反向应用到当前工作区',
+                },
+                child: TextButton(
+                  onPressed: () {
+                    final result = onHunkAction!(action, line.hunkIndex!);
+                    if (result is Future<void>) unawaited(result);
+                  },
+                  style: TextButton.styleFrom(
+                    minimumSize: const Size(0, 20),
+                    padding: const EdgeInsets.symmetric(horizontal: 6),
+                    tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                    visualDensity: VisualDensity.compact,
+                    textStyle: Theme.of(context).textTheme.labelSmall,
+                  ),
+                  child: Text(switch (action) {
+                    RepositoryDiffHunkAction.stage => '暂存区块',
+                    RepositoryDiffHunkAction.discard => '放弃区块',
+                    RepositoryDiffHunkAction.unstage => '取消暂存区块',
+                    RepositoryDiffHunkAction.revertCommitted => '回滚区块',
+                  }),
+                ),
+              ),
         ],
       ),
     );
@@ -5367,6 +5453,7 @@ class _TabbedInspector extends StatelessWidget {
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
+    required this.onHunkAction,
     required this.onCommitFileSelected,
     required this.onCommitFileContextAction,
   });
@@ -5382,6 +5469,7 @@ class _TabbedInspector extends StatelessWidget {
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
+  final RepositoryDiffHunkActionCallback? onHunkAction;
   final RepositoryCommitFileCallback? onCommitFileSelected;
   final RepositoryCommitFileContextActionCallback? onCommitFileContextAction;
 
@@ -5411,6 +5499,7 @@ class _TabbedInspector extends StatelessWidget {
               onRemove: onRemove,
               onStopTracking: onStopTracking,
               onReset: onReset,
+              onHunkAction: onHunkAction,
               onCommitFileSelected: onCommitFileSelected,
               onCommitFileContextAction: onCommitFileContextAction,
             ),

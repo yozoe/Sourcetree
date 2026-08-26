@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
@@ -2824,17 +2825,168 @@ class _RepositoryWorkspaceScreenState
     }
   }
 
-  /// Reports a historical-file context-menu action that has no implementation.
+  /// Routes one source-specific Diff hunk action through the session layer.
   ///
-  /// 中文：提示历史提交文件右键菜单中的占位动作尚未实现；不执行 Git、文件或
-  /// 外部应用操作，确保菜单结构可以先交付而不改变仓库状态。
-  void _showPendingCommitFileContextAction(
+  /// Staging and unstaging are reversible index operations and run directly.
+  /// Discarding working-tree content or reverse-applying a committed hunk first
+  /// explains the impact and requires confirmation. Every mutation uses the
+  /// raw Diff retained by the session so Git can reject stale context.
+  ///
+  /// 中文：根据 Diff 来源路由区块操作。暂存和取消暂存只修改索引，可直接执行；
+  /// 放弃未暂存内容或反向应用已提交区块前会解释影响并要求确认。所有写入都使用
+  /// 会话保留的原始 Diff，让 Git 拒绝已经过期的上下文。
+  Future<void> _handleDiffHunkAction(
+    RepositoryDiffHunkAction action,
+    int hunkIndex,
+  ) async {
+    if (hunkIndex < 0) return;
+    final session = ref.read(repositorySessionProvider);
+    if (action == RepositoryDiffHunkAction.discard) {
+      final change = session.selectedChange;
+      if (change == null || session.diff == null || change.isStaged) return;
+      final approved = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('放弃区块'),
+          content: Text(
+            '将把 ${change.entry.path.display} 的此区块恢复到暂存区版本。'
+            '该区块的未暂存内容会永久丢失，无法通过提交恢复。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              style: FilledButton.styleFrom(
+                backgroundColor: Theme.of(context).colorScheme.error,
+                foregroundColor: Theme.of(context).colorScheme.onError,
+              ),
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('放弃区块'),
+            ),
+          ],
+        ),
+      );
+      if (approved != true || !mounted) return;
+    } else if (action == RepositoryDiffHunkAction.revertCommitted) {
+      final selected = session.selectedCommitFile;
+      if (selected == null || session.commitDiff == null) return;
+      final approved = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('回滚已提交区块'),
+          content: Text(
+            '将把 ${selected.file.path.display} 在所选提交中的此区块反向应用到当前工作区。'
+            '原提交和历史不会改变，工作区会产生一条新的未提交改动；若当前内容不匹配，'
+            'Git 会拒绝操作。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('取消'),
+            ),
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('回滚区块'),
+            ),
+          ],
+        ),
+      );
+      if (approved != true || !mounted) return;
+    }
+
+    final controller = ref.read(repositorySessionProvider.notifier);
+    final succeeded = switch (action) {
+      RepositoryDiffHunkAction.stage => await controller.stageSelectedDiffHunk(
+        hunkIndex,
+      ),
+      RepositoryDiffHunkAction.discard || RepositoryDiffHunkAction.unstage =>
+        await controller.revertSelectedDiffHunk(hunkIndex),
+      RepositoryDiffHunkAction.revertCommitted =>
+        await controller.revertSelectedCommitDiffHunk(hunkIndex),
+    };
+    if (!mounted) return;
+    if (succeeded) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(switch (action) {
+            RepositoryDiffHunkAction.stage => '已暂存该区块。',
+            RepositoryDiffHunkAction.discard => '已放弃该区块。',
+            RepositoryDiffHunkAction.unstage => '已取消暂存该区块。',
+            RepositoryDiffHunkAction.revertCommitted => '已将该提交区块回滚到当前工作区。',
+          }),
+        ),
+      );
+      return;
+    }
+    if (ref.read(repositorySessionProvider).phase ==
+        RepositorySessionPhase.ready) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('区块或文件状态已变化，请刷新后重试。')));
+    }
+  }
+
+  /// Routes one historical-file context-menu action through the application
+  /// layer.
+  ///
+  /// 中文：将历史提交文件右键菜单动作路由至应用层。查看修改日志只读取 Git
+  /// 历史和 Diff；其他待实现动作仍只显示无副作用提示。
+  void _handleCommitFileContextAction(
     CommitFileViewData file,
     RepositoryCommitFileContextAction action,
   ) {
+    if (action == RepositoryCommitFileContextAction.viewSelectedFileLog) {
+      unawaited(_showSelectedFileHistory(file));
+      return;
+    }
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text('“${file.path}”的该菜单功能待实现。')));
+  }
+
+  /// Opens a focused, read-only history window for one historical file.
+  ///
+  /// 中文：为一个历史提交文件打开聚焦的只读历史窗口。窗口使用会话应用层读取
+  /// Git，不改写主工作区的提交、文件或 Diff 选择。
+  Future<void> _showSelectedFileHistory(CommitFileViewData file) async {
+    final session = ref.read(repositorySessionProvider);
+    if (!file.isPathValidUtf8 ||
+        session.phase != RepositorySessionPhase.ready ||
+        session.repository == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前没有可读取修改日志的仓库。')));
+      return;
+    }
+    await showDialog<void>(
+      context: context,
+      builder: (context) => _FileHistoryDialog(
+        path: file.path,
+        loadHistory: (path, cancellationToken) => ref
+            .read(repositorySessionProvider.notifier)
+            .readFileHistory(
+              path,
+              sourceCommitId: session.selectedCommitId,
+              cancellationToken: cancellationToken,
+            ),
+        loadCommitChanges: (commit, cancellationToken) => ref
+            .read(repositorySessionProvider.notifier)
+            .readFileHistoryCommitChanges(
+              commit,
+              cancellationToken: cancellationToken,
+            ),
+        loadCommitDiff: (commit, path, cancellationToken) => ref
+            .read(repositorySessionProvider.notifier)
+            .readFileHistoryCommitDiff(
+              commit,
+              path: path,
+              cancellationToken: cancellationToken,
+            ),
+      ),
+    );
   }
 
   String? _workspaceChangePath(String root, String changePath) {
@@ -2895,7 +3047,7 @@ class _RepositoryWorkspaceScreenState
               onUncommittedChangesSelected: controller.selectUncommittedChanges,
               onCommitFileSelected: (file) =>
                   unawaited(controller.selectCommitFile(file)),
-              onCommitFileContextAction: _showPendingCommitFileContextAction,
+              onCommitFileContextAction: _handleCommitFileContextAction,
               onChangeSelected: controller.selectChange,
               onChangeStageToggled: controller.toggleStage,
               onChangeGroupStageToggled: (changes, stage) =>
@@ -2910,6 +3062,8 @@ class _RepositoryWorkspaceScreenState
                   unawaited(_stopTrackingChanges(changes)),
               onChangeReset: (changes) =>
                   unawaited(_resetChangesToHead(changes)),
+              onDiffHunkAction: (action, hunkIndex) =>
+                  unawaited(_handleDiffHunkAction(action, hunkIndex)),
             ),
           ),
           if (overview.repository == null && widget.themeControl != null)
@@ -2922,6 +3076,517 @@ class _RepositoryWorkspaceScreenState
       ),
     );
   }
+}
+
+/// A Sourcetree-style, focused read-only history surface for one file.
+///
+/// The dialog owns only transient presentation state. Every displayed commit,
+/// change summary and diff comes from the application-layer callbacks, so it
+/// cannot mutate repository state or overwrite the workspace selection.
+///
+/// 中文：一个文件的 Sourcetree 风格聚焦只读历史界面。对话框只拥有短暂的
+/// 展示状态；每一条提交、改动摘要和 Diff 都由应用层回调读取，因此不会修改
+/// 仓库状态或覆盖主工作区选择。
+final class _FileHistoryDialog extends StatefulWidget {
+  const _FileHistoryDialog({
+    required this.path,
+    required this.loadHistory,
+    required this.loadCommitChanges,
+    required this.loadCommitDiff,
+  });
+
+  final String path;
+  final Future<List<GitFileHistoryEntry>> Function(
+    String path,
+    GitCancellationToken cancellationToken,
+  )
+  loadHistory;
+  final Future<GitCommitChangeSummary> Function(
+    GitCommit commit,
+    GitCancellationToken cancellationToken,
+  )
+  loadCommitChanges;
+  final Future<GitUnifiedDiff> Function(
+    GitCommit commit,
+    String path,
+    GitCancellationToken cancellationToken,
+  )
+  loadCommitDiff;
+
+  @override
+  State<_FileHistoryDialog> createState() => _FileHistoryDialogState();
+}
+
+final class _FileHistoryDialogState extends State<_FileHistoryDialog> {
+  List<GitFileHistoryEntry>? _history;
+  GitFileHistoryEntry? _selectedEntry;
+  GitCommitChangeSummary? _summary;
+  GitUnifiedDiff? _diff;
+  Object? _historyError;
+  Object? _detailError;
+  var _isLoadingHistory = true;
+  var _isLoadingDetails = false;
+  var _detailGeneration = 0;
+  GitCancellationToken? _historyCancellation;
+  GitCancellationToken? _detailCancellation;
+
+  /// Starts the first cancellable history read for this dialog instance.
+  ///
+  /// 中文：为当前弹窗实例启动首次可取消的文件历史读取。
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_loadHistory());
+  }
+
+  /// Cancels dialog-owned Git reads before this local UI state is destroyed.
+  ///
+  /// 中文：弹窗销毁前取消其持有的文件历史、提交摘要和 Diff Git 读取，避免关闭
+  /// 窗口后继续占用子进程与输出缓冲区。
+  @override
+  void dispose() {
+    _detailGeneration++;
+    _historyCancellation?.cancel();
+    _detailCancellation?.cancel();
+    super.dispose();
+  }
+
+  /// Reads the selected path's history when the dialog first opens.
+  ///
+  /// 中文：首次打开对话框时读取所选路径的历史；关闭后的回调不会更新已销毁的
+  /// Widget。
+  Future<void> _loadHistory() async {
+    _historyCancellation?.cancel();
+    final cancellation = GitCancellationToken();
+    _historyCancellation = cancellation;
+    try {
+      final history = await widget.loadHistory(widget.path, cancellation);
+      if (!mounted || cancellation.isCancelled) return;
+      setState(() {
+        _history = history;
+        _isLoadingHistory = false;
+      });
+      if (history.isNotEmpty) {
+        await _selectHistoryEntry(history.first);
+      }
+    } on Object catch (error) {
+      if (!mounted || cancellation.isCancelled) return;
+      setState(() {
+        _historyError = error;
+        _isLoadingHistory = false;
+      });
+    } finally {
+      if (identical(_historyCancellation, cancellation)) {
+        _historyCancellation = null;
+      }
+    }
+  }
+
+  /// Selects a history row and then loads its concrete changed files and diff.
+  ///
+  /// 中文：选择一条历史记录并读取其实际改动文件和 Diff。递增代次可使较早的
+  /// 异步回调失效，快速切换提交时不会显示错误的差异。
+  Future<void> _selectHistoryEntry(GitFileHistoryEntry entry) async {
+    final generation = ++_detailGeneration;
+    _detailCancellation?.cancel();
+    final cancellation = GitCancellationToken();
+    _detailCancellation = cancellation;
+    setState(() {
+      _selectedEntry = entry;
+      _summary = null;
+      _diff = null;
+      _detailError = null;
+      _isLoadingDetails = true;
+    });
+    try {
+      final summary = await widget.loadCommitChanges(
+        entry.commit,
+        cancellation,
+      );
+      if (!mounted ||
+          cancellation.isCancelled ||
+          generation != _detailGeneration) {
+        return;
+      }
+      setState(() {
+        _summary = summary;
+      });
+      final diff = await widget.loadCommitDiff(
+        entry.commit,
+        entry.path.display,
+        cancellation,
+      );
+      if (!mounted ||
+          cancellation.isCancelled ||
+          generation != _detailGeneration) {
+        return;
+      }
+      setState(() {
+        _diff = diff;
+        _isLoadingDetails = false;
+      });
+    } on Object catch (error) {
+      if (!mounted ||
+          cancellation.isCancelled ||
+          generation != _detailGeneration) {
+        return;
+      }
+      setState(() {
+        _detailError = error;
+        _isLoadingDetails = false;
+      });
+    } finally {
+      if (identical(_detailCancellation, cancellation)) {
+        _detailCancellation = null;
+      }
+    }
+  }
+
+  /// Builds the bounded three-pane history dialog from dialog-local state.
+  ///
+  /// 中文：根据弹窗局部状态构建带尺寸约束的文件历史三栏界面。
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Dialog(
+      insetPadding: const EdgeInsets.all(24),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 1180, maxHeight: 760),
+        child: SizedBox(
+          width: 1080,
+          height: 680,
+          child: Column(
+            children: [
+              Container(
+                height: 42,
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                color: colors.surfaceContainerHigh,
+                child: Row(
+                  children: [
+                    const Icon(Icons.history, size: 19),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '修改日志：${widget.path}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: '关闭',
+                      icon: const Icon(Icons.close, size: 19),
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
+                  ],
+                ),
+              ),
+              Divider(height: 1, color: colors.outlineVariant),
+              Expanded(
+                child: Row(
+                  children: [
+                    SizedBox(width: 432, child: _buildHistoryList(context)),
+                    VerticalDivider(width: 1, color: colors.outlineVariant),
+                    Expanded(child: _buildDiffPane(context)),
+                  ],
+                ),
+              ),
+              Divider(height: 1, color: colors.outlineVariant),
+              Container(
+                height: 46,
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                color: colors.surfaceContainerLow,
+                child: Row(
+                  children: [
+                    Text(
+                      _history == null ? '正在读取历史…' : '${_history!.length} 个提交',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: const Text('关闭'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Builds the loading, error, empty, or selectable file-history list.
+  ///
+  /// 中文：构建文件历史列表，并覆盖加载、错误、空结果和可选择记录状态。
+  Widget _buildHistoryList(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    if (_isLoadingHistory) {
+      return const Center(child: CircularProgressIndicator.adaptive());
+    }
+    if (_historyError != null) {
+      return _FileHistoryMessage(
+        icon: Icons.error_outline,
+        title: '无法读取修改日志',
+        message: _historyError.toString(),
+      );
+    }
+    final history = _history!;
+    if (history.isEmpty) {
+      return const _FileHistoryMessage(
+        icon: Icons.history_toggle_off_outlined,
+        title: '没有匹配的提交',
+        message: '当前分支中没有这个文件的已提交修改。',
+      );
+    }
+    return Column(
+      children: [
+        Container(
+          height: 31,
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          color: colors.surfaceContainerHigh,
+          child: const Row(
+            children: [
+              SizedBox(width: 68, child: Text('提交号')),
+              SizedBox(width: 78, child: Text('日期')),
+              SizedBox(width: 78, child: Text('用户')),
+              Expanded(child: Text('描述')),
+            ],
+          ),
+        ),
+        Divider(height: 1, color: colors.outlineVariant),
+        Expanded(
+          child: ListView.builder(
+            itemCount: history.length,
+            itemExtent: 34,
+            itemBuilder: (context, index) {
+              final entry = history[index];
+              final commit = entry.commit;
+              final selected =
+                  commit.objectId == _selectedEntry?.commit.objectId;
+              final shortId = commit.objectId.substring(
+                0,
+                math.min(8, commit.objectId.length),
+              );
+              final date = commit.author.when.toLocal();
+              final dateLabel = '${date.month}/${date.day}';
+              return InkWell(
+                onTap: () => unawaited(_selectHistoryEntry(entry)),
+                child: Container(
+                  color: selected ? colors.primary : null,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  alignment: Alignment.centerLeft,
+                  child: DefaultTextStyle(
+                    style: Theme.of(context).textTheme.bodySmall!.copyWith(
+                      color: selected ? colors.onPrimary : colors.onSurface,
+                    ),
+                    child: Row(
+                      children: [
+                        SizedBox(width: 68, child: Text(shortId)),
+                        SizedBox(width: 78, child: Text(dateLabel)),
+                        SizedBox(
+                          width: 78,
+                          child: Text(
+                            commit.author.name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        Expanded(
+                          child: Text(
+                            commit.subject.isEmpty ? '（无提交标题）' : commit.subject,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Builds details for the currently selected file-history record.
+  ///
+  /// 中文：为当前选中的文件历史记录构建提交摘要和只读 Diff 面板。
+  Widget _buildDiffPane(BuildContext context) {
+    final selectedEntry = _selectedEntry;
+    if (selectedEntry == null) {
+      return const _FileHistoryMessage(
+        icon: Icons.touch_app_outlined,
+        title: '选择一个提交',
+        message: '从左侧选择提交以查看该文件的修改。',
+      );
+    }
+    if (_isLoadingDetails) {
+      return const Center(child: CircularProgressIndicator.adaptive());
+    }
+    if (_detailError != null) {
+      return _FileHistoryMessage(
+        icon: Icons.error_outline,
+        title: '无法读取提交差异',
+        message: _detailError.toString(),
+      );
+    }
+    final summary = _summary;
+    final diff = _diff;
+    if (summary == null || diff == null) {
+      return const _FileHistoryMessage(
+        icon: Icons.difference_outlined,
+        title: '没有可显示的文件差异',
+        message: '此提交没有可读取的文本差异。',
+      );
+    }
+    final shortId = selectedEntry.commit.objectId.substring(
+      0,
+      math.min(8, selectedEntry.commit.objectId.length),
+    );
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.fromLTRB(14, 9, 14, 8),
+          color: Theme.of(context).colorScheme.surfaceContainerHigh,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                '$shortId  ${selectedEntry.commit.subject}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
+              const SizedBox(height: 4),
+              Text(
+                '${selectedEntry.path.display} · ${summary.files.length} 个文件 · +${summary.additions} −${summary.deletions}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                  color: Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+            ],
+          ),
+        ),
+        Divider(height: 1, color: Theme.of(context).colorScheme.outlineVariant),
+        Expanded(child: _FileHistoryDiff(text: diff.text)),
+      ],
+    );
+  }
+}
+
+final class _FileHistoryMessage extends StatelessWidget {
+  const _FileHistoryMessage({
+    required this.icon,
+    required this.title,
+    required this.message,
+  });
+
+  final IconData icon;
+  final String title;
+  final String message;
+
+  /// Builds a centered status message for an empty, loading, or error surface.
+  ///
+  /// 中文：为空结果、加载或错误界面构建居中的状态提示。
+  @override
+  Widget build(BuildContext context) => Center(
+    child: Padding(
+      padding: const EdgeInsets.all(28),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(
+            icon,
+            size: 30,
+            color: Theme.of(context).colorScheme.onSurfaceVariant,
+          ),
+          const SizedBox(height: 10),
+          Text(title, style: Theme.of(context).textTheme.titleSmall),
+          const SizedBox(height: 5),
+          Text(message, textAlign: TextAlign.center),
+        ],
+      ),
+    ),
+  );
+}
+
+final class _FileHistoryDiff extends StatelessWidget {
+  const _FileHistoryDiff({required this.text});
+
+  final String text;
+
+  /// Builds a horizontally scrollable, selectable, read-only unified diff.
+  ///
+  /// 中文：构建可横向滚动、可选择且只读的 Unified Diff。
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final lines = text.split('\n');
+    return SingleChildScrollView(
+      padding: const EdgeInsets.all(12),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        child: SelectableText.rich(
+          TextSpan(
+            children: [
+              for (final line in lines)
+                TextSpan(
+                  text: '$line\n',
+                  style: TextStyle(
+                    fontFamily: 'monospace',
+                    fontSize: 12,
+                    height: 1.45,
+                    color: _diffLineColor(colors, line),
+                    backgroundColor: _diffLineBackground(colors, line),
+                  ),
+                ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Returns the foreground color for one unified-diff line.
+  ///
+  /// 中文：根据 Unified Diff 行类型返回对应的前景色。
+  Color _diffLineColor(ColorScheme colors, String line) => switch (line) {
+    _ when line.startsWith('+') && !line.startsWith('+++') =>
+      colors.brightness == Brightness.dark
+          ? const Color(0xff91d5a5)
+          : const Color(0xff166534),
+    _ when line.startsWith('-') && !line.startsWith('---') =>
+      colors.brightness == Brightness.dark
+          ? const Color(0xffffadad)
+          : const Color(0xffb42318),
+    _ when line.startsWith('@@') => colors.primary,
+    _ when line.startsWith('diff --git') || line.startsWith('index ') =>
+      colors.onSurfaceVariant,
+    _ => colors.onSurface,
+  };
+
+  /// Returns an optional background highlight for one unified-diff line.
+  ///
+  /// 中文：根据 Unified Diff 行类型返回可选的背景高亮色。
+  Color? _diffLineBackground(ColorScheme colors, String line) => switch (line) {
+    _ when line.startsWith('+') && !line.startsWith('+++') =>
+      colors.brightness == Brightness.dark
+          ? const Color(0xff153b27)
+          : const Color(0xffdcfce7),
+    _ when line.startsWith('-') && !line.startsWith('---') =>
+      colors.brightness == Brightness.dark
+          ? const Color(0xff4a2023)
+          : const Color(0xffffe4e6),
+    _ when line.startsWith('@@') => colors.primaryContainer,
+    _ => null,
+  };
 }
 
 final class _ResetCommitDialog extends StatefulWidget {

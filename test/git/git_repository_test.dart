@@ -1,7 +1,11 @@
 import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:git_desktop/src/git/git.dart';
+import 'package:git_desktop/src/git/git_cancellation.dart';
+import 'package:git_desktop/src/git/git_errors.dart';
+import 'package:git_desktop/src/git/git_models.dart';
+import 'package:git_desktop/src/git/git_repository.dart';
+import 'package:git_desktop/src/git/git_runner.dart';
 
 void main() {
   late Directory temporaryDirectory;
@@ -54,6 +58,122 @@ void main() {
     expect(status.isClean, isTrue);
     expect(status.branch.isUnborn, isTrue);
     expect(await reader.readRecentHistory(repository), isEmpty);
+  });
+
+  test('reads one file history and follows its rename', () async {
+    File(
+      '${temporaryDirectory.path}${Platform.pathSeparator}draft.md',
+    ).writeAsStringSync('first\n');
+    File(
+      '${temporaryDirectory.path}${Platform.pathSeparator}other.md',
+    ).writeAsStringSync('other\n');
+    await _git(temporaryDirectory.path, ['add', '--', 'draft.md']);
+    await _git(temporaryDirectory.path, ['add', '--', 'other.md']);
+    await _git(temporaryDirectory.path, ['commit', '--quiet', '-m', 'draft']);
+    await File(
+      '${temporaryDirectory.path}${Platform.pathSeparator}draft.md',
+    ).writeAsString('second\n');
+    await File(
+      '${temporaryDirectory.path}${Platform.pathSeparator}other.md',
+    ).writeAsString('other changed\n');
+    await _git(temporaryDirectory.path, ['add', '--all']);
+    await _git(temporaryDirectory.path, [
+      'commit',
+      '--quiet',
+      '-m',
+      'draft with another file',
+    ]);
+    await _git(temporaryDirectory.path, ['mv', 'draft.md', 'README.md']);
+    await _git(temporaryDirectory.path, ['commit', '--quiet', '-m', 'rename']);
+
+    final repository = (await inspector.inspect(temporaryDirectory.path))!;
+    final history = await reader.readFileHistory(repository, path: 'README.md');
+
+    expect(history.map((entry) => entry.commit.subject), [
+      'rename',
+      'draft with another file',
+      'draft',
+    ]);
+    expect(history.map((entry) => entry.path.display), [
+      'README.md',
+      'draft.md',
+      'draft.md',
+    ]);
+  });
+
+  test(
+    'file history preserves record separators in messages and paths',
+    () async {
+      const path = 'record\u001e.md';
+      const subject = 'subject\u001eseparator';
+      await File(
+        '${temporaryDirectory.path}${Platform.pathSeparator}$path',
+      ).writeAsString('content\n');
+      await _git(temporaryDirectory.path, ['add', '--', path]);
+      await _git(temporaryDirectory.path, ['commit', '--quiet', '-m', subject]);
+
+      final repository = (await inspector.inspect(temporaryDirectory.path))!;
+      final history = await reader.readFileHistory(repository, path: path);
+
+      expect(history, hasLength(1));
+      expect(history.single.commit.subject, subject);
+      expect(history.single.path.display, path);
+    },
+  );
+
+  test('file history honors cancellation before starting Git', () async {
+    await File(
+      '${temporaryDirectory.path}${Platform.pathSeparator}README.md',
+    ).writeAsString('content\n');
+    await _git(temporaryDirectory.path, ['add', '--all']);
+    await _git(temporaryDirectory.path, ['commit', '--quiet', '-m', 'base']);
+    final repository = (await inspector.inspect(temporaryDirectory.path))!;
+    final cancellation = GitCancellationToken()..cancel();
+
+    await expectLater(
+      reader.readFileHistory(
+        repository,
+        path: 'README.md',
+        cancellationToken: cancellation,
+      ),
+      throwsA(isA<GitCancelledException>()),
+    );
+  });
+
+  test('reads a file history from every loaded local branch', () async {
+    await File(
+      '${temporaryDirectory.path}${Platform.pathSeparator}base.md',
+    ).writeAsString('base\n');
+    await _git(temporaryDirectory.path, ['add', '--all']);
+    await _git(temporaryDirectory.path, ['commit', '--quiet', '-m', 'base']);
+    final primaryBranch = (await _git(temporaryDirectory.path, [
+      'branch',
+      '--show-current',
+    ])).stdout.toString().trim();
+    await _git(temporaryDirectory.path, ['switch', '--quiet', '-c', 'feature']);
+    await File(
+      '${temporaryDirectory.path}${Platform.pathSeparator}feature.md',
+    ).writeAsString('feature\n');
+    await _git(temporaryDirectory.path, ['add', '--all']);
+    await _git(temporaryDirectory.path, [
+      'commit',
+      '--quiet',
+      '-m',
+      'feature file',
+    ]);
+    await _git(temporaryDirectory.path, ['switch', '--quiet', primaryBranch]);
+
+    final repository = (await inspector.inspect(temporaryDirectory.path))!;
+    final snapshot = await reader.readHistoryRevisionSnapshot(repository);
+    final history = await reader.readFileHistory(
+      repository,
+      path: 'feature.md',
+      revisionSnapshot: snapshot,
+    );
+
+    expect(history, hasLength(1));
+    expect(history.single.commit.subject, 'feature file');
+    expect(history.single.path.display, 'feature.md');
   });
 
   test(

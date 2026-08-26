@@ -622,6 +622,22 @@ final class GitCommit {
   final String body;
 }
 
+/// One committed file-history record with the path valid at that revision.
+///
+/// `path` can differ between adjacent entries when Git's `--follow` detects a
+/// rename. Callers must use this value—not the newest display path—when
+/// requesting a revision's diff.
+///
+/// 中文：一条提交文件历史记录及其在该提交中的有效路径。当 Git 的 `--follow`
+/// 检测到重命名时，相邻记录的路径可能不同；读取某次提交的 Diff 时必须使用
+/// 该字段，而不能一律使用最新显示路径。
+final class GitFileHistoryEntry {
+  const GitFileHistoryEntry({required this.commit, required this.path});
+
+  final GitCommit commit;
+  final GitPath path;
+}
+
 enum GitDiffSource { workingTree, staged, commit }
 
 /// An operation marker currently owned by Git in this repository.
@@ -681,4 +697,16 @@ final class GitUnifiedDiff {
   final List<int> bytes;
   final String text;
   final bool isTruncated;
+
+  /// 中文：此 Diff 是否同时修改了已有文件的模式（例如 executable bit）。
+  /// 新增/删除文件的模式头不属于该情况，因为它们是补丁语义的一部分。
+  ///
+  /// English: Whether this diff also changes an existing file's mode, such as
+  /// its executable bit. New/deleted-file mode headers are excluded because
+  /// they are part of those patches' semantics.
+  bool get changesFileMode =>
+      text.startsWith('old mode ') ||
+      text.startsWith('new mode ') ||
+      text.contains('\nold mode ') ||
+      text.contains('\nnew mode ');
 }

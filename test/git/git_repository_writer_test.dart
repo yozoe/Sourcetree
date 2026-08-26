@@ -61,6 +61,235 @@ void main() {
     },
   );
 
+  test('stages one working-tree hunk without touching another hunk', () async {
+    await fixture.writeFile(
+      'README.md',
+      '${List<String>.generate(16, (index) => 'line ${index + 1}').join('\n')}\n',
+    );
+    await fixture.commit('Base');
+    await fixture.writeFile(
+      'README.md',
+      '${List<String>.generate(16, (index) => switch (index + 1) {
+        2 => 'changed 2',
+        14 => 'changed 14',
+        _ => 'line ${index + 1}',
+      }).join('\n')}\n',
+    );
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+    final diff = await reader.readUnifiedDiff(repository, path: 'README.md');
+
+    await writer.stageDiffHunk(repository, diff: diff, hunkIndex: 0);
+
+    final staged = await reader.readUnifiedDiff(
+      repository,
+      path: 'README.md',
+      source: GitDiffSource.staged,
+    );
+    final unstaged = await reader.readUnifiedDiff(
+      repository,
+      path: 'README.md',
+    );
+    expect(staged.text, contains('changed 2'));
+    expect(staged.text, isNot(contains('changed 14')));
+    expect(unstaged.text, isNot(contains('changed 2')));
+    expect(unstaged.text, contains('changed 14'));
+  });
+
+  test(
+    'rejects hunk writes when a text diff also changes executable mode',
+    () async {
+      await fixture.writeFile(
+        'README.md',
+        '${List<String>.generate(16, (index) => 'line ${index + 1}').join('\n')}\n',
+      );
+      await fixture.commit('Base');
+      await fixture.runGit(['update-index', '--chmod=+x', '--', 'README.md']);
+      await fixture.runGit(['checkout-index', '--force', '--', 'README.md']);
+      await fixture.runGit(['reset', 'HEAD', '--', 'README.md']);
+      await fixture.writeFile(
+        'README.md',
+        '${List<String>.generate(16, (index) => switch (index + 1) {
+          2 => 'changed 2',
+          14 => 'changed 14',
+          _ => 'line ${index + 1}',
+        }).join('\n')}\n',
+      );
+      final file = File(
+        '${fixture.workingDirectory.path}${Platform.pathSeparator}README.md',
+      );
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+      final diff = await reader.readUnifiedDiff(repository, path: 'README.md');
+      final contentBefore = await file.readAsString();
+      final modeBefore = (await file.stat()).mode;
+
+      expect(diff.changesFileMode, isTrue);
+      expect(diff.text, contains('old mode 100644'));
+      expect(diff.text, contains('new mode 100755'));
+      await expectLater(
+        writer.stageDiffHunk(repository, diff: diff, hunkIndex: 0),
+        throwsArgumentError,
+      );
+      await expectLater(
+        writer.revertDiffHunk(repository, diff: diff, hunkIndex: 0),
+        throwsArgumentError,
+      );
+      expect(await file.readAsString(), contentBefore);
+      expect((await file.stat()).mode, modeBefore);
+    },
+  );
+
+  test('discards one working-tree hunk without touching another hunk', () async {
+    await fixture.writeFile(
+      'README.md',
+      '${List<String>.generate(16, (index) => 'line ${index + 1}').join('\n')}\n',
+    );
+    await fixture.commit('Base');
+    await fixture.writeFile(
+      'README.md',
+      '${List<String>.generate(16, (index) => switch (index + 1) {
+        2 => 'changed 2',
+        14 => 'changed 14',
+        _ => 'line ${index + 1}',
+      }).join('\n')}\n',
+    );
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+    final diff = await reader.readUnifiedDiff(repository, path: 'README.md');
+
+    await writer.revertDiffHunk(repository, diff: diff, hunkIndex: 0);
+
+    final content = await File(
+      '${fixture.workingDirectory.path}${Platform.pathSeparator}README.md',
+    ).readAsString();
+    expect(content, contains('line 2\n'));
+    expect(content, contains('changed 14\n'));
+    final remaining = await reader.readUnifiedDiff(
+      repository,
+      path: 'README.md',
+    );
+    expect(remaining.text, isNot(contains('changed 2')));
+    expect(remaining.text, contains('changed 14'));
+  });
+
+  test(
+    'unstages one staged hunk while retaining its work-tree content',
+    () async {
+      await fixture.writeFile(
+        'README.md',
+        '${List<String>.generate(16, (index) => 'line ${index + 1}').join('\n')}\n',
+      );
+      await fixture.commit('Base');
+      await fixture.writeFile(
+        'README.md',
+        '${List<String>.generate(16, (index) => switch (index + 1) {
+          2 => 'changed 2',
+          14 => 'changed 14',
+          _ => 'line ${index + 1}',
+        }).join('\n')}\n',
+      );
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+      final entry = (await reader.readStatus(repository)).entries.single;
+      await writer.stagePath(repository, entry.path);
+      final staged = await reader.readUnifiedDiff(
+        repository,
+        path: 'README.md',
+        source: GitDiffSource.staged,
+      );
+
+      await writer.revertDiffHunk(repository, diff: staged, hunkIndex: 0);
+
+      final stagedAfter = await reader.readUnifiedDiff(
+        repository,
+        path: 'README.md',
+        source: GitDiffSource.staged,
+      );
+      final workTreeAfter = await reader.readUnifiedDiff(
+        repository,
+        path: 'README.md',
+      );
+      expect(stagedAfter.text, isNot(contains('changed 2')));
+      expect(stagedAfter.text, contains('changed 14'));
+      expect(workTreeAfter.text, contains('changed 2'));
+    },
+  );
+
+  test(
+    'reverse-applies one committed hunk without rewriting the commit',
+    () async {
+      await fixture.writeFile(
+        'README.md',
+        '${List<String>.generate(16, (index) => 'line ${index + 1}').join('\n')}\n',
+      );
+      final base = await fixture.commit('Base');
+      await fixture.writeFile(
+        'README.md',
+        '${List<String>.generate(16, (index) => switch (index + 1) {
+          2 => 'changed 2',
+          14 => 'changed 14',
+          _ => 'line ${index + 1}',
+        }).join('\n')}\n',
+      );
+      final changed = await fixture.commit('Change two hunks');
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+      final diff = await reader.readCommitUnifiedDiff(
+        repository,
+        objectId: changed,
+        parentObjectId: base,
+        path: 'README.md',
+      );
+
+      await writer.revertDiffHunk(repository, diff: diff, hunkIndex: 0);
+
+      final content = await File(
+        '${fixture.workingDirectory.path}${Platform.pathSeparator}README.md',
+      ).readAsString();
+      expect(content, contains('line 2\n'));
+      expect(content, contains('changed 14\n'));
+      expect(
+        (await fixture.runGit(['rev-parse', 'HEAD'])).stdout.toString().trim(),
+        changed,
+      );
+    },
+  );
+
+  test(
+    'reverse-applies a committed new-file hunk as a working-tree deletion',
+    () async {
+      await fixture.writeFile('new-file.txt', 'first\nsecond\nthird\n');
+      final added = await fixture.commit('Add file');
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+      final diff = await reader.readCommitUnifiedDiff(
+        repository,
+        objectId: added,
+        path: 'new-file.txt',
+      );
+
+      await writer.revertDiffHunk(repository, diff: diff, hunkIndex: 0);
+
+      expect(
+        await File(
+          '${fixture.workingDirectory.path}${Platform.pathSeparator}new-file.txt',
+        ).exists(),
+        isFalse,
+      );
+      expect(
+        (await fixture.runGit(['rev-parse', 'HEAD'])).stdout.toString().trim(),
+        added,
+      );
+    },
+  );
+
   test('unstages an added file in an unborn branch', () async {
     await fixture.writeFile('README.md', '# Unborn branch\n');
     final repository = (await inspector.inspect(

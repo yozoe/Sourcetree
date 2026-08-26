@@ -321,6 +321,7 @@ List<CommitFileViewData> _mapCommitChanges(RepositorySessionState state) {
           GitCommitChangeKind.unknown => RepositoryChangeKind.modified,
         },
         isSelected: state.selectedCommitFile?.file.path == change.path,
+        isPathValidUtf8: change.path.isValidUtf8,
         additions: change.additions,
         deletions: change.deletions,
       ),
@@ -618,11 +619,26 @@ DiffViewData _mapDiff(RepositorySessionState state) {
   final binary =
       diff.text.contains('Binary files ') ||
       diff.text.contains('GIT binary patch');
+  final supportsHunkActions =
+      state.operationState == GitRepositoryOperationState.none &&
+      !binary &&
+      !diff.isTruncated &&
+      !diff.changesFileMode &&
+      selected.kind == RepositoryChangeKind.modified &&
+      !selected.entry.isConflicted;
   return DiffViewData(
     path: selected.entry.path.display,
     previousPath: selected.entry.originalPath?.display,
     isBinary: binary,
     isTooLarge: diff.isTruncated,
+    hunkActions: !supportsHunkActions
+        ? const []
+        : selected.isStaged
+        ? const [RepositoryDiffHunkAction.unstage]
+        : const [
+            RepositoryDiffHunkAction.stage,
+            RepositoryDiffHunkAction.discard,
+          ],
     notice: diff.isTruncated ? 'Diff 超过安全显示上限，内容已截断。' : null,
     lines: binary ? const [] : _diffLines(diff.text),
   );
@@ -652,11 +668,26 @@ DiffViewData _mapCommitDiff(RepositorySessionState state) {
   final binary =
       diff.text.contains('Binary files ') ||
       diff.text.contains('GIT binary patch');
+  final supportsCommittedHunkRevert =
+      state.operationState == GitRepositoryOperationState.none &&
+      !state.selectedRefId.startsWith('refs/stash/') &&
+      !binary &&
+      !diff.isTruncated &&
+      !diff.changesFileMode &&
+      switch (selected.file.kind) {
+        GitCommitChangeKind.added ||
+        GitCommitChangeKind.modified ||
+        GitCommitChangeKind.deleted => true,
+        _ => false,
+      };
   return DiffViewData(
     path: selected.file.path.display,
     previousPath: selected.file.previousPath?.display,
     isBinary: binary,
     isTooLarge: diff.isTruncated,
+    hunkActions: supportsCommittedHunkRevert
+        ? const [RepositoryDiffHunkAction.revertCommitted]
+        : const [],
     notice: diff.isTruncated ? 'Diff 超过安全显示上限，内容已截断。' : null,
     lines: binary ? const [] : _diffLines(diff.text),
   );
@@ -670,19 +701,27 @@ List<DiffLineViewData> _diffLines(String text) {
   final result = <DiffLineViewData>[];
   var oldLine = 0;
   var newLine = 0;
+  var hunkIndex = -1;
   final hunk = RegExp(r'^@@ -(\d+)(?:,\d+)? \+(\d+)(?:,\d+)? @@');
   for (final line in text.split('\n')) {
     final match = hunk.firstMatch(line);
     if (match != null) {
       oldLine = int.parse(match.group(1)!);
       newLine = int.parse(match.group(2)!);
-      result.add(DiffLineViewData(kind: DiffLineKind.hunkHeader, text: line));
+      result.add(
+        DiffLineViewData(
+          kind: DiffLineKind.hunkHeader,
+          text: line,
+          hunkIndex: ++hunkIndex,
+        ),
+      );
     } else if (line.startsWith('+') && !line.startsWith('+++')) {
       result.add(
         DiffLineViewData(
           kind: DiffLineKind.addition,
           text: line,
           newLineNumber: newLine++,
+          hunkIndex: hunkIndex < 0 ? null : hunkIndex,
         ),
       );
     } else if (line.startsWith('-') && !line.startsWith('---')) {
@@ -691,6 +730,7 @@ List<DiffLineViewData> _diffLines(String text) {
           kind: DiffLineKind.deletion,
           text: line,
           oldLineNumber: oldLine++,
+          hunkIndex: hunkIndex < 0 ? null : hunkIndex,
         ),
       );
     } else if (line.startsWith('diff --git ') ||
@@ -707,6 +747,7 @@ List<DiffLineViewData> _diffLines(String text) {
           text: line,
           oldLineNumber: oldLine == 0 ? null : oldLine++,
           newLineNumber: newLine == 0 ? null : newLine++,
+          hunkIndex: hunkIndex < 0 ? null : hunkIndex,
         ),
       );
     }

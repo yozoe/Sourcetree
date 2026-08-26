@@ -454,7 +454,7 @@ void main() {
       await tester.pumpAndSettle();
 
       for (final label in <String>[
-        '查看选中的修改日志…（待实现）',
+        '查看选中的修改日志…',
         '审查选定的项目（待实现）',
         '重置到提交…（待实现）',
         '打开当前版本（待实现）',
@@ -479,6 +479,58 @@ void main() {
       );
     },
   );
+
+  testWidgets('marks file history pending for a non-UTF-8 Git path', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    RepositoryCommitFileContextAction? selectedAction;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              selectedCommit: CommitDetailsViewData(
+                oid: '0123456789abcdef',
+                subject: 'Non UTF-8 path',
+                author: 'Test User',
+                authoredAt: '2026-08-26 12:00',
+              ),
+              commitChanges: [
+                CommitFileViewData(
+                  path: 'invalid�.txt',
+                  kind: RepositoryChangeKind.modified,
+                  isPathValidUtf8: false,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onCommitFileContextAction: (_, action) => selectedAction = action,
+          ),
+        ),
+      ),
+    );
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('invalid�.txt')),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    final pending = find.text('查看选中的修改日志…（待实现）');
+    expect(pending, findsOneWidget);
+    await tester.tap(pending);
+    await tester.pumpAndSettle();
+    expect(selectedAction, isNull);
+  });
 
   testWidgets('command-click keeps multiple working-tree files selected', (
     tester,
@@ -676,6 +728,223 @@ void main() {
     expect(stoppedTracking?.map((change) => change.path), [
       'config/local.json',
     ]);
+  });
+
+  testWidgets('shows stage and discard actions for an unstaged hunk', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final actions = <(RepositoryDiffHunkAction, int)>[];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: [
+                RepositoryChangeViewData(
+                  path: 'README.md',
+                  kind: RepositoryChangeKind.modified,
+                  isSelected: true,
+                ),
+              ],
+              selectedChange: RepositoryChangeViewData(
+                path: 'README.md',
+                kind: RepositoryChangeKind.modified,
+                isSelected: true,
+              ),
+              diff: DiffViewData(
+                path: 'README.md',
+                hunkActions: [
+                  RepositoryDiffHunkAction.stage,
+                  RepositoryDiffHunkAction.discard,
+                ],
+                lines: [
+                  DiffLineViewData(
+                    kind: DiffLineKind.hunkHeader,
+                    text: '@@ -1 +1 @@',
+                    hunkIndex: 0,
+                  ),
+                  DiffLineViewData(
+                    kind: DiffLineKind.deletion,
+                    text: '-before',
+                    oldLineNumber: 1,
+                    hunkIndex: 0,
+                  ),
+                  DiffLineViewData(
+                    kind: DiffLineKind.addition,
+                    text: '+after',
+                    newLineNumber: 1,
+                    hunkIndex: 0,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onDiffHunkAction: (action, hunkIndex) =>
+                actions.add((action, hunkIndex)),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('暂存区块'), findsOneWidget);
+    expect(find.text('放弃区块'), findsOneWidget);
+    expect(find.text('取消暂存区块'), findsNothing);
+    expect(find.text('回滚区块'), findsNothing);
+    await tester.tap(find.text('暂存区块'));
+    await tester.tap(find.text('放弃区块'));
+    expect(actions, [
+      (RepositoryDiffHunkAction.stage, 0),
+      (RepositoryDiffHunkAction.discard, 0),
+    ]);
+  });
+
+  testWidgets('shows only unstage for a staged hunk', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    (RepositoryDiffHunkAction, int)? selectedAction;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: [
+                RepositoryChangeViewData(
+                  path: 'README.md',
+                  kind: RepositoryChangeKind.modified,
+                  isStaged: true,
+                  isSelected: true,
+                ),
+              ],
+              selectedChange: RepositoryChangeViewData(
+                path: 'README.md',
+                kind: RepositoryChangeKind.modified,
+                isStaged: true,
+                isSelected: true,
+              ),
+              diff: DiffViewData(
+                path: 'README.md',
+                hunkActions: [RepositoryDiffHunkAction.unstage],
+                lines: [
+                  DiffLineViewData(
+                    kind: DiffLineKind.hunkHeader,
+                    text: '@@ -1 +1 @@',
+                    hunkIndex: 0,
+                  ),
+                  DiffLineViewData(
+                    kind: DiffLineKind.deletion,
+                    text: '-before',
+                    oldLineNumber: 1,
+                    hunkIndex: 0,
+                  ),
+                  DiffLineViewData(
+                    kind: DiffLineKind.addition,
+                    text: '+after',
+                    newLineNumber: 1,
+                    hunkIndex: 0,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onDiffHunkAction: (action, hunkIndex) =>
+                selectedAction = (action, hunkIndex),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('取消暂存区块'), findsOneWidget);
+    expect(find.text('暂存区块'), findsNothing);
+    expect(find.text('放弃区块'), findsNothing);
+    expect(find.text('回滚区块'), findsNothing);
+    await tester.tap(find.text('取消暂存区块'));
+    expect(selectedAction, (RepositoryDiffHunkAction.unstage, 0));
+  });
+
+  testWidgets('shows only revert for a committed hunk', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    (RepositoryDiffHunkAction, int)? selectedAction;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              selectedCommit: CommitDetailsViewData(
+                oid: '0123456789abcdef',
+                subject: 'Committed change',
+                author: 'Test User',
+                authoredAt: '2026-08-26 12:00',
+              ),
+              commitChanges: [
+                CommitFileViewData(
+                  path: 'README.md',
+                  kind: RepositoryChangeKind.modified,
+                  isSelected: true,
+                ),
+              ],
+              selectedCommitFile: CommitFileViewData(
+                path: 'README.md',
+                kind: RepositoryChangeKind.modified,
+                isSelected: true,
+              ),
+              commitDiff: DiffViewData(
+                path: 'README.md',
+                hunkActions: [RepositoryDiffHunkAction.revertCommitted],
+                lines: [
+                  DiffLineViewData(
+                    kind: DiffLineKind.hunkHeader,
+                    text: '@@ -1 +1 @@',
+                    hunkIndex: 0,
+                  ),
+                  DiffLineViewData(
+                    kind: DiffLineKind.deletion,
+                    text: '-before',
+                    oldLineNumber: 1,
+                    hunkIndex: 0,
+                  ),
+                  DiffLineViewData(
+                    kind: DiffLineKind.addition,
+                    text: '+after',
+                    newLineNumber: 1,
+                    hunkIndex: 0,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onDiffHunkAction: (action, hunkIndex) =>
+                selectedAction = (action, hunkIndex),
+          ),
+        ),
+      ),
+    );
+
+    expect(find.text('回滚区块'), findsOneWidget);
+    expect(find.text('暂存区块'), findsNothing);
+    expect(find.text('放弃区块'), findsNothing);
+    expect(find.text('取消暂存区块'), findsNothing);
+    await tester.tap(find.text('回滚区块'));
+    expect(selectedAction, (RepositoryDiffHunkAction.revertCommitted, 0));
   });
 
   testWidgets('context menu stops tracking selected staged new files', (

@@ -678,6 +678,281 @@ void main() {
     expect(container.read(repositorySessionProvider).status!.isClean, isTrue);
   });
 
+  test('stages only the selected working-tree diff hunk', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile(
+      'README.md',
+      '${List<String>.generate(16, (index) => 'line ${index + 1}').join('\n')}\n',
+    );
+    await repository.commit('Base');
+    await repository.writeFile(
+      'README.md',
+      '${List<String>.generate(16, (index) => switch (index + 1) {
+        2 => 'changed 2',
+        14 => 'changed 14',
+        _ => 'line ${index + 1}',
+      }).join('\n')}\n',
+    );
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    var overview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    controller.selectUncommittedChanges();
+    await controller.selectChange(overview.changes.single);
+
+    overview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    expect(overview.diff.hunkActions, const [
+      RepositoryDiffHunkAction.stage,
+      RepositoryDiffHunkAction.discard,
+    ]);
+    expect(await controller.stageSelectedDiffHunk(0), isTrue);
+
+    final refreshed = container.read(repositorySessionProvider);
+    final entry = refreshed.status!.entries.single;
+    expect(entry.hasStagedChange, isTrue);
+    expect(entry.hasWorkTreeChange, isTrue);
+    expect(refreshed.selectedRefId, 'uncommitted');
+    expect(refreshed.selectedChange?.source, GitDiffSource.workingTree);
+    expect(refreshed.diff?.text, isNot(contains('changed 2')));
+    expect(refreshed.diff?.text, contains('changed 14'));
+
+    overview = mapRepositoryOverview(refreshed).repository!;
+    final stagedChange = overview.changes.singleWhere(
+      (change) => change.isStaged,
+    );
+    await controller.selectChange(stagedChange);
+    expect(
+      mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!.diff.hunkActions,
+      const [RepositoryDiffHunkAction.unstage],
+    );
+  });
+
+  test(
+    'hides and rejects working-tree hunk actions when file mode changes',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile(
+        'README.md',
+        '${List<String>.generate(16, (index) => 'line ${index + 1}').join('\n')}\n',
+      );
+      await repository.commit('Base');
+      await repository.runGit([
+        'update-index',
+        '--chmod=+x',
+        '--',
+        'README.md',
+      ]);
+      await repository.runGit(['checkout-index', '--force', '--', 'README.md']);
+      await repository.runGit(['reset', 'HEAD', '--', 'README.md']);
+      await repository.writeFile(
+        'README.md',
+        '${List<String>.generate(16, (index) => switch (index + 1) {
+          2 => 'changed 2',
+          14 => 'changed 14',
+          _ => 'line ${index + 1}',
+        }).join('\n')}\n',
+      );
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      controller.selectUncommittedChanges();
+      final change = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!.changes.single;
+      await controller.selectChange(change);
+
+      final state = container.read(repositorySessionProvider);
+      final overview = mapRepositoryOverview(state).repository!;
+      expect(state.diff?.changesFileMode, isTrue);
+      expect(overview.diff.hunkActions, isEmpty);
+      expect(await controller.stageSelectedDiffHunk(0), isFalse);
+      expect(await controller.revertSelectedDiffHunk(0), isFalse);
+    },
+  );
+
+  test('discards only the selected working-tree diff hunk', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile(
+      'README.md',
+      '${List<String>.generate(16, (index) => 'line ${index + 1}').join('\n')}\n',
+    );
+    await repository.commit('Base');
+    await repository.writeFile(
+      'README.md',
+      '${List<String>.generate(16, (index) => switch (index + 1) {
+        2 => 'changed 2',
+        14 => 'changed 14',
+        _ => 'line ${index + 1}',
+      }).join('\n')}\n',
+    );
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final overview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    controller.selectUncommittedChanges();
+    await controller.selectChange(overview.changes.single);
+
+    expect(await controller.revertSelectedDiffHunk(0), isTrue);
+    final content = await File(
+      '${repository.workingDirectory.path}${Platform.pathSeparator}README.md',
+    ).readAsString();
+    expect(content, contains('line 2\n'));
+    expect(content, contains('changed 14\n'));
+    final refreshed = container.read(repositorySessionProvider);
+    expect(refreshed.selectedRefId, 'uncommitted');
+    expect(refreshed.selectedCommitId, isNull);
+    expect(refreshed.selectedChange?.entry.path.display, 'README.md');
+    expect(refreshed.diff?.text, contains('changed 14'));
+  });
+
+  test(
+    'reverse-applies a committed hunk and preserves history selection',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile(
+        'README.md',
+        '${List<String>.generate(16, (index) => 'line ${index + 1}').join('\n')}\n',
+      );
+      await repository.commit('Base');
+      await repository.writeFile(
+        'README.md',
+        '${List<String>.generate(16, (index) => switch (index + 1) {
+          2 => 'changed 2',
+          14 => 'changed 14',
+          _ => 'line ${index + 1}',
+        }).join('\n')}\n',
+      );
+      final changed = await repository.commit('Change two hunks');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      final before = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      expect(before.selectedCommit?.oid, changed);
+      expect(before.commitDiff.hunkActions, const [
+        RepositoryDiffHunkAction.revertCommitted,
+      ]);
+
+      expect(await controller.revertSelectedCommitDiffHunk(0), isTrue);
+
+      final content = await File(
+        '${repository.workingDirectory.path}${Platform.pathSeparator}README.md',
+      ).readAsString();
+      expect(content, contains('line 2\n'));
+      expect(content, contains('changed 14\n'));
+      final refreshed = container.read(repositorySessionProvider);
+      expect(refreshed.selectedCommitId, changed);
+      expect(refreshed.selectedCommitFile?.file.path.display, 'README.md');
+      expect(refreshed.status!.entries.single.hasWorkTreeChange, isTrue);
+      expect(
+        (await repository.runGit([
+          'rev-parse',
+          'HEAD',
+        ])).stdout.toString().trim(),
+        changed,
+      );
+    },
+  );
+
+  test(
+    'offers and applies committed-hunk revert for a newly added file',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('new-file.txt', 'first\nsecond\nthird\n');
+      final added = await repository.commit('Add file');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      final before = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      expect(before.selectedCommit?.oid, added);
+      expect(before.selectedCommitFile?.kind, RepositoryChangeKind.added);
+      expect(before.commitDiff.hunkActions, const [
+        RepositoryDiffHunkAction.revertCommitted,
+      ]);
+
+      expect(await controller.revertSelectedCommitDiffHunk(0), isTrue);
+
+      expect(
+        await File(
+          '${repository.workingDirectory.path}${Platform.pathSeparator}new-file.txt',
+        ).exists(),
+        isFalse,
+      );
+      final refreshed = container.read(repositorySessionProvider);
+      expect(refreshed.selectedCommitId, added);
+      expect(
+        refreshed.status!.entries.single.workTreeStatus,
+        GitChangeType.deleted,
+      );
+    },
+  );
+
+  test(
+    'hides and rejects committed-hunk revert when file mode changes',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile(
+        'README.md',
+        '${List<String>.generate(16, (index) => 'line ${index + 1}').join('\n')}\n',
+      );
+      await repository.commit('Base');
+      await repository.runGit([
+        'update-index',
+        '--chmod=+x',
+        '--',
+        'README.md',
+      ]);
+      await repository.runGit(['checkout-index', '--force', '--', 'README.md']);
+      await repository.writeFile(
+        'README.md',
+        '${List<String>.generate(16, (index) => switch (index + 1) {
+          2 => 'changed 2',
+          14 => 'changed 14',
+          _ => 'line ${index + 1}',
+        }).join('\n')}\n',
+      );
+      await repository.commit('Change mode and content');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+
+      final state = container.read(repositorySessionProvider);
+      final overview = mapRepositoryOverview(state).repository!;
+      expect(state.commitDiff?.changesFileMode, isTrue);
+      expect(overview.commitDiff.hunkActions, isEmpty);
+      expect(await controller.revertSelectedCommitDiffHunk(0), isFalse);
+    },
+  );
+
   test(
     'refuses reset when the selected file was unstaged after confirmation',
     () async {

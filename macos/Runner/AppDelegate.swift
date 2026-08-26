@@ -300,6 +300,105 @@ final class GitDesktopRepositoryLibraryPendingStore {
   }
 }
 
+/// 中文：将窗口内容区尺寸限制在有效的最小值和当前屏幕可见范围内。
+///
+/// English: Constrains a window content size to valid minimum dimensions and
+/// the current screen's visible bounds.
+func gitDesktopConstrainedWindowContentSize(
+  _ preferredSize: NSSize?,
+  default defaultSize: NSSize,
+  minimum minimumSize: NSSize,
+  maximum maximumSize: NSSize? = nil
+) -> NSSize {
+  func validDimension(_ value: CGFloat) -> Bool {
+    value.isFinite && value > 0
+  }
+
+  let preferred = preferredSize.flatMap { size in
+    validDimension(size.width) && validDimension(size.height) ? size : nil
+  } ?? defaultSize
+  let maximumWidth = maximumSize.flatMap { size in
+    validDimension(size.width) ? size.width : nil
+  } ?? .greatestFiniteMagnitude
+  let maximumHeight = maximumSize.flatMap { size in
+    validDimension(size.height) ? size.height : nil
+  } ?? .greatestFiniteMagnitude
+  let minimumWidth = min(minimumSize.width, maximumWidth)
+  let minimumHeight = min(minimumSize.height, maximumHeight)
+  return NSSize(
+    width: min(max(preferred.width, minimumWidth), maximumWidth),
+    height: min(max(preferred.height, minimumHeight), maximumHeight)
+  )
+}
+
+/// 中文：分别持久化仓库浏览器与工作区窗口的内容区尺寸。
+///
+/// English: Persists content sizes independently for the repository library
+/// and workspace window roles.
+final class GitDesktopWindowSizeStore {
+  private static let repositoryLibraryKey =
+    "gitDesktopRepositoryLibraryWindowContentSize"
+  private static let workspaceKey = "gitDesktopWorkspaceWindowContentSize"
+
+  private let defaults: UserDefaults
+
+  init(defaults: UserDefaults = .standard) {
+    self.defaults = defaults
+  }
+
+  /// 中文：保存指定窗口类型的有效内容区尺寸；无效值不会覆盖现有偏好。
+  ///
+  /// English: Saves a valid content size for one window role without letting
+  /// invalid values replace an existing preference.
+  func save(_ size: NSSize, for role: GitDesktopWindowRole) {
+    guard size.width.isFinite,
+          size.height.isFinite,
+          size.width > 0,
+          size.height > 0 else {
+      return
+    }
+    defaults.set(
+      ["width": Double(size.width), "height": Double(size.height)],
+      forKey: key(for: role)
+    )
+  }
+
+  /// 中文：读取并约束指定窗口类型的尺寸，缺失或损坏时返回默认值。
+  ///
+  /// English: Reads and constrains one window role's size, falling back to the
+  /// default when the stored value is missing or corrupt.
+  func restoredSize(
+    for role: GitDesktopWindowRole,
+    default defaultSize: NSSize,
+    minimum minimumSize: NSSize,
+    maximum maximumSize: NSSize? = nil
+  ) -> NSSize {
+    let dictionary = defaults.dictionary(forKey: key(for: role))
+    let width = (dictionary?["width"] as? NSNumber)?.doubleValue
+    let height = (dictionary?["height"] as? NSNumber)?.doubleValue
+    let storedSize = width.flatMap { width in
+      height.map { height in
+        NSSize(width: width, height: height)
+      }
+    }
+    return gitDesktopConstrainedWindowContentSize(
+      storedSize,
+      default: defaultSize,
+      minimum: minimumSize,
+      maximum: maximumSize
+    )
+  }
+
+  private func key(for role: GitDesktopWindowRole) -> String {
+    switch role {
+    case .repositoryLibrary:
+      Self.repositoryLibraryKey
+    case .workspace:
+      Self.workspaceKey
+    }
+  }
+}
+
 /// 中文：返回追加新工作区后的实时合并窗口顺序；当前不存在合并组时返回 nil。
 ///
 /// English: Returns the live merged-window order after adding a newly opened
@@ -350,6 +449,10 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// 即时禁用菜单，真正执行前仍由 Flutter 重新读取 Git 状态。
   private(set) var canStopTrackingFromMenu = false
 
+  /// 中文：创建独立工作区 Engine，并恢复共享的工作区窗口尺寸。
+  ///
+  /// English: Creates an independent workspace Engine and restores the shared
+  /// workspace-window size preference.
   init(
     repositoryPath: String?,
     initialAction: String?,
@@ -392,7 +495,7 @@ final class WorkspaceFlutterWindowController: NSWindowController,
     window.configure(role: .workspace)
     window.installFlutterViewController(flutterViewController)
     window.minSize = NSSize(width: 900, height: 600)
-    window.setContentSize(NSSize(width: 1280, height: 800))
+    coordinator.restoreContentSize(of: window, for: .workspace)
     window.center()
 
     self.coordinator = coordinator
@@ -457,6 +560,23 @@ final class WorkspaceFlutterWindowController: NSWindowController,
     return false
   }
 
+  /// 中文：用户结束实时缩放时立即保存工作区内容区尺寸。
+  ///
+  /// English: Saves the workspace content size when the user finishes a live
+  /// resize operation.
+  func windowDidEndLiveResize(_ notification: Notification) {
+    guard let window else {
+      return
+    }
+    coordinator?.saveContentSize(of: window, for: .workspace)
+  }
+
+  /// 中文：关闭窗口时释放此工作区的协调与 Engine 资源。尺寸由用户结束实时
+  /// 缩放时保存，避免较旧的工作区关闭时覆盖最近调整的共享尺寸。
+  ///
+  /// English: Releases this workspace's coordinator and Engine resources on
+  /// close. Live resize completion owns persistence so an older workspace
+  /// cannot overwrite the most recently adjusted shared size while closing.
   func windowWillClose(_ notification: Notification) {
     coordinator?.workspaceWillClose(self)
     shutDownEngine()
@@ -604,6 +724,9 @@ final class WindowCoordinator {
   private let workspaceRestoreStore: GitDesktopWorkspaceRestoreStore
   private let repositoryLibraryPendingStore:
     GitDesktopRepositoryLibraryPendingStore
+  private let windowSizeStore: GitDesktopWindowSizeStore
+  private var repositoryLibraryResizeObserver: NSObjectProtocol?
+  private var repositoryLibraryCloseObserver: NSObjectProtocol?
   private var unregisteredWorkspaces: [
     ObjectIdentifier: WorkspaceFlutterWindowController
   ] = [:]
@@ -616,23 +739,60 @@ final class WindowCoordinator {
   private var didRequestWorkspaceRestoration = false
   private var isTerminating = false
 
+  /// 中文：创建窗口协调器，并注入可独立测试的恢复、登记与尺寸偏好存储。
+  ///
+  /// English: Creates the window coordinator with independently testable
+  /// restoration, registration, and size-preference stores.
   init(
     workspaceRestoreStore: GitDesktopWorkspaceRestoreStore =
       GitDesktopWorkspaceRestoreStore(),
     repositoryLibraryPendingStore: GitDesktopRepositoryLibraryPendingStore =
-      GitDesktopRepositoryLibraryPendingStore()
+      GitDesktopRepositoryLibraryPendingStore(),
+    windowSizeStore: GitDesktopWindowSizeStore = GitDesktopWindowSizeStore()
   ) {
     self.workspaceRestoreStore = workspaceRestoreStore
     self.repositoryLibraryPendingStore = repositoryLibraryPendingStore
+    self.windowSizeStore = windowSizeStore
   }
 
+  deinit {
+    removeRepositoryLibraryWindowObservers()
+  }
+
+  /// 中文：连接首页 Engine，恢复仓库浏览器尺寸并安装有界的尺寸保存监听。
+  ///
+  /// English: Attaches the home Engine, restores the repository-library size,
+  /// and installs bounded size-persistence observers.
   func attachRepositoryLibrary(
     window: MainFlutterWindow,
     flutterViewController: FlutterViewController
   ) {
     repositoryLibraryChannel?.setMethodCallHandler(nil)
+    removeRepositoryLibraryWindowObservers()
     repositoryLibraryWindow = window
     window.configure(role: .repositoryLibrary)
+    restoreContentSize(of: window, for: .repositoryLibrary)
+    window.center()
+    repositoryLibraryResizeObserver = NotificationCenter.default.addObserver(
+      forName: NSWindow.didEndLiveResizeNotification,
+      object: window,
+      queue: .main
+    ) { [weak self, weak window] _ in
+      guard let self, let window else {
+        return
+      }
+      self.saveContentSize(of: window, for: .repositoryLibrary)
+    }
+    repositoryLibraryCloseObserver = NotificationCenter.default.addObserver(
+      forName: NSWindow.willCloseNotification,
+      object: window,
+      queue: .main
+    ) { [weak self, weak window] _ in
+      guard let self, let window else {
+        return
+      }
+      self.saveContentSize(of: window, for: .repositoryLibrary)
+    }
 
     let channel = FlutterMethodChannel(
       name: "com.yeknom.git_desktop/window",
@@ -689,6 +849,55 @@ final class WindowCoordinator {
     }
     repositoryLibraryChannel = channel
     restoreOpenWorkspacesAfterLaunch()
+  }
+
+  /// 中文：按窗口角色恢复内容区尺寸，并限制在当前屏幕可见范围内。
+  ///
+  /// English: Restores a role-specific content size constrained to the current
+  /// screen's visible bounds.
+  func restoreContentSize(
+    of window: NSWindow,
+    for role: GitDesktopWindowRole
+  ) {
+    let defaultSize = NSSize(width: 1280, height: 800)
+    let minimumSize = NSSize(width: 900, height: 600)
+    let maximumSize = (window.screen ?? NSScreen.main).map { screen in
+      window.contentRect(forFrameRect: screen.visibleFrame).size
+    }
+    window.setContentSize(
+      windowSizeStore.restoredSize(
+        for: role,
+        default: defaultSize,
+        minimum: minimumSize,
+        maximum: maximumSize
+      )
+    )
+  }
+
+  /// 中文：保存指定角色窗口的当前内容区尺寸，供后续启动恢复。
+  ///
+  /// English: Saves a role-specific window's current content size for a later
+  /// launch.
+  func saveContentSize(
+    of window: NSWindow,
+    for role: GitDesktopWindowRole
+  ) {
+    windowSizeStore.save(window.contentLayoutRect.size, for: role)
+  }
+
+  /// 中文：移除旧首页窗口的尺寸监听，防止重建首页后收到失效回调。
+  ///
+  /// English: Removes size observers for the old home window so a replacement
+  /// cannot receive stale callbacks.
+  private func removeRepositoryLibraryWindowObservers() {
+    if let repositoryLibraryResizeObserver {
+      NotificationCenter.default.removeObserver(repositoryLibraryResizeObserver)
+      self.repositoryLibraryResizeObserver = nil
+    }
+    if let repositoryLibraryCloseObserver {
+      NotificationCenter.default.removeObserver(repositoryLibraryCloseObserver)
+      self.repositoryLibraryCloseObserver = nil
+    }
   }
 
   func openWorkspace(
@@ -1162,6 +1371,10 @@ final class WindowCoordinator {
     showRepositoryLibrary()
   }
 
+  /// 中文：保存全部窗口尺寸，并等待各 Engine 完成有界的退出清理。
+  ///
+  /// English: Saves every live window size and waits for each Engine's bounded
+  /// termination cleanup.
   func prepareForApplicationTermination(completion: @escaping () -> Void) {
     let registered = workspaceIndex.allHosts
     let unregistered = Array(unregisteredWorkspaces.values)
@@ -1171,6 +1384,13 @@ final class WindowCoordinator {
       if seen.insert(ObjectIdentifier(controller)).inserted {
         controllers.append(controller)
       }
+    }
+
+    if let repositoryLibraryWindow {
+      saveContentSize(of: repositoryLibraryWindow, for: .repositoryLibrary)
+    }
+    if let window = workspaceHistory.mostRecent?.window {
+      saveContentSize(of: window, for: .workspace)
     }
 
     let group = DispatchGroup()
