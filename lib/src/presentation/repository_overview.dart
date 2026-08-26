@@ -1235,6 +1235,7 @@ class _RefsNavigation extends StatelessWidget {
       onDoubleTap:
           ref.kind == RepositoryRefKind.stash ||
               ref.isSymbolicRemote ||
+              repository.isRefreshing ||
               onActivated == null ||
               stashActionDisabled
           ? null
@@ -2434,13 +2435,20 @@ class _HistoryPaneState extends State<_HistoryPane> {
                                                     commit,
                                                   ),
                                             onDoubleTap:
-                                                widget.onActivated == null
+                                                widget
+                                                        .repository
+                                                        .isRefreshing ||
+                                                    widget.onActivated == null
                                                 ? null
                                                 : () => widget.onActivated!(
                                                     commit,
                                                   ),
                                             onContextAction:
-                                                widget.onContextAction == null
+                                                widget
+                                                        .repository
+                                                        .isRefreshing ||
+                                                    widget.onContextAction ==
+                                                        null
                                                 ? null
                                                 : (action) =>
                                                       widget.onContextAction!(
@@ -4695,6 +4703,14 @@ class _ChangeTile extends StatelessWidget {
         onReset != null &&
         selectedChanges().isNotEmpty &&
         selectedChanges().every((item) => item.canResetToHead);
+    bool canRemove() =>
+        onRemove != null &&
+        selectedChanges().isNotEmpty &&
+        selectedChanges().every(
+          (item) => item.isActionEnabled && item.isPathValidUtf8,
+        );
+    bool hasUnsupportedRemovePath() =>
+        selectedChanges().any((item) => !item.isPathValidUtf8);
     final String fileName = change.path.split('/').last;
     final int slash = change.path.lastIndexOf('/');
     final String parentPath = slash <= 0 ? '' : change.path.substring(0, slash);
@@ -4719,7 +4735,9 @@ class _ChangeTile extends StatelessWidget {
             child: Row(
               children: [
                 Tooltip(
-                  message: !change.canToggleStage
+                  message: !change.isActionEnabled
+                      ? '正在更新文件状态'
+                      : !change.canToggleStage
                       ? '冲突或无法安全表示的文件名不能在此暂存'
                       : change.isStaged
                       ? '取消暂存 ${change.path}'
@@ -4838,17 +4856,13 @@ class _ChangeTile extends StatelessWidget {
           child: const Text('从索引中取消暂存'),
         ),
         MenuItemButton(
-          onPressed:
-              onRemove != null &&
-                  selectedChanges().every(
-                    (item) => item.kind == RepositoryChangeKind.untracked,
-                  )
+          onPressed: canRemove()
               ? () {
                   final result = onRemove!(selectedChanges());
                   if (result is Future<void>) unawaited(result);
                 }
               : null,
-          child: const Text('移除'),
+          child: Text(hasUnsupportedRemovePath() ? '移除（待实现）' : '移除'),
         ),
         MenuItemButton(
           onPressed: canStopTracking()
@@ -4871,6 +4885,7 @@ class _ChangeTile extends StatelessWidget {
         const MenuItemButton(onPressed: null, child: Text('忽略…（待实现）')),
         const Divider(height: 1),
         if (change.kind == RepositoryChangeKind.conflicted &&
+            change.isActionEnabled &&
             onConflictAction != null)
           SubmenuButton(
             leadingIcon: const Icon(Icons.merge_type, size: 18),

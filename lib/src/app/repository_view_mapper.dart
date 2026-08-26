@@ -16,6 +16,9 @@ RepositoryOverviewViewData mapRepositoryOverview(RepositorySessionState state) {
         title: '打开一个 Git 仓库',
         message: '选择本地仓库，查看改动、提交历史和分支状态。',
       ),
+    RepositorySessionPhase.loading
+        when state.isWorkingTreeBusy && repository != null =>
+      RepositoryOverviewViewData.ready(repository),
     RepositorySessionPhase.loading => RepositoryOverviewViewData.loading(
       title: '正在读取仓库',
       message: state.requestedPath,
@@ -66,6 +69,18 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     RepositoryAction.cloneRepository,
     RepositoryAction.initializeRepository,
   };
+  if (state.isWorkingTreeBusy) {
+    disabledActions.addAll(const [
+      RepositoryAction.fetch,
+      RepositoryAction.pull,
+      RepositoryAction.push,
+      RepositoryAction.createBranch,
+      RepositoryAction.mergeBranch,
+      RepositoryAction.stash,
+      RepositoryAction.commit,
+      RepositoryAction.refresh,
+    ]);
+  }
   final isRebaseInProgress =
       state.operationState == GitRepositoryOperationState.rebase;
   final isCherryPickInProgress =
@@ -140,7 +155,9 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     ahead: detachedPushBranch?.ahead ?? branch.ahead,
     behind: detachedPushBranch?.behind ?? branch.behind,
     isDetachedHead: branch.isDetached,
-    isRefreshing: state.phase == RepositorySessionPhase.loading,
+    isRefreshing:
+        state.phase == RepositorySessionPhase.loading ||
+        state.isWorkingTreeBusy,
     isFetching: state.isFetchRunning,
     isPulling: state.isPullRunning,
     isPushing: state.isPushRunning,
@@ -568,7 +585,12 @@ RepositoryChangeViewData _changeData(
     previousPath: entry.originalPath?.display,
     kind: kind,
     isStaged: staged,
-    canToggleStage: !entry.isConflicted && entry.path.isValidUtf8,
+    canToggleStage:
+        !state.isWorkingTreeBusy &&
+        !entry.isConflicted &&
+        entry.path.isValidUtf8,
+    isPathValidUtf8: entry.path.isValidUtf8,
+    isActionEnabled: !state.isWorkingTreeBusy,
     isSelected:
         selected?.entry.path == entry.path && selected?.source == source,
   );
@@ -620,6 +642,7 @@ DiffViewData _mapDiff(RepositorySessionState state) {
       diff.text.contains('Binary files ') ||
       diff.text.contains('GIT binary patch');
   final supportsHunkActions =
+      !state.isWorkingTreeBusy &&
       state.operationState == GitRepositoryOperationState.none &&
       !binary &&
       !diff.isTruncated &&

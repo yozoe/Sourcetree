@@ -708,6 +708,8 @@ final class RepositoryChangeViewData {
     this.isSelected = false,
     this.isBinary = false,
     this.canToggleStage = true,
+    this.isPathValidUtf8 = true,
+    this.isActionEnabled = true,
     this.additions,
     this.deletions,
   });
@@ -719,6 +721,8 @@ final class RepositoryChangeViewData {
   final bool isSelected;
   final bool isBinary;
   final bool canToggleStage;
+  final bool isPathValidUtf8;
+  final bool isActionEnabled;
   final int? additions;
   final int? deletions;
 
@@ -727,14 +731,16 @@ final class RepositoryChangeViewData {
   /// 中文：该变更是否可从 Git 索引移除，同时保留工作区文件。普通已追踪
   /// 修改，以及已暂存但尚未提交的新增文件，都拥有可移除的索引条目。
   bool get canStopTracking =>
-      kind == RepositoryChangeKind.modified ||
-      (isStaged && kind == RepositoryChangeKind.added);
+      isActionEnabled &&
+      (kind == RepositoryChangeKind.modified ||
+          (isStaged && kind == RepositoryChangeKind.added));
 
   /// Whether this staged tracked change can be restored to HEAD.
   ///
   /// 中文：该已暂存的已跟踪改动是否可恢复到 HEAD。新增文件没有 HEAD 版本，
   /// 因此不通过此入口重置，避免把“恢复”误解为删除未提交的新文件。
   bool get canResetToHead =>
+      isActionEnabled &&
       isStaged &&
       (kind == RepositoryChangeKind.modified ||
           kind == RepositoryChangeKind.deleted);

@@ -638,7 +638,7 @@ void main() {
     );
   });
 
-  testWidgets('working-tree context menu removes selected untracked files', (
+  testWidgets('working-tree context menu removes files from either group', (
     tester,
   ) async {
     await tester.binding.setSurfaceSize(const Size(1280, 800));
@@ -659,6 +659,63 @@ void main() {
                   path: 'scratch.txt',
                   kind: RepositoryChangeKind.untracked,
                 ),
+                RepositoryChangeViewData(
+                  path: 'working.txt',
+                  kind: RepositoryChangeKind.modified,
+                ),
+                RepositoryChangeViewData(
+                  path: 'staged.txt',
+                  kind: RepositoryChangeKind.modified,
+                  isStaged: true,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onChangeRemove: (changes) => removed = changes,
+          ),
+        ),
+      ),
+    );
+
+    for (final path in ['scratch.txt', 'working.txt', 'staged.txt']) {
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.text(path)),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('移除'));
+      await tester.pumpAndSettle();
+
+      expect(removed?.map((change) => change.path), [path]);
+    }
+  });
+
+  testWidgets('marks removal pending for a non-UTF-8 working-tree path', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    List<RepositoryChangeViewData>? removed;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: [
+                RepositoryChangeViewData(
+                  path: 'invalid�.txt',
+                  kind: RepositoryChangeKind.untracked,
+                  isPathValidUtf8: false,
+                ),
               ],
             ),
           ),
@@ -670,17 +727,18 @@ void main() {
     );
 
     final gesture = await tester.startGesture(
-      tester.getCenter(find.text('scratch.txt')),
+      tester.getCenter(find.text('invalid�.txt')),
       kind: PointerDeviceKind.mouse,
       buttons: kSecondaryMouseButton,
     );
     await gesture.up();
     await tester.pumpAndSettle();
 
-    await tester.tap(find.text('移除'));
+    expect(find.text('移除（待实现）'), findsOneWidget);
+    expect(find.text('移除'), findsNothing);
+    await tester.tap(find.text('移除（待实现）'));
     await tester.pumpAndSettle();
-
-    expect(removed?.map((change) => change.path), ['scratch.txt']);
+    expect(removed, isNull);
   });
 
   testWidgets('working-tree context menu stops tracking selected files', (

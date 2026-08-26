@@ -2573,24 +2573,20 @@ class _RepositoryWorkspaceScreenState
     ).showSnackBar(const SnackBar(content: Text('无法在 Finder 中显示所选文件。')));
   }
 
-  /// 中文：确认并移除选中的未跟踪文件；不会删除已跟踪改动。
-  /// English: Confirms and removes selected untracked files only.
-  Future<void> _removeUntrackedChanges(
-    List<RepositoryChangeViewData> changes,
-  ) async {
-    final root = ref.read(repositorySessionProvider).repository?.workTreeRoot;
-    if (root == null ||
-        changes.isEmpty ||
-        changes.any(
-          (change) => change.kind != RepositoryChangeKind.untracked,
-        )) {
-      return;
-    }
+  /// Confirms deletion of selected staged or unstaged working-tree files.
+  ///
+  /// 中文：确认删除暂存或未暂存列表中选中文件的工作区副本。删除不会直接
+  /// 改写 Git 索引或提交历史，但未提交且未暂存的本地内容将无法恢复。
+  Future<void> _removeChanges(List<RepositoryChangeViewData> changes) async {
+    if (changes.isEmpty) return;
     final approved = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('移除未跟踪文件'),
-        content: Text('确定要移除选中的 ${changes.length} 个未跟踪文件吗？此操作无法通过 Git 恢复。'),
+        title: const Text('确认删除修改过的或未被跟踪的文件？'),
+        content: Text(
+          '下列文件包含了不在版本控制内的变更或信息，若它们被删除，将无法被找回：\n\n'
+          '${changes.map((change) => change.path).toSet().join('\n')}',
+        ),
         actions: [
           TextButton(
             onPressed: () => Navigator.of(context).pop(false),
@@ -2598,65 +2594,38 @@ class _RepositoryWorkspaceScreenState
           ),
           FilledButton(
             onPressed: () => Navigator.of(context).pop(true),
-            child: const Text('移除'),
+            child: const Text('确认'),
           ),
         ],
       ),
     );
     if (approved != true || !mounted) return;
 
-    // Re-read Git status after the confirmation. The list may have become
-    // stale while the dialog was open; never delete a path whose current
-    // status is no longer untracked.
-    await ref.read(repositorySessionProvider.notifier).refresh();
+    final removal = await ref
+        .read(repositorySessionProvider.notifier)
+        .removeChanges(changes);
     if (!mounted) return;
-    final refreshed = ref.read(repositorySessionProvider);
-    final refreshedRoot = refreshed.repository?.workTreeRoot;
-    final status = refreshed.status;
-    if (refreshedRoot != root || status == null) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('仓库状态已变化，请刷新后重试。')));
-      return;
+    final String message;
+    if (removal == null) {
+      message = '未能移除所选文件；仓库状态可能已经变化，请刷新后重试。';
+    } else if (removal.hasFailures) {
+      final completed = removal.removedPaths.length;
+      message = completed == 0
+          ? '未能移除 ${removal.failedPaths.length} 个文件：\n'
+                '${removal.failedPaths.join('\n')}\n'
+                '失败目录可能已有部分内容被删除，请检查工作区。'
+          : '已移除 $completed 个文件，${removal.failedPaths.length} 个删除失败：\n'
+                '${removal.failedPaths.join('\n')}\n'
+                '失败目录可能已有部分内容被删除，请检查工作区。';
+    } else if (removal.removedPaths.isEmpty) {
+      message = '所选 ${removal.missingPaths.length} 个文件已不在工作区。';
+    } else if (removal.missingPaths.isNotEmpty) {
+      message =
+          '已从工作区移除 ${removal.removedPaths.length} 个文件；'
+          '另有 ${removal.missingPaths.length} 个文件已不存在。';
+    } else {
+      message = '已从工作区移除 ${removal.removedPaths.length} 个文件。';
     }
-    final currentUntrackedPaths = <String>{
-      for (final entry in status.entries)
-        if (entry.kind == GitFileStatusKind.untracked && entry.path.isValidUtf8)
-          entry.path.display,
-    };
-    if (changes.any((change) => !currentUntrackedPaths.contains(change.path))) {
-      ScaffoldMessenger.of(
-        context,
-      ).showSnackBar(const SnackBar(content: Text('选中的文件状态已变化，请刷新后重试。')));
-      return;
-    }
-
-    var removed = 0;
-    var failed = 0;
-    for (final change in changes) {
-      final filePath = _workspaceChangePath(root, change.path);
-      if (filePath == null) continue;
-      try {
-        final entityType = await FileSystemEntity.type(
-          filePath,
-          followLinks: false,
-        );
-        if (entityType == FileSystemEntityType.notFound) continue;
-        if (entityType == FileSystemEntityType.directory) {
-          await Directory(filePath).delete(recursive: true);
-        } else {
-          await File(filePath).delete();
-        }
-        removed++;
-      } on Object {
-        failed++;
-      }
-    }
-    await ref.read(repositorySessionProvider.notifier).refresh();
-    if (!mounted) return;
-    final message = failed == 0
-        ? '已移除 $removed 个未跟踪文件或目录。'
-        : '已移除 $removed 个项目，$failed 个项目删除失败。';
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));
@@ -3056,8 +3025,7 @@ class _RepositoryWorkspaceScreenState
                   unawaited(_handleConflictAction(change, action)),
               onChangeRevealInFinder: (changes) =>
                   unawaited(_revealChangesInFinder(changes)),
-              onChangeRemove: (changes) =>
-                  unawaited(_removeUntrackedChanges(changes)),
+              onChangeRemove: (changes) => unawaited(_removeChanges(changes)),
               onChangeStopTracking: (changes) =>
                   unawaited(_stopTrackingChanges(changes)),
               onChangeReset: (changes) =>

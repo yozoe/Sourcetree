@@ -61,6 +61,91 @@ void main() {
     },
   );
 
+  test(
+    'keeps uncommitted changes selected throughout a manual refresh',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('first.txt', 'first base\n');
+      await repository.writeFile('second.txt', 'second base\n');
+      await repository.commit('Base');
+      await repository.writeFile('first.txt', 'first changed\n');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      controller.selectUncommittedChanges();
+      var overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      await controller.selectChange(overview.changes.single);
+      await repository.writeFile('second.txt', 'second changed\n');
+
+      final emitted = <RepositorySessionState>[];
+      final subscription = container.listen<RepositorySessionState>(
+        repositorySessionProvider,
+        (_, next) => emitted.add(next),
+      );
+      addTearDown(subscription.close);
+
+      await controller.refresh();
+
+      expect(emitted, isNotEmpty);
+      expect(
+        emitted.every(
+          (state) =>
+              state.selectedRefId == 'uncommitted' &&
+              state.selectedCommitId == null,
+        ),
+        isTrue,
+      );
+      final state = container.read(repositorySessionProvider);
+      overview = mapRepositoryOverview(state).repository!;
+      expect(overview.isUncommittedChangesSelected, isTrue);
+      expect(overview.selectedChange?.path, 'first.txt');
+      expect(
+        overview.changes.map((change) => change.path),
+        containsAll(['first.txt', 'second.txt']),
+      );
+    },
+  );
+
+  test('clears a file selection that disappears during refresh', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('first.txt', 'first base\n');
+    await repository.writeFile('second.txt', 'second base\n');
+    await repository.commit('Base');
+    await repository.writeFile('first.txt', 'first changed\n');
+    await repository.writeFile('second.txt', 'second changed\n');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    controller.selectUncommittedChanges();
+    final overview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    await controller.selectChange(
+      overview.changes.singleWhere((change) => change.path == 'first.txt'),
+    );
+
+    await repository.runGit(['restore', '--', 'first.txt']);
+    await controller.refresh();
+
+    final state = container.read(repositorySessionProvider);
+    final refreshedOverview = mapRepositoryOverview(state).repository!;
+    expect(state.selectedRefId, 'uncommitted');
+    expect(state.selectedChange, isNull);
+    expect(state.diff, isNull);
+    expect(refreshedOverview.selectedChange, isNull);
+    expect(refreshedOverview.changes.map((change) => change.path), [
+      'second.txt',
+    ]);
+  });
+
   test('chooses the first UTF-8 commit path for the initial file diff', () {
     final invalid = GitCommitFileChange(
       path: GitPath(<int>[0x69, 0x6e, 0x76, 0x61, 0x6c, 0x69, 0x64, 0xff]),
@@ -495,6 +580,140 @@ void main() {
     );
   });
 
+  test('keeps the file list visible while staging and unstaging', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('visible.txt', 'keep the row visible\n');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    final emitted = <RepositorySessionState>[];
+    final subscription = container.listen<RepositorySessionState>(
+      repositorySessionProvider,
+      (_, next) => emitted.add(next),
+    );
+    addTearDown(subscription.close);
+
+    var overview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    await controller.toggleStage(overview.changes.single);
+
+    expect(emitted.any((state) => state.isWorkingTreeBusy), isTrue);
+    expect(
+      emitted
+          .where((state) => state.isWorkingTreeBusy)
+          .every((state) => state.phase == RepositorySessionPhase.loading),
+      isTrue,
+    );
+    expect(
+      emitted.where((state) => state.isWorkingTreeBusy).every((state) {
+        final view = mapRepositoryOverview(state);
+        return view.state == RepositoryOverviewState.ready &&
+            view.repository!.changes.isNotEmpty;
+      }),
+      isTrue,
+    );
+
+    emitted.clear();
+    overview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    await controller.toggleStage(overview.changes.single);
+
+    expect(emitted.any((state) => state.isWorkingTreeBusy), isTrue);
+    expect(
+      emitted
+          .where((state) => state.isWorkingTreeBusy)
+          .every((state) => state.phase == RepositorySessionPhase.loading),
+      isTrue,
+    );
+    final finalOverview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    expect(finalOverview.changes, hasLength(1));
+    expect(finalOverview.changes.single.isStaged, isFalse);
+  });
+
+  test('returns to ready after a successful staging retry', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    final staleFile = await repository.writeFile('stale.txt', 'stale\n');
+    await repository.writeFile('retry.txt', 'retry\n');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    var overview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    final stale = overview.changes.singleWhere(
+      (change) => change.path == 'stale.txt',
+    );
+    await staleFile.delete();
+
+    await controller.toggleStage(stale);
+    expect(
+      container.read(repositorySessionProvider).phase,
+      RepositorySessionPhase.error,
+    );
+
+    overview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    final retry = overview.changes.singleWhere(
+      (change) => change.path == 'retry.txt',
+    );
+    await controller.toggleStage(retry);
+
+    final state = container.read(repositorySessionProvider);
+    expect(state.phase, RepositorySessionPhase.ready);
+    expect(state.isWorkingTreeBusy, isFalse);
+    expect(
+      state.status!.stagedEntries.map((entry) => entry.path.display),
+      contains('retry.txt'),
+    );
+  });
+
+  test('preserves a newer file selection made during group staging', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('first.txt', 'first\n');
+    await repository.writeFile('second.txt', 'second\n');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final overview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    final first = overview.changes.singleWhere(
+      (change) => change.path == 'first.txt',
+    );
+    final second = overview.changes.singleWhere(
+      (change) => change.path == 'second.txt',
+    );
+    controller.selectUncommittedChanges();
+    await controller.selectChange(first);
+
+    final staging = controller.toggleStageGroup(overview.changes, stage: true);
+    expect(container.read(repositorySessionProvider).isWorkingTreeBusy, isTrue);
+    final newerSelection = controller.selectChange(second);
+    await Future.wait([staging, newerSelection]);
+
+    final state = container.read(repositorySessionProvider);
+    final finalOverview = mapRepositoryOverview(state).repository!;
+    expect(finalOverview.selectedChange?.path, 'second.txt');
+    expect(finalOverview.selectedChange?.isStaged, isTrue);
+    expect(state.diff?.path.display, 'second.txt');
+    expect(state.diff?.source, GitDiffSource.staged);
+  });
+
   test('stops tracking a selected modified file without deleting it', () async {
     final repository = await GitTestRepository.create();
     addTearDown(repository.dispose);
@@ -666,6 +885,8 @@ void main() {
       container.read(repositorySessionProvider),
     ).repository!;
     final staged = overview.changes.singleWhere((change) => change.isStaged);
+    controller.selectUncommittedChanges();
+    await controller.selectChange(staged);
     expect(staged.canResetToHead, isTrue);
     expect(await controller.resetChangesToHead([staged]), isTrue);
     expect(
@@ -676,7 +897,75 @@ void main() {
       '{"version": 1}\n',
     );
     expect(container.read(repositorySessionProvider).status!.isClean, isTrue);
+    final state = container.read(repositorySessionProvider);
+    expect(state.selectedRefId, 'history');
+    expect(state.selectedCommitId, isNotNull);
+    expect(state.selectedChange, isNull);
+    expect(state.diff, isNull);
   });
+
+  test(
+    'keeps uncommitted changes selected after resetting one of several files',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('first.txt', 'first base\n');
+      await repository.writeFile('second.txt', 'second base\n');
+      await repository.commit('Base');
+      await repository.writeFile('first.txt', 'first changed\n');
+      await repository.writeFile('second.txt', 'second changed\n');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      var overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      await controller.toggleStageGroup(overview.changes, stage: true);
+      controller.selectUncommittedChanges();
+      overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      final first = overview.changes.singleWhere(
+        (change) => change.path == 'first.txt' && change.isStaged,
+      );
+      await controller.selectChange(first);
+      final emitted = <RepositorySessionState>[];
+      final subscription = container.listen<RepositorySessionState>(
+        repositorySessionProvider,
+        (_, next) => emitted.add(next),
+      );
+      addTearDown(subscription.close);
+
+      expect(await controller.resetChangesToHead([first]), isTrue);
+
+      final state = container.read(repositorySessionProvider);
+      overview = mapRepositoryOverview(state).repository!;
+      expect(emitted, isNotEmpty);
+      expect(
+        emitted.every((candidate) => candidate.selectedRefId == 'uncommitted'),
+        isTrue,
+      );
+      expect(
+        emitted
+            .where((candidate) => candidate.isWorkingTreeBusy)
+            .every(
+              (candidate) =>
+                  mapRepositoryOverview(candidate).state ==
+                  RepositoryOverviewState.ready,
+            ),
+        isTrue,
+      );
+      expect(state.status!.isClean, isFalse);
+      expect(state.selectedRefId, 'uncommitted');
+      expect(state.selectedCommitId, isNull);
+      expect(state.selectedChange, isNull);
+      expect(state.diff, isNull);
+      expect(overview.isUncommittedChangesSelected, isTrue);
+      expect(overview.changes.map((change) => change.path), ['second.txt']);
+    },
+  );
 
   test('stages only the selected working-tree diff hunk', () async {
     final repository = await GitTestRepository.create();
@@ -974,8 +1263,9 @@ void main() {
         container.read(repositorySessionProvider),
       ).repository!;
       final previouslyStaged = overview.changes.single;
+      controller.selectUncommittedChanges();
 
-      await controller.toggleStage(previouslyStaged);
+      await repository.runGit(['reset', '--', 'config/local.json']);
       await repository.writeFile('config/local.json', '{"version": 3}\n');
 
       expect(await controller.resetChangesToHead([previouslyStaged]), isFalse);
@@ -985,6 +1275,10 @@ void main() {
           '${Platform.pathSeparator}local.json',
         ).readAsString(),
         '{"version": 3}\n',
+      );
+      expect(
+        container.read(repositorySessionProvider).selectedRefId,
+        'uncommitted',
       );
     },
   );
@@ -1023,6 +1317,121 @@ void main() {
       final status = container.read(repositorySessionProvider).status!;
       expect(status.entries, hasLength(1));
       expect(status.entries.single.kind, GitFileStatusKind.untracked);
+    },
+  );
+
+  test(
+    'removes staged, unstaged, and untracked files without changing the index',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('tracked-unstaged.txt', 'base unstaged\n');
+      await repository.writeFile('tracked-staged.txt', 'base staged\n');
+      await repository.commit('Base');
+      await repository.writeFile(
+        'tracked-unstaged.txt',
+        'working tree change\n',
+      );
+      await repository.writeFile('tracked-staged.txt', 'staged change\n');
+      await repository.writeFile('untracked.txt', 'local only\n');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      var overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      await controller.toggleStage(
+        overview.changes.singleWhere(
+          (change) => change.path == 'tracked-staged.txt',
+        ),
+      );
+
+      overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      final selected = [
+        overview.changes.singleWhere(
+          (change) => change.path == 'tracked-unstaged.txt',
+        ),
+        overview.changes.singleWhere(
+          (change) => change.path == 'tracked-staged.txt' && change.isStaged,
+        ),
+        overview.changes.singleWhere(
+          (change) => change.path == 'untracked.txt',
+        ),
+      ];
+
+      final removal = await controller.removeChanges(selected);
+      expect(removal, isNotNull);
+      expect(
+        removal!.removedPaths,
+        containsAll([
+          'tracked-unstaged.txt',
+          'tracked-staged.txt',
+          'untracked.txt',
+        ]),
+      );
+      expect(removal.missingPaths, isEmpty);
+      expect(removal.failedPaths, isEmpty);
+      expect(removal.hasFailures, isFalse);
+      for (final path in [
+        'tracked-unstaged.txt',
+        'tracked-staged.txt',
+        'untracked.txt',
+      ]) {
+        expect(
+          await File(
+            '${repository.workingDirectory.path}${Platform.pathSeparator}$path',
+          ).exists(),
+          isFalse,
+        );
+      }
+      expect(
+        (await repository.runGit(['show', ':tracked-staged.txt'])).stdout,
+        'staged change\n',
+      );
+      expect(
+        (await repository.runGit(['show', 'HEAD:tracked-staged.txt'])).stdout,
+        'base staged\n',
+      );
+      final status = container.read(repositorySessionProvider).status!;
+      expect(
+        status.entries.map((entry) => entry.path.display),
+        containsAll(['tracked-unstaged.txt', 'tracked-staged.txt']),
+      );
+      expect(
+        status.entries.any((entry) => entry.path.display == 'untracked.txt'),
+        isFalse,
+      );
+    },
+  );
+
+  test(
+    'refuses removal when a selected source changed after confirmation',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      final file = await repository.writeFile('scratch.txt', 'local only\n');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      final untracked = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!.changes.single;
+      controller.selectUncommittedChanges();
+
+      await repository.runGit(['add', '--', 'scratch.txt']);
+
+      expect(await controller.removeChanges([untracked]), isNull);
+      expect(await file.readAsString(), 'local only\n');
+      expect(
+        container.read(repositorySessionProvider).selectedRefId,
+        'uncommitted',
+      );
     },
   );
 

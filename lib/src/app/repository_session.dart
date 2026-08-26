@@ -138,6 +138,28 @@ final class SelectedRepositoryChange {
   }
 }
 
+/// Outcome of deleting selected paths from the working tree.
+///
+/// 中文：从工作区删除所选路径的逐项结果。已移除、执行前已不存在和删除失败
+/// 分别记录，使不可逆的部分成功不会被统一失败提示掩盖。
+final class RepositoryChangeRemovalResult {
+  RepositoryChangeRemovalResult({
+    required List<String> removedPaths,
+    required List<String> missingPaths,
+    required List<String> failedPaths,
+  }) : removedPaths = List<String>.unmodifiable(removedPaths),
+       missingPaths = List<String>.unmodifiable(missingPaths),
+       failedPaths = List<String>.unmodifiable(failedPaths);
+
+  final List<String> removedPaths;
+  final List<String> missingPaths;
+  final List<String> failedPaths;
+
+  /// Whether at least one selected path could not be deleted.
+  /// 中文：是否至少有一个所选路径未能删除。
+  bool get hasFailures => failedPaths.isNotEmpty;
+}
+
 /// 中文：在暂存状态切换并刷新后，从 Git 状态恢复同一文件在目标分组中的展示数据。
 /// English: Rebuilds the same file's display data in its target group after a
 /// staging toggle and status refresh.
@@ -228,6 +250,7 @@ final class RepositorySessionState {
     this.selectedChange,
     this.diff,
     this.isDiffLoading = false,
+    this.isWorkingTreeBusy = false,
     this.isCloneRunning = false,
     this.isFetchRunning = false,
     this.isPullRunning = false,
@@ -282,6 +305,7 @@ final class RepositorySessionState {
   final SelectedRepositoryChange? selectedChange;
   final GitUnifiedDiff? diff;
   final bool isDiffLoading;
+  final bool isWorkingTreeBusy;
   final bool isCloneRunning;
   final bool isFetchRunning;
   final bool isPullRunning;
@@ -330,6 +354,7 @@ final class RepositorySessionState {
     SelectedRepositoryChange? selectedChange,
     GitUnifiedDiff? diff,
     bool? isDiffLoading,
+    bool? isWorkingTreeBusy,
     bool? isCloneRunning,
     bool? isFetchRunning,
     bool? isPullRunning,
@@ -389,6 +414,7 @@ final class RepositorySessionState {
           : selectedChange ?? this.selectedChange,
       diff: clearDiff ? null : diff ?? this.diff,
       isDiffLoading: isDiffLoading ?? this.isDiffLoading,
+      isWorkingTreeBusy: isWorkingTreeBusy ?? this.isWorkingTreeBusy,
       isCloneRunning: isCloneRunning ?? this.isCloneRunning,
       isFetchRunning: isFetchRunning ?? this.isFetchRunning,
       isPullRunning: isPullRunning ?? this.isPullRunning,
@@ -603,21 +629,34 @@ final class RepositorySessionController
   /// 中文：打开目标仓库、读取初始状态和首屏历史，并自动选中最新提交。
   ///
   /// 输入为用户选择的仓库路径；成功后状态切换为 ready，最新提交的详情与首个
-  /// 可预览文件差异会异步填充。仓库切换、刷新或控制器销毁会使过期读取失效。
+  /// 可预览文件差异会异步填充。内部刷新可要求保留“文件状态”或仍有效的
+  /// `Uncommitted changes` 入口及文件选择；仓库切换、刷新或控制器销毁会使
+  /// 过期读取失效。
   ///
   /// English: Opens a repository, loads its initial state and first history
   /// page, then selects the newest commit automatically.
   ///
   /// The input is a user-selected repository path. On success it moves the
   /// state to ready, then asynchronously fills the newest commit's details
-  /// and first previewable file diff. Repository switches, refreshes and
-  /// controller disposal invalidate stale reads.
-  Future<void> openRepository(String path) async {
+  /// and first previewable file diff. Internal refreshes may preserve the File
+  /// Status or still-valid Uncommitted Changes surface and file selection.
+  /// Repository switches, refreshes and controller disposal invalidate stale
+  /// reads.
+  Future<void> openRepository(
+    String path, {
+    bool preserveWorkingTreeSurface = false,
+  }) async {
     final normalizedPath = path.trim();
     if (normalizedPath.isEmpty) {
       return;
     }
 
+    final previousSelection = preserveWorkingTreeSurface
+        ? state.selectedChange
+        : null;
+    final previousRefId = preserveWorkingTreeSurface
+        ? state.selectedRefId
+        : null;
     final generation = ++_repositoryGeneration;
     _historyGeneration++;
     _diffGeneration++;
@@ -626,13 +665,14 @@ final class RepositorySessionController
     state = state.copyWith(
       phase: RepositorySessionPhase.loading,
       requestedPath: normalizedPath,
+      isWorkingTreeBusy: false,
       isDiffLoading: false,
       isHistoryLoading: false,
       historyOffset: 0,
       historyRevisionSnapshot: const [],
       hasMoreHistory: false,
       clearDiff: true,
-      clearSelectedChange: true,
+      clearSelectedChange: !preserveWorkingTreeSurface,
       clearMessage: true,
       clearHistoryLoadError: true,
     );
@@ -682,6 +722,9 @@ final class RepositorySessionController
       final stashes = results[7] as List<GitStashEntry>;
       final loadedHistory = results[8] as List<GitCommit>;
       final commits = loadedHistory.take(_historyPageSize).toList();
+      final shouldRestoreWorkingTreeSurface =
+          previousRefId == 'workspace' ||
+          (previousRefId == 'uncommitted' && !status.isClean);
       state = RepositorySessionState(
         phase: RepositorySessionPhase.ready,
         requestedPath: normalizedPath,
@@ -700,6 +743,9 @@ final class RepositorySessionController
         historyRevisionSnapshot: historyRevisionSnapshot,
         historyOffset: commits.length,
         hasMoreHistory: loadedHistory.length > _historyPageSize,
+        selectedRefId: shouldRestoreWorkingTreeSurface
+            ? previousRefId!
+            : 'history',
         // A repository with history opens on its newest commit. Selecting it
         // below replaces the working-tree inspector with that commit's file
         // list and first available Diff.
@@ -708,7 +754,12 @@ final class RepositorySessionController
         gitVersion: results[9] as String,
         searchQuery: state.searchQuery,
       );
-      if (commits.isNotEmpty) {
+      if (shouldRestoreWorkingTreeSurface) {
+        await _restoreWorkingTreeSelectionAfterRefresh(
+          previousSelection: previousSelection,
+          previousRefId: previousRefId!,
+        );
+      } else if (commits.isNotEmpty) {
         await selectCommit(commits.first.objectId);
       }
     } on Object catch (error, stackTrace) {
@@ -1582,11 +1633,18 @@ final class RepositorySessionController
   }
 
   /// 中文：刷新当前数据。
-  /// English: Refreshes the current data.
+  ///
+  /// 刷新同一仓库时保留“文件状态”，以及仍有改动时的 `Uncommitted changes`
+  /// 入口和有效文件选择；不会先发布默认历史提交再切回工作区。
+  ///
+  /// English: Refreshes the current repository while preserving File Status,
+  /// or a still-valid Uncommitted Changes surface and file selection, without
+  /// publishing the default history commit first.
   Future<void> refresh() async {
+    if (state.isWorkingTreeBusy) return;
     final path = state.requestedPath ?? state.repository?.commandDirectory;
     if (path != null) {
-      await openRepository(path);
+      await openRepository(path, preserveWorkingTreeSurface: true);
     }
   }
 
@@ -2141,14 +2199,97 @@ final class RepositorySessionController
     }
   }
 
-  /// 中文：切换当前状态。
-  /// English: Toggles the current state.
+  /// Finishes a working-tree mutation with an atomic Git status refresh.
+  ///
+  /// The existing repository, history and file-list snapshot stay visible
+  /// until the new status is ready. The replacement is applied atomically and
+  /// the closest valid working-tree selection is then restored. A status that
+  /// was already read for mutation validation can be supplied to avoid a
+  /// second read.
+  ///
+  /// 中文：工作区写入后只刷新 Git 状态。在新状态读取完成前保留现有仓库、历史、
+  /// 文件列表和入口选择；读取完成后原子替换状态，并恢复最接近的有效文件选择。
+  /// 若调用方已为写入前校验读取状态，可直接传入以避免重复读取。
+  Future<bool> _finishWorkingTreeMutation({
+    required GitRepository repository,
+    required int repositoryGeneration,
+    required SelectedRepositoryChange? previousSelection,
+    required String previousRefId,
+    GitStatusSnapshot? validatedStatus,
+    String? preferredPath,
+    bool? preferredStaged,
+  }) async {
+    final refreshedStatus =
+        validatedStatus ?? await _reader.readStatus(repository);
+    if (!ref.mounted ||
+        repositoryGeneration != _repositoryGeneration ||
+        state.repository?.id != repository.id) {
+      return false;
+    }
+
+    final latestSelection = state.selectedChange;
+    final latestRefId = state.selectedRefId;
+    final selectionChangedDuringMutation =
+        !identical(latestSelection, previousSelection) ||
+        latestRefId != previousRefId;
+    final shouldSelectPreferred =
+        preferredPath != null &&
+        preferredStaged != null &&
+        !selectionChangedDuringMutation;
+    final shouldSelectLatestCommit =
+        latestRefId == 'uncommitted' && refreshedStatus.isClean;
+    _diffGeneration++;
+    state = state.copyWith(
+      phase: RepositorySessionPhase.ready,
+      status: refreshedStatus,
+      selectedRefId: shouldSelectLatestCommit ? 'history' : null,
+      isWorkingTreeBusy: false,
+      isDiffLoading: false,
+      clearSelectedChange: true,
+      clearDiff: true,
+      clearMessage: true,
+    );
+    if (shouldSelectLatestCommit) {
+      final latestCommit = state.historyCommits.firstOrNull;
+      if (latestCommit != null) await selectCommit(latestCommit.objectId);
+      return true;
+    }
+    await _restoreWorkingTreeSurfaceIfAvailable(
+      previousSelection: shouldSelectPreferred ? null : latestSelection,
+      previousRefId: latestRefId,
+    );
+
+    if (shouldSelectPreferred) {
+      final entry = refreshedStatus.entries
+          .where((candidate) => candidate.path.display == preferredPath)
+          .firstOrNull;
+      if (entry != null) {
+        final preferred = _changeAfterStageToggle(
+          entry,
+          isStaged: preferredStaged,
+        );
+        final fallback = _changeAfterStageToggle(
+          entry,
+          isStaged: !preferredStaged,
+        );
+        final nextSelection = preferred ?? fallback;
+        if (nextSelection != null) await selectChange(nextSelection);
+      }
+    }
+    return true;
+  }
+
+  /// Toggles one file between the staged and unstaged groups.
+  ///
+  /// 中文：在暂存和未暂存分组间移动一个文件。写入期间保留当前列表，完成后仅
+  /// 刷新工作区状态，不重新打开仓库或清空历史数据。
   Future<void> toggleStage(RepositoryChangeViewData change) async {
     final repository = state.repository;
     final status = state.status;
     if (repository == null ||
         status == null ||
-        state.phase == RepositorySessionPhase.loading) {
+        state.phase == RepositorySessionPhase.loading ||
+        state.isWorkingTreeBusy) {
       return;
     }
 
@@ -2163,11 +2304,12 @@ final class RepositorySessionController
       return;
     }
 
+    final repositoryGeneration = _repositoryGeneration;
+    final previousSelection = state.selectedChange;
+    final previousRefId = state.selectedRefId;
     state = state.copyWith(
       phase: RepositorySessionPhase.loading,
-      isDiffLoading: false,
-      clearDiff: true,
-      clearSelectedChange: true,
+      isWorkingTreeBusy: true,
       clearMessage: true,
     );
     try {
@@ -2180,28 +2322,24 @@ final class RepositorySessionController
       } else {
         await _writer.stagePath(repository, entry.path);
       }
-      await refresh();
-      if (state.phase != RepositorySessionPhase.ready) return;
-      final refreshedStatus = state.status;
-      if (refreshedStatus == null) return;
-      final shouldBeStaged = !change.isStaged;
-      for (final refreshedEntry in refreshedStatus.entries) {
-        if (refreshedEntry.path.display != change.path) continue;
-        final refreshedChange = _changeAfterStageToggle(
-          refreshedEntry,
-          isStaged: shouldBeStaged,
-        );
-        if (refreshedChange != null) {
-          await selectChange(refreshedChange);
-        }
-        break;
-      }
-    } on Object catch (error, stackTrace) {
-      state = state.copyWith(
-        phase: RepositorySessionPhase.error,
-        message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+      await _finishWorkingTreeMutation(
+        repository: repository,
+        repositoryGeneration: repositoryGeneration,
+        previousSelection: previousSelection,
+        previousRefId: previousRefId,
+        preferredPath: change.path,
+        preferredStaged: !change.isStaged,
       );
+    } on Object catch (error, stackTrace) {
+      if (repositoryGeneration == _repositoryGeneration &&
+          state.repository?.id == repository.id) {
+        state = state.copyWith(
+          phase: RepositorySessionPhase.error,
+          isWorkingTreeBusy: false,
+          message: _friendlyError(error),
+          technicalDetails: '$error\n$stackTrace',
+        );
+      }
     }
   }
 
@@ -2215,7 +2353,8 @@ final class RepositorySessionController
     final status = state.status;
     if (repository == null ||
         status == null ||
-        state.phase == RepositorySessionPhase.loading) {
+        state.phase == RepositorySessionPhase.loading ||
+        state.isWorkingTreeBusy) {
       return;
     }
 
@@ -2233,11 +2372,12 @@ final class RepositorySessionController
     }
     if (entries.isEmpty) return;
 
+    final repositoryGeneration = _repositoryGeneration;
+    final previousSelection = state.selectedChange;
+    final previousRefId = state.selectedRefId;
     state = state.copyWith(
       phase: RepositorySessionPhase.loading,
-      isDiffLoading: false,
-      clearDiff: true,
-      clearSelectedChange: true,
+      isWorkingTreeBusy: true,
       clearMessage: true,
     );
     try {
@@ -2251,14 +2391,133 @@ final class RepositorySessionController
           isUnbornBranch: status.branch.isUnborn,
         );
       }
-      await refresh();
-    } on Object catch (error, stackTrace) {
-      state = state.copyWith(
-        phase: RepositorySessionPhase.error,
-        message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+      await _finishWorkingTreeMutation(
+        repository: repository,
+        repositoryGeneration: repositoryGeneration,
+        previousSelection: previousSelection,
+        previousRefId: previousRefId,
       );
+    } on Object catch (error, stackTrace) {
+      if (repositoryGeneration == _repositoryGeneration &&
+          state.repository?.id == repository.id) {
+        state = state.copyWith(
+          phase: RepositorySessionPhase.error,
+          isWorkingTreeBusy: false,
+          message: _friendlyError(error),
+          technicalDetails: '$error\n$stackTrace',
+        );
+      }
     }
+  }
+
+  /// Deletes selected staged or unstaged paths from the working tree.
+  ///
+  /// The Git index and commit history are left unchanged. Status is re-read
+  /// after the caller's confirmation and each selected row must still exist in
+  /// the same staged or unstaged source before any filesystem deletion starts.
+  ///
+  /// 中文：从工作区删除暂存或未暂存列表中选中的路径，不直接修改 Git 索引或
+  /// 提交历史。调用方确认后会重新读取状态；所有选中行仍处于原暂存来源且路径
+  /// 可安全表示时才开始文件系统删除，完成后刷新真实 Git 状态。
+  Future<RepositoryChangeRemovalResult?> removeChanges(
+    List<RepositoryChangeViewData> changes,
+  ) async {
+    if (changes.isEmpty ||
+        state.phase == RepositorySessionPhase.loading ||
+        state.isWorkingTreeBusy) {
+      return null;
+    }
+
+    final previousSelection = state.selectedChange;
+    final previousRefId = state.selectedRefId;
+    await refresh();
+    Future<RepositoryChangeRemovalResult?> rejectStaleSelection() async {
+      await _restoreWorkingTreeSurfaceIfAvailable(
+        previousSelection: previousSelection,
+        previousRefId: previousRefId,
+      );
+      return null;
+    }
+
+    final repository = state.repository;
+    final status = state.status;
+    final workTreeRoot = repository?.workTreeRoot;
+    if (repository == null ||
+        status == null ||
+        workTreeRoot == null ||
+        state.phase != RepositorySessionPhase.ready) {
+      return rejectStaleSelection();
+    }
+
+    final paths = <GitPath>[];
+    for (final change in changes) {
+      final entry = status.displayEntries
+          .where((candidate) => candidate.path.display == change.path)
+          .firstOrNull;
+      final stillInSelectedSource = change.isStaged
+          ? entry?.hasStagedChange == true
+          : entry?.hasWorkTreeChange == true;
+      if (entry == null || !entry.path.isValidUtf8 || !stillInSelectedSource) {
+        return rejectStaleSelection();
+      }
+      if (!paths.contains(entry.path)) paths.add(entry.path);
+    }
+    if (paths.isEmpty) return rejectStaleSelection();
+
+    final localPaths = <String>[];
+    for (final path in paths) {
+      final localPath = path_utils.normalize(
+        path_utils.join(workTreeRoot, path.display),
+      );
+      if (!path_utils.isWithin(workTreeRoot, localPath)) {
+        return rejectStaleSelection();
+      }
+      localPaths.add(localPath);
+    }
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearMessage: true,
+    );
+    final removedPaths = <String>[];
+    final missingPaths = <String>[];
+    final failedPaths = <String>[];
+    for (var index = 0; index < localPaths.length; index++) {
+      final localPath = localPaths[index];
+      final displayPath = paths[index].display;
+      try {
+        final entityType = await FileSystemEntity.type(
+          localPath,
+          followLinks: false,
+        );
+        if (entityType == FileSystemEntityType.notFound) {
+          missingPaths.add(displayPath);
+          continue;
+        }
+        if (entityType == FileSystemEntityType.directory) {
+          await Directory(localPath).delete(recursive: true);
+        } else if (entityType == FileSystemEntityType.link) {
+          await Link(localPath).delete();
+        } else {
+          await File(localPath).delete();
+        }
+        removedPaths.add(displayPath);
+      } on Object {
+        failedPaths.add(displayPath);
+      }
+    }
+    await refresh();
+    await _restoreWorkingTreeSurfaceIfAvailable(
+      previousSelection: previousSelection,
+      previousRefId: previousRefId,
+    );
+    return RepositoryChangeRemovalResult(
+      removedPaths: removedPaths,
+      missingPaths: missingPaths,
+      failedPaths: failedPaths,
+    );
   }
 
   /// Stops tracking the selected working-tree files without deleting them.
@@ -2268,7 +2527,9 @@ final class RepositorySessionController
   Future<bool> stopTrackingChanges(
     List<RepositoryChangeViewData> changes,
   ) async {
-    if (changes.isEmpty || state.phase == RepositorySessionPhase.loading) {
+    if (changes.isEmpty ||
+        state.phase == RepositorySessionPhase.loading ||
+        state.isWorkingTreeBusy) {
       return false;
     }
 
@@ -2334,7 +2595,11 @@ final class RepositorySessionController
   /// 快照直接写入 Git。
   Future<bool> stopTrackingSelectedCommitFile() async {
     final selected = state.selectedCommitFile;
-    if (selected == null || !selected.file.path.isValidUtf8) return false;
+    if (selected == null ||
+        !selected.file.path.isValidUtf8 ||
+        state.isWorkingTreeBusy) {
+      return false;
+    }
 
     await refresh();
     final repository = state.repository;
@@ -2399,57 +2664,84 @@ final class RepositorySessionController
   Future<bool> resetChangesToHead(
     List<RepositoryChangeViewData> changes,
   ) async {
-    if (changes.isEmpty || state.phase == RepositorySessionPhase.loading) {
-      return false;
-    }
-
-    await refresh();
     final repository = state.repository;
-    final status = state.status;
-    if (repository == null ||
-        status == null ||
-        state.phase != RepositorySessionPhase.ready ||
-        status.branch.objectId == null) {
+    if (changes.isEmpty ||
+        repository == null ||
+        state.phase == RepositorySessionPhase.loading ||
+        state.isWorkingTreeBusy) {
       return false;
     }
 
-    final paths = <GitPath>[];
-    for (final change in changes) {
-      if (!change.canResetToHead) return false;
-      final entry = status.entries
-          .where((candidate) => candidate.path.display == change.path)
-          .firstOrNull;
-      if (entry == null ||
-          entry.isConflicted ||
-          !entry.path.isValidUtf8 ||
-          entry.kind != GitFileStatusKind.ordinary ||
-          !entry.hasStagedChange ||
-          entry.indexStatus == GitChangeType.added ||
-          entry.indexStatus == GitChangeType.renamed ||
-          entry.indexStatus == GitChangeType.copied) {
-        return false;
-      }
-      if (!paths.contains(entry.path)) paths.add(entry.path);
-    }
-    if (paths.isEmpty) return false;
-
+    final repositoryGeneration = _repositoryGeneration;
+    final previousSelection = state.selectedChange;
+    final previousRefId = state.selectedRefId;
     state = state.copyWith(
       phase: RepositorySessionPhase.loading,
-      isDiffLoading: false,
-      clearDiff: true,
-      clearSelectedChange: true,
+      isWorkingTreeBusy: true,
       clearMessage: true,
     );
-    try {
-      await _writer.resetPathsToHead(repository, paths);
-      await refresh();
-      return state.phase == RepositorySessionPhase.ready;
-    } on Object catch (error, stackTrace) {
-      state = state.copyWith(
-        phase: RepositorySessionPhase.error,
-        message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+
+    Future<bool> rejectStaleSelection(GitStatusSnapshot status) async {
+      await _finishWorkingTreeMutation(
+        repository: repository,
+        repositoryGeneration: repositoryGeneration,
+        previousSelection: previousSelection,
+        previousRefId: previousRefId,
+        validatedStatus: status,
       );
+      return false;
+    }
+
+    try {
+      final status = await _reader.readStatus(repository);
+      if (!ref.mounted ||
+          repositoryGeneration != _repositoryGeneration ||
+          state.repository?.id != repository.id) {
+        return false;
+      }
+      if (status.branch.objectId == null) {
+        return await rejectStaleSelection(status);
+      }
+
+      final paths = <GitPath>[];
+      for (final change in changes) {
+        if (!change.canResetToHead) {
+          return await rejectStaleSelection(status);
+        }
+        final entry = status.entries
+            .where((candidate) => candidate.path.display == change.path)
+            .firstOrNull;
+        if (entry == null ||
+            entry.isConflicted ||
+            !entry.path.isValidUtf8 ||
+            entry.kind != GitFileStatusKind.ordinary ||
+            !entry.hasStagedChange ||
+            entry.indexStatus == GitChangeType.added ||
+            entry.indexStatus == GitChangeType.renamed ||
+            entry.indexStatus == GitChangeType.copied) {
+          return await rejectStaleSelection(status);
+        }
+        if (!paths.contains(entry.path)) paths.add(entry.path);
+      }
+      if (paths.isEmpty) return await rejectStaleSelection(status);
+
+      await _writer.resetPathsToHead(repository, paths);
+      return await _finishWorkingTreeMutation(
+        repository: repository,
+        repositoryGeneration: repositoryGeneration,
+        previousSelection: previousSelection,
+        previousRefId: previousRefId,
+      );
+    } on Object catch (error, stackTrace) {
+      if (repositoryGeneration == _repositoryGeneration &&
+          state.repository?.id == repository.id) {
+        state = state.copyWith(
+          phase: RepositorySessionPhase.error,
+          isWorkingTreeBusy: false,
+          message: _friendlyError(error),
+          technicalDetails: '$error\n$stackTrace',
+        );
+      }
       return false;
     }
   }
@@ -2467,6 +2759,7 @@ final class RepositorySessionController
         selected == null ||
         diff == null ||
         state.phase != RepositorySessionPhase.ready ||
+        state.isWorkingTreeBusy ||
         state.operationState != GitRepositoryOperationState.none ||
         state.isDiffLoading ||
         selected.source != GitDiffSource.workingTree ||
@@ -2489,7 +2782,7 @@ final class RepositorySessionController
     try {
       await _writer.stageDiffHunk(repository, diff: diff, hunkIndex: hunkIndex);
       await refresh();
-      await _restoreDiffSelectionAfterRefresh(
+      await _restoreWorkingTreeSelectionAfterRefresh(
         previousSelection: selected,
         previousRefId: selectedRefId,
       );
@@ -2519,6 +2812,7 @@ final class RepositorySessionController
         selected == null ||
         diff == null ||
         state.phase != RepositorySessionPhase.ready ||
+        state.isWorkingTreeBusy ||
         state.operationState != GitRepositoryOperationState.none ||
         state.isDiffLoading ||
         selected.kind != RepositoryChangeKind.modified ||
@@ -2544,7 +2838,7 @@ final class RepositorySessionController
         hunkIndex: hunkIndex,
       );
       await refresh();
-      await _restoreDiffSelectionAfterRefresh(
+      await _restoreWorkingTreeSelectionAfterRefresh(
         previousSelection: selected,
         previousRefId: selectedRefId,
       );
@@ -2631,13 +2925,31 @@ final class RepositorySessionController
     }
   }
 
-  /// Restores the uncommitted surface and closest surviving file selection.
+  /// Restores a previously selected working-tree surface when it still exists.
   ///
-  /// 中文：区块写入后的完整 Git 刷新会默认选中最新提交；此方法恢复操作前的
-  /// “文件状态”或未提交行，并优先重新选择同一路径、同一暂存来源，来源已消失时
-  /// 再选择另一侧仍存在的改动。
-  Future<void> _restoreDiffSelectionAfterRefresh({
-    required SelectedRepositoryChange previousSelection,
+  /// 中文：完整刷新后，如果原入口是“文件状态”，或仍有改动时原入口是
+  /// `Uncommitted changes`，则恢复该入口及仍有效的文件选择。
+  Future<void> _restoreWorkingTreeSurfaceIfAvailable({
+    required SelectedRepositoryChange? previousSelection,
+    required String previousRefId,
+  }) async {
+    final shouldRestore =
+        previousRefId == 'workspace' ||
+        (previousRefId == 'uncommitted' && state.status?.isClean == false);
+    if (!shouldRestore) return;
+    await _restoreWorkingTreeSelectionAfterRefresh(
+      previousSelection: previousSelection,
+      previousRefId: previousRefId,
+    );
+  }
+
+  /// Restores the working-tree surface and closest surviving file selection.
+  ///
+  /// 中文：工作区写入后的完整 Git 刷新会默认选中最新提交；此方法恢复操作前的
+  /// “文件状态”或未提交行。若原文件选择仍存在，则优先恢复同一路径、同一暂存
+  /// 来源，来源已消失时再选择另一侧仍存在的改动。
+  Future<void> _restoreWorkingTreeSelectionAfterRefresh({
+    required SelectedRepositoryChange? previousSelection,
     required String previousRefId,
   }) async {
     if (state.phase != RepositorySessionPhase.ready) return;
@@ -2660,10 +2972,17 @@ final class RepositorySessionController
       selectUncommittedChanges();
     }
 
+    if (previousSelection == null) {
+      await selectChange(null);
+      return;
+    }
     final entry = state.status?.entries
         .where((candidate) => candidate.path == previousSelection.entry.path)
         .firstOrNull;
-    if (entry == null || entry.isConflicted || !entry.path.isValidUtf8) return;
+    if (entry == null || entry.isConflicted || !entry.path.isValidUtf8) {
+      await selectChange(null);
+      return;
+    }
     final preferred = _changeAfterStageToggle(
       entry,
       isStaged: previousSelection.isStaged,
@@ -2673,7 +2992,11 @@ final class RepositorySessionController
       isStaged: !previousSelection.isStaged,
     );
     final nextSelection = preferred ?? fallback;
-    if (nextSelection != null) await selectChange(nextSelection);
+    if (nextSelection == null) {
+      await selectChange(null);
+      return;
+    }
+    await selectChange(nextSelection);
   }
 
   /// Executes one explicit conflict-resolution action for an unmerged file.
@@ -2689,7 +3012,8 @@ final class RepositorySessionController
     final status = state.status;
     if (repository == null ||
         status == null ||
-        state.phase == RepositorySessionPhase.loading) {
+        state.phase == RepositorySessionPhase.loading ||
+        state.isWorkingTreeBusy) {
       return false;
     }
 
@@ -2792,7 +3116,8 @@ final class RepositorySessionController
     final status = state.status;
     if (repository == null ||
         status == null ||
-        state.phase == RepositorySessionPhase.loading) {
+        state.phase == RepositorySessionPhase.loading ||
+        state.isWorkingTreeBusy) {
       return false;
     }
 
