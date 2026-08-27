@@ -16,9 +16,13 @@ RepositoryOverviewViewData mapRepositoryOverview(RepositorySessionState state) {
         title: '打开一个 Git 仓库',
         message: '选择本地仓库，查看改动、提交历史和分支状态。',
       ),
-    RepositorySessionPhase.loading
-        when state.isWorkingTreeBusy && repository != null =>
-      RepositoryOverviewViewData.ready(repository),
+    // Keep the existing workspace mounted while an in-place operation is
+    // running.  Remote operations (fetch/pull/push), stash mutations and
+    // working-tree updates all retain the same repository; replacing the
+    // whole view with the initial skeleton made the refs/history impossible
+    // to browse until the operation completed.
+    RepositorySessionPhase.loading when _isInPlaceLoading(state, repository) =>
+      RepositoryOverviewViewData.ready(repository!),
     RepositorySessionPhase.loading => RepositoryOverviewViewData.loading(
       title: '正在读取仓库',
       message: state.requestedPath,
@@ -39,6 +43,33 @@ RepositoryOverviewViewData mapRepositoryOverview(RepositorySessionState state) {
     ),
     _ => const RepositoryOverviewViewData.error(message: '仓库状态不完整，请重新打开。'),
   };
+}
+
+/// 中文：判断加载是否仍针对当前已打开的仓库，从而保留可浏览的工作区视图。
+///
+/// English: Determines whether loading targets the already-open repository so
+/// the navigable workspace can remain mounted while the task runs.
+bool _isInPlaceLoading(
+  RepositorySessionState state,
+  RepositoryViewData? repository,
+) {
+  if (repository == null) return false;
+  if (state.isCloneRunning) return false;
+  if (state.isWorkingTreeBusy ||
+      state.isFetchRunning ||
+      state.isPullRunning ||
+      state.isPushRunning ||
+      state.isStashRunning) {
+    return true;
+  }
+
+  // Branch checkout and an ordinary refresh do not expose a dedicated
+  // running flag.  They keep the requested path on the same repository; a
+  // clone/open into a different path must continue to use the skeleton.
+  final requestedPath = state.requestedPath;
+  if (requestedPath == null) return false;
+  return path.normalize(requestedPath) ==
+      path.normalize(state.repository!.commandDirectory);
 }
 
 RepositoryViewData? _mapRepository(RepositorySessionState state) {

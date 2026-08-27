@@ -12,6 +12,34 @@ import 'package:git_desktop/src/presentation/presentation.dart';
 import '../support/git_test_repository.dart';
 
 void main() {
+  test(
+    'keeps the workspace navigable while a remote task is running',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'workspace\n');
+      await repository.commit('Initial commit');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+
+      final loading = container
+          .read(repositorySessionProvider)
+          .copyWith(
+            phase: RepositorySessionPhase.loading,
+            isFetchRunning: true,
+          );
+      final overview = mapRepositoryOverview(loading);
+
+      expect(overview.state, RepositoryOverviewState.ready);
+      expect(overview.repository, isNotNull);
+      expect(overview.repository!.refs, isNotEmpty);
+      expect(overview.repository!.isRefreshing, isTrue);
+    },
+  );
+
   test('derives clone directory names from common remote formats', () {
     expect(
       cloneRepositoryNameFromRemote('https://example.com/team/source-tree.git'),
