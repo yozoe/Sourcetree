@@ -54,11 +54,11 @@
 | 提交 | Commit、Amend、作者校验、hook 错误展示 | 模板、签名状态 | 提交草稿 |
 | 历史 | 分页列表、基础 DAG、提交详情、双击或右键检出提交、将选定提交合并到当前分支、从选定提交创建分支、标签、复制 SHA-1、推送、变基、重置、回滚、创建补丁和遴选；历史提交中的文本新增、修改和删除 Diff 支持确认后按区块反向应用到当前工作区，不改写原提交，同时改变已有文件模式（含 executable bit）时不提供区块回滚；历史提交文件列表的“查看选中的修改日志…”会以路径过滤已加载本地分支历史、跟踪单文件重命名，并按各提交的实际路径在独立只读视图显示真实摘要和 Unified Diff；关闭或切换会取消过期读取，非 UTF-8 路径入口保持禁用并标注“（待实现）”；审查、重置到提交、打开版本、Finder、复制路径、快速查看、外部 Diff 和自定义操作仍直接标注“（待实现）”，其中“重置到提交…（待实现）”暂禁用，其余文件动作暂为无副作用提示；变基/回滚/遴选要求干净工作区，hard reset 必须额外确认；非提交对象标签保留在导航但不进入提交详情 | 搜索、Blame、Reflog | 高级查询 |
 | Branch / Tag | 创建/切换/重命名本地分支、从指定本地或已获取远端分支创建分支、引用右键菜单、安全删除已合并分支；读取本地 Tag、从历史提交创建轻量/附注 Tag、精确推送或确认删除本地/指定远端 Tag | Tag 签名与远端 Tag 状态管理 | Worktree |
-| 远端 | 按已配置远端分组展示跟踪引用和符号 HEAD、按远端配置 Pull/Fetch/Push、右键安全移除本地远端配置、进度和取消 | Prune、安全 Force Push | 托管平台适配 |
+| 远端 | 按已配置远端分组展示跟踪引用和符号 HEAD、按远端配置 Pull/Fetch/Push、右键安全移除本地远端配置、进度和取消；Clone 拒绝凭据化地址、remote-helper 与未知协议，远端写操作验证字面远端名 | Prune、安全 Force Push | 托管平台适配 |
 | 高级操作 | 本地分支安全合并、拉取变基、从历史提交变基及可编辑交互式 todo（当前支持 pick、edit、squash、fixup、drop；内置提交信息编辑器完成前不暴露 reword）、变基/遴选/回滚 Continue/Abort、Cherry-pick、Revert、Reset、从原生“动作”菜单创建/检查/应用补丁和停止追踪；创建补丁复用历史页的提交 Graph、引用、文件、Diff 与详情视图，支持多选并合并或独立导出；应用补丁明确区分默认 Git `-p1` 与显式 strip 值；原生“动作”菜单的停止追踪按当前 key workspace 的 Flutter 选择快照动态启用，适用于普通已追踪改动、已暂存新增文件和历史提交文件；历史文件优先作为路径来源并在确认框显示，应用层会重读当前索引和本地文件状态后才执行；同一路径混合暂存/未暂存修改时仍只移除索引项并保留本地最新文件；其余动作入口保留并将未实现项标注待实现且不执行写操作；菜单只路由当前前台工作区，补丁窗口支持四边/四角缩放并保持在可见边界；原生“仓库”菜单可显示当前仓库的 Git 详情（提交、引用、文件、作者、LFS 和本地占用），其余入口明确标注待实现且不执行写操作；冲突状态展示、贮藏创建/恢复/弹出/删除（工具栏和左侧入口创建；左侧固定显示真实贮藏列表，选择后在引用导航右侧完整预览文件和 Diff；仅在可安全保存已跟踪改动时启用） | 高级批量操作 | 高级查询 |
 | 冲突 | 检测并展示进行中状态；内置文本 Diff 左右对比、选边、编辑结果并标记已解决；变基可 Continue/Abort | Skip、外部工具 | 二进制和高级三方合并器评估 |
 | Git 扩展 | — | Submodule、LFS 基础能力 | 深度增强 |
-| 桌面集成 | Finder/终端入口、快捷键、深浅主题、原生仓库/动作/窗口菜单（窗口菜单保留最小化、缩放、仓库浏览器、合并和系统窗口列表；平铺、显示器、窗口组及标签页项待实现） | 中英文、外部 Diff/Merge、自动更新 | Windows/Linux 原生集成 |
+| 桌面集成 | 快捷键、深浅主题、原生仓库/动作/窗口菜单（Finder/终端入口及窗口平铺、显示器、窗口组、标签页项待实现；窗口菜单保留最小化、缩放、仓库浏览器、合并和系统窗口列表） | 中英文、外部 Diff/Merge、自动更新 | Windows/Linux 原生集成 |
 
 ## 4. 首版信息架构
 
@@ -154,8 +154,8 @@ RepositoryId = canonical common-dir + canonical worktree root
   MRU 回退，最后才显示首页。
 - 明确退出 App 或在 `flutter run` 中按 `q` 时终止唯一进程，全部窗口、Engine 和 Git 子进程
   一起退出；关闭单个窗口只释放该窗口自己的资源。
-- 关闭窗口或退出前先通过 MethodChannel 执行有界的 Dart 清理握手，取消活动远端 Git 操作、
-  关闭 AskPass 并释放对应 ProviderContainer，再销毁 Flutter Engine。
+- 关闭窗口或退出前先通过 MethodChannel 执行有界的 Dart 清理握手，取消当前 Engine 的全部
+  Git 进程树、关闭 AskPass、等待仓库清单与主题偏好写入并释放对应 ProviderContainer，再销毁 Flutter Engine。
 - 工作区切换使用有序 MRU 记录；关闭当前工作区后继续指向仍存活窗口中最近使用的一个。
 - 单进程不等于所有次级 Flutter Engine 必然支持同一次热重载，必须针对当前 Flutter 版本验证
   `r`/`R` 的实际覆盖范围并记录开发边界。
@@ -263,7 +263,7 @@ Git Graph 从 OID、parents 和 topo order 独立计算 lane，不解析
 - 默认复用 Git credential helper、SSH Agent 和 macOS Keychain。
 - token、密码和私钥不得进入命令参数、remote URL、普通日志或崩溃报告。
 - 后台刷新使用 `GIT_TERMINAL_PROMPT=0`，避免隐藏进程等待输入。
-- 一次性 AskPass IPC 的安全评估已记录在 [ASKPASS_IPC_EVALUATION.md](ASKPASS_IPC_EVALUATION.md)；
+- 操作级 AskPass IPC 的安全评估已记录在 [ASKPASS_IPC_EVALUATION.md](ASKPASS_IPC_EVALUATION.md)；
   仅 macOS 正式 app bundle 的用户主动 Clone、Fetch、Pull、Push 会启用受限管道与受控凭据输入；
   后台 Git 调用不注入 AskPass。
 - 不导入或复制 SSH 私钥，不静默接受 host key 变化。
@@ -290,7 +290,7 @@ macOS 首发建议采用 Developer ID 签名并公证的站外 DMG。Mac App Sto
 5. 历史分页与 Git Graph lane 算法原型。（已完成：首屏、按页追加、加载与重试状态。）
 6. Diff 元数据/patch 分离和大文件降级。
 7. 临时仓库测试工厂与本地 bare remote。
-8. macOS 进程树取消、Finder 权限和签名/公证可行性验证。
+8. macOS 进程树取消（已完成温和终止、后代清理与强制终止升级）；Finder 权限和签名/公证可行性验证。
 
 退出条件：能安全打开测试仓库，准确展示 status、首屏历史和基础 Diff；
 解析器覆盖 Unicode、换行文件名、rename、binary、conflict、worktree、
@@ -303,13 +303,15 @@ detached HEAD、SHA-1/SHA-256 等边界。
 以下产品行为已完成并由真实 Git fixture 或原生单元测试覆盖：
 
 - 单仓库打开、空目录初始化和克隆到空目录。
-- 独立仓库首页与单仓库工作区界面：首页按父目录分组并筛选已知仓库，支持从 Finder 拖入一个或多个目录；仅 Git 识别出的根目录会加入清单，重复与非仓库目录有明确反馈。仓库根目录存在可读取的 `icon.png` 时以该图片显示圆形图标；缺失、不可读或无效时使用默认 Git 图标。每项右侧展示 Git 状态读取到的当前分支和未提交文件数，游离 HEAD 与尚未首次提交的仓库有明确标签；工作区完成导致状态变化的操作后会通知首页刷新对应摘要。可在同一父目录组内拖动排序，筛选时禁用排序以避免改变隐藏条目；双击仓库条目会创建或激活对应窗口，同一标准化路径只允许一个工作区。工作区内打开其他仓库会继续走新窗口入口；系统“窗口”菜单提供“合并所有窗口”，将已打开工作区收拢为单行矩形标签而不共享 Engine。
+- 独立仓库首页与单仓库工作区界面：首页按规范化的完整父路径分组并筛选已知仓库，父目录 basename 同名时显示完整路径消歧；支持从 Finder 拖入一个或多个目录；仅 Git 识别出的根目录会加入清单，重复与非仓库目录有明确反馈。仓库根目录存在可读取的 `icon.png` 时以该图片显示圆形图标；缺失、不可读或无效时使用默认 Git 图标。每项右侧展示 Git 状态读取到的当前分支和未提交文件数，游离 HEAD 与尚未首次提交的仓库有明确标签；工作区完成导致状态变化的操作后会通知首页刷新对应摘要。可在同一父目录组内拖动排序，筛选时禁用排序以避免改变隐藏条目；仓库条目有可见键盘焦点，Enter/Space 与双击均会创建或激活对应窗口，同一标准化路径只允许一个工作区。工作区内打开其他仓库会继续走新窗口入口；系统“窗口”菜单提供“合并所有窗口”，将已打开工作区收拢为单行矩形标签而不共享 Engine。
 - 首页筛选输入框的文字与搜索图标在紧凑工具栏高度内保持垂直居中。
+- 主 Diff 与冲突双栏的长行支持横向滚动并有安全宽度上限；分栏分隔条支持拖动、方向键、可见焦点与辅助功能 increase/decrease。冲突索引 stage 2/3 在入口处使用中性名称，对话框再按 merge/rebase/cherry-pick/revert 显示实际角色；900px 窗口与 200% 文字缩放下长版本标签保持无溢出并可通过 Tooltip 查看全文。
+- 系统文字缩放会同步扩展紧凑行、状态栏、首页工具栏和冲突行，不再以 1.6 倍封顶。
 - 仓库顶部只保留 Git 操作栏，不渲染重复仓库名的 Flutter 标签条；操作栏完整显示可用操作，每个操作统一采用图标在上、标签在下的紧凑布局，主题设置位于末端，并在无仓库、加载或错误状态下保留在右上角。多仓库切换继续由独立窗口及 macOS 合并窗口的原生标签负责。
-- 工作区首次读取且无旧数据时显示响应式骨架屏：宽屏预告引用导航、提交历史和详情三栏，中等与窄窗口收缩为两栏或单栏；加载说明、目标路径及可用的取消克隆入口不被占位块隐藏。有旧数据的局部刷新及 Fetch/Pull/Push/贮藏后台任务继续保留内容并仅显示顶部进度，任务运行期间仍可浏览和切换当前查看的引用；冲突写操作继续按安全边界禁用。
+- 工作区首次读取且无旧数据时显示响应式骨架屏：宽屏预告引用导航、提交历史和详情三栏，macOS 窗口在 900px 最小宽度下收缩为两栏；Flutter 低于 760px 的单栏仅供嵌入场景使用。加载说明、目标路径及可用的取消克隆入口不被占位块隐藏。有旧数据的局部刷新及 Fetch/Pull/Push/贮藏后台任务继续保留内容并仅显示顶部进度，任务运行期间仍可浏览和切换当前查看的引用，但刷新和冲突写操作继续按安全边界禁用。
 - 仓库清单恢复与跨窗口同步：本机应用支持目录仅保存成功打开的 worktree 路径和最后激活项；
-  首页启动时顺序恢复并自动丢弃失效路径。工作区不恢复全局清单，成功打开、克隆或初始化后
-  通过进程内协调器回传首页串行登记；不保存凭据、Git 操作记录或仓库内容。
+  首页恢复时保留暂时离线或不可访问的仓库，不会用空结果覆盖已存清单。工作区不恢复全局清单，成功打开、克隆或初始化后
+  通过进程内协调器回传首页串行登记；只有持久化成功才确认跨窗口登记，失败会保留原生 pending 记录并进入可见错误状态。普通添加、选择、排序和拖入后的保存失败均提示当前窗口保留但尚未落盘，且拖入流程不会同时显示成功；shutdown flush 不伪装成功。不保存凭据、Git 操作记录或仓库内容。
 - macOS Dock 与激活：唯一 regular app 进程管理全部窗口；窗口协调器负责恢复最小化窗口、
   移动到当前 Space 并置前，不创建额外 Dock 图标。
 - macOS 应用图标：已交付原创分支提交图标，统一从 `design/render_icon.swift` 渲染
@@ -322,6 +324,7 @@ detached HEAD、SHA-1/SHA-256 等边界。
 - 共享主题偏好：系统/浅色/深色模式写入原子偏好文件，并通过文件监听同步到所有已打开窗口；
   旧的颜色预设字段会在读取时忽略，下一次保存时移除。每个 Engine 的主题监听、顺序写入和失败反馈由独立 Riverpod 控制器释放；Provider 不跨 Engine 共享内存。
 - 状态边界：首页仓库清单由独立 Riverpod 控制器恢复、登记、排序和持久化，只读取仓库识别与摘要；单仓库工作区会话只负责该窗口的 Git 状态、历史、Diff 和操作，避免首页恢复触发工作区历史读取。
+- 写入 capability 边界：引用双击与菜单、历史操作、整文件/批量暂存、移除、停止追踪、重置和工作区区块操作统一消费 `RepositoryViewData` 的 mutation capability，在加载、后台 Git 任务或变基/遴选/回滚暂停期间禁用；冲突恢复入口按当前 operation 状态保留。
 - 工作区状态、未跟踪目录文件展开、整文件 stage/unstage、Command 多选、批量切换、暂存与未暂存列表中经确认删除工作区文件（索引保持不变，确认后重读状态并拒绝过期来源；批量操作逐项反馈结果，非 UTF-8 路径标注“移除（待实现）”）、对已暂存已跟踪文件的“重置…”（明确确认后将 index 与 worktree 一起恢复到 HEAD；成功或状态校验拒绝后，只要仍有其他改动就保持 `Uncommitted changes` 选中），以及停止追踪普通已追踪改动或已暂存新增文件（从 index 移除而不删除本地文件；已有提交文件确认后显示为已暂存删除与同路径未跟踪文件，已暂存新增文件恢复为未跟踪）。文件列表始终按 Git 原始暂存/未暂存状态展示，不维护应用私有的停止追踪分组。另有 Unified Diff、基础历史 DAG 和提交详情；提交图采用
   96px 宽的主题自适应图栏、实心节点、2px 竖线与短斜向补位连线，主线、侧分支与共同基点以蓝/橙/红等高对比色区分；游离 HEAD 位于分支共同基点时预留连续的最左车道，右侧分支只从自身提交开始绘制，未变化时保持垂直，分叉插入或路径结束后再让受影响位置右侧的车道同步补位；各车道仅在上一行确有连接时绘制节点上方线段。主本地
   分支、其他本地分支、远端与 HEAD 的标签边框复用对应 Graph 色，提交详情同样保持该引用语义，领先主分支显示 ahead 徽标。单个引用优先
@@ -341,7 +344,8 @@ detached HEAD、SHA-1/SHA-256 等边界。
   最终由 Git 判断是否能安全执行，支持取消。
 - 检测进行中的 rebase 状态；变基冲突可在工具栏继续或中止，继续变基会使用非交互编辑器避免阻塞 UI。
   检测到变基暂停时会弹出“继续变基 / 放弃变基 / 取消”提示；取消后仍可从工具栏继续处理。
-- 拉取对话框显示脱敏后的远端 URL；凭据形态的 userinfo、Token 和密码不会进入 UI 状态。
+- 拉取对话框显示脱敏后的远端 URL；凭据形态的 userinfo、Token 和密码不会进入 UI 状态。Clone 输入会拒绝带凭据的 URI userinfo、query/fragment 或 SCP 密码形态地址，避免秘密进入 argv 和 `remote.origin.url`。
+- Pull 与移除远端的异步预检互斥，并在写入前重新验证会话未关闭且仓库代际未变；关闭后所有公开 Git 流程及派生 refresh/Push verify 都不再启动。
 - 安全 Push 当前分支 upstream（有远端推送目标即可打开；游离 HEAD 时选择已配置远端的本地分支，显式锁定远端/refspec，不受用户 `push.default` 影响；工具栏徽标显示 ahead 数量，确认框显示目标与数量，无领先提交时执行无改动检查，支持取消，禁止 force push）。
 - Push 取消或异常退出后，使用可取消的只读 `ls-remote` 核验远端是否已包含本地 HEAD；核验不会修改本地 tracking refs，并提示用户 Fetch 刷新 ahead/behind。
 - 统一操作进度与日志：Clone、Fetch、Pull、Push 均记录运行/成功/取消/失败状态，状态栏显示不确定进度并可打开最近 12 条的脱敏操作记录。
@@ -350,21 +354,21 @@ detached HEAD、SHA-1/SHA-256 等边界。
   fixture 中覆盖打开工作区、暂存、提交、创建分支、推送、ahead/behind 与远端 ref 核验。
 - macOS AskPass UI E2E：正式 bundle 的 native helper、broker、session 和 Flutter 脱敏弹窗
   完成一次取消链路验证；真实认证远端的恢复与结果核验仍待受控账户环境。
-- AskPass IPC 安全设计评估：保持无交互认证默认值，冻结单次 helper、nonce、权限、取消和脱敏契约，并以 macOS helper/broker 实施。
+- AskPass IPC 安全设计评估：保持无交互认证默认值，冻结操作级 helper、nonce、权限、串行多提示、取消和脱敏契约，并以 macOS helper/broker 实施。
 - AskPass 应用侧协议校验：拒绝非法 nonce、未知字段和超限 prompt，且协议对象不保存秘密。
 - AskPass macOS helper：固定路径的 socket 转发 helper 已编译并打包进 Debug app；正式 bundle
-  的用户主动远端操作通过单次 broker/session 启用 `GIT_ASKPASS`。
-- AskPass Flutter 一次性 socket session：随机 `0700` 临时目录中的 `0600` Unix socket、
-  每次 256-bit nonce、单连接、16 KiB 响应限制、取消/拒绝/超时清理均已由单元测试覆盖；
+  的用户主动远端操作通过操作级 broker/session 启用 `GIT_ASKPASS`。
+- AskPass Flutter 操作级 socket session：随机 `0700` 临时目录中的 `0600` Unix socket、
+  每次 256-bit nonce、串行用户名/密码请求、16 KiB 响应限制、取消/拒绝/超时清理均已由单元测试覆盖；
   会话环境只能从 `Platform.resolvedExecutable` 的固定 app bundle 路径推导 helper；
   测试 fixture 路径入口受 `@visibleForTesting` 标识；
   同一份 C helper 已通过与 Flutter session 的进程级 socket 往返测试；helper 会验证
   socket owner/权限及 server peer UID；native IPC broker 已打包并可验证 helper peer UID，
   正式 macOS app bundle 的 Flutter session 已切换至该 broker；
-  nonce 重放、第二连接、畸形 UTF-8 与错误 nonce helper 均已有负向测试；认证 UI 通过
-  单次提示协调器接入 macOS 正式 app bundle 的用户主动 Clone、Fetch、Pull、Push，取消会
+  session 关闭后重放、并发请求串行化、畸形 UTF-8 与错误 nonce helper 均已有负向测试；认证 UI 通过
+  串行提示协调器接入 macOS 正式 app bundle 的用户主动 Clone、Fetch、Pull、Push，取消会
   同时关闭弹窗与 session/broker；后台刷新、状态、Diff 和 Push 后核验不注入 AskPass。
-  开发/测试 runtime 不猜测 helper 路径或设置 `GIT_ASKPASS`，保留既有 credential helper /
+  开发/测试 runtime 不猜测 helper 路径或设置 `GIT_ASKPASS`，保留 Git 配置中的 credential helper /
   SSH Agent 的无交互兼容；源码泄漏扫描和 URL/Header/query 脱敏测试、credential helper 调用
   顺序与 SSH Agent socket 环境契约测试已完成；真实私有远端、Release 签名和 Keychain/企业
   SSO 兼容性验证待完成。

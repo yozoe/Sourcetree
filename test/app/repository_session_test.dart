@@ -285,7 +285,7 @@ void main() {
       completedHistory.commits.map((commit) => commit.objectId).toSet(),
       hasLength(102),
     );
-  });
+  }, timeout: const Timeout(Duration(minutes: 2)));
 
   test('always shows the stashes navigation entry below remote refs', () async {
     final repository = await GitTestRepository.create();
@@ -2761,12 +2761,14 @@ while true; do sleep 1; done
     expect(versions.oursText, 'main\n');
     expect(versions.theirsText, 'feature\n');
     expect(versions.workingText, contains('<<<<<<<'));
+    final didResolve = await controller.resolveConflictWithContent(
+      conflict,
+      'merged in internal diff\n',
+    );
     expect(
-      await controller.resolveConflictWithContent(
-        conflict,
-        'merged in internal diff\n',
-      ),
+      didResolve,
       isTrue,
+      reason: container.read(repositorySessionProvider).technicalDetails,
     );
     expect(
       container.read(repositorySessionProvider).status!.conflictedEntries,

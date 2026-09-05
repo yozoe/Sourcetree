@@ -1,8 +1,12 @@
+import 'dart:async';
 import 'dart:convert';
+import 'dart:ffi' as ffi;
 import 'dart:io';
+import 'dart:math';
 import 'dart:typed_data';
 
 import 'package:path/path.dart' as path_utils;
+import 'package:meta/meta.dart';
 
 import 'git_cancellation.dart';
 import 'git_errors.dart';
@@ -14,9 +18,13 @@ import 'git_runner.dart';
 /// Every method accepts literal inputs and never invokes a shell. Destructive
 /// mutations such as hard reset are only reachable after a UI confirmation.
 final class GitRepositoryWriter {
-  GitRepositoryWriter(this.runner);
+  GitRepositoryWriter(
+    this.runner, {
+    @visibleForTesting this.beforeConflictResultPublicationForTesting,
+  });
 
   final GitRunner runner;
+  final FutureOr<void> Function()? beforeConflictResultPublicationForTesting;
 
   /// 中文：暂存指定路径。
   /// English: Stages the specified path.
@@ -77,6 +85,59 @@ final class GitRepositoryWriter {
       ),
     );
     result.throwIfFailed(operation: 'Stopping file tracking');
+  }
+
+  /// Deletes one work-tree file or symlink without changing the Git index.
+  /// On macOS every parent is opened relative to a pinned work-tree descriptor;
+  /// directory removal is rejected because safe recursive unlink is not exposed
+  /// by Dart's portable filesystem API.
+  ///
+  /// 中文：删除一个工作区文件或符号链接而不修改 Git 索引。macOS 会从固定的
+  /// 工作区描述符逐级打开父目录；由于 Dart 可移植 API 无法安全递归 unlink，目录删除会失败关闭。
+  Future<bool> removeWorkingTreePath(
+    GitRepository repository,
+    GitPath path,
+  ) async {
+    final workTreeRoot = repository.workTreeRoot;
+    if (workTreeRoot == null) {
+      throw const GitException('A working tree is required.');
+    }
+    final displayPath = _requireUtf8Path(path);
+    if (path_utils.isAbsolute(displayPath) ||
+        path_utils.split(path_utils.normalize(displayPath)).contains('..')) {
+      throw const GitException('The removal path is outside the work tree.');
+    }
+    if (Platform.isMacOS) {
+      return _MacOsSecureRemoval.remove(
+        workTreeRoot: await Directory(workTreeRoot).resolveSymbolicLinks(),
+        relativePath: displayPath,
+      );
+    }
+    final target = path_utils.normalize(
+      path_utils.join(workTreeRoot, displayPath),
+    );
+    final canonicalRoot = await Directory(workTreeRoot).resolveSymbolicLinks();
+    final parent = Directory(path_utils.dirname(target));
+    final canonicalParent = await parent.resolveSymbolicLinks();
+    if (canonicalParent != canonicalRoot &&
+        !path_utils.isWithin(canonicalRoot, canonicalParent)) {
+      throw const GitException('The removal path is outside the work tree.');
+    }
+    final type = await FileSystemEntity.type(target, followLinks: false);
+    if (type == FileSystemEntityType.notFound) return false;
+    if (type == FileSystemEntityType.directory) {
+      throw const GitException(
+        'Safe recursive directory removal is unavailable on this platform.',
+      );
+    }
+    if (type == FileSystemEntityType.link) {
+      await Link(target).delete();
+    } else if (type == FileSystemEntityType.file) {
+      await File(target).delete();
+    } else {
+      throw const GitException('The removal target is not a regular file.');
+    }
+    return true;
   }
 
   /// Restores tracked paths to their HEAD versions in both index and work tree.
@@ -377,7 +438,18 @@ final class GitRepositoryWriter {
         !path_utils.isWithin(canonicalRoot, canonicalParent)) {
       throw const GitException('The conflicted path is outside the work tree.');
     }
-    await File(target).writeAsString(content, encoding: utf8, flush: true);
+    if (Platform.isMacOS) {
+      await _MacOsAtomicFileWriter.replace(
+        directoryPath: canonicalParent,
+        fileName: path_utils.basename(target),
+        bytes: utf8.encode(content),
+        beforePublicationForTesting: beforeConflictResultPublicationForTesting,
+      );
+    } else {
+      throw const GitException(
+        'Safe conflict-result replacement is unavailable on this platform.',
+      );
+    }
     await stagePath(repository, path);
   }
 
@@ -950,6 +1022,13 @@ final class GitRepositoryWriter {
     }
     final remote = remoteName.substring(0, separator);
     final branch = remoteName.substring(separator + 1);
+    if (!_isSafeRemoteName(remote)) {
+      throw ArgumentError.value(
+        remoteName,
+        'remoteName',
+        'The remote name is not safe to pass to Git.',
+      );
+    }
     final result = await runner.run(
       GitInvocation(
         arguments: ['--no-pager', 'push', remote, '--delete', '--', branch],
@@ -968,7 +1047,7 @@ final class GitRepositoryWriter {
   /// 中文：移除一个本地 Git 远端配置；不会删除远端仓库或其上的分支。
   Future<void> removeRemote(GitRepository repository, String remoteName) async {
     final normalizedName = remoteName.trim();
-    if (normalizedName.isEmpty ||
+    if (!_isSafeRemoteName(normalizedName) ||
         normalizedName.contains(RegExp(r'[\x00\s]'))) {
       throw ArgumentError.value(
         remoteName,
@@ -978,7 +1057,7 @@ final class GitRepositoryWriter {
     }
     final result = await runner.run(
       GitInvocation(
-        arguments: ['--no-pager', 'remote', 'remove', normalizedName],
+        arguments: ['--no-pager', 'remote', 'remove', '--', normalizedName],
         workingDirectory: repository.commandDirectory,
         outputLimit: const GitOutputLimit(
           stdoutBytes: 256 * 1024,
@@ -1111,10 +1190,7 @@ final class GitRepositoryWriter {
     GitCancellationToken? cancellationToken,
     Map<String, String> environment = const {},
   }) async {
-    final normalizedUrl = remoteUrl.trim();
-    if (normalizedUrl.isEmpty) {
-      throw ArgumentError.value(remoteUrl, 'remoteUrl', 'Must not be empty.');
-    }
+    final normalizedUrl = _requireCredentialFreeCloneUrl(remoteUrl);
     final directory = Directory(directoryPath.trim());
     final targetType = await FileSystemEntity.type(
       directory.path,
@@ -1683,16 +1759,6 @@ final class GitRepositoryWriter {
         'The patch destination already exists.',
       );
     }
-    final bytes = BytesBuilder(copy: false);
-    for (final objectId in normalizedIds) {
-      final patch = await _renderPatch(
-        repository,
-        objectId: objectId,
-        cancellationToken: cancellationToken,
-      );
-      bytes.add(patch);
-      if (patch.isNotEmpty && patch.last != 10) bytes.addByte(10);
-    }
     final parent = Directory(path_utils.dirname(target));
     if (!await parent.exists()) {
       throw ArgumentError.value(
@@ -1701,11 +1767,35 @@ final class GitRepositoryWriter {
         'The patch destination directory does not exist.',
       );
     }
-    await _writePatchAtomically(
-      parent,
-      path_utils.basename(target),
-      bytes.takeBytes(),
-    );
+    final pinnedDirectory = Platform.isMacOS
+        ? _MacOsPinnedDirectory.open(parent.path)
+        : null;
+    final bytes = BytesBuilder(copy: false);
+    try {
+      for (final objectId in normalizedIds) {
+        final patch = await _renderPatch(
+          repository,
+          objectId: objectId,
+          cancellationToken: cancellationToken,
+        );
+        bytes.add(patch);
+        if (patch.isNotEmpty && patch.last != 10) bytes.addByte(10);
+      }
+      if (pinnedDirectory != null) {
+        pinnedDirectory.createExclusive(
+          path_utils.basename(target),
+          bytes.takeBytes(),
+        );
+        return;
+      }
+      await _writePatchAtomically(
+        parent,
+        path_utils.basename(target),
+        bytes.takeBytes(),
+      );
+    } finally {
+      pinnedDirectory?.close();
+    }
   }
 
   Future<List<int>> _renderPatch(
@@ -1746,56 +1836,69 @@ final class GitRepositoryWriter {
     required Directory outputDirectory,
     GitCancellationToken? cancellationToken,
   }) async {
-    final fileNames = [
-      for (var index = 0; index < objectIds.length; index++)
-        '${(index + 1).toString().padLeft(4, '0')}-${objectIds[index].substring(0, 12)}.patch',
-    ];
-    for (final name in fileNames) {
-      if (await FileSystemEntity.type(
-            path_utils.join(outputDirectory.path, name),
-            followLinks: false,
-          ) !=
-          FileSystemEntityType.notFound) {
-        throw ArgumentError.value(
-          outputDirectory.path,
-          'outputPath',
-          'A patch file named $name already exists.',
-        );
-      }
-    }
-    final generated = <List<int>>[];
-    for (final objectId in objectIds) {
-      generated.add(
-        await _renderPatch(
-          repository,
-          objectId: objectId,
-          cancellationToken: cancellationToken,
-        ),
-      );
-    }
-    final temporaryDirectory = await outputDirectory.createTemp(
-      '.git-desktop-patches.',
-    );
+    final pinnedDirectory = Platform.isMacOS
+        ? _MacOsPinnedDirectory.open(outputDirectory.path)
+        : null;
     try {
-      for (var index = 0; index < fileNames.length; index++) {
-        await File(
-          path_utils.join(temporaryDirectory.path, fileNames[index]),
-        ).writeAsBytes(generated[index], flush: true);
-      }
+      final fileNames = [
+        for (var index = 0; index < objectIds.length; index++)
+          '${(index + 1).toString().padLeft(4, '0')}-${objectIds[index].substring(0, 12)}.patch',
+      ];
       for (final name in fileNames) {
-        await _movePatchIfDestinationAbsent(
-          File(path_utils.join(temporaryDirectory.path, name)),
-          path_utils.join(outputDirectory.path, name),
-        );
-      }
-    } finally {
-      if (await temporaryDirectory.exists()) {
-        try {
-          await temporaryDirectory.delete(recursive: true);
-        } on FileSystemException {
-          // Do not mask the original export failure with cleanup noise.
+        if (await FileSystemEntity.type(
+              path_utils.join(outputDirectory.path, name),
+              followLinks: false,
+            ) !=
+            FileSystemEntityType.notFound) {
+          throw ArgumentError.value(
+            outputDirectory.path,
+            'outputPath',
+            'A patch file named $name already exists.',
+          );
         }
       }
+      final generated = <List<int>>[];
+      for (final objectId in objectIds) {
+        generated.add(
+          await _renderPatch(
+            repository,
+            objectId: objectId,
+            cancellationToken: cancellationToken,
+          ),
+        );
+      }
+      if (pinnedDirectory != null) {
+        for (var index = 0; index < fileNames.length; index++) {
+          pinnedDirectory.createExclusive(fileNames[index], generated[index]);
+        }
+        return;
+      }
+      final temporaryDirectory = await outputDirectory.createTemp(
+        '.git-desktop-patches.',
+      );
+      try {
+        for (var index = 0; index < fileNames.length; index++) {
+          await File(
+            path_utils.join(temporaryDirectory.path, fileNames[index]),
+          ).writeAsBytes(generated[index], flush: true);
+        }
+        for (final name in fileNames) {
+          await _movePatchIfDestinationAbsent(
+            File(path_utils.join(temporaryDirectory.path, name)),
+            path_utils.join(outputDirectory.path, name),
+          );
+        }
+      } finally {
+        if (await temporaryDirectory.exists()) {
+          try {
+            await temporaryDirectory.delete(recursive: true);
+          } on FileSystemException {
+            // Do not mask the original export failure with cleanup noise.
+          }
+        }
+      }
+    } finally {
+      pinnedDirectory?.close();
     }
   }
 
@@ -1830,22 +1933,93 @@ final class GitRepositoryWriter {
     }
   }
 
-  /// Moves one completed temporary patch after confirming that the named
-  /// destination did not exist.
-  /// 中文：在确认目标文件不存在后复制已完成的临时补丁。
+  /// Publishes one completed temporary patch through an exclusive destination
+  /// create, so a concurrent file can never be replaced.
+  /// 中文：通过排他创建目标文件发布临时补丁，绝不替换并发创建的同名文件。
   Future<void> _movePatchIfDestinationAbsent(
     File source,
     String targetPath,
   ) async {
-    if (await FileSystemEntity.type(targetPath, followLinks: false) !=
-        FileSystemEntityType.notFound) {
+    final linkResult = await Process.run('/bin/ln', <String>[
+      '--',
+      source.path,
+      targetPath,
+    ]);
+    if (linkResult.exitCode != 0) {
       throw ArgumentError.value(
         targetPath,
         'outputPath',
         'The patch destination already exists.',
       );
     }
-    await source.rename(targetPath);
+  }
+
+  /// 中文：拒绝会把 HTTP(S) 凭据或签名查询串暴露到 Git 参数与远端配置的克隆地址。
+  ///
+  /// English: Rejects clone URLs that would expose HTTP(S) credentials or
+  /// signed query data through Git arguments and persisted remote config.
+  String _requireCredentialFreeCloneUrl(String value) {
+    final normalized = value.trim();
+    if (normalized.isEmpty) {
+      throw const GitException('A clone URL is required.');
+    }
+    if (RegExp(r'^[A-Za-z][A-Za-z0-9+.-]*::').hasMatch(normalized)) {
+      throw const GitException(
+        'Git remote-helper clone URLs are not supported.',
+      );
+    }
+    final uri = Uri.tryParse(normalized);
+    if (uri == null &&
+        RegExp(r'^[A-Za-z][A-Za-z0-9+.-]*:').hasMatch(normalized)) {
+      throw const GitException('The clone URL is invalid.');
+    }
+    if (uri != null && uri.hasScheme) {
+      final scheme = uri.scheme.toLowerCase();
+      final isWindowsDrivePath = RegExp(
+        r'^[A-Za-z]:[\\/]',
+      ).hasMatch(normalized);
+      if (!isWindowsDrivePath &&
+          !const {
+            'file',
+            'ftp',
+            'ftps',
+            'git',
+            'http',
+            'https',
+            'ssh',
+          }.contains(scheme)) {
+        throw const GitException('The clone URL scheme is not supported.');
+      }
+      final String decodedUserInfo;
+      try {
+        decodedUserInfo = Uri.decodeComponent(uri.userInfo);
+      } on FormatException {
+        throw const GitException('The clone URL is invalid.');
+      }
+      final passwordBearingUserInfo = decodedUserInfo.contains(':');
+      final curlCredentialUserInfo =
+          const {'http', 'https', 'ftp', 'ftps'}.contains(scheme) &&
+          uri.userInfo.isNotEmpty;
+      if (passwordBearingUserInfo ||
+          curlCredentialUserInfo ||
+          uri.hasQuery ||
+          uri.hasFragment) {
+        throw const GitException(
+          'Clone URLs must not contain embedded credentials or query data. '
+          'Enter credentials through the protected prompt instead.',
+        );
+      }
+    }
+    final scpCredential = RegExp(
+      r'^[^/@\s:]+:[^/@\s]+@[^/:\s]+:',
+    ).hasMatch(normalized);
+    if (scpCredential) {
+      throw const GitException(
+        'Clone URLs must not contain embedded credentials. '
+        'Enter credentials through the protected prompt instead.',
+      );
+    }
+    return normalized;
   }
 
   /// Applies a user-selected patch to the work tree, or checks whether it can
@@ -2056,10 +2230,10 @@ final class GitRepositoryWriter {
     }
   }
 
-  /// 中文：为已成功推送的分支写入上游跟踪配置，不移动工作区或覆盖引用。
+  /// 中文：通过单条 Git 分支命令为已成功推送的分支写入上游跟踪配置，不留下半配置状态。
   ///
-  /// English: Records upstream tracking for a successfully pushed branch
-  /// without moving the work tree or overwriting refs.
+  /// English: Records upstream tracking with one Git branch command, avoiding
+  /// a half-written remote/merge pair without moving the work tree.
   Future<void> _setBranchTracking(
     GitRepository repository, {
     required String localBranch,
@@ -2067,24 +2241,13 @@ final class GitRepositoryWriter {
     required String remoteBranch,
     GitCancellationToken? cancellationToken,
   }) async {
-    final remoteResult = await runner.run(
-      GitInvocation(
-        arguments: ['config', 'branch.$localBranch.remote', remoteName],
-        workingDirectory: repository.commandDirectory,
-        cancellationToken: cancellationToken,
-        outputLimit: const GitOutputLimit(
-          stdoutBytes: 256 * 1024,
-          stderrBytes: 256 * 1024,
-        ),
-      ),
-    );
-    remoteResult.throwIfFailed(operation: 'Setting branch upstream remote');
-    final mergeResult = await runner.run(
+    final result = await runner.run(
       GitInvocation(
         arguments: [
-          'config',
-          'branch.$localBranch.merge',
-          'refs/heads/$remoteBranch',
+          'branch',
+          '--set-upstream-to=refs/remotes/$remoteName/$remoteBranch',
+          '--',
+          localBranch,
         ],
         workingDirectory: repository.commandDirectory,
         cancellationToken: cancellationToken,
@@ -2094,7 +2257,7 @@ final class GitRepositoryWriter {
         ),
       ),
     );
-    mergeResult.throwIfFailed(operation: 'Setting branch upstream ref');
+    result.throwIfFailed(operation: 'Setting branch upstream');
   }
 
   /// 中文：判断远端名称是否能安全作为 Git 的字面参数使用。
@@ -2322,6 +2485,581 @@ final class GitRepositoryWriter {
       );
     }
     return normalized;
+  }
+}
+
+/// Uses directory-relative macOS syscalls to durably prepare a sibling file,
+/// reject a detected target replacement, and atomically publish complete data.
+final class _MacOsAtomicFileWriter {
+  static final ffi.DynamicLibrary _libc = ffi.DynamicLibrary.process();
+  static final _open = _libc
+      .lookupFunction<
+        ffi.Int32 Function(ffi.Pointer<ffi.Uint8>, ffi.Int32),
+        int Function(ffi.Pointer<ffi.Uint8>, int)
+      >('open');
+  static final ffi.Pointer<ffi.NativeFunction<ffi.Int32 Function()>>
+  _openAtSymbol = _libc.lookup('openat');
+  static final int Function(int, ffi.Pointer<ffi.Uint8>, int) _openAtExisting =
+      _openAtSymbol
+          .cast<
+            ffi.NativeFunction<
+              ffi.Int32 Function(
+                ffi.Int32,
+                ffi.Pointer<ffi.Uint8>,
+                ffi.Int32,
+                ffi.VarArgs<()>,
+              )
+            >
+          >()
+          .asFunction();
+  static final int Function(int, ffi.Pointer<ffi.Uint8>, int, int)
+  _openAtCreate = _openAtSymbol
+      .cast<
+        ffi.NativeFunction<
+          ffi.Int32 Function(
+            ffi.Int32,
+            ffi.Pointer<ffi.Uint8>,
+            ffi.Int32,
+            ffi.VarArgs<(ffi.Int32,)>,
+          )
+        >
+      >()
+      .asFunction();
+  static final _write = _libc
+      .lookupFunction<
+        ffi.IntPtr Function(ffi.Int32, ffi.Pointer<ffi.Uint8>, ffi.IntPtr),
+        int Function(int, ffi.Pointer<ffi.Uint8>, int)
+      >('write');
+  static final _fsync = _libc
+      .lookupFunction<ffi.Int32 Function(ffi.Int32), int Function(int)>(
+        'fsync',
+      );
+  static final _fchmod = _libc
+      .lookupFunction<
+        ffi.Int32 Function(ffi.Int32, ffi.Uint16),
+        int Function(int, int)
+      >('fchmod');
+  static final _fstat = _libc
+      .lookupFunction<
+        ffi.Int32 Function(ffi.Int32, ffi.Pointer<ffi.Void>),
+        int Function(int, ffi.Pointer<ffi.Void>)
+      >('fstat');
+  static final _linkAt = _libc
+      .lookupFunction<
+        ffi.Int32 Function(
+          ffi.Int32,
+          ffi.Pointer<ffi.Uint8>,
+          ffi.Int32,
+          ffi.Pointer<ffi.Uint8>,
+          ffi.Int32,
+        ),
+        int Function(
+          int,
+          ffi.Pointer<ffi.Uint8>,
+          int,
+          ffi.Pointer<ffi.Uint8>,
+          int,
+        )
+      >('linkat');
+  static final _renameAt = _libc
+      .lookupFunction<
+        ffi.Int32 Function(
+          ffi.Int32,
+          ffi.Pointer<ffi.Uint8>,
+          ffi.Int32,
+          ffi.Pointer<ffi.Uint8>,
+        ),
+        int Function(int, ffi.Pointer<ffi.Uint8>, int, ffi.Pointer<ffi.Uint8>)
+      >('renameat');
+  static final _unlinkAt = _libc
+      .lookupFunction<
+        ffi.Int32 Function(ffi.Int32, ffi.Pointer<ffi.Uint8>, ffi.Int32),
+        int Function(int, ffi.Pointer<ffi.Uint8>, int)
+      >('unlinkat');
+  static final _close = _libc
+      .lookupFunction<ffi.Int32 Function(ffi.Int32), int Function(int)>(
+        'close',
+      );
+  static final _malloc = _libc
+      .lookupFunction<
+        ffi.Pointer<ffi.Void> Function(ffi.IntPtr),
+        ffi.Pointer<ffi.Void> Function(int)
+      >('malloc');
+  static final _free = _libc
+      .lookupFunction<
+        ffi.Void Function(ffi.Pointer<ffi.Void>),
+        void Function(ffi.Pointer<ffi.Void>)
+      >('free');
+  static final _errnoLocation = _libc
+      .lookupFunction<
+        ffi.Pointer<ffi.Int32> Function(),
+        ffi.Pointer<ffi.Int32> Function()
+      >('__error');
+
+  static const _oReadOnly = 0x00000000;
+  static const _oWriteOnly = 0x00000001;
+  static const _oNonBlock = 0x00000004;
+  static const _oCreate = 0x00000200;
+  static const _oExclusive = 0x00000800;
+  static const _oNoFollow = 0x00000100;
+  static const _oDirectory = 0x00100000;
+  static const _oCloseOnExec = 0x01000000;
+
+  /// 中文：固定父目录，完整写入同目录临时文件，复核目标身份后原子发布。
+  ///
+  /// English: Pins the parent, fully writes a sibling temporary file, then
+  /// revalidates the target identity immediately before atomic publication.
+  static Future<void> replace({
+    required String directoryPath,
+    required String fileName,
+    required List<int> bytes,
+    FutureOr<void> Function()? beforePublicationForTesting,
+  }) async {
+    if (!Platform.isMacOS || fileName.isEmpty || fileName.contains('/')) {
+      throw const GitException('The conflict destination is invalid.');
+    }
+    ffi.Pointer<ffi.Uint8>? directoryPointer;
+    ffi.Pointer<ffi.Uint8>? temporaryPointer;
+    ffi.Pointer<ffi.Uint8>? targetPointer;
+    var directoryFd = -1;
+    var temporaryFd = -1;
+    var targetFd = -1;
+    var targetOriginallyExisted = false;
+    var published = false;
+    try {
+      directoryPointer = _nativeString(directoryPath);
+      directoryFd = _open(
+        directoryPointer,
+        _oDirectory | _oNoFollow | _oCloseOnExec,
+      );
+      _free(directoryPointer.cast());
+      directoryPointer = null;
+      if (directoryFd < 0) {
+        throw const GitException(
+          'The conflict destination directory could not be secured.',
+        );
+      }
+
+      temporaryPointer = _nativeString(_temporaryName());
+      targetPointer = _nativeString(fileName);
+      targetFd = _openAtExisting(
+        directoryFd,
+        targetPointer,
+        _oReadOnly | _oNonBlock | _oNoFollow | _oCloseOnExec,
+      );
+      int? existingMode;
+      if (targetFd >= 0) {
+        targetOriginallyExisted = true;
+        final status = _malloc(256);
+        if (status.address == 0) {
+          throw const GitException(
+            'Memory for conflict metadata is unavailable.',
+          );
+        }
+        int targetMode;
+        try {
+          if (_fstat(targetFd, status) != 0) {
+            throw const GitException(
+              'The conflict destination metadata could not be read.',
+            );
+          }
+          targetMode = (status.cast<ffi.Uint8>() + 4).cast<ffi.Uint16>().value;
+        } finally {
+          _free(status);
+        }
+        if (targetMode & 0xf000 != 0x8000) {
+          throw const GitException(
+            'The conflicted path is not a regular file.',
+          );
+        }
+        existingMode = targetMode & 0x1ff;
+      } else if (_errnoLocation().value != 2) {
+        throw const GitException(
+          'The conflict destination could not be inspected safely.',
+        );
+      }
+
+      temporaryFd = _openAtCreate(
+        directoryFd,
+        temporaryPointer,
+        _oWriteOnly | _oCreate | _oExclusive | _oNoFollow | _oCloseOnExec,
+        0x1b6,
+      );
+      if (temporaryFd < 0) {
+        throw const GitException(
+          'A private conflict-result file could not be created.',
+        );
+      }
+      if (existingMode != null && _fchmod(temporaryFd, existingMode) != 0) {
+        throw const GitException(
+          'The conflict-result permissions could not be secured.',
+        );
+      }
+      _writeAll(temporaryFd, bytes);
+      if (_fsync(temporaryFd) != 0) {
+        throw const GitException('The conflict result could not be flushed.');
+      }
+      _close(temporaryFd);
+      temporaryFd = -1;
+
+      await beforePublicationForTesting?.call();
+      final currentFd = _openAtExisting(
+        directoryFd,
+        targetPointer,
+        _oReadOnly | _oNonBlock | _oNoFollow | _oCloseOnExec,
+      );
+      if (targetOriginallyExisted) {
+        if (currentFd < 0) {
+          throw const GitException(
+            'The conflict destination changed while it was being saved.',
+          );
+        }
+        try {
+          if (!_sameFile(targetFd, currentFd)) {
+            throw const GitException(
+              'The conflict destination changed while it was being saved.',
+            );
+          }
+        } finally {
+          _close(currentFd);
+        }
+      } else {
+        if (currentFd >= 0) {
+          _close(currentFd);
+          throw const GitException(
+            'The conflict destination changed while it was being saved.',
+          );
+        }
+        if (_errnoLocation().value != 2) {
+          throw const GitException(
+            'The conflict destination could not be revalidated safely.',
+          );
+        }
+      }
+      if (_renameAt(
+            directoryFd,
+            temporaryPointer,
+            directoryFd,
+            targetPointer,
+          ) !=
+          0) {
+        throw const GitException(
+          'The conflict result could not be published safely.',
+        );
+      }
+      published = true;
+      _fsync(directoryFd);
+    } finally {
+      if (targetFd >= 0) _close(targetFd);
+      if (temporaryFd >= 0) _close(temporaryFd);
+      if (!published && directoryFd >= 0 && temporaryPointer != null) {
+        _unlinkAt(directoryFd, temporaryPointer, 0);
+      }
+      if (directoryPointer != null) _free(directoryPointer.cast());
+      if (temporaryPointer != null) _free(temporaryPointer.cast());
+      if (targetPointer != null) _free(targetPointer.cast());
+      if (directoryFd >= 0) _close(directoryFd);
+    }
+  }
+
+  /// Compares stable Darwin device and inode fields for two open descriptors.
+  /// 中文：比较两个已打开描述符的 Darwin 设备号和 inode，确认路径仍指向原对象。
+  static bool _sameFile(int firstFd, int secondFd) {
+    final first = _malloc(256);
+    final second = _malloc(256);
+    if (first.address == 0 || second.address == 0) {
+      if (first.address != 0) _free(first);
+      if (second.address != 0) _free(second);
+      throw const GitException('File identity memory is unavailable.');
+    }
+    try {
+      if (_fstat(firstFd, first) != 0 || _fstat(secondFd, second) != 0) {
+        throw const GitException('File identity could not be verified.');
+      }
+      final firstBytes = first.cast<ffi.Uint8>();
+      final secondBytes = second.cast<ffi.Uint8>();
+      return firstBytes.cast<ffi.Uint32>().value ==
+              secondBytes.cast<ffi.Uint32>().value &&
+          (firstBytes + 8).cast<ffi.Uint64>().value ==
+              (secondBytes + 8).cast<ffi.Uint64>().value;
+    } finally {
+      _free(first);
+      _free(second);
+    }
+  }
+
+  /// 中文：把全部字节写入已排他创建的文件描述符，短写或错误时立即拒绝发布。
+  ///
+  /// English: Writes every byte to an exclusively created descriptor and
+  /// rejects publication immediately on a short write or error.
+  static void _writeAll(int fileDescriptor, List<int> bytes) {
+    if (bytes.isEmpty) return;
+    final pointer = _malloc(bytes.length).cast<ffi.Uint8>();
+    if (pointer.address == 0) {
+      throw const GitException(
+        'Memory for the conflict result is unavailable.',
+      );
+    }
+    try {
+      pointer.asTypedList(bytes.length).setAll(0, bytes);
+      var offset = 0;
+      while (offset < bytes.length) {
+        final written = _write(
+          fileDescriptor,
+          pointer + offset,
+          bytes.length - offset,
+        );
+        if (written <= 0) {
+          throw const GitException('The conflict result could not be written.');
+        }
+        offset += written;
+      }
+    } finally {
+      _free(pointer.cast());
+    }
+  }
+
+  /// 中文：分配一个以 NUL 结尾的 UTF-8 C 字符串；调用方负责释放。
+  ///
+  /// English: Allocates a NUL-terminated UTF-8 C string that the caller owns.
+  static ffi.Pointer<ffi.Uint8> _nativeString(String value) {
+    final bytes = utf8.encode(value);
+    final pointer = _malloc(bytes.length + 1).cast<ffi.Uint8>();
+    if (pointer.address == 0) {
+      throw const GitException('Native path memory is unavailable.');
+    }
+    final buffer = pointer.asTypedList(bytes.length + 1);
+    buffer
+      ..setAll(0, bytes)
+      ..[bytes.length] = 0;
+    return pointer;
+  }
+
+  /// 中文：生成不可预测的同目录临时文件名，配合 O_EXCL 防止名称复用。
+  ///
+  /// English: Generates an unpredictable sibling name whose reuse is rejected
+  /// by `O_EXCL`.
+  static String _temporaryName() {
+    final random = Random.secure();
+    final nonce = List<int>.generate(
+      16,
+      (_) => random.nextInt(256),
+    ).map((value) => value.toRadixString(16).padLeft(2, '0')).join();
+    return '.git-desktop-resolve.$nonce';
+  }
+}
+
+/// Pins a macOS directory descriptor and publishes new regular files without
+/// re-resolving the user-selected path or replacing an existing destination.
+/// 中文：固定 macOS 目录描述符，并在不重新解析用户路径、不覆盖目标的前提下发布新文件。
+final class _MacOsPinnedDirectory {
+  _MacOsPinnedDirectory._(this._fileDescriptor);
+
+  int _fileDescriptor;
+
+  /// Opens and pins [path], rejecting a final symlink or non-directory.
+  /// 中文：打开并固定 [path]；最终路径若为链接或非目录则失败关闭。
+  static _MacOsPinnedDirectory open(String path) {
+    if (!Platform.isMacOS) {
+      throw const GitException('Pinned directories require macOS.');
+    }
+    final pointer = _MacOsAtomicFileWriter._nativeString(path);
+    try {
+      final descriptor = _MacOsAtomicFileWriter._open(
+        pointer,
+        _MacOsAtomicFileWriter._oReadOnly |
+            _MacOsAtomicFileWriter._oDirectory |
+            _MacOsAtomicFileWriter._oNoFollow |
+            _MacOsAtomicFileWriter._oCloseOnExec,
+      );
+      if (descriptor < 0) {
+        throw const GitException(
+          'The patch destination directory could not be secured.',
+        );
+      }
+      return _MacOsPinnedDirectory._(descriptor);
+    } finally {
+      _MacOsAtomicFileWriter._free(pointer.cast());
+    }
+  }
+
+  /// Creates [fileName] exclusively and durably writes [bytes].
+  /// 中文：排他创建 [fileName] 并持久写入 [bytes]，同名目标存在时绝不覆盖。
+  void createExclusive(String fileName, List<int> bytes) {
+    if (_fileDescriptor < 0 ||
+        fileName.isEmpty ||
+        fileName == '.' ||
+        fileName == '..' ||
+        fileName.contains('/')) {
+      throw const GitException('The patch destination is invalid.');
+    }
+    final targetPointer = _MacOsAtomicFileWriter._nativeString(fileName);
+    final temporaryPointer = _MacOsAtomicFileWriter._nativeString(
+      _MacOsAtomicFileWriter._temporaryName(),
+    );
+    var temporaryFd = -1;
+    try {
+      temporaryFd = _MacOsAtomicFileWriter._openAtCreate(
+        _fileDescriptor,
+        temporaryPointer,
+        _MacOsAtomicFileWriter._oWriteOnly |
+            _MacOsAtomicFileWriter._oCreate |
+            _MacOsAtomicFileWriter._oExclusive |
+            _MacOsAtomicFileWriter._oNoFollow |
+            _MacOsAtomicFileWriter._oCloseOnExec,
+        0x180,
+      );
+      if (temporaryFd < 0) {
+        throw const GitException('A private patch file could not be created.');
+      }
+      _MacOsAtomicFileWriter._writeAll(temporaryFd, bytes);
+      if (_MacOsAtomicFileWriter._fsync(temporaryFd) != 0) {
+        throw const GitException('The patch could not be flushed.');
+      }
+      _MacOsAtomicFileWriter._close(temporaryFd);
+      temporaryFd = -1;
+      if (_MacOsAtomicFileWriter._linkAt(
+            _fileDescriptor,
+            temporaryPointer,
+            _fileDescriptor,
+            targetPointer,
+            0,
+          ) !=
+          0) {
+        throw ArgumentError.value(
+          fileName,
+          'outputPath',
+          'The patch destination already exists or cannot be created safely.',
+        );
+      }
+      if (_MacOsAtomicFileWriter._fsync(_fileDescriptor) != 0) {
+        throw const GitException(
+          'The patch destination directory could not be flushed.',
+        );
+      }
+    } finally {
+      if (temporaryFd >= 0) _MacOsAtomicFileWriter._close(temporaryFd);
+      _MacOsAtomicFileWriter._unlinkAt(_fileDescriptor, temporaryPointer, 0);
+      _MacOsAtomicFileWriter._free(targetPointer.cast());
+      _MacOsAtomicFileWriter._free(temporaryPointer.cast());
+    }
+  }
+
+  /// Releases the pinned directory descriptor.
+  /// 中文：释放已固定的目录描述符。
+  void close() {
+    if (_fileDescriptor < 0) return;
+    _MacOsAtomicFileWriter._close(_fileDescriptor);
+    _fileDescriptor = -1;
+  }
+}
+
+/// Removes a leaf through a descriptor-pinned macOS directory chain.
+/// 中文：通过描述符固定的 macOS 目录链删除叶节点，拒绝链接父目录和递归目录删除。
+final class _MacOsSecureRemoval {
+  static const _atRemoveDir = 0x80;
+
+  /// Removes [relativePath] below [workTreeRoot], returning false when absent.
+  /// 中文：删除 [workTreeRoot] 下的 [relativePath]；目标不存在时返回 false。
+  static bool remove({
+    required String workTreeRoot,
+    required String relativePath,
+  }) {
+    final components = path_utils
+        .split(path_utils.normalize(relativePath))
+        .where((component) => component != '.')
+        .toList(growable: false);
+    if (components.isEmpty ||
+        components.any((component) => component == '..')) {
+      throw const GitException('The removal path is invalid.');
+    }
+    final rootPointer = _MacOsAtomicFileWriter._nativeString(workTreeRoot);
+    var currentFd = -1;
+    try {
+      currentFd = _MacOsAtomicFileWriter._open(
+        rootPointer,
+        _MacOsAtomicFileWriter._oReadOnly |
+            _MacOsAtomicFileWriter._oDirectory |
+            _MacOsAtomicFileWriter._oNoFollow |
+            _MacOsAtomicFileWriter._oCloseOnExec,
+      );
+      if (currentFd < 0) {
+        throw const GitException('The work tree could not be secured.');
+      }
+      for (final component in components.take(components.length - 1)) {
+        final pointer = _MacOsAtomicFileWriter._nativeString(component);
+        try {
+          final nextFd = _MacOsAtomicFileWriter._openAtExisting(
+            currentFd,
+            pointer,
+            _MacOsAtomicFileWriter._oReadOnly |
+                _MacOsAtomicFileWriter._oDirectory |
+                _MacOsAtomicFileWriter._oNoFollow |
+                _MacOsAtomicFileWriter._oCloseOnExec,
+          );
+          if (nextFd < 0) {
+            throw const GitException(
+              'A removal parent changed or is not a safe directory.',
+            );
+          }
+          _MacOsAtomicFileWriter._close(currentFd);
+          currentFd = nextFd;
+        } finally {
+          _MacOsAtomicFileWriter._free(pointer.cast());
+        }
+      }
+      final leafPointer = _MacOsAtomicFileWriter._nativeString(components.last);
+      try {
+        final leafFd = _MacOsAtomicFileWriter._openAtExisting(
+          currentFd,
+          leafPointer,
+          _MacOsAtomicFileWriter._oReadOnly |
+              _MacOsAtomicFileWriter._oNonBlock |
+              _MacOsAtomicFileWriter._oNoFollow |
+              _MacOsAtomicFileWriter._oCloseOnExec,
+        );
+        if (leafFd >= 0) {
+          _MacOsAtomicFileWriter._close(leafFd);
+          if (_MacOsAtomicFileWriter._unlinkAt(currentFd, leafPointer, 0) !=
+              0) {
+            throw const GitException(
+              'The work-tree file could not be removed.',
+            );
+          }
+          return true;
+        }
+        final error = _MacOsAtomicFileWriter._errnoLocation().value;
+        if (error == 2) return false;
+        // ELOOP identifies a final symlink under O_NOFOLLOW. unlinkat removes
+        // the link itself and never follows its destination.
+        if (error == 62) {
+          if (_MacOsAtomicFileWriter._unlinkAt(currentFd, leafPointer, 0) !=
+              0) {
+            throw const GitException(
+              'The work-tree link could not be removed.',
+            );
+          }
+          return true;
+        }
+        // Never recurse through an unpinned directory tree.
+        if (_MacOsAtomicFileWriter._unlinkAt(
+              currentFd,
+              leafPointer,
+              _atRemoveDir,
+            ) ==
+            0) {
+          return true;
+        }
+        throw const GitException(
+          'Safe recursive directory removal is unavailable.',
+        );
+      } finally {
+        _MacOsAtomicFileWriter._free(leafPointer.cast());
+      }
+    } finally {
+      _MacOsAtomicFileWriter._free(rootPointer.cast());
+      if (currentFd >= 0) _MacOsAtomicFileWriter._close(currentFd);
+    }
   }
 }
 

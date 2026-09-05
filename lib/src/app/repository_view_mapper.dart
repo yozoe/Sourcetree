@@ -99,7 +99,23 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
   final disabledActions = <RepositoryAction>{
     RepositoryAction.cloneRepository,
     RepositoryAction.initializeRepository,
+    RepositoryAction.continueRebase,
+    RepositoryAction.abortRebase,
+    RepositoryAction.continueSequencer,
+    RepositoryAction.abortSequencer,
   };
+  final hasRunningTask =
+      state.phase == RepositorySessionPhase.loading ||
+      state.isWorkingTreeBusy ||
+      state.isFetchRunning ||
+      state.isPullRunning ||
+      state.isPushRunning ||
+      state.isStashRunning ||
+      runningOperation != null;
+  if (hasRunningTask ||
+      state.operationState != GitRepositoryOperationState.none) {
+    disabledActions.add(RepositoryAction.refresh);
+  }
   if (state.isWorkingTreeBusy) {
     disabledActions.addAll(const [
       RepositoryAction.fetch,
@@ -114,6 +130,8 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
   }
   final isRebaseInProgress =
       state.operationState == GitRepositoryOperationState.rebase;
+  final isMergeInProgress =
+      state.operationState == GitRepositoryOperationState.merge;
   final isCherryPickInProgress =
       state.operationState == GitRepositoryOperationState.cherryPick;
   final isRevertInProgress =
@@ -128,12 +146,20 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
       RepositoryAction.stash,
       RepositoryAction.commit,
     ]);
-    if (!isRebaseInProgress) {
-      disabledActions.addAll([
-        RepositoryAction.continueRebase,
-        RepositoryAction.abortRebase,
-      ]);
-    }
+  }
+  final canRecoverOperation =
+      state.phase == RepositorySessionPhase.ready && !hasRunningTask;
+  if (canRecoverOperation && isRebaseInProgress) {
+    disabledActions.removeAll(const [
+      RepositoryAction.continueRebase,
+      RepositoryAction.abortRebase,
+    ]);
+  } else if (canRecoverOperation &&
+      (isCherryPickInProgress || isRevertInProgress)) {
+    disabledActions.removeAll(const [
+      RepositoryAction.continueSequencer,
+      RepositoryAction.abortSequencer,
+    ]);
   }
   if (state.remoteNames.isEmpty ||
       (state.phase == RepositorySessionPhase.loading &&
@@ -194,6 +220,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     isPulling: state.isPullRunning,
     isPushing: state.isPushRunning,
     isStashing: state.isStashRunning,
+    isMergeInProgress: isMergeInProgress,
     isRebaseInProgress: isRebaseInProgress,
     isCherryPickInProgress: isCherryPickInProgress,
     isRevertInProgress: isRevertInProgress,
@@ -674,7 +701,13 @@ DiffViewData _mapDiff(RepositorySessionState state) {
       diff.text.contains('Binary files ') ||
       diff.text.contains('GIT binary patch');
   final supportsHunkActions =
+      state.phase == RepositorySessionPhase.ready &&
       !state.isWorkingTreeBusy &&
+      !state.isFetchRunning &&
+      !state.isPullRunning &&
+      !state.isPushRunning &&
+      !state.isStashRunning &&
+      _runningOperation(state.operations) == null &&
       state.operationState == GitRepositoryOperationState.none &&
       !binary &&
       !diff.isTruncated &&
@@ -724,6 +757,13 @@ DiffViewData _mapCommitDiff(RepositorySessionState state) {
       diff.text.contains('Binary files ') ||
       diff.text.contains('GIT binary patch');
   final supportsCommittedHunkRevert =
+      state.phase == RepositorySessionPhase.ready &&
+      !state.isWorkingTreeBusy &&
+      !state.isFetchRunning &&
+      !state.isPullRunning &&
+      !state.isPushRunning &&
+      !state.isStashRunning &&
+      _runningOperation(state.operations) == null &&
       state.operationState == GitRepositoryOperationState.none &&
       !state.selectedRefId.startsWith('refs/stash/') &&
       !binary &&

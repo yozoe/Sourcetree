@@ -4,8 +4,8 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import '../git/git.dart';
 
-/// Delivers the one validated AskPass request of an active Git operation to
-/// the UI without retaining its answer in application state.
+/// Delivers each validated AskPass request of an active Git operation to the
+/// UI without retaining answers in application state.
 final gitAskPassPromptCoordinatorProvider =
     NotifierProvider<GitAskPassPromptCoordinator, GitAskPassRequest?>(
       GitAskPassPromptCoordinator.new,
@@ -20,10 +20,10 @@ final class GitAskPassPromptCoordinator extends Notifier<GitAskPassRequest?> {
     return null;
   }
 
-  /// 中文：显示已验证的 AskPass 请求并等待受控 UI 的一次响应；第二个请求会被拒绝。
+  /// 中文：显示已验证的 AskPass 请求并等待受控 UI 响应；仅拒绝与当前提示并发的请求。
   ///
   /// English: Exposes a validated AskPass request and waits for one controlled
-  /// UI response; a second request is rejected.
+  /// UI response; only a request concurrent with the current prompt is rejected.
   Future<String?> request(GitAskPassRequest request) {
     if (_response != null) {
       return Future<String?>.value();
@@ -41,7 +41,7 @@ final class GitAskPassPromptCoordinator extends Notifier<GitAskPassRequest?> {
   void submit(String? secret) => _complete(secret);
 
   /// Rejects the active prompt, for example when the Git operation is
-  /// cancelled or its one-time session is closed.
+  /// cancelled or its operation-scoped session is closed.
   /// 中文：取消当前操作。
   /// English: Cancels the current operation.
   void cancel() => _complete(null);

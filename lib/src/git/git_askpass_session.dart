@@ -11,7 +11,7 @@ import 'git_askpass_protocol.dart';
 typedef GitAskPassPromptHandler =
     Future<String?> Function(GitAskPassRequest request);
 
-/// The non-secret state of a one-time AskPass IPC session.
+/// The non-secret state of one operation-scoped AskPass IPC session.
 enum GitAskPassSessionStatus {
   waitingForConnection,
   waitingForResponse,
@@ -21,12 +21,12 @@ enum GitAskPassSessionStatus {
   closed,
 }
 
-/// A single-use, local Unix-domain-socket channel for the bundled AskPass
-/// helper.
+/// An operation-scoped, local Unix-domain-socket channel for the bundled
+/// AskPass helper.
 ///
 /// The session deliberately stores neither prompt answers nor IPC payloads.
 /// Its [onPrompt] callback is responsible for presenting a controlled UI and
-/// returning an answer once. Calling [close], timing out, or answering a
+/// returning answers serially. Calling [close], timing out, or rejecting a
 /// request removes the socket and invalidates [nonce].
 final class GitAskPassSession {
   GitAskPassSession._({
@@ -61,10 +61,10 @@ final class GitAskPassSession {
         File(_bundledHelperPathForExecutable(appExecutablePath)).existsSync();
   }
 
-  /// 中文：为一次 AskPass 请求创建本地、一次性的 IPC 端点。
+  /// 中文：为一次 Git 操作创建本地 IPC 端点，并允许该操作顺序请求用户名和密码。
   ///
-  /// English: Creates a local, single-use IPC endpoint for one AskPass
-  /// request.
+  /// English: Creates a local IPC endpoint that can serve sequential username
+  /// and password prompts for one Git operation.
   static Future<GitAskPassSession> start({
     required GitAskPassPromptHandler onPrompt,
     Duration timeout = defaultTimeout,
@@ -93,10 +93,10 @@ final class GitAskPassSession {
     preferNativeBroker: useNativeBroker,
   );
 
-  /// 中文：校验运行环境后创建 Socket 或 macOS broker 驱动的一次性会话，并在失败时删除临时目录。
+  /// 中文：校验运行环境后创建 Socket 或 macOS broker 驱动的操作级会话，并在失败时删除临时目录。
   ///
   /// English: Validates the runtime, creates a Socket- or macOS-broker-backed
-  /// one-time session, and removes its temporary directory on failure.
+  /// operation-scoped session, and removes its temporary directory on failure.
   static Future<GitAskPassSession> _start({
     required GitAskPassPromptHandler onPrompt,
     required Duration timeout,
@@ -121,6 +121,7 @@ final class GitAskPassSession {
       );
     }
 
+    ServerSocket? server;
     try {
       if (preferNativeBroker && _isMacAppBundle(appExecutablePath)) {
         final nonce = _newNonce();
@@ -133,7 +134,7 @@ final class GitAskPassSession {
           nonce: nonce,
         );
       }
-      final server = await ServerSocket.bind(
+      server = await ServerSocket.bind(
         InternetAddress(socketPath, type: InternetAddressType.unix),
         0,
         backlog: 1,
@@ -152,6 +153,11 @@ final class GitAskPassSession {
       session._startListening();
       return session;
     } catch (_) {
+      try {
+        await server?.close();
+      } catch (_) {
+        // Endpoint cleanup below remains authoritative.
+      }
       await _deleteDirectory(socketDirectory);
       rethrow;
     }
@@ -170,11 +176,12 @@ final class GitAskPassSession {
 
   StreamSubscription<Socket>? _serverSubscription;
   StreamSubscription<String>? _brokerOutputSubscription;
+  Future<void> _clientTail = Future<void>.value();
   Timer? _timeoutTimer;
   Future<void>? _closeFuture;
   GitAskPassSessionStatus _status =
       GitAskPassSessionStatus.waitingForConnection;
-  bool _requestAccepted = false;
+  bool _requestInProgress = false;
 
   GitAskPassSessionStatus get status => _status;
 
@@ -194,8 +201,11 @@ final class GitAskPassSession {
     return Map<String, String>.unmodifiable(<String, String>{
       'GIT_ASKPASS': helperPath,
       'GIT_TERMINAL_PROMPT': '0',
+      'GIT_ASKPASS_REQUIRE': 'force',
       'GIT_DESKTOP_ASKPASS_SOCKET': socketPath,
       'GIT_DESKTOP_ASKPASS_NONCE': nonce,
+      'GIT_DESKTOP_ASKPASS_TIMEOUT_SECONDS':
+          '${(_timeout.inMicroseconds + Duration.microsecondsPerSecond - 1) ~/ Duration.microsecondsPerSecond}',
     });
   }
 
@@ -212,28 +222,34 @@ final class GitAskPassSession {
   /// English: Starts the current flow.
   void _startListening() {
     if (_broker != null) return;
-    _timeoutTimer = Timer(_timeout, () {
-      unawaited(_closeWithStatus(GitAskPassSessionStatus.timedOut));
-    });
+    _resetTimeout();
     _serverSubscription = _server!.listen(
-      (client) => unawaited(_handleClient(client)),
+      _enqueueClient,
       onError: (Object _) =>
           unawaited(_closeWithStatus(GitAskPassSessionStatus.rejected)),
       cancelOnError: true,
     );
   }
 
+  /// 中文：串行处理同一 Git 操作的凭据请求，避免并发展示多个密钥对话框。
+  ///
+  /// English: Serializes credential requests for one Git operation so secret
+  /// dialogs are never presented concurrently.
+  void _enqueueClient(Socket client) {
+    _clientTail = _clientTail.then((_) => _handleClient(client));
+  }
+
   /// 中文：处理当前事件。
   /// English: Handles the current event.
   Future<void> _handleClient(Socket client) async {
-    if (_closeFuture != null || _requestAccepted) {
+    if (_closeFuture != null) {
       await client.close();
       return;
     }
-    _requestAccepted = true;
+    _requestInProgress = true;
+    _resetTimeout();
     _clients.add(client);
     _status = GitAskPassSessionStatus.waitingForResponse;
-    await _server?.close();
 
     try {
       final payload = await _readRequestLine(client);
@@ -251,7 +267,11 @@ final class GitAskPassSession {
         return;
       }
       await _sendSecret(client, secret);
-      await _closeWithStatus(GitAskPassSessionStatus.completed);
+      _requestInProgress = false;
+      _status = GitAskPassSessionStatus.completed;
+      _resetTimeout();
+      _clients.remove(client);
+      await client.close();
     } on FormatException {
       await _closeWithStatus(GitAskPassSessionStatus.rejected);
     } on SocketException {
@@ -268,8 +288,9 @@ final class GitAskPassSession {
   /// 中文：处理当前事件。
   /// English: Handles the current event.
   Future<void> _handleBrokerRequest(String payload) async {
-    if (_closeFuture != null || _requestAccepted) return;
-    _requestAccepted = true;
+    if (_closeFuture != null || _requestInProgress) return;
+    _requestInProgress = true;
+    _resetTimeout();
     _status = GitAskPassSessionStatus.waitingForResponse;
     try {
       final request = GitAskPassRequest.decode(payload);
@@ -285,8 +306,9 @@ final class GitAskPassSession {
       final response = _encodeSecretResponse(secret);
       _broker!.stdin.add(utf8.encode(response));
       await _broker.stdin.flush();
-      await _broker.exitCode;
-      await _closeWithStatus(GitAskPassSessionStatus.completed);
+      _requestInProgress = false;
+      _status = GitAskPassSessionStatus.completed;
+      _resetTimeout();
     } on Object {
       await _closeWithStatus(GitAskPassSessionStatus.rejected);
     }
@@ -350,7 +372,11 @@ final class GitAskPassSession {
     } catch (_) {
       // Closing an already-closed listener is not security relevant.
     }
-    await _brokerOutputSubscription?.cancel();
+    try {
+      await _brokerOutputSubscription?.cancel();
+    } catch (_) {
+      // A failed stream cancellation cannot retain the credential endpoint.
+    }
     final broker = _broker;
     if (broker != null) {
       try {
@@ -360,7 +386,7 @@ final class GitAskPassSession {
       }
       broker.kill();
     }
-    for (final client in _clients) {
+    for (final client in List<Socket>.of(_clients)) {
       try {
         await client.close();
       } catch (_) {
@@ -375,6 +401,17 @@ final class GitAskPassSession {
         _closedCompleter.complete();
       }
     }
+  }
+
+  /// 中文：为当前连接、提示或等待下一提示阶段重新开始空闲超时。
+  ///
+  /// English: Restarts the idle timeout for the current connection, prompt, or
+  /// wait for the next prompt in the same Git operation.
+  void _resetTimeout() {
+    _timeoutTimer?.cancel();
+    _timeoutTimer = Timer(_timeout, () {
+      unawaited(_closeWithStatus(GitAskPassSessionStatus.timedOut));
+    });
   }
 
   /// 中文：创建所需的对象或资源。
@@ -443,7 +480,11 @@ final class GitAskPassSession {
     }
     final broker = await Process.start(
       brokerPath,
-      <String>[socketPath, nonce],
+      <String>[
+        socketPath,
+        nonce,
+        '${(timeout.inMicroseconds + Duration.microsecondsPerSecond - 1) ~/ Duration.microsecondsPerSecond}',
+      ],
       includeParentEnvironment: false,
       runInShell: false,
     );
@@ -494,9 +535,7 @@ final class GitAskPassSession {
       appExecutablePath: appExecutablePath,
     );
     session._brokerOutputSubscription = subscription;
-    session._timeoutTimer = Timer(timeout, () {
-      unawaited(session._closeWithStatus(GitAskPassSessionStatus.timedOut));
-    });
+    session._resetTimeout();
     try {
       await ready.future.timeout(timeout);
       return session;

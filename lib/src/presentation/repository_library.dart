@@ -1,6 +1,8 @@
 import 'dart:io';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path_utils;
 
 const double _repositoryLibraryIconSize = 36;
@@ -120,7 +122,11 @@ class _RepositoryLibraryPageState extends State<RepositoryLibraryPage> {
             child: Column(
               children: [
                 Container(
-                  height: 52,
+                  constraints: BoxConstraints(
+                    minHeight:
+                        52 *
+                        math.max(1, MediaQuery.textScalerOf(context).scale(1)),
+                  ),
                   padding: const EdgeInsets.symmetric(
                     horizontal: 14,
                     vertical: 8,
@@ -255,7 +261,7 @@ class _RepositoryLibraryList extends StatelessWidget {
         for (final MapEntry<String, List<RepositoryLibraryItem>> group
             in groups.entries) ...[
           _RepositoryLibraryGroupHeader(
-            title: group.key,
+            title: _repositoryGroupLabel(group.key, groups.keys),
             count: group.value.length,
           ),
           _RepositoryLibraryGroup(
@@ -369,7 +375,9 @@ List<RepositoryLibraryItem> _filteredRepositories(
       .toList(growable: false);
 }
 
-/// Groups repositories by the final component of their parent directory.
+/// Groups repositories by their complete normalized parent directory.
+///
+/// 中文：以规范化的完整父目录分组，避免同名目录被合并。
 Map<String, List<RepositoryLibraryItem>> _groupRepositories(
   List<RepositoryLibraryItem> repositories,
 ) {
@@ -377,14 +385,25 @@ Map<String, List<RepositoryLibraryItem>> _groupRepositories(
       <String, List<RepositoryLibraryItem>>{};
   for (final RepositoryLibraryItem repository in repositories) {
     final String parentPath = path_utils.dirname(repository.path);
-    final String groupLabel = path_utils.basename(parentPath).isEmpty
-        ? parentPath
-        : path_utils.basename(parentPath);
+    final String groupLabel = path_utils.normalize(parentPath);
     groups
         .putIfAbsent(groupLabel, () => <RepositoryLibraryItem>[])
         .add(repository);
   }
   return groups;
+}
+
+/// Returns a concise group label and includes the full path when basenames
+/// collide.
+///
+/// 中文：返回紧凑的仓库分组标题；父目录同名时显示完整路径消歧。
+String _repositoryGroupLabel(String parentPath, Iterable<String> allPaths) {
+  final basename = path_utils.basename(parentPath);
+  final concise = basename.isEmpty ? parentPath : basename;
+  final collisions = allPaths.where(
+    (candidate) => path_utils.basename(candidate) == basename,
+  );
+  return collisions.length > 1 ? parentPath : concise;
 }
 
 class _RepositoryLibraryGroupHeader extends StatelessWidget {
@@ -427,7 +446,7 @@ class _RepositoryLibraryGroupHeader extends StatelessWidget {
   }
 }
 
-class _RepositoryLibraryTile extends StatelessWidget {
+class _RepositoryLibraryTile extends StatefulWidget {
   const _RepositoryLibraryTile({
     super.key,
     required this.repository,
@@ -441,6 +460,42 @@ class _RepositoryLibraryTile extends StatelessWidget {
   final VoidCallback onPressed;
   final Widget? dragHandle;
 
+  /// 中文：创建负责管理仓库条目键盘焦点的状态对象。
+  /// English: Creates the state that owns keyboard focus for this repository.
+  @override
+  State<_RepositoryLibraryTile> createState() => _RepositoryLibraryTileState();
+}
+
+class _RepositoryLibraryTileState extends State<_RepositoryLibraryTile> {
+  final FocusNode _focusNode = FocusNode(debugLabel: 'Repository library tile');
+  bool _focused = false;
+
+  /// 中文：处理仓库条目的 Enter 和空格键激活，并忽略其他按键。
+  /// English: Activates the repository for Enter or Space and ignores other keys.
+  KeyEventResult _handleKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is KeyDownEvent &&
+        (event.logicalKey == LogicalKeyboardKey.enter ||
+            event.logicalKey == LogicalKeyboardKey.space)) {
+      widget.onPressed();
+      return KeyEventResult.handled;
+    }
+    return KeyEventResult.ignored;
+  }
+
+  /// 中文：同步焦点可见状态，让键盘用户能辨认当前仓库条目。
+  /// English: Tracks focus visibility so keyboard users can identify the tile.
+  void _handleFocusChange(bool focused) {
+    setState(() => _focused = focused);
+  }
+
+  /// 中文：释放当前条目拥有的键盘焦点节点。
+  /// English: Disposes the keyboard focus node owned by this tile.
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
   @override
@@ -450,89 +505,111 @@ class _RepositoryLibraryTile extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.only(bottom: 1),
       child: Material(
-        key: ValueKey<String>('repository-library-tile:${repository.path}'),
-        color: selected ? colors.secondaryContainer : Colors.transparent,
+        key: ValueKey<String>(
+          'repository-library-tile:${widget.repository.path}',
+        ),
+        color: widget.selected ? colors.secondaryContainer : Colors.transparent,
         borderRadius: BorderRadius.circular(7),
-        child: InkWell(
-          onDoubleTap: onPressed,
-          borderRadius: BorderRadius.circular(7),
-          child: Semantics(
-            button: true,
-            selected: selected,
-            label: '仓库 ${repository.label}',
-            hint: '双击打开仓库',
-            onTap: onPressed,
-            child: Container(
-              constraints: const BoxConstraints(minHeight: 62),
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 9),
-              child: Row(
-                children: [
-                  _RepositoryLibraryIcon(
-                    iconPath: repository.iconPath,
-                    repositoryPath: repository.path,
-                    selected: selected,
+        child: Listener(
+          onPointerDown: (_) => _focusNode.requestFocus(),
+          child: Focus(
+            focusNode: _focusNode,
+            onKeyEvent: _handleKeyEvent,
+            onFocusChange: _handleFocusChange,
+            child: InkWell(
+              canRequestFocus: false,
+              onDoubleTap: widget.onPressed,
+              borderRadius: BorderRadius.circular(7),
+              child: Semantics(
+                button: true,
+                selected: widget.selected,
+                label: '仓库 ${widget.repository.label}',
+                hint: '双击打开仓库',
+                onTap: widget.onPressed,
+                child: Container(
+                  constraints: const BoxConstraints(minHeight: 62),
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 12,
+                    vertical: 9,
                   ),
-                  const SizedBox(width: 12),
-                  Expanded(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      children: [
-                        Text(
-                          repository.label,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.bodyMedium?.copyWith(
-                            fontWeight: FontWeight.w600,
-                            color: selected
-                                ? colors.onSecondaryContainer
-                                : colors.onSurface,
-                          ),
+                  decoration: _focused
+                      ? BoxDecoration(
+                          border: Border.all(color: colors.primary, width: 2),
+                          borderRadius: BorderRadius.circular(7),
+                        )
+                      : null,
+                  child: Row(
+                    children: [
+                      _RepositoryLibraryIcon(
+                        iconPath: widget.repository.iconPath,
+                        repositoryPath: widget.repository.path,
+                        selected: widget.selected,
+                      ),
+                      const SizedBox(width: 12),
+                      Expanded(
+                        child: Column(
+                          mainAxisSize: MainAxisSize.min,
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          children: [
+                            Text(
+                              widget.repository.label,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.bodyMedium?.copyWith(
+                                fontWeight: FontWeight.w600,
+                                color: widget.selected
+                                    ? colors.onSecondaryContainer
+                                    : colors.onSurface,
+                              ),
+                            ),
+                            const SizedBox(height: 2),
+                            Text(
+                              widget.repository.path,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.bodySmall?.copyWith(
+                                color: widget.selected
+                                    ? colors.onSecondaryContainer.withValues(
+                                        alpha: .78,
+                                      )
+                                    : colors.onSurfaceVariant,
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 2),
-                        Text(
-                          repository.path,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            color: selected
-                                ? colors.onSecondaryContainer.withValues(
-                                    alpha: .78,
-                                  )
-                                : colors.onSurfaceVariant,
+                      ),
+                      if (widget.repository.hasStatus) ...[
+                        const SizedBox(width: 12),
+                        _RepositoryLibraryBranchStatus(
+                          repository: widget.repository,
+                        ),
+                      ],
+                      if (widget.selected) ...[
+                        const SizedBox(width: 10),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 7,
+                            vertical: 3,
+                          ),
+                          decoration: BoxDecoration(
+                            color: colors.primary,
+                            borderRadius: BorderRadius.circular(10),
+                          ),
+                          child: Text(
+                            '当前',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: colors.onPrimary,
+                              fontWeight: FontWeight.w700,
+                            ),
                           ),
                         ),
                       ],
-                    ),
+                      ...(widget.dragHandle == null
+                          ? const <Widget>[]
+                          : <Widget>[widget.dragHandle!]),
+                    ],
                   ),
-                  if (repository.hasStatus) ...[
-                    const SizedBox(width: 12),
-                    _RepositoryLibraryBranchStatus(repository: repository),
-                  ],
-                  if (selected) ...[
-                    const SizedBox(width: 10),
-                    Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 7,
-                        vertical: 3,
-                      ),
-                      decoration: BoxDecoration(
-                        color: colors.primary,
-                        borderRadius: BorderRadius.circular(10),
-                      ),
-                      child: Text(
-                        '当前',
-                        style: theme.textTheme.labelSmall?.copyWith(
-                          color: colors.onPrimary,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ),
-                  ],
-                  ...(dragHandle == null
-                      ? const <Widget>[]
-                      : <Widget>[dragHandle!]),
-                ],
+                ),
               ),
             ),
           ),

@@ -1,4 +1,5 @@
 #include <errno.h>
+#include <limits.h>
 #include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -49,13 +50,18 @@ static int read_line(int fd, char *buffer, size_t capacity) {
 }
 
 int main(int argc, char *argv[]) {
-  const char *socket_path = argc == 3 ? argv[1] : NULL;
-  const char *nonce = argc == 3 ? argv[2] : NULL;
+  const char *socket_path = argc == 4 ? argv[1] : NULL;
+  const char *nonce = argc == 4 ? argv[2] : NULL;
+  char *timeout_end = NULL;
+  const unsigned long parsed_timeout =
+      argc == 4 ? strtoul(argv[3], &timeout_end, 10) : 0;
   if (socket_path == NULL || socket_path[0] != '/' ||
       strlen(socket_path) >= sizeof(((struct sockaddr_un *)0)->sun_path) ||
-      !is_valid_nonce(nonce)) {
+      !is_valid_nonce(nonce) || timeout_end == argv[3] || *timeout_end != '\0' ||
+      parsed_timeout == 0 || parsed_timeout > UINT_MAX) {
     return 1;
   }
+  const unsigned int timeout_seconds = (unsigned int)parsed_timeout;
 
   const int server_fd = socket(AF_UNIX, SOCK_STREAM, 0);
   if (server_fd < 0) return 1;
@@ -71,28 +77,37 @@ int main(int argc, char *argv[]) {
     return 1;
   }
 
-  alarm(60);
-  const int client_fd = accept(server_fd, NULL, NULL);
-  uid_t peer_uid = 0;
-  gid_t peer_gid = 0;
-  if (client_fd < 0 || getpeereid(client_fd, &peer_uid, &peer_gid) != 0 ||
-      peer_uid != geteuid()) {
-    if (client_fd >= 0) close(client_fd);
-    close(server_fd);
-    unlink(socket_path);
-    return 1;
-  }
+  alarm(timeout_seconds);
+  int success = 1;
+  for (;;) {
+    const int client_fd = accept(server_fd, NULL, NULL);
+    uid_t peer_uid = 0;
+    gid_t peer_gid = 0;
+    if (client_fd < 0 || getpeereid(client_fd, &peer_uid, &peer_gid) != 0 ||
+        peer_uid != geteuid()) {
+      if (client_fd >= 0) close(client_fd);
+      success = 0;
+      break;
+    }
+    alarm(timeout_seconds);
 
-  char request[kMaxFrameLength + 1];
-  char response[kMaxFrameLength + 1];
-  const int success = read_line(client_fd, request, sizeof(request)) == 0 &&
-      write_all(STDOUT_FILENO, request, strlen(request)) == 0 &&
-      write_all(STDOUT_FILENO, "\n", 1) == 0 &&
-      read_line(STDIN_FILENO, response, sizeof(response)) == 0 &&
-      write_all(client_fd, response, strlen(response)) == 0 &&
-      write_all(client_fd, "\n", 1) == 0;
-  memset(response, 0, sizeof(response));
-  close(client_fd);
+    char request[kMaxFrameLength + 1];
+    char response[kMaxFrameLength + 1];
+    const int request_success =
+        read_line(client_fd, request, sizeof(request)) == 0 &&
+        write_all(STDOUT_FILENO, request, strlen(request)) == 0 &&
+        write_all(STDOUT_FILENO, "\n", 1) == 0 &&
+        read_line(STDIN_FILENO, response, sizeof(response)) == 0 &&
+        write_all(client_fd, response, strlen(response)) == 0 &&
+        write_all(client_fd, "\n", 1) == 0;
+    memset(response, 0, sizeof(response));
+    close(client_fd);
+    if (!request_success) {
+      success = 0;
+      break;
+    }
+    alarm(timeout_seconds);
+  }
   close(server_fd);
   unlink(socket_path);
   return success ? 0 : 1;

@@ -1,6 +1,122 @@
 import 'dart:math' as math;
+import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+
+/// One aligned row in the internal conflict comparison.
+///
+/// 中文：内部冲突对比中的一行；任一侧为空表示该行只存在于另一版本。
+final class ConflictDiffLine {
+  const ConflictDiffLine({
+    required this.oursLineNumber,
+    required this.oursText,
+    required this.theirsLineNumber,
+    required this.theirsText,
+  });
+
+  final int? oursLineNumber;
+  final String? oursText;
+  final int? theirsLineNumber;
+  final String? theirsText;
+
+  bool get isEqual => oursText != null && oursText == theirsText;
+}
+
+const int _maximumLcsCells = 250000;
+
+/// Aligns two text versions around their longest common subsequence.
+///
+/// Replacement blocks are zipped so related changed lines remain side by
+/// side. To keep rendering bounded, very large inputs use positional pairing
+/// instead of allocating a quadratic LCS table.
+///
+/// 中文：以最长公共子序列为锚点对齐两个文本版本，并将相邻替换行并排展示；
+/// 超大输入会退化为按位置配对，避免为二次复杂度表格耗尽内存。
+List<ConflictDiffLine> alignConflictLines(String oursText, String theirsText) {
+  final ours = oursText.split('\n');
+  final theirs = theirsText.split('\n');
+  if (ours.length * theirs.length > _maximumLcsCells) {
+    return _zipConflictGap(ours, theirs, 0, 0);
+  }
+
+  final table = List<Uint32List>.generate(
+    ours.length + 1,
+    (_) => Uint32List(theirs.length + 1),
+    growable: false,
+  );
+  for (var oursIndex = ours.length - 1; oursIndex >= 0; oursIndex--) {
+    for (var theirsIndex = theirs.length - 1; theirsIndex >= 0; theirsIndex--) {
+      table[oursIndex][theirsIndex] = ours[oursIndex] == theirs[theirsIndex]
+          ? table[oursIndex + 1][theirsIndex + 1] + 1
+          : math.max(
+              table[oursIndex + 1][theirsIndex],
+              table[oursIndex][theirsIndex + 1],
+            );
+    }
+  }
+
+  final anchors = <(int, int)>[];
+  var oursIndex = 0;
+  var theirsIndex = 0;
+  while (oursIndex < ours.length && theirsIndex < theirs.length) {
+    if (ours[oursIndex] == theirs[theirsIndex]) {
+      anchors.add((oursIndex++, theirsIndex++));
+    } else if (table[oursIndex + 1][theirsIndex] >=
+        table[oursIndex][theirsIndex + 1]) {
+      oursIndex++;
+    } else {
+      theirsIndex++;
+    }
+  }
+
+  final result = <ConflictDiffLine>[];
+  oursIndex = 0;
+  theirsIndex = 0;
+  for (final anchor in anchors) {
+    result.addAll(
+      _zipConflictGap(
+        ours.sublist(oursIndex, anchor.$1),
+        theirs.sublist(theirsIndex, anchor.$2),
+        oursIndex,
+        theirsIndex,
+      ),
+    );
+    result.add(
+      ConflictDiffLine(
+        oursLineNumber: anchor.$1 + 1,
+        oursText: ours[anchor.$1],
+        theirsLineNumber: anchor.$2 + 1,
+        theirsText: theirs[anchor.$2],
+      ),
+    );
+    oursIndex = anchor.$1 + 1;
+    theirsIndex = anchor.$2 + 1;
+  }
+  result.addAll(
+    _zipConflictGap(
+      ours.sublist(oursIndex),
+      theirs.sublist(theirsIndex),
+      oursIndex,
+      theirsIndex,
+    ),
+  );
+  return result;
+}
+
+List<ConflictDiffLine> _zipConflictGap(
+  List<String> ours,
+  List<String> theirs,
+  int oursOffset,
+  int theirsOffset,
+) => [
+  for (var index = 0; index < math.max(ours.length, theirs.length); index++)
+    ConflictDiffLine(
+      oursLineNumber: index < ours.length ? oursOffset + index + 1 : null,
+      oursText: index < ours.length ? ours[index] : null,
+      theirsLineNumber: index < theirs.length ? theirsOffset + index + 1 : null,
+      theirsText: index < theirs.length ? theirs[index] : null,
+    ),
+];
 
 /// 中文：用于文本冲突的内置三方合并对话框。
 ///
@@ -16,6 +132,8 @@ class InternalConflictResolverDialog extends StatefulWidget {
     required this.oursText,
     required this.theirsText,
     required this.workingText,
+    this.oursLabel,
+    this.theirsLabel,
     this.isBinary = false,
     this.isTruncated = false,
   });
@@ -25,6 +143,8 @@ class InternalConflictResolverDialog extends StatefulWidget {
   final String oursText;
   final String theirsText;
   final String workingText;
+  final String? oursLabel;
+  final String? theirsLabel;
   final bool isBinary;
   final bool isTruncated;
 
@@ -111,33 +231,72 @@ class _InternalConflictResolverDialogState
                     Expanded(
                       flex: 3,
                       child: _SideBySideDiff(
-                        oursLabel: '我的版本 · ${widget.currentBranch}',
-                        theirsLabel: '他们的版本 · 合并来源',
+                        oursLabel:
+                            widget.oursLabel ??
+                            '我的版本 · ${widget.currentBranch}',
+                        theirsLabel: widget.theirsLabel ?? '他们的版本 · 合并来源',
                         oursText: widget.oursText,
                         theirsText: widget.theirsText,
                       ),
                     ),
                     const SizedBox(height: 10),
-                    Row(
-                      children: [
-                        OutlinedButton.icon(
-                          key: const ValueKey('use-ours-version'),
-                          onPressed: _canSave
-                              ? () => _useVersion(widget.oursText)
-                              : null,
-                          icon: const Icon(Icons.arrow_downward, size: 16),
-                          label: const Text('使用我的版本'),
-                        ),
-                        const SizedBox(width: 8),
-                        OutlinedButton.icon(
-                          key: const ValueKey('use-theirs-version'),
-                          onPressed: _canSave
-                              ? () => _useVersion(widget.theirsText)
-                              : null,
-                          icon: const Icon(Icons.arrow_downward, size: 16),
-                          label: const Text('使用他们的版本'),
-                        ),
-                      ],
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        final oursActionLabel =
+                            '使用${widget.oursLabel ?? "我的版本"}';
+                        final theirsActionLabel =
+                            '使用${widget.theirsLabel ?? "他们的版本"}';
+                        final buttons = <Widget>[
+                          OutlinedButton.icon(
+                            key: const ValueKey('use-ours-version'),
+                            onPressed: _canSave
+                                ? () => _useVersion(widget.oursText)
+                                : null,
+                            icon: const Icon(Icons.arrow_downward, size: 16),
+                            label: Tooltip(
+                              message: oursActionLabel,
+                              child: Text(
+                                oursActionLabel,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ),
+                          OutlinedButton.icon(
+                            key: const ValueKey('use-theirs-version'),
+                            onPressed: _canSave
+                                ? () => _useVersion(widget.theirsText)
+                                : null,
+                            icon: const Icon(Icons.arrow_downward, size: 16),
+                            label: Tooltip(
+                              message: theirsActionLabel,
+                              child: Text(
+                                theirsActionLabel,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          ),
+                        ];
+                        final useVerticalLayout = constraints.maxWidth < 620;
+                        if (useVerticalLayout) {
+                          return Column(
+                            crossAxisAlignment: CrossAxisAlignment.stretch,
+                            children: [
+                              buttons.first,
+                              const SizedBox(height: 8),
+                              buttons.last,
+                            ],
+                          );
+                        }
+                        return Row(
+                          children: [
+                            Expanded(child: buttons.first),
+                            const SizedBox(width: 8),
+                            Expanded(child: buttons.last),
+                          ],
+                        );
+                      },
                     ),
                     const SizedBox(height: 10),
                     Text('合并结果', style: theme.textTheme.titleSmall),
@@ -262,74 +421,97 @@ class _SideBySideDiff extends StatelessWidget {
   /// highlighting.
   @override
   Widget build(BuildContext context) {
-    final ours = oursText.split('\n');
-    final theirs = theirsText.split('\n');
-    final rowCount = math.max(ours.length, theirs.length);
+    final lines = alignConflictLines(oursText, theirsText);
     final theme = Theme.of(context);
+    final rowHeight = _scaledHeight(context, 24);
 
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        border: Border.all(color: theme.dividerColor),
-        borderRadius: BorderRadius.circular(6),
-      ),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(5),
-        child: Column(
-          children: [
-            _DiffHeader(oursLabel: oursLabel, theirsLabel: theirsLabel),
-            Expanded(
-              child: ListView.builder(
-                key: const ValueKey('conflict-side-by-side-diff'),
-                itemExtent: 24,
-                itemCount: rowCount,
-                itemBuilder: (context, index) {
-                  final oursLine = index < ours.length ? ours[index] : null;
-                  final theirsLine = index < theirs.length
-                      ? theirs[index]
-                      : null;
-                  final differs = oursLine != theirsLine;
-                  return Container(
-                    key: ValueKey(
-                      differs
-                          ? 'conflict-difference-row-$index'
-                          : 'conflict-equal-row-$index',
-                    ),
-                    decoration: BoxDecoration(
-                      color: differs
-                          ? theme.colorScheme.tertiaryContainer.withValues(
-                              alpha: .32,
-                            )
-                          : null,
-                      border: Border(
-                        bottom: BorderSide(
-                          color: theme.dividerColor.withValues(alpha: .35),
-                        ),
+    final longestLine = lines.fold<int>(0, (longest, line) {
+      return math.max(
+        longest,
+        math.max(line.oursText?.length ?? 0, line.theirsText?.length ?? 0),
+      );
+    });
+    final textScale = math.max(1.0, MediaQuery.textScalerOf(context).scale(1));
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final contentWidth = math.max(
+          constraints.maxWidth,
+          math.min(32768.0, (70 + longestLine * 7.2 * textScale) * 2),
+        );
+        return SingleChildScrollView(
+          key: const ValueKey('conflict-horizontal-scroll'),
+          scrollDirection: Axis.horizontal,
+          child: SizedBox(
+            width: contentWidth,
+            height: constraints.maxHeight,
+            child: DecoratedBox(
+              decoration: BoxDecoration(
+                border: Border.all(color: theme.dividerColor),
+                borderRadius: BorderRadius.circular(6),
+              ),
+              child: ClipRRect(
+                borderRadius: BorderRadius.circular(5),
+                child: Column(
+                  children: [
+                    _DiffHeader(oursLabel: oursLabel, theirsLabel: theirsLabel),
+                    Expanded(
+                      child: ListView.builder(
+                        key: const ValueKey('conflict-side-by-side-diff'),
+                        itemExtent: rowHeight,
+                        itemCount: lines.length,
+                        itemBuilder: (context, index) {
+                          final line = lines[index];
+                          final differs = !line.isEqual;
+                          return Container(
+                            key: ValueKey(
+                              differs
+                                  ? 'conflict-difference-row-$index'
+                                  : 'conflict-equal-row-$index',
+                            ),
+                            decoration: BoxDecoration(
+                              color: differs
+                                  ? theme.colorScheme.tertiaryContainer
+                                        .withValues(alpha: .32)
+                                  : null,
+                              border: Border(
+                                bottom: BorderSide(
+                                  color: theme.dividerColor.withValues(
+                                    alpha: .35,
+                                  ),
+                                ),
+                              ),
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: _VersionLine(
+                                    lineNumber: line.oursLineNumber,
+                                    text: line.oursText,
+                                  ),
+                                ),
+                                VerticalDivider(
+                                  width: 1,
+                                  color: theme.dividerColor,
+                                ),
+                                Expanded(
+                                  child: _VersionLine(
+                                    lineNumber: line.theirsLineNumber,
+                                    text: line.theirsText,
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
                       ),
                     ),
-                    child: Row(
-                      children: [
-                        Expanded(
-                          child: _VersionLine(
-                            lineNumber: oursLine == null ? null : index + 1,
-                            text: oursLine,
-                          ),
-                        ),
-                        VerticalDivider(width: 1, color: theme.dividerColor),
-                        Expanded(
-                          child: _VersionLine(
-                            lineNumber: theirsLine == null ? null : index + 1,
-                            text: theirsLine,
-                          ),
-                        ),
-                      ],
-                    ),
-                  );
-                },
+                  ],
+                ),
               ),
             ),
-          ],
-        ),
-      ),
+          ),
+        );
+      },
     );
   }
 }
@@ -349,21 +531,31 @@ class _DiffHeader extends StatelessWidget {
       fontWeight: FontWeight.w600,
     );
     return Container(
-      height: 34,
+      height: _scaledHeight(context, 34),
       color: theme.colorScheme.surfaceContainerHighest,
       child: Row(
         children: [
           Expanded(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 10),
-              child: Text(oursLabel, style: style),
+              child: Text(
+                oursLabel,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: style,
+              ),
             ),
           ),
           VerticalDivider(width: 1, color: theme.dividerColor),
           Expanded(
             child: Padding(
               padding: const EdgeInsets.symmetric(horizontal: 10),
-              child: Text(theirsLabel, style: style),
+              child: Text(
+                theirsLabel,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: style,
+              ),
             ),
           ),
         ],
@@ -419,3 +611,8 @@ TextStyle _monospaceStyle(ThemeData theme) =>
       fontFamily: 'monospace',
       height: 1.35,
     );
+
+double _scaledHeight(BuildContext context, double base) {
+  final scale = math.max(1.0, MediaQuery.textScalerOf(context).scale(1));
+  return base * scale;
+}

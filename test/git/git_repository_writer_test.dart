@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ffi' as ffi;
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:git_desktop/src/git/git.dart';
@@ -20,6 +21,30 @@ void main() {
   });
 
   tearDown(() => fixture.dispose());
+
+  test('refuses removal through a symlinked work-tree parent', () async {
+    if (!Platform.isMacOS) return;
+    final outside = await Directory.systemTemp.createTemp(
+      'git-desktop-removal-outside-',
+    );
+    addTearDown(() => outside.delete(recursive: true));
+    final outsideFile = File('${outside.path}/keep.txt');
+    await outsideFile.writeAsString('keep\n');
+    await Link('${fixture.workingDirectory.path}/linked').create(outside.path);
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await expectLater(
+      writer.removeWorkingTreePath(
+        repository,
+        GitPath.fromString('linked/keep.txt'),
+      ),
+      throwsA(isA<GitException>()),
+    );
+
+    expect(await outsideFile.readAsString(), 'keep\n');
+  });
 
   test(
     'stages and unstages a tracked file without changing its work tree',
@@ -394,6 +419,135 @@ void main() {
       ).readAsString(),
       'custom merged result\n',
     );
+    expect(
+      await Directory(fixture.workingDirectory.path)
+          .list()
+          .where(
+            (entity) => entity.path
+                .split(Platform.pathSeparator)
+                .last
+                .startsWith('.git-desktop-resolve.'),
+          )
+          .isEmpty,
+      isTrue,
+    );
+  });
+
+  test('keeps the original conflict file when publication fails', () async {
+    if (!Platform.isMacOS) return;
+    final repository = await _createContentConflict(fixture, inspector);
+    final conflicted = (await reader.readStatus(repository)).entries.single;
+    final conflictFile = File(
+      '${fixture.workingDirectory.path}${Platform.pathSeparator}conflict.txt',
+    );
+    final original = await conflictFile.readAsBytes();
+    final failingWriter = GitRepositoryWriter(
+      GitRunner(),
+      beforeConflictResultPublicationForTesting: () {
+        throw const FileSystemException('injected publication failure');
+      },
+    );
+
+    await expectLater(
+      failingWriter.resolveConflictWithContent(
+        repository,
+        conflicted.path,
+        'must never replace the original\n',
+      ),
+      throwsA(isA<FileSystemException>()),
+    );
+
+    expect(await conflictFile.readAsBytes(), original);
+    expect((await reader.readStatus(repository)).conflictedEntries, isNotEmpty);
+    expect(
+      await Directory(fixture.workingDirectory.path)
+          .list()
+          .where(
+            (entity) => entity.path
+                .split(Platform.pathSeparator)
+                .last
+                .startsWith('.git-desktop-resolve.'),
+          )
+          .isEmpty,
+      isTrue,
+    );
+  });
+
+  test(
+    'does not overwrite a conflict path replaced before publication',
+    () async {
+      if (!Platform.isMacOS) return;
+      final repository = await _createContentConflict(fixture, inspector);
+      final conflicted = (await reader.readStatus(repository)).entries.single;
+      final conflictFile = File(
+        '${fixture.workingDirectory.path}${Platform.pathSeparator}conflict.txt',
+      );
+      final displacedFile = File('${conflictFile.path}.displaced');
+      final racingWriter = GitRepositoryWriter(
+        GitRunner(),
+        beforeConflictResultPublicationForTesting: () async {
+          await conflictFile.rename(displacedFile.path);
+          await conflictFile.writeAsString('concurrent replacement\n');
+        },
+      );
+
+      await expectLater(
+        racingWriter.resolveConflictWithContent(
+          repository,
+          conflicted.path,
+          'must not overwrite replacement\n',
+        ),
+        throwsA(isA<GitException>()),
+      );
+
+      expect(await conflictFile.readAsString(), 'concurrent replacement\n');
+      expect(await displacedFile.exists(), isTrue);
+    },
+  );
+
+  test('preserves an executable conflict file mode on macOS', () async {
+    if (!Platform.isMacOS) return;
+    final repository = await _createContentConflict(fixture, inspector);
+    final conflicted = (await reader.readStatus(repository)).entries.single;
+    final conflictFile = File(
+      '${fixture.workingDirectory.path}${Platform.pathSeparator}conflict.txt',
+    );
+    final chmod = await Process.run('/bin/chmod', ['0751', conflictFile.path]);
+    expect(chmod.exitCode, 0, reason: chmod.stderr);
+
+    await writer.resolveConflictWithContent(
+      repository,
+      conflicted.path,
+      'mode-preserving result\n',
+    );
+
+    expect((await conflictFile.stat()).mode & 0x1ff, 0x1e9);
+  });
+
+  test('applies the process umask when recreating a conflict file', () async {
+    if (!Platform.isMacOS) return;
+    final repository = await _createContentConflict(fixture, inspector);
+    final conflicted = (await reader.readStatus(repository)).entries.single;
+    final conflictFile = File(
+      '${fixture.workingDirectory.path}${Platform.pathSeparator}conflict.txt',
+    );
+    await conflictFile.delete();
+    final umask = ffi.DynamicLibrary.process()
+        .lookupFunction<ffi.Uint16 Function(ffi.Uint16), int Function(int)>(
+          'umask',
+        );
+    final previousUmask = umask(0x3f);
+    try {
+      await writer.resolveConflictWithContent(
+        repository,
+        conflicted.path,
+        'recreated securely\n',
+      );
+    } finally {
+      umask(previousUmask);
+    }
+
+    expect((await conflictFile.stat()).mode & 0x1ff, 0x180);
   });
 
   test(
@@ -886,6 +1040,16 @@ void main() {
     expect(remoteRef.exitCode, isNot(0));
   });
 
+  test('rejects an option-shaped remote when deleting a branch', () async {
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+    await expectLater(
+      writer.deleteRemoteBranch(repository, remoteName: '--mirror/topic'),
+      throwsArgumentError,
+    );
+  });
+
   test('removes only the local configuration for a remote', () async {
     await fixture.writeFile('README.md', 'base\n');
     await fixture.commit('Initial commit');
@@ -901,6 +1065,17 @@ void main() {
     ])).stdout.toString().split('\n').where((name) => name.isNotEmpty);
     expect(remotes, isNot(contains('origin')));
     expect(await Directory(origin.path).exists(), isTrue);
+  });
+
+  test('rejects an option-shaped remote name before invoking Git', () async {
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await expectLater(
+      writer.removeRemote(repository, '--help'),
+      throwsArgumentError,
+    );
   });
 
   test('switches to an existing local branch without creating a ref', () async {
@@ -1097,6 +1272,79 @@ void main() {
       (await reader.readRecentHistory(repository!)).single.subject,
       'Initial commit',
     );
+  });
+
+  test('rejects clone URLs containing credentials or query data', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'git-desktop-clone-credentials-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+
+    for (final remoteUrl in const [
+      'https://user:top-secret@example.test/repository.git',
+      'https://example.test/repository.git?access_token=top-secret',
+      'ftp://user:top-secret@example.test/repository.git',
+      'ssh://user:top-secret@example.test/repository.git',
+      'ssh://user%3Atop-secret@example.test/repository.git',
+      'ssh://git@example.test/repository.git#top-secret',
+      'user:top-secret@example.test:repository.git',
+    ]) {
+      await expectLater(
+        writer.cloneRepository(
+          remoteUrl: remoteUrl,
+          directoryPath: directory.path,
+        ),
+        throwsA(
+          isA<GitException>().having(
+            (error) => error.toString(),
+            'message',
+            isNot(contains('top-secret')),
+          ),
+        ),
+      );
+    }
+    expect(await directory.list().isEmpty, isTrue);
+  });
+
+  test('allows a normal SCP-style SSH clone URL through validation', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'git-desktop-clone-ssh-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+    final recordingWriter = GitRepositoryWriter(
+      GitRunner(executable: '/usr/bin/true'),
+    );
+
+    await recordingWriter.cloneRepository(
+      remoteUrl: 'git@example.test:owner/repository.git',
+      directoryPath: directory.path,
+    );
+    await recordingWriter.cloneRepository(
+      remoteUrl: 'ssh://git@example.test/owner/repository.git',
+      directoryPath: directory.path,
+    );
+  });
+
+  test('rejects clone URLs that invoke Git remote helpers', () async {
+    final directory = await Directory.systemTemp.createTemp(
+      'git-desktop-clone-helper-',
+    );
+    addTearDown(() => directory.delete(recursive: true));
+
+    for (final remoteUrl in const [
+      'ext::sh -c id',
+      'unknown::payload',
+      'javascript://example.test/repository.git',
+    ]) {
+      await expectLater(
+        writer.cloneRepository(
+          remoteUrl: remoteUrl,
+          directoryPath: directory.path,
+        ),
+        throwsA(isA<GitException>()),
+      );
+    }
+    expect(await directory.list().isEmpty, isTrue);
   });
 
   test('fetches origin without changing the checked out branch', () async {
@@ -1847,6 +2095,50 @@ index 0000000..0000000 100644
         ),
         throwsArgumentError,
       );
+    },
+  );
+
+  test(
+    'keeps an in-place modified published patch when the batch fails',
+    () async {
+      final commits = <String>[];
+      for (var index = 0; index < 12; index++) {
+        await fixture.writeFile('file-$index.txt', 'content $index\n');
+        commits.add(await fixture.commit('Rollback patch $index'));
+      }
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+      final outputDirectory = await Directory.systemTemp.createTemp(
+        'git-desktop-patch-ownership-',
+      );
+      addTearDown(() => outputDirectory.delete(recursive: true));
+      final firstPath =
+          '${outputDirectory.path}/0001-${commits.first.substring(0, 12)}.patch';
+      final lastPath =
+          '${outputDirectory.path}/0012-${commits.last.substring(0, 12)}.patch';
+      final watcher = await Process.start('/bin/sh', [
+        '-c',
+        'while [ ! -e "\$1" ]; do :; done; '
+            'printf "%s\\n" "concurrent user content" > "\$1"; '
+            ': > "\$2"',
+        'patch-race-watcher',
+        firstPath,
+        lastPath,
+      ]);
+      addTearDown(() => watcher.kill());
+
+      await expectLater(
+        writer.createPatches(
+          repository,
+          objectIds: commits,
+          outputPath: outputDirectory.path,
+          createSeparateFiles: true,
+        ),
+        throwsArgumentError,
+      );
+      expect(await watcher.exitCode.timeout(const Duration(seconds: 5)), 0);
+      expect(await File(firstPath).readAsString(), 'concurrent user content\n');
     },
   );
 

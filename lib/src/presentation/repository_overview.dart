@@ -634,7 +634,7 @@ class _RepositoryToolbar extends StatelessWidget {
       color: colors.surfaceContainerLow,
       child: Container(
         key: const ValueKey<String>('repository-toolbar'),
-        height: 54,
+        height: _scaledDenseHeight(context, 54),
         decoration: BoxDecoration(
           border: Border(bottom: BorderSide(color: colors.outlineVariant)),
         ),
@@ -1037,7 +1037,7 @@ class _CompactHistorySearchBar extends StatelessWidget {
   Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;
     return Container(
-      height: 42,
+      height: _scaledDenseHeight(context, 42),
       padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
       decoration: BoxDecoration(
         color: colors.surfaceContainerLow,
@@ -1157,6 +1157,7 @@ class _RefsNavigation extends StatelessWidget {
             isSelected: _isReferenceSelected,
             onSelected: onSelected,
             onActivated: onActivated,
+            activationEnabled: !repository.blocksRepositoryMutations,
             contextItemsFor: _contextItemsFor,
             onContextAction: onContextAction,
           ),
@@ -1235,7 +1236,7 @@ class _RefsNavigation extends StatelessWidget {
       onDoubleTap:
           ref.kind == RepositoryRefKind.stash ||
               ref.isSymbolicRemote ||
-              repository.isRefreshing ||
+              repository.blocksRepositoryMutations ||
               onActivated == null ||
               stashActionDisabled
           ? null
@@ -1274,7 +1275,7 @@ class _RefsNavigation extends StatelessWidget {
   /// state, disabling operations that are not currently safe to run.
   List<_RefContextMenuItem> _contextItemsFor(RepositoryRefViewData ref) {
     final disabledActions = repository.disabledActions;
-    final isBusy = repository.isRefreshing;
+    final isBusy = repository.blocksRepositoryMutations;
     final canFetch =
         !isBusy && !disabledActions.contains(RepositoryAction.fetch);
     final canPull = !isBusy && !disabledActions.contains(RepositoryAction.pull);
@@ -1283,11 +1284,12 @@ class _RefsNavigation extends StatelessWidget {
       (change) => change.kind == RepositoryChangeKind.conflicted,
     );
     final canSwitch = !isBusy && !hasConflicts;
-    final canMerge = !disabledActions.contains(RepositoryAction.mergeBranch);
+    final canMerge =
+        !isBusy && !disabledActions.contains(RepositoryAction.mergeBranch);
     final canCreate =
         !isBusy && !disabledActions.contains(RepositoryAction.createBranch);
     final canManageLocalBranch = canCreate && !hasConflicts;
-    final canManageRemote = !isBusy && !repository.isRebaseInProgress;
+    final canManageRemote = !isBusy;
     final remoteName = _remoteNameFor(ref);
     if (ref.id == 'history') {
       return [
@@ -1295,7 +1297,7 @@ class _RefsNavigation extends StatelessWidget {
           action: RepositoryRefContextAction.refresh,
           label: '刷新仓库',
           icon: Icons.refresh,
-          enabled: !isBusy,
+          enabled: !disabledActions.contains(RepositoryAction.refresh),
         ),
       ];
     }
@@ -1305,7 +1307,7 @@ class _RefsNavigation extends StatelessWidget {
           action: RepositoryRefContextAction.refresh,
           label: '刷新仓库',
           icon: Icons.refresh,
-          enabled: !isBusy,
+          enabled: !disabledActions.contains(RepositoryAction.refresh),
         ),
       ];
     }
@@ -1315,7 +1317,7 @@ class _RefsNavigation extends StatelessWidget {
           action: RepositoryRefContextAction.refresh,
           label: '刷新仓库',
           icon: Icons.refresh,
-          enabled: !isBusy,
+          enabled: !disabledActions.contains(RepositoryAction.refresh),
         ),
       ];
     }
@@ -1327,6 +1329,7 @@ class _RefsNavigation extends StatelessWidget {
           icon: Icons.inventory_2_outlined,
           enabled:
               !isBusy &&
+              !disabledActions.contains(RepositoryAction.stash) &&
               repository.changes.isNotEmpty &&
               !repository.changes.any(
                 (change) => change.kind == RepositoryChangeKind.conflicted,
@@ -1343,7 +1346,7 @@ class _RefsNavigation extends StatelessWidget {
           action: RepositoryRefContextAction.refresh,
           label: '刷新仓库',
           icon: Icons.refresh,
-          enabled: !isBusy,
+          enabled: !disabledActions.contains(RepositoryAction.refresh),
         ),
       ],
       RepositoryRefKind.localBranch when ref.isCurrent => [
@@ -1383,7 +1386,7 @@ class _RefsNavigation extends StatelessWidget {
           action: RepositoryRefContextAction.refresh,
           label: '刷新仓库',
           icon: Icons.refresh,
-          enabled: !isBusy,
+          enabled: !disabledActions.contains(RepositoryAction.refresh),
         ),
       ],
       RepositoryRefKind.localBranch => [
@@ -1423,7 +1426,7 @@ class _RefsNavigation extends StatelessWidget {
           action: RepositoryRefContextAction.refresh,
           label: '刷新仓库',
           icon: Icons.refresh,
-          enabled: !isBusy,
+          enabled: !disabledActions.contains(RepositoryAction.refresh),
         ),
       ],
       RepositoryRefKind.remoteBranch => [
@@ -1444,7 +1447,7 @@ class _RefsNavigation extends StatelessWidget {
           action: RepositoryRefContextAction.refresh,
           label: '刷新仓库',
           icon: Icons.refresh,
-          enabled: !isBusy,
+          enabled: !disabledActions.contains(RepositoryAction.refresh),
         ),
       ],
       RepositoryRefKind.remote => [
@@ -1478,13 +1481,13 @@ class _RefsNavigation extends StatelessWidget {
           action: RepositoryRefContextAction.manageStashes,
           label: '管理贮藏',
           icon: Icons.inventory_2_outlined,
-          enabled: !isBusy,
+          enabled: !disabledActions.contains(RepositoryAction.refresh),
         ),
         _RefContextMenuItem(
           action: RepositoryRefContextAction.refresh,
           label: '刷新仓库',
           icon: Icons.refresh,
-          enabled: !isBusy,
+          enabled: !disabledActions.contains(RepositoryAction.refresh),
         ),
       ],
       _ => [
@@ -1492,7 +1495,7 @@ class _RefsNavigation extends StatelessWidget {
           action: RepositoryRefContextAction.refresh,
           label: '刷新仓库',
           icon: Icons.refresh,
-          enabled: !isBusy,
+          enabled: !disabledActions.contains(RepositoryAction.refresh),
         ),
       ],
     };
@@ -1649,6 +1652,7 @@ final class _RefDirectoryTile extends StatefulWidget {
     required this.isSelected,
     required this.onSelected,
     required this.onActivated,
+    required this.activationEnabled,
     required this.contextItemsFor,
     required this.onContextAction,
   });
@@ -1659,6 +1663,7 @@ final class _RefDirectoryTile extends StatefulWidget {
   final bool Function(RepositoryRefViewData ref) isSelected;
   final RepositoryRefCallback? onSelected;
   final RepositoryRefCallback? onActivated;
+  final bool activationEnabled;
   final List<_RefContextMenuItem> Function(RepositoryRefViewData ref)
   contextItemsFor;
   final RepositoryRefContextActionCallback? onContextAction;
@@ -1759,7 +1764,7 @@ class _RemoteDirectoryTileState extends State<_RemoteDirectoryTile> {
               onSecondaryTapDown: (details) =>
                   unawaited(_showContextMenu(context, details.globalPosition)),
               child: Container(
-                height: 31,
+                height: _scaledDenseHeight(context, 31),
                 padding: const EdgeInsets.only(left: 14, right: 8),
                 color: isSelected ? colors.secondaryContainer : null,
                 child: Row(
@@ -1828,7 +1833,7 @@ class _RefDirectoryTileState extends State<_RefDirectoryTile> {
             child: InkWell(
               onTap: _toggleExpanded,
               child: Container(
-                height: 31,
+                height: _scaledDenseHeight(context, 31),
                 padding: EdgeInsets.only(left: leftInset, right: 8),
                 child: Row(
                   children: [
@@ -1878,7 +1883,8 @@ class _RefDirectoryTileState extends State<_RefDirectoryTile> {
               onTap: widget.onSelected == null
                   ? null
                   : () => widget.onSelected!(ref),
-              onDoubleTap: widget.onActivated == null
+              onDoubleTap:
+                  widget.onActivated == null || !widget.activationEnabled
                   ? null
                   : () => widget.onActivated!(ref),
               contextItems: widget.contextItemsFor(ref),
@@ -1901,7 +1907,8 @@ class _RefDirectoryTileState extends State<_RefDirectoryTile> {
                 onTap: widget.onSelected == null
                     ? null
                     : () => widget.onSelected!(child.reference!),
-                onDoubleTap: widget.onActivated == null
+                onDoubleTap:
+                    widget.onActivated == null || !widget.activationEnabled
                     ? null
                     : () => widget.onActivated!(child.reference!),
                 contextItems: widget.contextItemsFor(child.reference!),
@@ -1919,6 +1926,7 @@ class _RefDirectoryTileState extends State<_RefDirectoryTile> {
                 isSelected: widget.isSelected,
                 onSelected: widget.onSelected,
                 onActivated: widget.onActivated,
+                activationEnabled: widget.activationEnabled,
                 contextItemsFor: widget.contextItemsFor,
                 onContextAction: widget.onContextAction,
               ),
@@ -2006,82 +2014,103 @@ class _RefTile extends StatelessWidget {
     ].join(' ');
     final displayLabel = label ?? ref.label;
 
-    return Semantics(
-      button: true,
-      enabled: onPointerDown != null || onTap != null,
-      onTap: onTap ?? onPointerDown,
-      selected: isSelected,
-      label: '${_refKindLabel(ref.kind)} $displayLabel',
-      child: Opacity(
-        opacity: onPointerDown == null && onTap == null ? 0.5 : 1,
-        child: Tooltip(
-          message: ref.secondaryLabel ?? ref.label,
-          waitDuration: const Duration(milliseconds: 650),
-          child: GestureDetector(
-            onLongPressStart: (details) =>
-                unawaited(_showContextMenu(context, details.globalPosition)),
-            child: Listener(
-              onPointerDown: (event) {
-                if (event.buttons == kPrimaryButton) onPointerDown?.call();
-              },
-              child: InkWell(
-                onTap: onTap,
-                onDoubleTap: onDoubleTap,
-                onSecondaryTapDown: (details) => unawaited(
-                  _showContextMenu(context, details.globalPosition),
-                ),
-                child: Container(
-                  height: 31,
-                  padding: EdgeInsets.only(left: 14 + indent * 18, right: 8),
-                  color: isSelected ? colors.secondaryContainer : null,
-                  child: Row(
-                    children: [
-                      if (showIcon)
-                        Icon(
-                          key: ValueKey<String>('ref-nav-icon:${ref.id}'),
-                          ref.isCurrent
-                              ? Icons.radio_button_checked
-                              : _refKindIcon(ref.kind),
-                          size: 15,
-                          color:
-                              graphColor ??
-                              (ref.isCurrent
-                                  ? colors.primary
-                                  : colors.onSurfaceVariant),
-                        )
-                      else
-                        const SizedBox(width: 15),
-                      const SizedBox(width: 7),
-                      Expanded(
-                        child: Text(
-                          displayLabel,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            fontWeight: ref.isCurrent ? FontWeight.w600 : null,
-                            color: isSelected
-                                ? colors.onSecondaryContainer
-                                : null,
+    return CallbackShortcuts(
+      bindings: <ShortcutActivator, VoidCallback>{
+        const SingleActivator(LogicalKeyboardKey.enter): ?onDoubleTap,
+        if (onContextAction != null && contextItems.isNotEmpty) ...{
+          const SingleActivator(LogicalKeyboardKey.f10, shift: true): () =>
+              unawaited(_showContextMenu(context, _globalCenter(context))),
+          const SingleActivator(LogicalKeyboardKey.contextMenu): () =>
+              unawaited(_showContextMenu(context, _globalCenter(context))),
+        },
+      },
+      child: Semantics(
+        button: true,
+        enabled: onPointerDown != null || onTap != null,
+        onTap: onTap ?? onPointerDown,
+        onLongPress: onContextAction == null || contextItems.isEmpty
+            ? null
+            : () =>
+                  unawaited(_showContextMenu(context, _globalCenter(context))),
+        selected: isSelected,
+        label: '${_refKindLabel(ref.kind)} $displayLabel',
+        child: Opacity(
+          opacity: onPointerDown == null && onTap == null ? 0.5 : 1,
+          child: Tooltip(
+            message: ref.secondaryLabel ?? ref.label,
+            waitDuration: const Duration(milliseconds: 650),
+            child: GestureDetector(
+              onLongPressStart: (details) =>
+                  unawaited(_showContextMenu(context, details.globalPosition)),
+              child: Listener(
+                onPointerDown: (event) {
+                  if (event.buttons == kPrimaryButton) onPointerDown?.call();
+                },
+                child: InkWell(
+                  onTap: onTap,
+                  onDoubleTap: onDoubleTap,
+                  onSecondaryTapDown: (details) => unawaited(
+                    _showContextMenu(context, details.globalPosition),
+                  ),
+                  child: Container(
+                    height: _scaledDenseHeight(context, 31),
+                    padding: EdgeInsets.only(left: 14 + indent * 18, right: 8),
+                    color: isSelected ? colors.secondaryContainer : null,
+                    child: Row(
+                      children: [
+                        if (showIcon)
+                          Icon(
+                            key: ValueKey<String>('ref-nav-icon:${ref.id}'),
+                            ref.isCurrent
+                                ? Icons.radio_button_checked
+                                : _refKindIcon(ref.kind),
+                            size: 15,
+                            color:
+                                graphColor ??
+                                (ref.isCurrent
+                                    ? colors.primary
+                                    : colors.onSurfaceVariant),
+                          )
+                        else
+                          const SizedBox(width: 15),
+                        const SizedBox(width: 7),
+                        Expanded(
+                          child: Text(
+                            displayLabel,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              fontWeight: ref.isCurrent
+                                  ? FontWeight.w600
+                                  : null,
+                              color: isSelected
+                                  ? colors.onSecondaryContainer
+                                  : null,
+                            ),
                           ),
                         ),
-                      ),
-                      if (tracking.isNotEmpty)
-                        Text(
-                          tracking,
-                          style: theme.textTheme.labelSmall?.copyWith(
-                            color: colors.onSurfaceVariant,
-                            fontFeatures: const [FontFeature.tabularFigures()],
+                        if (tracking.isNotEmpty)
+                          Text(
+                            tracking,
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: colors.onSurfaceVariant,
+                              fontFeatures: const [
+                                FontFeature.tabularFigures(),
+                              ],
+                            ),
+                          )
+                        else if (ref.childCount case final int count)
+                          Text(
+                            '$count',
+                            style: theme.textTheme.labelSmall?.copyWith(
+                              color: colors.onSurfaceVariant,
+                              fontFeatures: const [
+                                FontFeature.tabularFigures(),
+                              ],
+                            ),
                           ),
-                        )
-                      else if (ref.childCount case final int count)
-                        Text(
-                          '$count',
-                          style: theme.textTheme.labelSmall?.copyWith(
-                            color: colors.onSurfaceVariant,
-                            fontFeatures: const [FontFeature.tabularFigures()],
-                          ),
-                        ),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -2093,9 +2122,28 @@ class _RefTile extends StatelessWidget {
   }
 }
 
+/// 中文：返回组件渲染区域中心的全局坐标，供键盘和辅助功能定位上下文菜单。
+/// English: Returns the global center of a rendered widget for keyboard and
+/// accessibility context-menu placement.
+Offset _globalCenter(BuildContext context) {
+  final renderObject = context.findRenderObject();
+  if (renderObject is! RenderBox || !renderObject.hasSize) return Offset.zero;
+  return renderObject.localToGlobal(renderObject.size.center(Offset.zero));
+}
+
 // Sourcetree's history uses compact 24px rows: this keeps the commit graph
 // readable while giving each history entry a little more breathing room.
 const double _historyRowHeight = 24;
+
+/// 中文：按系统文字缩放提升紧凑控件的最小高度，避免大字号被裁切。
+///
+/// English: Raises compact control heights with the system text scale while
+/// allowing the rows to keep enlarged text visible.
+double _scaledDenseHeight(BuildContext context, double base) {
+  final scale = math.max(1.0, MediaQuery.textScalerOf(context).scale(1));
+  return base * scale;
+}
+
 const double _historyDescriptionMinimumWidth = 0;
 const double _historyGraphMinimumWidth = 0;
 const double _historyCommitMinimumWidth = 0;
@@ -2253,10 +2301,8 @@ class _HistoryPaneState extends State<_HistoryPane> {
       ).indexWhere((commit) => commit.oid == objectId);
       if (index < 0) return;
       final rowIndex = index + (widget.repository.isWorkingTreeClean ? 0 : 1);
-      final target = (rowIndex * _historyRowHeight).clamp(
-        0.0,
-        _scrollController.position.maxScrollExtent,
-      );
+      final target = (rowIndex * _scaledDenseHeight(context, _historyRowHeight))
+          .clamp(0.0, _scrollController.position.maxScrollExtent);
       _scrollController.animateTo(
         target,
         duration: const Duration(milliseconds: 180),
@@ -2276,6 +2322,7 @@ class _HistoryPaneState extends State<_HistoryPane> {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    final historyRowHeight = _scaledDenseHeight(context, _historyRowHeight);
     final showUncommittedChanges =
         widget.includeUncommittedChanges &&
         !widget.repository.isWorkingTreeClean;
@@ -2356,107 +2403,100 @@ class _HistoryPaneState extends State<_HistoryPane> {
                                         widget.repository.historyLoadError ==
                                             null &&
                                         notification.metrics.extentAfter <=
-                                            _historyRowHeight * 2) {
+                                            historyRowHeight * 2) {
                                       widget.onLoadMore?.call();
                                     }
                                     return false;
                                   },
                                   child: ListView.builder(
                                     controller: _scrollController,
-                                    itemExtent: _historyRowHeight,
+                                    itemExtent: historyRowHeight,
                                     itemCount: historyListItemCount,
-                                    itemBuilder:
-                                        (BuildContext context, int index) {
-                                          if (index == historyRowCount) {
-                                            return _HistoryLoadMoreRow(
-                                              isLoading: widget
-                                                  .repository
-                                                  .isHistoryLoading,
-                                              error: widget
-                                                  .repository
-                                                  .historyLoadError,
-                                              onPressed: widget.onLoadMore,
-                                            );
-                                          }
-                                          if (showUncommittedChanges &&
-                                              index == 0) {
-                                            return _UncommittedChangesRow(
-                                              isSelected:
-                                                  uncommittedChangesSelected,
-                                              compactGraph: _compactGraph,
-                                              widths: widths,
-                                              onTap: widget
-                                                  .onUncommittedChangesSelected,
-                                            );
-                                          }
-                                          final commitIndex =
-                                              index -
-                                              (showUncommittedChanges ? 1 : 0);
-                                          final CommitViewData commit =
-                                              commits[commitIndex];
-                                          final graph =
-                                              fallbackGraphs[commit.oid] ??
-                                              commit.graph;
-                                          final graphWithWorkspace = graph
-                                              .copyWith(
-                                                hasWorkspaceNode:
-                                                    showUncommittedChanges,
-                                                hasPreviousNode:
-                                                    showUncommittedChanges &&
-                                                        commitIndex == 0
-                                                    ? true
-                                                    : null,
-                                                additionalPreviousLanes:
-                                                    showUncommittedChanges &&
-                                                        commitIndex == 0
-                                                    ? const {0}
-                                                    : const {},
-                                              );
-                                          return _CommitRow(
-                                            commit: commit.copyWith(
-                                              graph: graphWithWorkspace,
-                                              isSelected:
-                                                  widget.selectedCommitIds
-                                                      ?.contains(commit.oid) ??
-                                                  commit.isSelected,
-                                            ),
-                                            currentBranch:
-                                                widget.repository.currentBranch,
-                                            primaryLocalBranch: widget
-                                                .repository
-                                                .primaryLocalBranch,
-                                            ahead: widget.repository.ahead,
-                                            showRemoteRefs: _showRemoteRefs,
-                                            compactGraph: _compactGraph,
-                                            widths: widths,
-                                            onTap: widget.onSelected == null
-                                                ? null
-                                                : () => widget.onSelected!(
+                                    itemBuilder: (BuildContext context, int index) {
+                                      if (index == historyRowCount) {
+                                        return _HistoryLoadMoreRow(
+                                          isLoading: widget
+                                              .repository
+                                              .isHistoryLoading,
+                                          error: widget
+                                              .repository
+                                              .historyLoadError,
+                                          onPressed: widget.onLoadMore,
+                                        );
+                                      }
+                                      if (showUncommittedChanges &&
+                                          index == 0) {
+                                        return _UncommittedChangesRow(
+                                          isSelected:
+                                              uncommittedChangesSelected,
+                                          compactGraph: _compactGraph,
+                                          widths: widths,
+                                          onTap: widget
+                                              .onUncommittedChangesSelected,
+                                        );
+                                      }
+                                      final commitIndex =
+                                          index -
+                                          (showUncommittedChanges ? 1 : 0);
+                                      final CommitViewData commit =
+                                          commits[commitIndex];
+                                      final graph =
+                                          fallbackGraphs[commit.oid] ??
+                                          commit.graph;
+                                      final graphWithWorkspace = graph.copyWith(
+                                        hasWorkspaceNode:
+                                            showUncommittedChanges,
+                                        hasPreviousNode:
+                                            showUncommittedChanges &&
+                                                commitIndex == 0
+                                            ? true
+                                            : null,
+                                        additionalPreviousLanes:
+                                            showUncommittedChanges &&
+                                                commitIndex == 0
+                                            ? const {0}
+                                            : const {},
+                                      );
+                                      return _CommitRow(
+                                        commit: commit.copyWith(
+                                          graph: graphWithWorkspace,
+                                          isSelected:
+                                              widget.selectedCommitIds
+                                                  ?.contains(commit.oid) ??
+                                              commit.isSelected,
+                                        ),
+                                        currentBranch:
+                                            widget.repository.currentBranch,
+                                        primaryLocalBranch: widget
+                                            .repository
+                                            .primaryLocalBranch,
+                                        ahead: widget.repository.ahead,
+                                        showRemoteRefs: _showRemoteRefs,
+                                        compactGraph: _compactGraph,
+                                        widths: widths,
+                                        onTap: widget.onSelected == null
+                                            ? null
+                                            : () => widget.onSelected!(commit),
+                                        onDoubleTap:
+                                            widget
+                                                    .repository
+                                                    .blocksRepositoryMutations ||
+                                                widget.onActivated == null
+                                            ? null
+                                            : () => widget.onActivated!(commit),
+                                        onContextAction:
+                                            widget.onContextAction == null
+                                            ? null
+                                            : (action) =>
+                                                  widget.onContextAction!(
                                                     commit,
+                                                    action,
                                                   ),
-                                            onDoubleTap:
-                                                widget
-                                                        .repository
-                                                        .isRefreshing ||
-                                                    widget.onActivated == null
-                                                ? null
-                                                : () => widget.onActivated!(
-                                                    commit,
-                                                  ),
-                                            onContextAction:
-                                                widget
-                                                        .repository
-                                                        .isRefreshing ||
-                                                    widget.onContextAction ==
-                                                        null
-                                                ? null
-                                                : (action) =>
-                                                      widget.onContextAction!(
-                                                        commit,
-                                                        action,
-                                                      ),
-                                          );
-                                        },
+                                        mutationActionsEnabled: !widget
+                                            .repository
+                                            .blocksRepositoryMutations,
+                                      );
+                                    },
                                   ),
                                 ),
                                 _HistoryResizeOverlay(
@@ -2754,7 +2794,7 @@ class _UncommittedChangesRow extends StatelessWidget {
               children: [
                 SizedBox(
                   width: widths.graph,
-                  height: _historyRowHeight,
+                  height: _scaledDenseHeight(context, _historyRowHeight),
                   child: CustomPaint(
                     painter: _UncommittedGraphPainter(
                       color: colors.onSurfaceVariant,
@@ -2880,7 +2920,7 @@ final class _HistoryColumnHeader extends StatelessWidget {
     final colors = theme.colorScheme;
     return Container(
       key: const ValueKey<String>('history-column-header'),
-      height: 25,
+      height: _scaledDenseHeight(context, 25),
       padding: const EdgeInsets.symmetric(horizontal: 8),
       decoration: BoxDecoration(
         color: colors.surfaceContainerLow,
@@ -3050,6 +3090,7 @@ class _CommitRow extends StatelessWidget {
     required this.onTap,
     this.onDoubleTap,
     this.onContextAction,
+    required this.mutationActionsEnabled,
     required this.showRemoteRefs,
     required this.compactGraph,
     required this.widths,
@@ -3062,6 +3103,7 @@ class _CommitRow extends StatelessWidget {
   final VoidCallback? onTap;
   final VoidCallback? onDoubleTap;
   final ValueChanged<RepositoryCommitContextAction>? onContextAction;
+  final bool mutationActionsEnabled;
   final bool showRemoteRefs;
   final bool compactGraph;
   final _HistoryColumnWidths widths;
@@ -3080,135 +3122,155 @@ class _CommitRow extends StatelessWidget {
         .take(3)
         .toList(growable: false);
 
-    return Semantics(
-      button: true,
-      selected: commit.isSelected,
-      label:
-          '${commit.subject}，${commit.author}，${commit.relativeDate}，提交 ${commit.shortOid}',
-      child: Tooltip(
-        message: '${commit.subject}\n${commit.oid}',
-        waitDuration: const Duration(milliseconds: 750),
-        child: InkWell(
-          onTap: onTap,
-          onDoubleTap: onDoubleTap,
-          onSecondaryTapDown: onContextAction == null
-              ? null
-              : (details) => unawaited(_showContextMenu(context, details)),
-          child: Container(
-            padding: const EdgeInsets.symmetric(horizontal: 8),
-            color: commit.isSelected ? colors.secondaryContainer : null,
-            child: Row(
-              children: [
-                SizedBox(
-                  width: widths.graph,
-                  height: _historyRowHeight,
-                  child: CustomPaint(
-                    key: const ValueKey<String>('commit-graph-canvas'),
-                    painter: _CommitGraphPainter(
-                      graph: commit.graph,
-                      colors: _graphColors(colors),
-                      workspaceRailColor: colors.onSurfaceVariant,
-                      backgroundColor: commit.isSelected
-                          ? colors.secondaryContainer
-                          : _graphBackground(colors),
-                      selected: commit.isSelected,
-                      compact: compactGraph,
+    return CallbackShortcuts(
+      bindings: <ShortcutActivator, VoidCallback>{
+        const SingleActivator(LogicalKeyboardKey.enter): ?onDoubleTap,
+        if (onContextAction != null) ...{
+          const SingleActivator(LogicalKeyboardKey.f10, shift: true): () =>
+              unawaited(_showContextMenu(context, _globalCenter(context))),
+          const SingleActivator(LogicalKeyboardKey.contextMenu): () =>
+              unawaited(_showContextMenu(context, _globalCenter(context))),
+        },
+      },
+      child: Semantics(
+        button: true,
+        selected: commit.isSelected,
+        onLongPress: onContextAction == null
+            ? null
+            : () =>
+                  unawaited(_showContextMenu(context, _globalCenter(context))),
+        label:
+            '${commit.subject}，${commit.author}，${commit.relativeDate}，提交 ${commit.shortOid}',
+        child: Tooltip(
+          message: '${commit.subject}\n${commit.oid}',
+          waitDuration: const Duration(milliseconds: 750),
+          child: InkWell(
+            onTap: onTap,
+            onDoubleTap: onDoubleTap,
+            onSecondaryTapDown: onContextAction == null
+                ? null
+                : (details) => unawaited(
+                    _showContextMenu(context, details.globalPosition),
+                  ),
+            child: Container(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              color: commit.isSelected ? colors.secondaryContainer : null,
+              child: Row(
+                children: [
+                  SizedBox(
+                    width: widths.graph,
+                    height: _scaledDenseHeight(context, _historyRowHeight),
+                    child: CustomPaint(
+                      key: const ValueKey<String>('commit-graph-canvas'),
+                      painter: _CommitGraphPainter(
+                        graph: commit.graph,
+                        colors: _graphColors(colors),
+                        workspaceRailColor: colors.onSurfaceVariant,
+                        backgroundColor: commit.isSelected
+                            ? colors.secondaryContainer
+                            : _graphBackground(colors),
+                        selected: commit.isSelected,
+                        compact: compactGraph,
+                      ),
                     ),
                   ),
-                ),
-                const SizedBox(width: _historyColumnHandleWidth),
-                Expanded(
-                  child: Row(
-                    children: [
-                      for (final CommitReferenceViewData ref
-                          in visibleRefs) ...[
-                        Flexible(
-                          fit: FlexFit.loose,
-                          child: Padding(
-                            padding: const EdgeInsets.only(right: 5),
-                            child: _RefLabel(
-                              label: ref.label,
-                              kind: _commitRefKind(ref),
-                              graphColor:
-                                  _graphPalette[commit.graph.colorIndex.abs() %
-                                      _graphPalette.length],
-                            ),
-                          ),
-                        ),
-                        if (ahead > 0 &&
-                            _commitRefKind(ref) ==
-                                _CommitRefKind.primaryLocalBranch)
+                  const SizedBox(width: _historyColumnHandleWidth),
+                  Expanded(
+                    child: Row(
+                      children: [
+                        for (final CommitReferenceViewData ref
+                            in visibleRefs) ...[
                           Flexible(
                             fit: FlexFit.loose,
                             child: Padding(
                               padding: const EdgeInsets.only(right: 5),
-                              child: _AheadLabel(count: ahead),
+                              child: _RefLabel(
+                                label: ref.label,
+                                kind: _commitRefKind(ref),
+                                graphColor:
+                                    _graphPalette[commit.graph.colorIndex
+                                            .abs() %
+                                        _graphPalette.length],
+                              ),
                             ),
                           ),
-                      ],
-                      if (commit.isMerge)
+                          if (ahead > 0 &&
+                              _commitRefKind(ref) ==
+                                  _CommitRefKind.primaryLocalBranch)
+                            Flexible(
+                              fit: FlexFit.loose,
+                              child: Padding(
+                                padding: const EdgeInsets.only(right: 5),
+                                child: _AheadLabel(count: ahead),
+                              ),
+                            ),
+                        ],
+                        if (commit.isMerge)
+                          Flexible(
+                            fit: FlexFit.loose,
+                            child: Padding(
+                              padding: const EdgeInsets.only(right: 5),
+                              child: Icon(
+                                Icons.merge,
+                                size: 13,
+                                color: colors.onSurfaceVariant,
+                              ),
+                            ),
+                          ),
                         Flexible(
-                          fit: FlexFit.loose,
-                          child: Padding(
-                            padding: const EdgeInsets.only(right: 5),
-                            child: Icon(
-                              Icons.merge,
-                              size: 13,
-                              color: colors.onSurfaceVariant,
+                          child: Text(
+                            commit.subject,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: theme.textTheme.bodySmall?.copyWith(
+                              fontWeight: commit.isHead
+                                  ? FontWeight.w600
+                                  : null,
                             ),
                           ),
                         ),
-                      Flexible(
-                        child: Text(
-                          commit.subject,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: theme.textTheme.bodySmall?.copyWith(
-                            fontWeight: commit.isHead ? FontWeight.w600 : null,
-                          ),
-                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: _historyColumnHandleWidth),
+                  SizedBox(
+                    width: widths.commit,
+                    child: Text(
+                      commit.shortOid,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: colors.onSurfaceVariant,
                       ),
-                    ],
-                  ),
-                ),
-                const SizedBox(width: _historyColumnHandleWidth),
-                SizedBox(
-                  width: widths.commit,
-                  child: Text(
-                    commit.shortOid,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: colors.onSurfaceVariant,
                     ),
                   ),
-                ),
-                const SizedBox(width: _historyColumnHandleWidth),
-                SizedBox(
-                  width: widths.author,
-                  child: Text(
-                    commit.author,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.bodySmall?.copyWith(
-                      color: colors.onSurfaceVariant,
+                  const SizedBox(width: _historyColumnHandleWidth),
+                  SizedBox(
+                    width: widths.author,
+                    child: Text(
+                      commit.author,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.bodySmall?.copyWith(
+                        color: colors.onSurfaceVariant,
+                      ),
                     ),
                   ),
-                ),
-                const SizedBox(width: _historyColumnHandleWidth),
-                SizedBox(
-                  width: widths.date,
-                  child: Text(
-                    commit.relativeDate,
-                    textAlign: TextAlign.start,
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: theme.textTheme.labelSmall?.copyWith(
-                      color: colors.onSurfaceVariant,
+                  const SizedBox(width: _historyColumnHandleWidth),
+                  SizedBox(
+                    width: widths.date,
+                    child: Text(
+                      commit.relativeDate,
+                      textAlign: TextAlign.start,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: theme.textTheme.labelSmall?.copyWith(
+                        color: colors.onSurfaceVariant,
+                      ),
                     ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
           ),
         ),
@@ -3221,38 +3283,42 @@ class _CommitRow extends StatelessWidget {
   /// the actual Git mutation.
   Future<void> _showContextMenu(
     BuildContext context,
-    TapDownDetails details,
+    Offset globalPosition,
   ) async {
     final handler = onContextAction;
     if (handler == null) return;
     final overlay =
         Overlay.of(context).context.findRenderObject()! as RenderBox;
     final position = RelativeRect.fromRect(
-      Rect.fromLTWH(details.globalPosition.dx, details.globalPosition.dy, 0, 0),
+      globalPosition & const Size(1, 1),
       Offset.zero & overlay.size,
     );
     final action = await showMenu<RepositoryCommitContextAction>(
       context: context,
       position: position,
-      items: const [
+      items: [
         PopupMenuItem<RepositoryCommitContextAction>(
           value: RepositoryCommitContextAction.checkout,
+          enabled: mutationActionsEnabled,
           height: 30,
           child: Text('检出…'),
         ),
         PopupMenuItem<RepositoryCommitContextAction>(
           value: RepositoryCommitContextAction.merge,
+          enabled: mutationActionsEnabled,
           height: 30,
           child: Text('合并…'),
         ),
         PopupMenuDivider(),
         PopupMenuItem<RepositoryCommitContextAction>(
           value: RepositoryCommitContextAction.tag,
+          enabled: mutationActionsEnabled,
           height: 30,
           child: Text('标签…'),
         ),
         PopupMenuItem<RepositoryCommitContextAction>(
           value: RepositoryCommitContextAction.createBranch,
+          enabled: mutationActionsEnabled,
           height: 30,
           child: Text('分支…'),
         ),
@@ -3265,36 +3331,43 @@ class _CommitRow extends StatelessWidget {
         PopupMenuDivider(),
         PopupMenuItem<RepositoryCommitContextAction>(
           value: RepositoryCommitContextAction.pushRevision,
+          enabled: mutationActionsEnabled,
           height: 30,
           child: Text('推送修订版本…'),
         ),
         PopupMenuItem<RepositoryCommitContextAction>(
           value: RepositoryCommitContextAction.rebase,
+          enabled: mutationActionsEnabled,
           height: 30,
           child: Text('变基…'),
         ),
         PopupMenuItem<RepositoryCommitContextAction>(
           value: RepositoryCommitContextAction.interactiveRebase,
+          enabled: mutationActionsEnabled,
           height: 30,
           child: Text('交互式变基…'),
         ),
         PopupMenuItem<RepositoryCommitContextAction>(
           value: RepositoryCommitContextAction.reset,
+          enabled: mutationActionsEnabled,
           height: 30,
           child: Text('将当前分支重置到此次提交'),
         ),
         PopupMenuItem<RepositoryCommitContextAction>(
           value: RepositoryCommitContextAction.revert,
+          enabled: mutationActionsEnabled,
           height: 30,
           child: Text('提交回滚'),
         ),
         PopupMenuItem<RepositoryCommitContextAction>(
           value: RepositoryCommitContextAction.createPatch,
+          enabled: mutationActionsEnabled,
           height: 30,
           child: Text('创建补丁…'),
         ),
         PopupMenuItem<RepositoryCommitContextAction>(
           value: RepositoryCommitContextAction.cherryPick,
+          enabled: mutationActionsEnabled,
           height: 30,
           child: Text('遴选'),
         ),
@@ -3936,7 +4009,7 @@ class _CommitFileList extends StatelessWidget {
       );
     }
     return ListView.builder(
-      itemExtent: 34,
+      itemExtent: _scaledDenseHeight(context, 34),
       itemCount: files.length,
       itemBuilder: (context, index) => _CommitFileTile(
         file: files[index],
@@ -4027,13 +4100,25 @@ class _CommitFileTile extends StatelessWidget {
           child: const Text('自定义操作（待实现）'),
         ),
       ],
-      builder: (context, controller, child) => GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onSecondaryTapDown: (details) {
-          onTap?.call();
-          controller.open(position: details.localPosition);
+      builder: (context, controller, child) => CallbackShortcuts(
+        bindings: <ShortcutActivator, VoidCallback>{
+          const SingleActivator(LogicalKeyboardKey.f10, shift: true): () {
+            onTap?.call();
+            controller.open();
+          },
+          const SingleActivator(LogicalKeyboardKey.contextMenu): () {
+            onTap?.call();
+            controller.open();
+          },
         },
-        child: child,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onSecondaryTapDown: (details) {
+            onTap?.call();
+            controller.open(position: details.localPosition);
+          },
+          child: child,
+        ),
       ),
       child: Semantics(
         button: true,
@@ -4165,6 +4250,10 @@ class _ChangesPaneState extends State<_ChangesPane> {
                       ? _ChangeList(
                           changes: repository.changes,
                           isWorkingTreeBusy: repository.isWorkingTreeBusy,
+                          ordinaryMutationsEnabled:
+                              !repository.blocksRepositoryMutations,
+                          conflictActionsEnabled:
+                              !repository.hasRunningRepositoryTask,
                           onSelected: widget.onSelected,
                           onStageToggled: widget.onStageToggled,
                           onGroupStageToggled: widget.onGroupStageToggled,
@@ -4173,11 +4262,12 @@ class _ChangesPaneState extends State<_ChangesPane> {
                           onRemove: widget.onRemove,
                           onStopTracking: widget.onStopTracking,
                           onReset: widget.onReset,
-                          currentBranch: repository.currentBranch,
                         )
                       : _DiffPreview(
                           diff: repository.diff,
-                          onHunkAction: widget.onHunkAction,
+                          onHunkAction: repository.blocksRepositoryMutations
+                              ? null
+                              : widget.onHunkAction,
                           onBack: widget.onSelected == null
                               ? null
                               : () => widget.onSelected!(null),
@@ -4201,6 +4291,10 @@ class _ChangesPaneState extends State<_ChangesPane> {
                       child: _ChangeList(
                         changes: repository.changes,
                         isWorkingTreeBusy: repository.isWorkingTreeBusy,
+                        ordinaryMutationsEnabled:
+                            !repository.blocksRepositoryMutations,
+                        conflictActionsEnabled:
+                            !repository.hasRunningRepositoryTask,
                         onSelected: widget.onSelected,
                         onStageToggled: widget.onStageToggled,
                         onGroupStageToggled: widget.onGroupStageToggled,
@@ -4209,7 +4303,6 @@ class _ChangesPaneState extends State<_ChangesPane> {
                         onRemove: widget.onRemove,
                         onStopTracking: widget.onStopTracking,
                         onReset: widget.onReset,
-                        currentBranch: repository.currentBranch,
                       ),
                     ),
                     _ResizeDivider(
@@ -4222,7 +4315,9 @@ class _ChangesPaneState extends State<_ChangesPane> {
                     Expanded(
                       child: _DiffPreview(
                         diff: repository.diff,
-                        onHunkAction: widget.onHunkAction,
+                        onHunkAction: repository.blocksRepositoryMutations
+                            ? null
+                            : widget.onHunkAction,
                       ),
                     ),
                   ],
@@ -4326,6 +4421,8 @@ class _ChangeList extends StatefulWidget {
   const _ChangeList({
     required this.changes,
     required this.isWorkingTreeBusy,
+    required this.ordinaryMutationsEnabled,
+    required this.conflictActionsEnabled,
     required this.onSelected,
     required this.onStageToggled,
     required this.onGroupStageToggled,
@@ -4334,11 +4431,12 @@ class _ChangeList extends StatefulWidget {
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
-    required this.currentBranch,
   });
 
   final List<RepositoryChangeViewData> changes;
   final bool isWorkingTreeBusy;
+  final bool ordinaryMutationsEnabled;
+  final bool conflictActionsEnabled;
   final RepositoryChangeCallback? onSelected;
   final RepositoryChangeStageCallback? onStageToggled;
   final RepositoryChangeGroupStageCallback? onGroupStageToggled;
@@ -4347,7 +4445,6 @@ class _ChangeList extends StatefulWidget {
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
-  final String currentBranch;
 
   @override
   State<_ChangeList> createState() => _ChangeListState();
@@ -4368,7 +4465,20 @@ class _ChangeListState extends State<_ChangeList> {
     super.didUpdateWidget(oldWidget);
     final available = widget.changes.map(_changeSelectionKey).toSet();
     _selectedKeys.removeWhere((key) => !available.contains(key));
-    if (_selectedKeys.isEmpty) _syncModelSelection();
+    final previousModelSelection = oldWidget.changes
+        .where((change) => change.isSelected)
+        .map(_changeSelectionKey)
+        .toSet();
+    final modelSelection = widget.changes
+        .where((change) => change.isSelected)
+        .map(_changeSelectionKey)
+        .toSet();
+    if (!previousModelSelection.containsAll(modelSelection) ||
+        !modelSelection.containsAll(previousModelSelection)) {
+      _selectedKeys
+        ..clear()
+        ..addAll(modelSelection);
+    }
   }
 
   void _syncModelSelection() {
@@ -4422,6 +4532,7 @@ class _ChangeListState extends State<_ChangeList> {
   }
 
   void _toggleSelectedStage(bool stage) {
+    if (!widget.ordinaryMutationsEnabled) return;
     final selected = _selectedChanges
         .where((change) => change.canToggleStage && change.isStaged != stage)
         .toList(growable: false);
@@ -4442,6 +4553,8 @@ class _ChangeListState extends State<_ChangeList> {
       isChecked: isChecked,
       changes: changes,
       isWorkingTreeBusy: widget.isWorkingTreeBusy,
+      ordinaryMutationsEnabled: widget.ordinaryMutationsEnabled,
+      conflictActionsEnabled: widget.conflictActionsEnabled,
       selectedKeys: _selectedKeys,
       selectedChanges: () => _selectedChanges,
       onSelected: _selectChange,
@@ -4454,7 +4567,6 @@ class _ChangeListState extends State<_ChangeList> {
       onRemove: widget.onRemove,
       onStopTracking: widget.onStopTracking,
       onReset: widget.onReset,
-      currentBranch: widget.currentBranch,
     ),
   );
 
@@ -4537,6 +4649,8 @@ class _ChangeGroup extends StatelessWidget {
     required this.isChecked,
     required this.changes,
     required this.isWorkingTreeBusy,
+    required this.ordinaryMutationsEnabled,
+    required this.conflictActionsEnabled,
     required this.selectedKeys,
     required this.selectedChanges,
     required this.onSelected,
@@ -4549,13 +4663,14 @@ class _ChangeGroup extends StatelessWidget {
     required this.onStageToggled,
     required this.onGroupStageToggled,
     required this.onConflictAction,
-    required this.currentBranch,
   });
 
   final String title;
   final bool isChecked;
   final List<RepositoryChangeViewData> changes;
   final bool isWorkingTreeBusy;
+  final bool ordinaryMutationsEnabled;
+  final bool conflictActionsEnabled;
   final Set<String> selectedKeys;
   final ValueGetter<List<RepositoryChangeViewData>> selectedChanges;
   final ValueChanged<RepositoryChangeViewData> onSelected;
@@ -4568,7 +4683,6 @@ class _ChangeGroup extends StatelessWidget {
   final RepositoryChangeStageCallback? onStageToggled;
   final RepositoryChangeGroupStageCallback? onGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
-  final String currentBranch;
 
   /// 中文：将工作区文件按暂存状态分组，保持与桌面 Git 客户端一致的扫描顺序。
   /// English: Groups workspace files by staging state for a desktop Git-client
@@ -4584,7 +4698,7 @@ class _ChangeGroup extends StatelessWidget {
           key: ValueKey<String>(
             isChecked ? 'staged-files-header' : 'unstaged-files-header',
           ),
-          height: 30,
+          height: _scaledDenseHeight(context, 30),
           padding: const EdgeInsets.symmetric(horizontal: 8),
           decoration: BoxDecoration(
             color: colors.surfaceContainerLow,
@@ -4599,6 +4713,7 @@ class _ChangeGroup extends StatelessWidget {
                 value: isChecked && changes.isNotEmpty,
                 onChanged:
                     onGroupStageToggled == null ||
+                        !ordinaryMutationsEnabled ||
                         changes.isEmpty ||
                         changes.every((change) => !change.canToggleStage)
                     ? null
@@ -4641,7 +4756,7 @@ class _ChangeGroup extends StatelessWidget {
         ),
         for (final change in changes)
           SizedBox(
-            height: 34,
+            height: _scaledDenseHeight(context, 34),
             child: _ChangeTile(
               change: change,
               isSelected: selectedKeys.contains(_changeSelectionKey(change)),
@@ -4649,6 +4764,8 @@ class _ChangeGroup extends StatelessWidget {
               onTap: () => onSelected(change),
               onContextMenuRequested: () => onContextMenuRequested(change),
               onSelectedStageToggled: onSelectedStageToggled,
+              ordinaryMutationsEnabled: ordinaryMutationsEnabled,
+              conflictActionsEnabled: conflictActionsEnabled,
               onRevealInFinder: onRevealInFinder,
               onRemove: onRemove,
               onStopTracking: onStopTracking,
@@ -4659,7 +4776,6 @@ class _ChangeGroup extends StatelessWidget {
               onConflictAction: onConflictAction == null
                   ? null
                   : (action) => onConflictAction!(change, action),
-              currentBranch: currentBranch,
             ),
           ),
       ],
@@ -4675,13 +4791,14 @@ class _ChangeTile extends StatelessWidget {
     required this.onTap,
     required this.onContextMenuRequested,
     required this.onSelectedStageToggled,
+    required this.ordinaryMutationsEnabled,
+    required this.conflictActionsEnabled,
     required this.onRevealInFinder,
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
     required this.onStageToggled,
     required this.onConflictAction,
-    required this.currentBranch,
   });
 
   final RepositoryChangeViewData change;
@@ -4690,13 +4807,14 @@ class _ChangeTile extends StatelessWidget {
   final VoidCallback? onTap;
   final VoidCallback onContextMenuRequested;
   final ValueChanged<bool> onSelectedStageToggled;
+  final bool ordinaryMutationsEnabled;
+  final bool conflictActionsEnabled;
   final RepositoryChangeFilesCallback? onRevealInFinder;
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
   final VoidCallback? onStageToggled;
   final ValueChanged<RepositoryConflictAction>? onConflictAction;
-  final String currentBranch;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -4708,14 +4826,17 @@ class _ChangeTile extends StatelessWidget {
     // it; mixed selections must not expose a partially applicable write path.
     // 待实现写操作只有在所有当前选择均适用时才可开放，混合选择不能暴露部分适用的写入路径。
     bool canStopTracking() =>
+        ordinaryMutationsEnabled &&
         onStopTracking != null &&
         selectedChanges().isNotEmpty &&
         selectedChanges().every((item) => item.canStopTracking);
     bool canReset() =>
+        ordinaryMutationsEnabled &&
         onReset != null &&
         selectedChanges().isNotEmpty &&
         selectedChanges().every((item) => item.canResetToHead);
     bool canRemove() =>
+        ordinaryMutationsEnabled &&
         onRemove != null &&
         selectedChanges().isNotEmpty &&
         selectedChanges().every(
@@ -4732,6 +4853,9 @@ class _ChangeTile extends StatelessWidget {
     ].join(' ');
 
     final content = Semantics(
+      key: ValueKey<String>(
+        'change-tile-${change.isStaged ? "staged" : "unstaged"}-${change.path}',
+      ),
       button: true,
       selected: isSelected,
       label:
@@ -4760,7 +4884,9 @@ class _ChangeTile extends StatelessWidget {
                     child: Checkbox(
                       value: change.isStaged,
                       onChanged:
-                          onStageToggled == null || !change.canToggleStage
+                          !ordinaryMutationsEnabled ||
+                              onStageToggled == null ||
+                              !change.canToggleStage
                           ? null
                           : (_) => onStageToggled!(),
                       visualDensity: const VisualDensity(
@@ -4831,7 +4957,7 @@ class _ChangeTile extends StatelessWidget {
       consumeOutsideTap: true,
       useRootOverlay: true,
       menuChildren: [
-        MenuItemButton(onPressed: onTap, child: const Text('打开')),
+        MenuItemButton(onPressed: onTap, child: const Text('在差异视图中选择')),
         MenuItemButton(
           onPressed: onRevealInFinder == null
               ? null
@@ -4857,18 +4983,20 @@ class _ChangeTile extends StatelessWidget {
         const Divider(height: 1),
         MenuItemButton(
           onPressed:
-              selectedChanges().any(
-                (item) => !item.isStaged && item.canToggleStage,
-              )
+              ordinaryMutationsEnabled &&
+                  selectedChanges().any(
+                    (item) => !item.isStaged && item.canToggleStage,
+                  )
               ? () => onSelectedStageToggled(true)
               : null,
           child: const Text('添加到索引'),
         ),
         MenuItemButton(
           onPressed:
-              selectedChanges().any(
-                (item) => item.isStaged && item.canToggleStage,
-              )
+              ordinaryMutationsEnabled &&
+                  selectedChanges().any(
+                    (item) => item.isStaged && item.canToggleStage,
+                  )
               ? () => onSelectedStageToggled(false)
               : null,
           child: const Text('从索引中取消暂存'),
@@ -4903,6 +5031,7 @@ class _ChangeTile extends StatelessWidget {
         const MenuItemButton(onPressed: null, child: Text('忽略…（待实现）')),
         const Divider(height: 1),
         if (change.kind == RepositoryChangeKind.conflicted &&
+            conflictActionsEnabled &&
             change.isActionEnabled &&
             onConflictAction != null)
           SubmenuButton(
@@ -4913,13 +5042,25 @@ class _ChangeTile extends StatelessWidget {
         const MenuItemButton(onPressed: null, child: Text('查看选中的修改日志…（待实现）')),
         const MenuItemButton(onPressed: null, child: Text('审核选定的项目（待实现）')),
       ],
-      builder: (context, controller, child) => GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onSecondaryTapDown: (details) {
-          onContextMenuRequested();
-          controller.open(position: details.localPosition);
+      builder: (context, controller, child) => CallbackShortcuts(
+        bindings: <ShortcutActivator, VoidCallback>{
+          const SingleActivator(LogicalKeyboardKey.f10, shift: true): () {
+            onContextMenuRequested();
+            controller.open();
+          },
+          const SingleActivator(LogicalKeyboardKey.contextMenu): () {
+            onContextMenuRequested();
+            controller.open();
+          },
         },
-        child: child,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onSecondaryTapDown: (details) {
+            onContextMenuRequested();
+            controller.open(position: details.localPosition);
+          },
+          child: child,
+        ),
       ),
       child: content,
     );
@@ -4935,11 +5076,11 @@ class _ChangeTile extends StatelessWidget {
       ),
       MenuItemButton(
         onPressed: () => handler(RepositoryConflictAction.useOurs),
-        child: Text('使用“我的”版本解决（保留来自 $currentBranch 的更改）'),
+        child: const Text('使用当前基线版本解决（Git stage 2）'),
       ),
       MenuItemButton(
         onPressed: () => handler(RepositoryConflictAction.useTheirs),
-        child: const Text('使用“他们的”版本解决（接受合并来源的更改）'),
+        child: const Text('使用待应用版本解决（Git stage 3）'),
       ),
       const Divider(height: 1),
       MenuItemButton(
@@ -5048,7 +5189,7 @@ class _DiffPreview extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         Container(
-          height: 27,
+          height: _scaledDenseHeight(context, 27),
           padding: const EdgeInsets.symmetric(horizontal: 9),
           alignment: Alignment.centerLeft,
           decoration: BoxDecoration(
@@ -5091,21 +5232,50 @@ class _DiffPreview extends StatelessWidget {
                   title: '没有文本差异',
                   message: 'Git 没有返回可显示的补丁。',
                 )
-              : ListView.builder(
-                  itemCount: diff.lines.length,
-                  itemBuilder: (BuildContext context, int index) {
-                    final line = diff.lines[index];
-                    final canAct =
-                        line.kind == DiffLineKind.hunkHeader &&
-                        line.hunkIndex != null &&
-                        diff.hunkActions.isNotEmpty &&
-                        onHunkAction != null;
-                    return SizedBox(
-                      height: line.kind == DiffLineKind.hunkHeader ? 26 : 20,
-                      child: _DiffLine(
-                        line: line,
-                        hunkActions: canAct ? diff.hunkActions : const [],
-                        onHunkAction: canAct ? onHunkAction : null,
+              : LayoutBuilder(
+                  builder: (context, constraints) {
+                    final longestLine = diff.lines.fold<int>(
+                      0,
+                      (longest, line) => math.max(longest, line.text.length),
+                    );
+                    final textScale = math.max(
+                      1.0,
+                      MediaQuery.textScalerOf(context).scale(1),
+                    );
+                    final contentWidth = math.max(
+                      constraints.maxWidth,
+                      math.min(32768.0, 118 + longestLine * 7.2 * textScale),
+                    );
+                    return SingleChildScrollView(
+                      key: const ValueKey('diff-horizontal-scroll'),
+                      scrollDirection: Axis.horizontal,
+                      child: SizedBox(
+                        width: contentWidth,
+                        height: constraints.maxHeight,
+                        child: ListView.builder(
+                          itemCount: diff.lines.length,
+                          itemBuilder: (BuildContext context, int index) {
+                            final line = diff.lines[index];
+                            final canAct =
+                                line.kind == DiffLineKind.hunkHeader &&
+                                line.hunkIndex != null &&
+                                diff.hunkActions.isNotEmpty &&
+                                onHunkAction != null;
+                            return SizedBox(
+                              height: _scaledDenseHeight(
+                                context,
+                                line.kind == DiffLineKind.hunkHeader ? 26 : 20,
+                              ),
+                              child: _DiffLine(
+                                line: line,
+                                hunkActions: canAct
+                                    ? diff.hunkActions
+                                    : const [],
+                                onHunkAction: canAct ? onHunkAction : null,
+                              ),
+                            );
+                          },
+                        ),
                       ),
                     );
                   },
@@ -5596,7 +5766,7 @@ class _DenseTabBar<T> extends StatelessWidget {
     return Material(
       color: colors.surfaceContainerLow,
       child: Container(
-        height: 37,
+        height: _scaledDenseHeight(context, 37),
         decoration: BoxDecoration(
           border: Border(bottom: BorderSide(color: colors.outlineVariant)),
         ),
@@ -5667,7 +5837,7 @@ class _PaneHeader extends StatelessWidget {
     final ThemeData theme = Theme.of(context);
     final ColorScheme colors = theme.colorScheme;
     return Container(
-      height: 34,
+      height: _scaledDenseHeight(context, 34),
       padding: const EdgeInsets.symmetric(horizontal: 10),
       decoration: BoxDecoration(
         color: colors.surfaceContainerLow,
@@ -5819,7 +5989,7 @@ class _RepositoryStatusBar extends StatelessWidget {
       liveRegion: isRunning || data.hasWarnings,
       label: data.operationLabel ?? data.message,
       child: Container(
-        height: 28,
+        height: _scaledDenseHeight(context, 28),
         padding: const EdgeInsets.symmetric(horizontal: 10),
         decoration: BoxDecoration(
           color: colors.surfaceContainerLow,
@@ -5911,7 +6081,7 @@ class _HistorySplitBar extends StatelessWidget {
             slider: true,
             child: Container(
               key: const ValueKey<String>('history-split-bar'),
-              height: 34,
+              height: _scaledDenseHeight(context, 34),
               padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
                 border: Border(
@@ -5930,7 +6100,7 @@ class _HistorySplitBar extends StatelessWidget {
                   SizedBox(
                     key: const ValueKey<String>('history-search-slot'),
                     width: 190,
-                    height: 28,
+                    height: _scaledDenseHeight(context, 28),
                     child: _HistorySearchField(
                       query: query,
                       onChanged: onSearchChanged,
@@ -5946,7 +6116,7 @@ class _HistorySplitBar extends StatelessWidget {
   }
 }
 
-class _ResizeDivider extends StatelessWidget {
+class _ResizeDivider extends StatefulWidget {
   const _ResizeDivider({
     required this.axis,
     required this.semanticsLabel,
@@ -5959,39 +6129,96 @@ class _ResizeDivider extends StatelessWidget {
   final ValueChanged<double> onDelta;
   final bool showIndicator;
 
+  /// 中文：创建负责分隔条键盘焦点生命周期的状态对象。
+  /// English: Creates the state that owns the divider keyboard focus.
+  @override
+  State<_ResizeDivider> createState() => _ResizeDividerState();
+}
+
+class _ResizeDividerState extends State<_ResizeDivider> {
+  final FocusNode _focusNode = FocusNode(debugLabel: 'Resizable divider');
+  bool _isFocused = false;
+
+  /// 中文：释放分隔条拥有的键盘焦点节点。
+  /// English: Disposes the keyboard focus node owned by this divider.
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
-    final Color dividerColor = Theme.of(context).colorScheme.outlineVariant;
-    final bool vertical = axis == Axis.vertical;
+    final ColorScheme colors = Theme.of(context).colorScheme;
+    final Color dividerColor = _isFocused
+        ? colors.primary
+        : colors.outlineVariant;
+    final bool vertical = widget.axis == Axis.vertical;
 
-    return Semantics(
-      label: semanticsLabel,
-      slider: true,
-      child: MouseRegion(
-        cursor: vertical
-            ? SystemMouseCursors.resizeColumn
-            : SystemMouseCursors.resizeRow,
-        child: GestureDetector(
-          behavior: HitTestBehavior.translucent,
-          onHorizontalDragUpdate: vertical
-              ? (DragUpdateDetails details) => onDelta(details.delta.dx)
-              : null,
-          onVerticalDragUpdate: vertical
-              ? null
-              : (DragUpdateDetails details) => onDelta(details.delta.dy),
-          child: Container(
-            width: vertical ? 5 : double.infinity,
-            height: vertical ? double.infinity : 5,
-            alignment: Alignment.center,
-            child: showIndicator
-                ? Container(
-                    width: vertical ? 1 : double.infinity,
-                    height: vertical ? double.infinity : 1,
-                    color: dividerColor,
-                  )
-                : null,
+    void increase() => widget.onDelta(12);
+    void decrease() => widget.onDelta(-12);
+    return CallbackShortcuts(
+      bindings: <ShortcutActivator, VoidCallback>{
+        SingleActivator(
+          vertical
+              ? LogicalKeyboardKey.arrowRight
+              : LogicalKeyboardKey.arrowDown,
+        ): increase,
+        SingleActivator(
+          vertical ? LogicalKeyboardKey.arrowLeft : LogicalKeyboardKey.arrowUp,
+        ): decrease,
+      },
+      child: Listener(
+        onPointerDown: (_) => _focusNode.requestFocus(),
+        child: Focus(
+          focusNode: _focusNode,
+          onFocusChange: (isFocused) {
+            if (_isFocused != isFocused) {
+              setState(() => _isFocused = isFocused);
+            }
+          },
+          child: Semantics(
+            label: widget.semanticsLabel,
+            value: '当前尺寸',
+            increasedValue: '增大',
+            decreasedValue: '减小',
+            slider: true,
+            onIncrease: increase,
+            onDecrease: decrease,
+            child: MouseRegion(
+              cursor: vertical
+                  ? SystemMouseCursors.resizeColumn
+                  : SystemMouseCursors.resizeRow,
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onHorizontalDragUpdate: vertical
+                    ? (DragUpdateDetails details) =>
+                          widget.onDelta(details.delta.dx)
+                    : null,
+                onVerticalDragUpdate: vertical
+                    ? null
+                    : (DragUpdateDetails details) =>
+                          widget.onDelta(details.delta.dy),
+                child: Container(
+                  width: vertical ? 5 : double.infinity,
+                  height: vertical ? double.infinity : 5,
+                  alignment: Alignment.center,
+                  child: widget.showIndicator || _isFocused
+                      ? Container(
+                          width: vertical
+                              ? (_isFocused ? 2 : 1)
+                              : double.infinity,
+                          height: vertical
+                              ? double.infinity
+                              : (_isFocused ? 2 : 1),
+                          color: dividerColor,
+                        )
+                      : null,
+                ),
+              ),
+            ),
           ),
         ),
       ),

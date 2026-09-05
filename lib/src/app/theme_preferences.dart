@@ -114,6 +114,7 @@ final class GitDesktopThemePreferencesController
     extends Notifier<GitDesktopThemePreferencesState> {
   StreamSubscription<GitDesktopThemePreferences>? _subscription;
   Future<void> _saveTail = Future<void>.value();
+  Future<void> _subscriptionCancellationTail = Future<void>.value();
 
   @override
   GitDesktopThemePreferencesState build() {
@@ -151,6 +152,24 @@ final class GitDesktopThemePreferencesController
     });
   }
 
+  /// Waits for all theme writes queued by this Engine, including failures
+  /// already reflected in [GitDesktopThemePreferencesState.saveFailureCount].
+  ///
+  /// 中文：等待当前 Engine 已排队的主题写入完成；失败仍通过
+  /// [GitDesktopThemePreferencesState.saveFailureCount] 呈现。
+  Future<void> flushPendingWrites() => _saveTail;
+
+  /// Drains queued preference writes and waits for this Engine's file watcher
+  /// to release its native subscription before the provider container closes.
+  ///
+  /// 中文：等待偏好写入队列完成，并在 Provider 容器关闭前等待当前 Engine 的
+  /// 文件监听释放原生订阅资源。
+  Future<void> prepareForShutdown() async {
+    await _saveTail;
+    _queueSubscriptionCancellation();
+    await _subscriptionCancellationTail;
+  }
+
   /// Accepts a preference persisted by another Engine without writing it back.
   ///
   /// 中文：接收其他 Engine 持久化的偏好，不回写到文件。
@@ -163,9 +182,20 @@ final class GitDesktopThemePreferencesController
   ///
   /// 中文：释放当前 Provider 持有的文件监听。
   void _dispose() {
+    _queueSubscriptionCancellation();
+  }
+
+  /// Queues cancellation of the current watcher and preserves ordering with a
+  /// cancellation already in progress from a provider rebuild.
+  ///
+  /// 中文：排队取消当前文件监听，并与 Provider 重建时已开始的取消保持顺序。
+  void _queueSubscriptionCancellation() {
     final subscription = _subscription;
     _subscription = null;
-    if (subscription != null) unawaited(subscription.cancel());
+    if (subscription == null) return;
+    _subscriptionCancellationTail = _subscriptionCancellationTail.then(
+      (_) => subscription.cancel(),
+    );
   }
 }
 

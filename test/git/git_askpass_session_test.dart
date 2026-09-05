@@ -6,39 +6,48 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:git_desktop/src/git/git.dart';
 
 void main() {
-  test('serves one authenticated prompt and removes its endpoint', () async {
-    GitAskPassRequest? received;
-    final session = await GitAskPassSession.start(
-      onPrompt: (request) async {
-        received = request;
-        return 'correct horse battery staple';
-      },
-    );
-    addTearDown(session.close);
+  test(
+    'serves sequential authenticated prompts and removes its endpoint',
+    () async {
+      GitAskPassRequest? received;
+      final session = await GitAskPassSession.start(
+        onPrompt: (request) async {
+          received = request;
+          return 'correct horse battery staple';
+        },
+      );
+      addTearDown(session.close);
 
-    final directory = Directory(File(session.socketPath).parent.path);
-    expect((await directory.stat()).mode & 0x1ff, 0x1c0);
-    expect((await FileStat.stat(session.socketPath)).mode & 0x1ff, 0x180);
-    expect(
-      (await FileStat.stat(session.socketPath)).type,
-      FileSystemEntityType.unixDomainSock,
-    );
+      final directory = Directory(File(session.socketPath).parent.path);
+      expect((await directory.stat()).mode & 0x1ff, 0x1c0);
+      expect((await FileStat.stat(session.socketPath)).mode & 0x1ff, 0x180);
+      expect(
+        (await FileStat.stat(session.socketPath)).type,
+        FileSystemEntityType.unixDomainSock,
+      );
 
-    final response = await _request(
-      session,
-      prompt: 'Password for https://example.test:',
-    );
+      final passwordResponse = await _request(
+        session,
+        prompt: 'Password for https://example.test:',
+      );
+      final usernameResponse = await _request(
+        session,
+        prompt: 'Username for https://example.test:',
+      );
 
-    expect(response, '{"secret":"correct horse battery staple"}\n');
-    expect(received?.nonce, session.nonce);
-    expect(received?.kind, GitAskPassPromptKind.password);
-    await session.closed;
-    expect(await directory.exists(), isFalse);
-    expect(
-      (await FileStat.stat(session.socketPath)).type,
-      FileSystemEntityType.notFound,
-    );
-  });
+      expect(passwordResponse, '{"secret":"correct horse battery staple"}\n');
+      expect(usernameResponse, '{"secret":"correct horse battery staple"}\n');
+      expect(received?.nonce, session.nonce);
+      expect(received?.kind, GitAskPassPromptKind.username);
+      await session.close();
+      await session.closed;
+      expect(await directory.exists(), isFalse);
+      expect(
+        (await FileStat.stat(session.socketPath)).type,
+        FileSystemEntityType.notFound,
+      );
+    },
+  );
 
   test(
     'rejects a mismatched nonce without calling the prompt handler',
@@ -83,11 +92,12 @@ void main() {
     expect(session.status, GitAskPassSessionStatus.rejected);
   });
 
-  test('rejects a replay after a completed one-time session', () async {
+  test('rejects requests after an operation session closes', () async {
     final session = await GitAskPassSession.start(onPrompt: (_) async => 'one');
     addTearDown(session.close);
 
     expect(await _request(session, prompt: 'Password:'), '{"secret":"one"}\n');
+    await session.close();
     await session.closed;
 
     await expectLater(
@@ -96,13 +106,15 @@ void main() {
     );
   });
 
-  test('allows only one connection', () async {
+  test('serializes concurrent connections', () async {
     final promptStarted = Completer<void>();
     final allowResponse = Completer<void>();
     final session = await GitAskPassSession.start(
       onPrompt: (_) async {
-        promptStarted.complete();
-        await allowResponse.future;
+        if (!promptStarted.isCompleted) {
+          promptStarted.complete();
+          await allowResponse.future;
+        }
         return 'secret';
       },
     );
@@ -115,13 +127,15 @@ void main() {
     await first.flush();
     await promptStarted.future;
 
-    await expectLater(
-      _connect(session.socketPath),
-      throwsA(isA<SocketException>()),
+    final second = await _connect(session.socketPath);
+    second.add(
+      utf8.encode('{"nonce":"${session.nonce}","prompt":"Username:"}\n'),
     );
+    await second.flush();
     allowResponse.complete();
     expect(await utf8.decoder.bind(first).join(), '{"secret":"secret"}\n');
-    await session.closed;
+    expect(await utf8.decoder.bind(second).join(), '{"secret":"secret"}\n');
+    await session.close();
   });
 
   test('times out and removes an unused endpoint', () async {
@@ -137,6 +151,22 @@ void main() {
     expect(await directory.exists(), isFalse);
   });
 
+  test('restarts the idle timeout for each sequential prompt', () async {
+    final session = await GitAskPassSession.start(
+      timeout: const Duration(milliseconds: 300),
+      onPrompt: (_) async {
+        await Future<void>.delayed(const Duration(milliseconds: 180));
+        return 'secret';
+      },
+    );
+    addTearDown(session.close);
+
+    expect(await _request(session, prompt: 'Username:'), isNotEmpty);
+    await Future<void>.delayed(const Duration(milliseconds: 180));
+    expect(await _request(session, prompt: 'Password:'), isNotEmpty);
+    expect(session.status, GitAskPassSessionStatus.completed);
+  });
+
   test(
     'builds AskPass environment only from the session bundle path',
     () async {
@@ -145,6 +175,7 @@ void main() {
       final session = await GitAskPassSession.startForTesting(
         onPrompt: (_) async => null,
         appExecutablePath: appExecutablePath,
+        timeout: const Duration(seconds: 61),
       );
       addTearDown(session.close);
 
@@ -157,12 +188,13 @@ void main() {
       expect(environment['GIT_TERMINAL_PROMPT'], '0');
       expect(environment['GIT_DESKTOP_ASKPASS_SOCKET'], session.socketPath);
       expect(environment['GIT_DESKTOP_ASKPASS_NONCE'], session.nonce);
+      expect(environment['GIT_DESKTOP_ASKPASS_TIMEOUT_SECONDS'], '61');
       expect(session.environmentForBundledHelper, returnsNormally);
     },
   );
 
   test(
-    'the native helper exchanges one secret only through the session socket',
+    'the native helper exchanges sequential secrets through the session socket',
     () async {
       final temporaryDirectory = await Directory.systemTemp.createTemp(
         'git_desktop_askpass_helper_',
@@ -208,9 +240,11 @@ void main() {
       final session = await GitAskPassSession.startForTesting(
         onPrompt: (request) async {
           expect(request.kind, GitAskPassPromptKind.password);
+          await Future<void>.delayed(const Duration(milliseconds: 600));
           return 'test-only-secret';
         },
         appExecutablePath: '${macosDirectory.path}/Git Desktop',
+        timeout: const Duration(seconds: 1),
         useNativeBroker: true,
       );
       addTearDown(session.close);
@@ -224,8 +258,18 @@ void main() {
       expect(result.exitCode, 0, reason: result.stderr);
       expect(result.stdout, 'test-only-secret\n');
       expect(result.stderr, isEmpty);
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      final secondResult = await Process.run(
+        helper.path,
+        <String>['Password for https://example.test:'],
+        environment: session.environmentForBundledHelper(),
+        includeParentEnvironment: false,
+      );
+      expect(secondResult.exitCode, 0, reason: secondResult.stderr);
+      expect(secondResult.stdout, 'test-only-secret\n');
+      await session.close();
       await session.closed;
-      expect(session.status, GitAskPassSessionStatus.completed);
+      expect(session.status, GitAskPassSessionStatus.closed);
 
       final nonSocket = File('${temporaryDirectory.path}/not-a-socket');
       await nonSocket.writeAsString('not an IPC endpoint');
@@ -235,6 +279,7 @@ void main() {
         environment: <String, String>{
           'GIT_DESKTOP_ASKPASS_SOCKET': nonSocket.path,
           'GIT_DESKTOP_ASKPASS_NONCE': '0' * 64,
+          'GIT_DESKTOP_ASKPASS_TIMEOUT_SECONDS': '60',
         },
         includeParentEnvironment: false,
       );

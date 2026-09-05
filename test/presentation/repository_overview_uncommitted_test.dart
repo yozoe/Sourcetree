@@ -531,6 +531,7 @@ void main() {
               name: 'playground',
               path: '/tmp/playground',
               currentBranch: 'main',
+              isRebaseInProgress: true,
               isWorkingTreeClean: false,
               changes: [conflict],
             ),
@@ -557,15 +558,111 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('打开内部 Diff 工具'), findsOneWidget);
-    expect(find.textContaining('使用“我的”版本解决'), findsOneWidget);
-    expect(find.textContaining('使用“他们的”版本解决'), findsOneWidget);
+    expect(find.textContaining('使用当前基线版本解决'), findsOneWidget);
+    expect(find.textContaining('使用待应用版本解决'), findsOneWidget);
     expect(find.text('重新合并'), findsOneWidget);
     expect(find.text('标记为已解决'), findsOneWidget);
     expect(find.text('标记为未解决'), findsOneWidget);
 
-    await tester.tap(find.textContaining('使用“我的”版本解决'));
+    await tester.tap(find.textContaining('使用当前基线版本解决'));
     await tester.pumpAndSettle();
     expect(selectedAction, RepositoryConflictAction.useOurs);
+  });
+
+  testWidgets('paused operation blocks ordinary workspace writes', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    const tracked = RepositoryChangeViewData(
+      path: 'tracked.dart',
+      kind: RepositoryChangeKind.modified,
+      isStaged: true,
+      isSelected: true,
+    );
+    const conflict = RepositoryChangeViewData(
+      path: 'conflict.dart',
+      kind: RepositoryChangeKind.conflicted,
+      canToggleStage: false,
+    );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isRebaseInProgress: true,
+              isWorkingTreeClean: false,
+              changes: [tracked, conflict],
+              selectedChange: tracked,
+              diff: DiffViewData(
+                path: 'tracked.dart',
+                hunkActions: [RepositoryDiffHunkAction.unstage],
+                lines: [
+                  DiffLineViewData(
+                    kind: DiffLineKind.hunkHeader,
+                    text: '@@ -1 +1 @@',
+                    hunkIndex: 0,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onChangeStageToggled: (_) {},
+            onChangeGroupStageToggled: (_, _) {},
+            onChangeRemove: (_) {},
+            onChangeStopTracking: (_) {},
+            onChangeReset: (_) {},
+            onDiffHunkAction: (_, _) {},
+            onConflictAction: (_, _) {},
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final stagedHeader = find.byKey(const ValueKey('staged-files-header'));
+    expect(
+      tester
+          .widget<Checkbox>(
+            find.descendant(of: stagedHeader, matching: find.byType(Checkbox)),
+          )
+          .onChanged,
+      isNull,
+    );
+    final trackedTile = find.byKey(
+      const ValueKey('change-tile-staged-tracked.dart'),
+    );
+    expect(
+      tester
+          .widget<Checkbox>(
+            find.descendant(of: trackedTile, matching: find.byType(Checkbox)),
+          )
+          .onChanged,
+      isNull,
+    );
+    expect(find.text('取消暂存区块'), findsNothing);
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('tracked.dart').first),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+    for (final label in ['从索引中取消暂存', '移除', '停止追踪', '重置…']) {
+      expect(
+        tester
+            .widget<MenuItemButton>(find.widgetWithText(MenuItemButton, label))
+            .onPressed,
+        isNull,
+        reason: label,
+      );
+    }
   });
 
   testWidgets(

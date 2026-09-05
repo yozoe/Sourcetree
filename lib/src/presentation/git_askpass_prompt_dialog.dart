@@ -2,7 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../git/git.dart';
 
-/// Presents a credential field for a validated, single-use AskPass request.
+/// Presents a credential field for one request in a validated AskPass session.
 ///
 /// Raw Git prompts can contain a full URL, username, or token. This dialog
 /// deliberately renders only a broad prompt type and returns the submitted

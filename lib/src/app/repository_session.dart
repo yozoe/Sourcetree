@@ -480,6 +480,16 @@ final class RepositorySessionController
   GitCancellationToken? _stashCancellation;
   GitCancellationToken? _historyMutationCancellation;
   GitCancellationToken? _repositoryDetailsCancellation;
+  final Set<Future<void>> _activeGitTasks = <Future<void>>{};
+  var _isShuttingDown = false;
+  var _fetchPreflightInProgress = false;
+  var _pushPreflightInProgress = false;
+  var _pullPreflightInProgress = false;
+  var _removeRemotePreflightInProgress = false;
+  static final Object _trackedGitTaskZoneKey = Object();
+
+  bool get _isInsideTrackedGitTask =>
+      Zone.current[_trackedGitTaskZoneKey] == this;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -500,6 +510,13 @@ final class RepositorySessionController
   Future<void> prepareForShutdown({
     Duration timeout = const Duration(seconds: 2),
   }) async {
+    final deadline = DateTime.now().add(timeout);
+    Duration remaining() {
+      final value = deadline.difference(DateTime.now());
+      return value.isNegative ? Duration.zero : value;
+    }
+
+    _isShuttingDown = true;
     _repositoryGeneration++;
     _historyGeneration++;
     _diffGeneration++;
@@ -507,21 +524,64 @@ final class RepositorySessionController
     _commitDiffGeneration++;
     _cancelActiveGitOperations();
 
-    final deadline = DateTime.now().add(timeout);
-    while (_hasActiveGitOperation && DateTime.now().isBefore(deadline)) {
-      await Future<void>.delayed(const Duration(milliseconds: 10));
+    await _runner.cancelAllAndWait(timeout: remaining());
+    if (_activeGitTasks.isNotEmpty && remaining() > Duration.zero) {
+      try {
+        await Future.wait<void>(
+          _activeGitTasks.toList(growable: false),
+        ).timeout(remaining());
+      } on TimeoutException {
+        // The outer native host also has a bounded watchdog. A final runner
+        // sweep below escalates any process still owned by this Engine.
+      }
     }
+    // A tracked flow may perform a final Git refresh after its mutation exits.
+    await _runner.cancelAllAndWait(timeout: remaining());
   }
 
-  bool get _hasActiveGitOperation =>
-      _cloneCancellation != null ||
-      _fetchCancellation != null ||
-      _pullCancellation != null ||
-      _pushCancellation != null ||
-      _pushVerificationCancellation != null ||
-      _stashCancellation != null ||
-      _historyMutationCancellation != null ||
-      _repositoryDetailsCancellation != null;
+  /// Runs one application-layer Git flow under the Engine shutdown barrier.
+  ///
+  /// 中文：在 Engine 关闭屏障内执行一个应用层 Git 流程；关闭开始后
+  /// 不再启动新流程，已开始的流程完成前不释放 Engine。
+  Future<T?> _trackGitTask<T>(Future<T> Function() run) {
+    if (_isShuttingDown) return Future<T?>.value();
+    late final Future<void> completion;
+    final operation = runZoned(
+      run,
+      zoneValues: <Object?, Object?>{_trackedGitTaskZoneKey: this},
+    );
+    completion = operation
+        .then<void>((_) {}, onError: (Object error, StackTrace stackTrace) {})
+        .whenComplete(() => _activeGitTasks.remove(completion));
+    _activeGitTasks.add(completion);
+    return operation;
+  }
+
+  /// Runs a boolean Git entry point exactly once inside the shutdown barrier.
+  ///
+  /// 中文：确保返回布尔值的 Git 入口只在关闭屏障内执行一次；嵌套调用复用当前任务。
+  Future<bool> _trackBooleanGitTask(Future<bool> Function() run) async {
+    if (_isInsideTrackedGitTask) return run();
+    return await _trackGitTask<bool>(run) ?? false;
+  }
+
+  /// Runs a void Git entry point inside the shutdown barrier.
+  ///
+  /// 中文：确保无返回值的 Git 入口在关闭屏障内执行，嵌套读取复用当前任务。
+  Future<void> _trackVoidGitTask(Future<void> Function() run) async {
+    if (_isInsideTrackedGitTask) return run();
+    await _trackGitTask<void>(run);
+  }
+
+  /// Runs a value-producing Git entry point or reports shutdown cancellation.
+  ///
+  /// 中文：在关闭屏障内执行必须返回值的 Git 入口；关闭后新请求以取消错误结束。
+  Future<T> _trackRequiredGitTask<T>(Future<T> Function() run) async {
+    if (_isInsideTrackedGitTask) return run();
+    final result = await _trackGitTask<T>(run);
+    if (result == null) throw const GitCancelledException();
+    return result;
+  }
 
   void _cancelActiveGitOperations() {
     _cloneCancellation?.cancel();
@@ -540,6 +600,9 @@ final class RepositorySessionController
   /// workspace-wide loading or error state. A new request cancels a prior
   /// details read, and a repository switch invalidates its result.
   Future<GitRepositoryDetails> readRepositoryDetails() async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackRequiredGitTask(readRepositoryDetails);
+    }
     final repository = state.repository;
     if (repository == null) {
       throw const GitException('请先打开一个仓库。');
@@ -626,6 +689,18 @@ final class RepositorySessionController
         : RepositoryOperationOutcome.failed;
   }
 
+  /// Returns whether an asynchronous preflight still belongs to the active
+  /// repository and may publish state after an await boundary.
+  ///
+  /// 中文：判断异步预检在跨越 await 后是否仍属于当前仓库并允许发布状态。
+  bool _isCurrentRepositoryRequest(
+    GitRepository repository,
+    int repositoryGeneration,
+  ) =>
+      !_isShuttingDown &&
+      repositoryGeneration == _repositoryGeneration &&
+      identical(state.repository, repository);
+
   /// 中文：打开目标仓库、读取初始状态和首屏历史，并自动选中最新提交。
   ///
   /// 输入为用户选择的仓库路径；成功后状态切换为 ready，最新提交的详情与首个
@@ -645,6 +720,21 @@ final class RepositorySessionController
   Future<void> openRepository(
     String path, {
     bool preserveWorkingTreeSurface = false,
+  }) async {
+    await _trackGitTask<void>(
+      () => _openRepository(
+        path,
+        preserveWorkingTreeSurface: preserveWorkingTreeSurface,
+      ),
+    );
+  }
+
+  /// 中文：执行已纳入关闭屏障的仓库打开与初始读取。
+  /// English: Performs repository opening and initial reads inside the
+  /// shutdown barrier.
+  Future<void> _openRepository(
+    String path, {
+    required bool preserveWorkingTreeSurface,
   }) async {
     final normalizedPath = path.trim();
     if (normalizedPath.isEmpty) {
@@ -770,7 +860,7 @@ final class RepositorySessionController
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
     }
   }
@@ -778,7 +868,13 @@ final class RepositorySessionController
   /// Initializes only an empty directory, then opens the new repository.
   /// 中文：初始化当前功能。
   /// English: Initializes the current feature.
-  Future<bool> initializeRepository(String path) async {
+  Future<bool> initializeRepository(String path) async =>
+      await _trackGitTask<bool>(() => _initializeRepository(path)) ?? false;
+
+  /// 中文：初始化目录并在同一关闭屏障中打开新仓库。
+  /// English: Initializes a directory and opens the new repository within the
+  /// same shutdown barrier.
+  Future<bool> _initializeRepository(String path) async {
     final normalizedPath = path.trim();
     if (normalizedPath.isEmpty ||
         state.phase == RepositorySessionPhase.loading) {
@@ -803,7 +899,7 @@ final class RepositorySessionController
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
     }
@@ -817,6 +913,12 @@ final class RepositorySessionController
     required String remoteUrl,
     required String directoryPath,
   }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(
+        () =>
+            cloneRepository(remoteUrl: remoteUrl, directoryPath: directoryPath),
+      );
+    }
     if (remoteUrl.trim().isEmpty ||
         directoryPath.trim().isEmpty ||
         state.phase == RepositorySessionPhase.loading) {
@@ -899,6 +1001,14 @@ final class RepositorySessionController
     required String remoteUrl,
     required String parentDirectoryPath,
   }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(
+        () => cloneRepositoryIntoParent(
+          remoteUrl: remoteUrl,
+          parentDirectoryPath: parentDirectoryPath,
+        ),
+      );
+    }
     if (remoteUrl.trim().isEmpty || parentDirectoryPath.trim().isEmpty) {
       return false;
     }
@@ -946,22 +1056,40 @@ final class RepositorySessionController
   /// English: Fetches one or every remote according to the dialog options and
   /// refreshes local references after the operation completes.
   Future<bool> fetchWithOptions(GitFetchOptions options) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(() => fetchWithOptions(options));
+    }
     final normalizedRemote = options.remoteName.trim();
     final repository = state.repository;
-    if (repository == null || state.phase == RepositorySessionPhase.loading) {
+    final repositoryGeneration = _repositoryGeneration;
+    if (repository == null ||
+        state.phase == RepositorySessionPhase.loading ||
+        _isShuttingDown ||
+        _fetchPreflightInProgress ||
+        _fetchCancellation != null) {
       return false;
     }
+    _fetchPreflightInProgress = true;
     List<String> remoteNames;
     try {
       remoteNames = await _reader.readRemoteNames(repository);
     } on Object catch (error, stackTrace) {
-      state = state.copyWith(
-        phase: RepositorySessionPhase.error,
-        isFetchRunning: false,
-        isDiffLoading: false,
-        message: _friendlyError(error),
-        technicalDetails: _technicalDetails(error, stackTrace),
-      );
+      if (_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
+        state = state.copyWith(
+          phase: RepositorySessionPhase.error,
+          isFetchRunning: false,
+          isDiffLoading: false,
+          message: _friendlyError(error),
+          technicalDetails: _technicalDetails(error, stackTrace),
+        );
+      }
+      return false;
+    } finally {
+      _fetchPreflightInProgress = false;
+    }
+    if (!_isCurrentRepositoryRequest(repository, repositoryGeneration) ||
+        state.phase == RepositorySessionPhase.loading ||
+        _fetchCancellation != null) {
       return false;
     }
     final hasRemote = options.fetchAllRemotes
@@ -1032,6 +1160,9 @@ final class RepositorySessionController
   /// redacted before it reaches UI state.
   /// 中文：读取拉取对话框所需的远端地址，并在返回前脱敏凭据。
   Future<String?> readRemoteUrl(String remoteName) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackGitTask<String?>(() => readRemoteUrl(remoteName));
+    }
     final repository = state.repository;
     if (repository == null) return null;
     final url = await _reader.readRemoteUrl(repository, remoteName: remoteName);
@@ -1043,6 +1174,9 @@ final class RepositorySessionController
   /// English: Reads configured remote names for explicit pull and push dialog
   /// selection in the current repository.
   Future<List<String>> readRemoteNames() async {
+    if (!_isInsideTrackedGitTask) {
+      return await _trackGitTask<List<String>>(readRemoteNames) ?? const [];
+    }
     final repository = state.repository;
     if (repository == null) return const [];
     return _reader.readRemoteNames(repository);
@@ -1053,28 +1187,44 @@ final class RepositorySessionController
   ///
   /// 中文：确认远端仍存在后移除其本地配置，并重新从 Git 读取完整仓库状态。
   Future<bool> removeRemote(String remoteName) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(() => removeRemote(remoteName));
+    }
     final repository = state.repository;
+    final repositoryGeneration = _repositoryGeneration;
     final normalizedName = remoteName.trim();
     if (repository == null ||
         normalizedName.isEmpty ||
         state.operationState != GitRepositoryOperationState.none ||
-        state.phase == RepositorySessionPhase.loading) {
+        state.phase == RepositorySessionPhase.loading ||
+        _isShuttingDown ||
+        _removeRemotePreflightInProgress) {
       return false;
     }
+    _removeRemotePreflightInProgress = true;
     try {
       final remoteNames = await _reader.readRemoteNames(repository);
-      if (!remoteNames.contains(normalizedName)) return false;
+      if (_isShuttingDown ||
+          !identical(state.repository, repository) ||
+          state.phase == RepositorySessionPhase.loading ||
+          !remoteNames.contains(normalizedName)) {
+        return false;
+      }
       await _writer.removeRemote(repository, normalizedName);
       await refresh();
       return state.phase == RepositorySessionPhase.ready;
     } on Object catch (error, stackTrace) {
-      state = state.copyWith(
-        phase: RepositorySessionPhase.error,
-        isDiffLoading: false,
-        message: _friendlyError(error),
-        technicalDetails: _technicalDetails(error, stackTrace),
-      );
+      if (_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
+        state = state.copyWith(
+          phase: RepositorySessionPhase.error,
+          isDiffLoading: false,
+          message: _friendlyError(error),
+          technicalDetails: _technicalDetails(error, stackTrace),
+        );
+      }
       return false;
+    } finally {
+      _removeRemotePreflightInProgress = false;
     }
   }
 
@@ -1083,13 +1233,18 @@ final class RepositorySessionController
   /// English: Fast-forward pulls only with a clean work tree/index and an
   /// upstream, refreshing reference state after failure as well.
   Future<bool> pullFastForward() async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(pullFastForward);
+    }
     final repository = state.repository;
     final status = state.status;
     if (repository == null ||
         status == null ||
         status.branch.upstream == null ||
         !status.isClean ||
-        state.phase == RepositorySessionPhase.loading) {
+        state.phase == RepositorySessionPhase.loading ||
+        _isShuttingDown ||
+        _pullCancellation != null) {
       return false;
     }
     final cancellation = GitCancellationToken();
@@ -1150,24 +1305,41 @@ final class RepositorySessionController
   /// Runs a configured pull from the Sourcetree-style dialog.
   /// 中文：按 Sourcetree 风格拉取对话框的配置执行拉取。
   Future<bool> pullWithOptions(GitPullOptions options) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(() => pullWithOptions(options));
+    }
     final repository = state.repository;
     final status = state.status;
+    final repositoryGeneration = _repositoryGeneration;
     if (repository == null ||
         status == null ||
-        state.phase == RepositorySessionPhase.loading) {
+        state.phase == RepositorySessionPhase.loading ||
+        _isShuttingDown ||
+        _pullPreflightInProgress ||
+        _pullCancellation != null) {
       return false;
     }
+    _pullPreflightInProgress = true;
     List<String> remoteNames;
     try {
       remoteNames = await _reader.readRemoteNames(repository);
     } on Object catch (error, stackTrace) {
-      state = state.copyWith(
-        phase: RepositorySessionPhase.error,
-        isPullRunning: false,
-        isDiffLoading: false,
-        message: _friendlyError(error),
-        technicalDetails: _technicalDetails(error, stackTrace),
-      );
+      if (_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
+        state = state.copyWith(
+          phase: RepositorySessionPhase.error,
+          isPullRunning: false,
+          isDiffLoading: false,
+          message: _friendlyError(error),
+          technicalDetails: _technicalDetails(error, stackTrace),
+        );
+      }
+      return false;
+    } finally {
+      _pullPreflightInProgress = false;
+    }
+    if (!_isCurrentRepositoryRequest(repository, repositoryGeneration) ||
+        state.phase == RepositorySessionPhase.loading ||
+        _pullCancellation != null) {
       return false;
     }
     if (!remoteNames.contains(options.remoteName.trim())) return false;
@@ -1227,11 +1399,13 @@ final class RepositorySessionController
 
   /// Continues the paused rebase after conflict fixes have been staged.
   /// 中文：暂存冲突修复后继续暂停的变基。
-  Future<bool> continueRebase() => _finishPausedRebase(abort: false);
+  Future<bool> continueRebase() =>
+      _trackBooleanGitTask(() => _finishPausedRebase(abort: false));
 
   /// Aborts the paused rebase and restores the pre-rebase state.
   /// 中文：中止暂停的变基并恢复变基前状态。
-  Future<bool> abortRebase() => _finishPausedRebase(abort: true);
+  Future<bool> abortRebase() =>
+      _trackBooleanGitTask(() => _finishPausedRebase(abort: true));
 
   Future<bool> _finishPausedRebase({required bool abort}) async {
     final repository = state.repository;
@@ -1304,42 +1478,52 @@ final class RepositorySessionController
 
   /// Continues a paused cherry-pick after conflict fixes have been staged.
   /// 中文：暂存冲突修复后继续暂停的遴选。
-  Future<bool> continueCherryPick() => _finishPausedSequencer(
-    expectedState: GitRepositoryOperationState.cherryPick,
-    successMessage: '已继续遴选。',
-    conflictMessage: '遴选仍有冲突。请解决冲突并暂存后继续，或选择中止遴选。',
-    run: (repository, cancellation) =>
-        _writer.continueCherryPick(repository, cancellationToken: cancellation),
+  Future<bool> continueCherryPick() => _trackBooleanGitTask(
+    () => _finishPausedSequencer(
+      expectedState: GitRepositoryOperationState.cherryPick,
+      successMessage: '已继续遴选。',
+      conflictMessage: '遴选仍有冲突。请解决冲突并暂存后继续，或选择中止遴选。',
+      run: (repository, cancellation) => _writer.continueCherryPick(
+        repository,
+        cancellationToken: cancellation,
+      ),
+    ),
   );
 
   /// Aborts a paused cherry-pick and restores its pre-pick branch state.
   /// 中文：中止暂停的遴选并恢复遴选前状态。
-  Future<bool> abortCherryPick() => _finishPausedSequencer(
-    expectedState: GitRepositoryOperationState.cherryPick,
-    successMessage: '已中止遴选。',
-    conflictMessage: '遴选仍有冲突。',
-    run: (repository, cancellation) =>
-        _writer.abortCherryPick(repository, cancellationToken: cancellation),
+  Future<bool> abortCherryPick() => _trackBooleanGitTask(
+    () => _finishPausedSequencer(
+      expectedState: GitRepositoryOperationState.cherryPick,
+      successMessage: '已中止遴选。',
+      conflictMessage: '遴选仍有冲突。',
+      run: (repository, cancellation) =>
+          _writer.abortCherryPick(repository, cancellationToken: cancellation),
+    ),
   );
 
   /// Continues a paused revert after conflict fixes have been staged.
   /// 中文：暂存冲突修复后继续暂停的回滚。
-  Future<bool> continueRevert() => _finishPausedSequencer(
-    expectedState: GitRepositoryOperationState.revert,
-    successMessage: '已继续回滚。',
-    conflictMessage: '回滚仍有冲突。请解决冲突并暂存后继续，或选择中止回滚。',
-    run: (repository, cancellation) =>
-        _writer.continueRevert(repository, cancellationToken: cancellation),
+  Future<bool> continueRevert() => _trackBooleanGitTask(
+    () => _finishPausedSequencer(
+      expectedState: GitRepositoryOperationState.revert,
+      successMessage: '已继续回滚。',
+      conflictMessage: '回滚仍有冲突。请解决冲突并暂存后继续，或选择中止回滚。',
+      run: (repository, cancellation) =>
+          _writer.continueRevert(repository, cancellationToken: cancellation),
+    ),
   );
 
   /// Aborts a paused revert and restores its pre-revert branch state.
   /// 中文：中止暂停的回滚并恢复回滚前状态。
-  Future<bool> abortRevert() => _finishPausedSequencer(
-    expectedState: GitRepositoryOperationState.revert,
-    successMessage: '已中止回滚。',
-    conflictMessage: '回滚仍有冲突。',
-    run: (repository, cancellation) =>
-        _writer.abortRevert(repository, cancellationToken: cancellation),
+  Future<bool> abortRevert() => _trackBooleanGitTask(
+    () => _finishPausedSequencer(
+      expectedState: GitRepositoryOperationState.revert,
+      successMessage: '已中止回滚。',
+      conflictMessage: '回滚仍有冲突。',
+      run: (repository, cancellation) =>
+          _writer.abortRevert(repository, cancellationToken: cancellation),
+    ),
   );
 
   Future<bool> _finishPausedSequencer({
@@ -1412,6 +1596,9 @@ final class RepositorySessionController
   /// Sourcetree-style toolbar action remains clickable; uncertain outcomes are
   /// verified against the remote.
   Future<bool> pushUpstream() async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(pushUpstream);
+    }
     final repository = state.repository;
     final status = state.status;
     final branch = status?.branch;
@@ -1425,7 +1612,11 @@ final class RepositorySessionController
         ((!branch.isDetached &&
                 (branch.upstream != null || state.hasOriginRemote)) ||
             (branch.isDetached && detachedPushBranch != null));
-    if (!canPush || state.phase == RepositorySessionPhase.loading) {
+    if (!canPush ||
+        state.phase == RepositorySessionPhase.loading ||
+        _isShuttingDown ||
+        _pushPreflightInProgress ||
+        _pushCancellation != null) {
       return false;
     }
     final cancellation = GitCancellationToken();
@@ -1498,12 +1689,19 @@ final class RepositorySessionController
   /// English: Pushes branch mappings explicitly selected in the panel and can
   /// include all tags; refreshes the Git-backed state after completion.
   Future<bool> pushWithOptions(GitPushOptions options) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(() => pushWithOptions(options));
+    }
     final repository = state.repository;
+    final repositoryGeneration = _repositoryGeneration;
     final selectedLocalBranches = options.branches
         .map((branch) => branch.localBranch.trim())
         .toSet();
     if (repository == null ||
         state.phase == RepositorySessionPhase.loading ||
+        _isShuttingDown ||
+        _pushPreflightInProgress ||
+        _pushCancellation != null ||
         (selectedLocalBranches.isEmpty && !options.pushTags) ||
         selectedLocalBranches.any((name) => name.isEmpty) ||
         !selectedLocalBranches.every(
@@ -1511,7 +1709,29 @@ final class RepositorySessionController
         )) {
       return false;
     }
-    final remoteNames = await _reader.readRemoteNames(repository);
+    _pushPreflightInProgress = true;
+    late final List<String> remoteNames;
+    try {
+      remoteNames = await _reader.readRemoteNames(repository);
+    } on Object catch (error, stackTrace) {
+      if (_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
+        state = state.copyWith(
+          phase: RepositorySessionPhase.error,
+          isPushRunning: false,
+          isDiffLoading: false,
+          message: _friendlyError(error),
+          technicalDetails: _technicalDetails(error, stackTrace),
+        );
+      }
+      return false;
+    } finally {
+      _pushPreflightInProgress = false;
+    }
+    if (!_isCurrentRepositoryRequest(repository, repositoryGeneration) ||
+        state.phase == RepositorySessionPhase.loading ||
+        _pushCancellation != null) {
+      return false;
+    }
     if (!remoteNames.contains(options.remoteName.trim())) return false;
 
     final cancellation = GitCancellationToken();
@@ -1615,6 +1835,7 @@ final class RepositorySessionController
     GitRepository repository, {
     String? localBranchName,
   }) async {
+    if (_isShuttingDown) return false;
     final cancellation = GitCancellationToken();
     _pushVerificationCancellation = cancellation;
     try {
@@ -1641,7 +1862,7 @@ final class RepositorySessionController
   /// or a still-valid Uncommitted Changes surface and file selection, without
   /// publishing the default history commit first.
   Future<void> refresh() async {
-    if (state.isWorkingTreeBusy) return;
+    if (_isShuttingDown || state.isWorkingTreeBusy) return;
     final path = state.requestedPath ?? state.repository?.commandDirectory;
     if (path != null) {
       await openRepository(path, preserveWorkingTreeSurface: true);
@@ -1653,6 +1874,9 @@ final class RepositorySessionController
   /// English: Reads and appends the next history page without replacing the
   /// current graph, ignoring results that belong to an old repository view.
   Future<void> loadMoreHistory() async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackVoidGitTask(loadMoreHistory);
+    }
     final repository = state.repository;
     if (repository == null || state.isHistoryLoading || !state.hasMoreHistory) {
       return;
@@ -1722,6 +1946,9 @@ final class RepositorySessionController
   /// its changed files, while File Status opens the full workspace and History
   /// restores the commit graph. This never checks out a branch.
   Future<void> selectReference(RepositoryRefViewData reference) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackVoidGitTask(() => selectReference(reference));
+    }
     if (state.repository == null) return;
     if (reference.kind == RepositoryRefKind.workspace) {
       _commitGeneration++;
@@ -1872,6 +2099,9 @@ final class RepositorySessionController
   /// updates commit-detail loading state, while repository switches, another
   /// commit selection, or controller disposal invalidate the async read.
   Future<void> selectCommit(String objectId) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackVoidGitTask(() => selectCommit(objectId));
+    }
     final repository = state.repository;
     if (repository == null) return;
     final generation = ++_commitGeneration;
@@ -1935,7 +2165,7 @@ final class RepositorySessionController
       state = state.copyWith(
         isCommitLoading: false,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
     }
   }
@@ -1949,6 +2179,9 @@ final class RepositorySessionController
   /// 中文：更新当前选择。
   /// English: Updates the current selection.
   Future<void> selectCommitFileByPath(String? path) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackVoidGitTask(() => selectCommitFileByPath(path));
+    }
     final objectId = state.selectedCommitId;
     final repository = state.repository;
     if (path == null || objectId == null || repository == null) {
@@ -1991,7 +2224,7 @@ final class RepositorySessionController
       state = state.copyWith(
         isCommitDiffLoading: false,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
     }
   }
@@ -2011,6 +2244,15 @@ final class RepositorySessionController
     String? sourceCommitId,
     required GitCancellationToken cancellationToken,
   }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackRequiredGitTask(
+        () => readFileHistory(
+          path,
+          sourceCommitId: sourceCommitId,
+          cancellationToken: cancellationToken,
+        ),
+      );
+    }
     final repository = state.repository;
     if (repository == null || state.phase != RepositorySessionPhase.ready) {
       throw StateError('当前没有可读取文件历史的仓库。');
@@ -2042,6 +2284,14 @@ final class RepositorySessionController
     GitCommit commit, {
     required GitCancellationToken cancellationToken,
   }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackRequiredGitTask(
+        () => readFileHistoryCommitChanges(
+          commit,
+          cancellationToken: cancellationToken,
+        ),
+      );
+    }
     final repository = state.repository;
     if (repository == null || state.phase != RepositorySessionPhase.ready) {
       throw StateError('当前没有可读取提交改动的仓库。');
@@ -2070,6 +2320,15 @@ final class RepositorySessionController
     required String path,
     required GitCancellationToken cancellationToken,
   }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackRequiredGitTask(
+        () => readFileHistoryCommitDiff(
+          commit,
+          path: path,
+          cancellationToken: cancellationToken,
+        ),
+      );
+    }
     final repository = state.repository;
     if (repository == null || state.phase != RepositorySessionPhase.ready) {
       throw StateError('当前没有可读取提交差异的仓库。');
@@ -2125,6 +2384,9 @@ final class RepositorySessionController
   /// 中文：更新当前选择。
   /// English: Updates the current selection.
   Future<void> selectChange(RepositoryChangeViewData? change) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackVoidGitTask(() => selectChange(change));
+    }
     if (change == null) {
       _diffGeneration++;
       state = state.copyWith(
@@ -2194,7 +2456,7 @@ final class RepositorySessionController
       state = state.copyWith(
         isDiffLoading: false,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
     }
   }
@@ -2284,6 +2546,13 @@ final class RepositorySessionController
   /// 中文：在暂存和未暂存分组间移动一个文件。写入期间保留当前列表，完成后仅
   /// 刷新工作区状态，不重新打开仓库或清空历史数据。
   Future<void> toggleStage(RepositoryChangeViewData change) async {
+    await _trackGitTask<void>(() => _toggleStage(change));
+  }
+
+  /// 中文：执行单文件暂存切换，完成前保持 Engine 所有权。
+  /// English: Toggles one staged file while retaining Engine ownership until
+  /// the mutation completes.
+  Future<void> _toggleStage(RepositoryChangeViewData change) async {
     final repository = state.repository;
     final status = state.status;
     if (repository == null ||
@@ -2337,7 +2606,7 @@ final class RepositorySessionController
           phase: RepositorySessionPhase.error,
           isWorkingTreeBusy: false,
           message: _friendlyError(error),
-          technicalDetails: '$error\n$stackTrace',
+          technicalDetails: _technicalDetails(error, stackTrace),
         );
       }
     }
@@ -2346,6 +2615,16 @@ final class RepositorySessionController
   /// 中文：批量切换文件组的暂存状态，一次刷新工作区。
   /// English: Stages or unstages a whole change group and refreshes once.
   Future<void> toggleStageGroup(
+    List<RepositoryChangeViewData> changes, {
+    required bool stage,
+  }) async {
+    await _trackGitTask<void>(() => _toggleStageGroup(changes, stage: stage));
+  }
+
+  /// 中文：执行一组文件的暂存切换，完成前保持 Engine 所有权。
+  /// English: Toggles a staged-file group while retaining Engine ownership
+  /// until the mutation completes.
+  Future<void> _toggleStageGroup(
     List<RepositoryChangeViewData> changes, {
     required bool stage,
   }) async {
@@ -2404,7 +2683,7 @@ final class RepositorySessionController
           phase: RepositorySessionPhase.error,
           isWorkingTreeBusy: false,
           message: _friendlyError(error),
-          technicalDetails: '$error\n$stackTrace',
+          technicalDetails: _technicalDetails(error, stackTrace),
         );
       }
     }
@@ -2422,6 +2701,11 @@ final class RepositorySessionController
   Future<RepositoryChangeRemovalResult?> removeChanges(
     List<RepositoryChangeViewData> changes,
   ) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackGitTask<RepositoryChangeRemovalResult?>(
+        () => removeChanges(changes),
+      );
+    }
     if (changes.isEmpty ||
         state.phase == RepositorySessionPhase.loading ||
         state.isWorkingTreeBusy) {
@@ -2464,7 +2748,6 @@ final class RepositorySessionController
     }
     if (paths.isEmpty) return rejectStaleSelection();
 
-    final localPaths = <String>[];
     for (final path in paths) {
       final localPath = path_utils.normalize(
         path_utils.join(workTreeRoot, path.display),
@@ -2472,7 +2755,6 @@ final class RepositorySessionController
       if (!path_utils.isWithin(workTreeRoot, localPath)) {
         return rejectStaleSelection();
       }
-      localPaths.add(localPath);
     }
 
     state = state.copyWith(
@@ -2484,24 +2766,16 @@ final class RepositorySessionController
     final removedPaths = <String>[];
     final missingPaths = <String>[];
     final failedPaths = <String>[];
-    for (var index = 0; index < localPaths.length; index++) {
-      final localPath = localPaths[index];
+    for (var index = 0; index < paths.length; index++) {
       final displayPath = paths[index].display;
       try {
-        final entityType = await FileSystemEntity.type(
-          localPath,
-          followLinks: false,
+        final removed = await _writer.removeWorkingTreePath(
+          repository,
+          paths[index],
         );
-        if (entityType == FileSystemEntityType.notFound) {
+        if (!removed) {
           missingPaths.add(displayPath);
           continue;
-        }
-        if (entityType == FileSystemEntityType.directory) {
-          await Directory(localPath).delete(recursive: true);
-        } else if (entityType == FileSystemEntityType.link) {
-          await Link(localPath).delete();
-        } else {
-          await File(localPath).delete();
         }
         removedPaths.add(displayPath);
       } on Object {
@@ -2527,6 +2801,9 @@ final class RepositorySessionController
   Future<bool> stopTrackingChanges(
     List<RepositoryChangeViewData> changes,
   ) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(() => stopTrackingChanges(changes));
+    }
     if (changes.isEmpty ||
         state.phase == RepositorySessionPhase.loading ||
         state.isWorkingTreeBusy) {
@@ -2581,7 +2858,7 @@ final class RepositorySessionController
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
     }
@@ -2594,6 +2871,9 @@ final class RepositorySessionController
   /// 必须重新读取当前工作区并验证该路径仍在索引中且本地文件存在，不能依据历史
   /// 快照直接写入 Git。
   Future<bool> stopTrackingSelectedCommitFile() async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(stopTrackingSelectedCommitFile);
+    }
     final selected = state.selectedCommitFile;
     if (selected == null ||
         !selected.file.path.isValidUtf8 ||
@@ -2650,7 +2930,7 @@ final class RepositorySessionController
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
     }
@@ -2664,6 +2944,9 @@ final class RepositorySessionController
   Future<bool> resetChangesToHead(
     List<RepositoryChangeViewData> changes,
   ) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(() => resetChangesToHead(changes));
+    }
     final repository = state.repository;
     if (changes.isEmpty ||
         repository == null ||
@@ -2739,7 +3022,7 @@ final class RepositorySessionController
           phase: RepositorySessionPhase.error,
           isWorkingTreeBusy: false,
           message: _friendlyError(error),
-          technicalDetails: '$error\n$stackTrace',
+          technicalDetails: _technicalDetails(error, stackTrace),
         );
       }
       return false;
@@ -2751,6 +3034,9 @@ final class RepositorySessionController
   /// 中文：暂存当前选中的一个未暂存文本区块并刷新 Git 状态。仅支持普通已跟踪
   /// 文件；补丁必须仍与索引匹配，刷新后恢复原工作区入口及最接近的文件选择。
   Future<bool> stageSelectedDiffHunk(int hunkIndex) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(() => stageSelectedDiffHunk(hunkIndex));
+    }
     final repository = state.repository;
     final selected = state.selectedChange;
     final diff = state.diff;
@@ -2792,7 +3078,7 @@ final class RepositorySessionController
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
     }
@@ -2804,6 +3090,9 @@ final class RepositorySessionController
   /// 支持普通已跟踪文件；未暂存区块恢复到索引版本，已暂存区块只修改索引并保留
   /// 工作区内容。上下文变化时 Git 会拒绝补丁。
   Future<bool> revertSelectedDiffHunk(int hunkIndex) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(() => revertSelectedDiffHunk(hunkIndex));
+    }
     final repository = state.repository;
     final selected = state.selectedChange;
     final diff = state.diff;
@@ -2848,7 +3137,7 @@ final class RepositorySessionController
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
     }
@@ -2863,6 +3152,11 @@ final class RepositorySessionController
   /// 中文：将当前选中的已提交区块反向应用到工作区，不修改原提交。Git 接受补丁
   /// 后刷新完整仓库状态，并重新选中原提交和文件，使历史上下文保持可见。
   Future<bool> revertSelectedCommitDiffHunk(int hunkIndex) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(
+        () => revertSelectedCommitDiffHunk(hunkIndex),
+      );
+    }
     final repository = state.repository;
     final selected = state.selectedCommitFile;
     final diff = state.commitDiff;
@@ -2919,7 +3213,7 @@ final class RepositorySessionController
         phase: RepositorySessionPhase.error,
         isCommitDiffLoading: false,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
     }
@@ -3005,6 +3299,9 @@ final class RepositorySessionController
     RepositoryChangeViewData change,
     RepositoryConflictAction action,
   ) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(() => resolveConflict(change, action));
+    }
     if (action == RepositoryConflictAction.launchInternalDiffTool) {
       return false;
     }
@@ -3065,7 +3362,7 @@ final class RepositorySessionController
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
     }
@@ -3078,6 +3375,11 @@ final class RepositorySessionController
   Future<GitConflictFileVersions?> readConflictVersions(
     RepositoryChangeViewData change,
   ) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackGitTask<GitConflictFileVersions?>(
+        () => readConflictVersions(change),
+      );
+    }
     final repository = state.repository;
     final status = state.status;
     if (repository == null || status == null) return null;
@@ -3098,7 +3400,7 @@ final class RepositorySessionController
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return null;
     }
@@ -3112,6 +3414,11 @@ final class RepositorySessionController
     RepositoryChangeViewData change,
     String content,
   ) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(
+        () => resolveConflictWithContent(change, content),
+      );
+    }
     final repository = state.repository;
     final status = state.status;
     if (repository == null ||
@@ -3148,7 +3455,7 @@ final class RepositorySessionController
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
     }
@@ -3161,7 +3468,13 @@ final class RepositorySessionController
   /// successfully. Git hooks are intentionally allowed to run.
   /// 中文：创建所需的对象或资源。
   /// English: Creates the required object or resource.
-  Future<bool> createCommit(String message, {bool amend = false}) async {
+  Future<bool> createCommit(String message, {bool amend = false}) async =>
+      await _trackGitTask<bool>(() => _createCommit(message, amend: amend)) ??
+      false;
+
+  /// 中文：执行提交写入并在完成后刷新状态。
+  /// English: Performs the commit write and refreshes state after completion.
+  Future<bool> _createCommit(String message, {required bool amend}) async {
     final repository = state.repository;
     final status = state.status;
     if (repository == null ||
@@ -3193,7 +3506,7 @@ final class RepositorySessionController
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
     }
@@ -3204,6 +3517,9 @@ final class RepositorySessionController
   ///
   /// 中文：读取当前贮藏列表供管理面板展示，不改变工作区或当前提交选择。
   Future<List<GitStashEntry>> readStashes() async {
+    if (!_isInsideTrackedGitTask) {
+      return await _trackGitTask<List<GitStashEntry>>(readStashes) ?? const [];
+    }
     final repository = state.repository;
     if (repository == null) return const [];
     return _reader.readStashes(repository);
@@ -3219,6 +3535,15 @@ final class RepositorySessionController
     bool includeUntracked = false,
     bool keepIndex = false,
   }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(
+        () => createStash(
+          message,
+          includeUntracked: includeUntracked,
+          keepIndex: keepIndex,
+        ),
+      );
+    }
     final status = state.status;
     final hasTrackedChanges =
         status?.displayEntries.any(
@@ -3254,17 +3579,21 @@ final class RepositorySessionController
   ///
   /// 中文：恢复指定贮藏并保留该条目；为避免覆盖本地改动，仅允许在干净工作区执行。
   Future<bool> applyStash(GitStashEntry stash) =>
-      _restoreStash(stash, pop: false);
+      _trackBooleanGitTask(() => _restoreStash(stash, pop: false));
 
   /// Applies one stash and lets Git remove it only after a successful restore.
   ///
   /// 中文：恢复并弹出指定贮藏；若 Git 发生冲突，条目会保留以便用户继续恢复。
-  Future<bool> popStash(GitStashEntry stash) => _restoreStash(stash, pop: true);
+  Future<bool> popStash(GitStashEntry stash) =>
+      _trackBooleanGitTask(() => _restoreStash(stash, pop: true));
 
   /// Drops one stash after the presentation layer has obtained confirmation.
   ///
   /// 中文：删除指定贮藏；此方法只处理 Git 写入与状态刷新，确认由界面层负责。
   Future<bool> dropStash(GitStashEntry stash) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(() => dropStash(stash));
+    }
     if (!_canMutateStashes || !await _isCurrentStash(stash)) return false;
     return _runStashMutation(
       successMessage: '已删除贮藏。',
@@ -3418,6 +3747,9 @@ final class RepositorySessionController
   /// 中文：创建所需的对象或资源。
   /// English: Creates the required object or resource.
   Future<bool> createLocalBranch(String name) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(() => createLocalBranch(name));
+    }
     final repository = state.repository;
     final status = state.status;
     if (repository == null ||
@@ -3447,7 +3779,7 @@ final class RepositorySessionController
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
     }
@@ -3458,6 +3790,11 @@ final class RepositorySessionController
   /// English: Creates a local branch at a loaded historical commit; callers
   /// may switch to it after creation when the user requested checkout.
   Future<bool> createLocalBranchFromCommit(String name, String objectId) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(
+        () => createLocalBranchFromCommit(name, objectId),
+      );
+    }
     final repository = state.repository;
     final status = state.status;
     if (repository == null ||
@@ -3491,7 +3828,7 @@ final class RepositorySessionController
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
     }
@@ -3502,6 +3839,9 @@ final class RepositorySessionController
   /// English: Creates a tag at one loaded historical commit and can push only
   /// that tag to an explicitly selected configured remote.
   Future<bool> createTag(GitCreateTagOptions options) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(() => createTag(options));
+    }
     final repository = state.repository;
     final status = state.status;
     final name = options.name.trim();
@@ -3567,7 +3907,7 @@ final class RepositorySessionController
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
     }
@@ -3578,6 +3918,9 @@ final class RepositorySessionController
   /// English: Deletes one loaded local tag and can first remove its matching
   /// ref from an explicitly selected remote.
   Future<bool> deleteTag(GitDeleteTagOptions options) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(() => deleteTag(options));
+    }
     final repository = state.repository;
     final status = state.status;
     final name = options.name.trim();
@@ -3619,7 +3962,7 @@ final class RepositorySessionController
         message: remoteDeleted
             ? '远端 $remote 的标签 $name 已删除，但本地标签仍保留：${_friendlyError(error)}'
             : _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
     }
@@ -3633,6 +3976,11 @@ final class RepositorySessionController
     String name,
     String sourceName,
   ) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(
+        () => createLocalBranchFromLocalBranch(name, sourceName),
+      );
+    }
     final repository = state.repository;
     final status = state.status;
     if (repository == null ||
@@ -3666,7 +4014,7 @@ final class RepositorySessionController
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
     }
@@ -3676,7 +4024,12 @@ final class RepositorySessionController
   /// 中文：切换到本地分支；保留可安全携带的工作区改动，并拒绝冲突状态。
   /// English: Switches to a local branch, preserving changes Git can carry
   /// safely and rejecting repositories with unresolved conflicts.
-  Future<bool> switchToLocalBranch(String name) async {
+  Future<bool> switchToLocalBranch(String name) async =>
+      await _trackGitTask<bool>(() => _switchToLocalBranch(name)) ?? false;
+
+  /// 中文：在关闭屏障内执行本地分支切换。
+  /// English: Performs a local-branch switch inside the shutdown barrier.
+  Future<bool> _switchToLocalBranch(String name) async {
     final repository = state.repository;
     final status = state.status;
     if (repository == null ||
@@ -3708,7 +4061,7 @@ final class RepositorySessionController
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
     }
@@ -3716,7 +4069,12 @@ final class RepositorySessionController
 
   /// Checks out a commit in detached HEAD mode, letting Git reject conflicts.
   /// 中文：以分离 HEAD 模式检出提交，由 Git 拒绝会覆盖本地改动的情况。
-  Future<bool> checkoutCommit(String objectId) async {
+  Future<bool> checkoutCommit(String objectId) async =>
+      await _trackGitTask<bool>(() => _checkoutCommit(objectId)) ?? false;
+
+  /// 中文：在关闭屏障内以分离 HEAD 检出提交。
+  /// English: Checks out a detached commit inside the shutdown barrier.
+  Future<bool> _checkoutCommit(String objectId) async {
     final repository = state.repository;
     final status = state.status;
     if (repository == null ||
@@ -3743,7 +4101,7 @@ final class RepositorySessionController
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
     }
@@ -3753,7 +4111,14 @@ final class RepositorySessionController
   ///
   /// English: Creates and switches to a local tracking branch only when the
   /// work tree is clean and the branch remains in the loaded remote refs.
-  Future<bool> switchToRemoteBranch(String remoteName) async {
+  Future<bool> switchToRemoteBranch(String remoteName) async =>
+      await _trackGitTask<bool>(() => _switchToRemoteBranch(remoteName)) ??
+      false;
+
+  /// 中文：在关闭屏障内创建并切换远端跟踪分支。
+  /// English: Creates and switches a remote-tracking branch inside the
+  /// shutdown barrier.
+  Future<bool> _switchToRemoteBranch(String remoteName) async {
     final repository = state.repository;
     final status = state.status;
     if (repository == null ||
@@ -3780,7 +4145,7 @@ final class RepositorySessionController
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
     }
@@ -3791,6 +4156,9 @@ final class RepositorySessionController
   /// English: Renames a loaded local branch without touching work-tree files
   /// and never allows Git to overwrite an existing branch.
   Future<bool> renameLocalBranch(String oldName, String newName) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(() => renameLocalBranch(oldName, newName));
+    }
     final repository = state.repository;
     final status = state.status;
     if (repository == null ||
@@ -3824,7 +4192,7 @@ final class RepositorySessionController
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
     }
@@ -3847,6 +4215,15 @@ final class RepositorySessionController
     List<String> remoteBranchNames = const [],
     bool forceLocal = false,
   }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(
+        () => deleteBranches(
+          localBranchNames: localBranchNames,
+          remoteBranchNames: remoteBranchNames,
+          forceLocal: forceLocal,
+        ),
+      );
+    }
     final repository = state.repository;
     final status = state.status;
     final currentBranch = status?.branch.head;
@@ -3899,7 +4276,7 @@ final class RepositorySessionController
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
-        technicalDetails: '$error\n$stackTrace',
+        technicalDetails: _technicalDetails(error, stackTrace),
       );
       return false;
     }
@@ -3915,6 +4292,9 @@ final class RepositorySessionController
   /// Merge conflicts remain in the repository and are refreshed for display;
   /// they are never continued or aborted automatically.
   Future<bool> mergeLocalBranch(String sourceName) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(() => mergeLocalBranch(sourceName));
+    }
     final repository = state.repository;
     final status = state.status;
     final currentBranch = status?.branch.head;
@@ -3966,6 +4346,9 @@ final class RepositorySessionController
   /// English: Merges one loaded historical commit into the current branch and
   /// refreshes the repository before exposing any resulting conflict state.
   Future<bool> mergeCommit(String objectId) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(() => mergeCommit(objectId));
+    }
     final repository = state.repository;
     final status = state.status;
     final currentBranch = status?.branch.head;
@@ -4012,15 +4395,17 @@ final class RepositorySessionController
   /// Rebases the checked-out branch onto a loaded historical commit. A clean
   /// working tree is required because Git may replay multiple commits.
   /// 中文：将当前检出分支变基到已加载历史提交；因可能重放多个提交，要求工作区干净。
-  Future<bool> rebaseOntoCommit(String objectId) => _runHistoryMutation(
-    objectId: objectId,
-    requireCleanWorkTree: true,
-    successMessage: '已完成变基。',
-    conflictMessage: '变基遇到冲突。请解决冲突并暂存后继续，或选择放弃变基。',
-    run: (repository, cancellation) => _writer.rebaseOnto(
-      repository,
+  Future<bool> rebaseOntoCommit(String objectId) => _trackBooleanGitTask(
+    () => _runHistoryMutation(
       objectId: objectId,
-      cancellationToken: cancellation,
+      requireCleanWorkTree: true,
+      successMessage: '已完成变基。',
+      conflictMessage: '变基遇到冲突。请解决冲突并暂存后继续，或选择放弃变基。',
+      run: (repository, cancellation) => _writer.rebaseOnto(
+        repository,
+        objectId: objectId,
+        cancellationToken: cancellation,
+      ),
     ),
   );
 
@@ -4031,16 +4416,18 @@ final class RepositorySessionController
   Future<bool> interactiveRebaseOntoCommit(
     String objectId, {
     required List<GitInteractiveRebaseInstruction> instructions,
-  }) => _runHistoryMutation(
-    objectId: objectId,
-    requireCleanWorkTree: true,
-    successMessage: '已完成交互式变基。',
-    conflictMessage: '交互式变基遇到冲突。请解决冲突并暂存后继续，或选择放弃变基。',
-    run: (repository, cancellation) => _writer.interactiveRebaseOnto(
-      repository,
+  }) => _trackBooleanGitTask(
+    () => _runHistoryMutation(
       objectId: objectId,
-      cancellationToken: cancellation,
-      instructions: instructions,
+      requireCleanWorkTree: true,
+      successMessage: '已完成交互式变基。',
+      conflictMessage: '交互式变基遇到冲突。请解决冲突并暂存后继续，或选择放弃变基。',
+      run: (repository, cancellation) => _writer.interactiveRebaseOnto(
+        repository,
+        objectId: objectId,
+        cancellationToken: cancellation,
+        instructions: instructions,
+      ),
     ),
   );
 
@@ -4050,6 +4437,12 @@ final class RepositorySessionController
   Future<List<GitInteractiveRebaseInstruction>> readInteractiveRebaseTodo(
     String objectId,
   ) async {
+    if (!_isInsideTrackedGitTask) {
+      return await _trackGitTask<List<GitInteractiveRebaseInstruction>>(
+            () => readInteractiveRebaseTodo(objectId),
+          ) ??
+          const [];
+    }
     final repository = state.repository;
     final status = state.status;
     final normalizedId = objectId.trim();
@@ -4076,15 +4469,17 @@ final class RepositorySessionController
   Future<bool> resetCurrentBranchToCommit(
     String objectId, {
     required GitResetMode mode,
-  }) => _runHistoryMutation(
-    objectId: objectId,
-    requireCleanWorkTree: false,
-    successMessage: '已重置当前分支。',
-    run: (repository, cancellation) => _writer.resetToCommit(
-      repository,
+  }) => _trackBooleanGitTask(
+    () => _runHistoryMutation(
       objectId: objectId,
-      mode: mode,
-      cancellationToken: cancellation,
+      requireCleanWorkTree: false,
+      successMessage: '已重置当前分支。',
+      run: (repository, cancellation) => _writer.resetToCommit(
+        repository,
+        objectId: objectId,
+        mode: mode,
+        cancellationToken: cancellation,
+      ),
     ),
   );
 
@@ -4092,32 +4487,36 @@ final class RepositorySessionController
   /// stay in the repository for Git's normal recovery flow.
   /// 中文：为已加载的历史提交创建反向提交；冲突保留给 Git 的正常恢复流程。
   Future<bool> revertCommit(String objectId, {int? mainlineParent}) =>
-      _runHistoryMutation(
-        objectId: objectId,
-        requireCleanWorkTree: true,
-        successMessage: '已创建回滚提交。',
-        conflictMessage: '回滚遇到冲突。请解决冲突后使用 Git 命令行继续或中止回滚，再刷新仓库。',
-        run: (repository, cancellation) => _writer.revertCommit(
-          repository,
+      _trackBooleanGitTask(
+        () => _runHistoryMutation(
           objectId: objectId,
-          mainlineParent: mainlineParent,
-          cancellationToken: cancellation,
+          requireCleanWorkTree: true,
+          successMessage: '已创建回滚提交。',
+          conflictMessage: '回滚遇到冲突。请解决冲突后使用 Git 命令行继续或中止回滚，再刷新仓库。',
+          run: (repository, cancellation) => _writer.revertCommit(
+            repository,
+            objectId: objectId,
+            mainlineParent: mainlineParent,
+            cancellationToken: cancellation,
+          ),
         ),
       );
 
   /// Applies a loaded commit to the checked-out branch and records its source.
   /// 中文：将已加载提交遴选到当前分支，并记录来源提交。
   Future<bool> cherryPickCommit(String objectId, {int? mainlineParent}) =>
-      _runHistoryMutation(
-        objectId: objectId,
-        requireCleanWorkTree: true,
-        successMessage: '已遴选提交。',
-        conflictMessage: '遴选遇到冲突。请解决冲突后使用 Git 命令行继续或中止遴选，再刷新仓库。',
-        run: (repository, cancellation) => _writer.cherryPickCommit(
-          repository,
+      _trackBooleanGitTask(
+        () => _runHistoryMutation(
           objectId: objectId,
-          mainlineParent: mainlineParent,
-          cancellationToken: cancellation,
+          requireCleanWorkTree: true,
+          successMessage: '已遴选提交。',
+          conflictMessage: '遴选遇到冲突。请解决冲突后使用 Git 命令行继续或中止遴选，再刷新仓库。',
+          run: (repository, cancellation) => _writer.cherryPickCommit(
+            repository,
+            objectId: objectId,
+            mainlineParent: mainlineParent,
+            cancellationToken: cancellation,
+          ),
         ),
       );
 
@@ -4139,6 +4538,15 @@ final class RepositorySessionController
     required String outputPath,
     required bool createSeparateFiles,
   }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(
+        () => createPatches(
+          objectIds,
+          outputPath: outputPath,
+          createSeparateFiles: createSeparateFiles,
+        ),
+      );
+    }
     final repository = state.repository;
     final normalizedIds = objectIds
         .map((objectId) => objectId.trim())
@@ -4199,6 +4607,16 @@ final class RepositorySessionController
     required String basePath,
     required bool checkOnly,
   }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(
+        () => applyPatchFile(
+          patchPath: patchPath,
+          stripLevel: stripLevel,
+          basePath: basePath,
+          checkOnly: checkOnly,
+        ),
+      );
+    }
     final repository = state.repository;
     final status = state.status;
     if (repository == null ||
@@ -4347,7 +4765,7 @@ final class RepositorySessionController
     if (error is GitProcessStartException) {
       return error.kind == GitErrorKind.executableNotFound
           ? '找不到 Git。请先安装 Git 或在设置中选择 Git 可执行文件。'
-          : '无法启动 Git：${error.message}';
+          : '无法启动 Git：${_redactSensitiveText(error.message)}';
     }
     if (error is GitCommandException) {
       if (error.message.toLowerCase().contains(
@@ -4370,7 +4788,7 @@ final class RepositorySessionController
         GitErrorKind.network => '无法连接远端，请检查网络和代理设置。',
         GitErrorKind.conflicts => '仓库存在需要处理的冲突。',
         GitErrorKind.cancelled => 'Git 操作已取消。',
-        _ => error.message,
+        _ => _redactSensitiveText(error.message),
       };
     }
     if (error is GitException) {

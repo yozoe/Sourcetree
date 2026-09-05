@@ -1,4 +1,4 @@
-# 一次性 AskPass IPC 评估
+# 操作级 AskPass IPC 评估
 
 日期：2026-08-20  
 状态：macOS bundle 的用户主动远端操作已接入；发布与兼容性验证待完成
@@ -9,14 +9,14 @@
 泄漏测试全部完成前，应用不得把密码、Token、SSH 私钥口令或 OAuth 回调交给
 Git 子进程。
 
-后续交互认证仅采用一次性 AskPass helper 加本机 IPC；不通过命令参数、普通
+交互认证仅采用每次调用即退出的 AskPass helper 加操作级本机 IPC；不通过命令参数、普通
 环境日志、remote URL、剪贴板或持久化文本文件传递秘密。
 
 ## 建议架构
 
 ```text
 用户确认的 Clone / Fetch / Pull / Push
-  → Application 创建单次 AuthenticationSession
+  → Application 为该 Git 操作创建 AuthenticationSession
   → 生成 256-bit nonce 与仅当前用户可读的 Unix domain socket
   → GitInvocation 设置 GIT_ASKPASS、GIT_TERMINAL_PROMPT=0、会话标识
   → 签名的 AskPass helper 接收 Git prompt
@@ -26,15 +26,16 @@ Git 子进程。
   → Git 退出 / 取消 / 超时后关闭 socket、销毁 nonce 与内存中的秘密
 ```
 
-AskPass helper 不应解析或保存 Git 命令；它只将单次 prompt 转发到指定 socket。
+AskPass helper 不应解析或保存 Git 命令；每次 helper 调用只将一个 prompt 转发到指定 socket，
+同一 Git 操作需要用户名和密码时由 session 串行处理多个 helper 调用。
 应用只显示经过脱敏的远端主机和 prompt 类型，不显示含用户信息、Token 或查询
 参数的完整 URL。
 
 应用侧已实现并测试非秘密请求的协议校验：nonce 必须为 256-bit 十六进制值，消息
 只允许 `nonce` 和 `prompt` 两个字段，prompt 限制为 8 KiB。该代码不接收、保存或
-序列化秘密。Flutter 侧现已实现一次性 Unix socket session：在权限为 `0700` 的
-随机临时目录创建 `0600` socket，每次生成新 nonce，只接受一条连接/请求，并在成功、
-拒绝、取消或 60 秒超时后关闭并删除 endpoint。它只把 UI 回调的单次回答编码为响应
+序列化秘密。Flutter 侧现已实现操作级 Unix socket session：在权限为 `0700` 的
+随机临时目录创建 `0600` socket，每次 Git 操作生成新 nonce，串行接受用户名、密码等请求，
+并在 Git 完成、拒绝、取消或某个提示阶段连续 60 秒空闲后关闭并删除 endpoint。每成功接收一个新提示都会重置该空闲超时，因此 60 秒不是整个多提示 session 的总时限。它只把 UI 回调的当前回答编码为响应
 帧，限制整个响应为 16 KiB，且不保留秘密；取消时不发送空秘密。Dart 标准库暂未暴露
 UID；开发/测试 runtime 的 Dart fallback 以随机私有目录和权限复核收紧访问面。正式
 macOS bundle 则通过 native broker 在 server 端完成 helper peer UID 校验。
@@ -42,7 +43,8 @@ macOS bundle 则通过 native broker 在 server 端完成 helper peer UID 校验
 macOS 已有固定路径的 `git-desktop-askpass` C helper，Xcode 会将其编译到
 `Git Desktop.app/Contents/MacOS/`，并已通过 Debug bundle 的签名完整性验证。
 helper 只接受绝对 Unix socket 路径、64 位十六进制 nonce 和一个 prompt；它转发
-长度受限的 JSON 请求，并仅将 socket 返回的秘密写到 stdout。
+长度受限的 JSON 请求，并仅将 socket 返回的秘密写到 stdout。helper 的 socket 收发超时
+来自 session 生成的正整数秒环境变量，与 broker 和 Flutter 空闲计时使用同一配置。
 
 helper 在连接前通过 `lstat` 要求 endpoint 为当前有效 UID 拥有的 `0600` Unix socket，
 连接后用 macOS `getpeereid` 再确认服务端 peer UID 与当前有效 UID 相同；非 socket 或
@@ -53,31 +55,33 @@ client UID。已新增并打包 `git-desktop-askpass-broker`，它会在 accept 
 Flutter session、broker 与 helper 的进程级测试。
 
 session 只可根据 `Platform.resolvedExecutable` 的 `*.app/Contents/MacOS/` 固定 bundle
-布局推导 helper 路径，并生成 `GIT_ASKPASS`、`GIT_TERMINAL_PROMPT=0`、socket 与 nonce
-四项环境变量；生产调用不接受仓库配置、remote 或 UI 文本指定 helper。测试可使用独立
+布局推导 helper 路径，并生成 `GIT_ASKPASS`、`GIT_TERMINAL_PROMPT=0`、socket、nonce 与
+超时等六项环境变量（包含强制使用受控 helper 的 `GIT_ASKPASS_REQUIRE`）；生产调用不接受仓库配置、remote 或 UI 文本指定 helper。测试可使用独立
 fixture 路径验证 IPC，并以 `@visibleForTesting` 标识测试入口。当前只有 macOS 正式 app
 bundle 的用户主动 Clone、Fetch、Pull、Push 会为实际远端 Git 子进程传入这些环境变量。
 Flutter 的提示协调器只在状态中保存已校验的非秘密请求，用户输入直接回传 session 后即被
 清除；取消操作会同时取消提示、关闭 socket/broker 和失效 nonce。开发与测试运行时不猜测
-helper 路径、不设置 `GIT_ASKPASS`，仍可使用既有 credential helper 或 SSH Agent，但
-`GIT_TERMINAL_PROMPT=0` 保持生效。
+helper 路径、不设置 `GIT_ASKPASS`，仍可使用既有 credential helper 或 SSH Agent；宿主环境中的
+`GIT_ASKPASS`/`SSH_ASKPASS` 会被清除，`GIT_TERMINAL_PROMPT=0` 保持生效。
 
 ## 不可妥协的安全契约
 
 1. socket 目录权限为 `0700`，socket 权限为 `0600`；创建后验证 owner 为当前 UID。
-2. 每次 Git 操作生成新 nonce；helper 的第一帧必须携带该 nonce，且只接受一次连接。
+2. 每次 Git 操作生成新 nonce；每个 helper 请求都必须携带该 nonce，session 只串行接受请求。
 3. IPC 请求采用长度受限的结构化消息，prompt 文本最大 8 KiB，秘密最大 16 KiB；
-   拒绝未知字段、重复回答和超限数据。
+   拒绝未知字段、并发提示和超限数据。
 4. helper 只允许位于应用已签名 bundle 内的固定绝对路径；不接受仓库配置或用户输入
    指定的 AskPass 可执行文件。
 5. GitInvocation 继续强制 `GIT_TERMINAL_PROMPT=0`；只在用户显式发起的远端写/读
    操作中设置 `GIT_ASKPASS`，后台刷新永不设置。
 6. 密码、Token、私钥口令、完整认证 URL、IPC payload 不进入 `GitResult`、操作日志、
    崩溃报告或 `technicalDetails`。UI 输入框禁用自动填充、复制和调试输出。
-7. 取消、Git 退出、窗口关闭、helper 断开、60 秒超时都必须关闭 socket、终止 helper，
+7. 取消、Git 退出、窗口关闭、helper 断开、当前提示阶段连续 60 秒空闲都必须关闭 socket、终止 helper，
    并使 nonce 失效；之后的连接一律拒绝。
 8. 认证结果只交由用户现有 Git credential helper/SSH Agent/Keychain 决定是否持久化；
    应用自身不落盘保存秘密。
+9. Clone 输入不接受带凭据的 URI userinfo、query/fragment 或 SCP 密码形态地址；
+   凭据必须经受保护提示或 credential helper 传递，不得进入 argv 或持久化的 remote URL。
 
 ## 认证状态机
 
@@ -93,10 +97,10 @@ helper 路径、不设置 `GIT_ASKPASS`，仍可使用既有 credential helper �
 
 - [x] macOS helper 的 Debug bundle 路径、C 编译和签名完整性验证。
 - [ ] Release/Developer ID 签名与 Gatekeeper 行为验证。
-- [x] nonce 重放、第二连接、畸形 UTF-8 与错误 nonce helper 的负向测试。
+- [x] session 关闭后重放、并发请求串行化、畸形 UTF-8 与错误 nonce helper 的负向测试。
 - [ ] 错误 UID 与签名 helper 欺骗测试（peer UID 已验证；仍需要发布签名环境）。
 - [x] 非秘密 IPC 请求的未知字段、非法 nonce 与超长 prompt 校验。
-- [x] 一次性 Flutter Unix socket 的 nonce、单连接、超时、拒绝和清理测试。
+- [x] 操作级 Flutter Unix socket 的 nonce、多提示、超时、拒绝和清理测试。
 - [x] macOS helper 与 Flutter session 的进程级 socket 往返测试（测试临时编译同一 C 源码）。
 - [ ] Token、用户名密码、SSH passphrase、拒绝认证、网络中断和用户取消的真实远端测试。
 - [x] 源码、日志入口、异常和操作面板的秘密泄漏扫描；URL userinfo、常见认证 Header 和

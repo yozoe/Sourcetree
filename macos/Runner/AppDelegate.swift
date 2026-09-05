@@ -13,6 +13,15 @@ func gitDesktopCanPerformStopTrackingMenuAction(
   hasKeyWorkspace && hasValidatedTrackedSelection
 }
 
+/// Returns whether Apply Patch may target the key repository workspace.
+/// 中文：判断原生“应用补丁”菜单能否安全作用于当前前台仓库工作区。
+func gitDesktopCanPerformApplyPatchMenuAction(
+  hasKeyWorkspace: Bool,
+  hasRepositoryMutationCapability: Bool
+) -> Bool {
+  hasKeyWorkspace && hasRepositoryMutationCapability
+}
+
 func gitDesktopCanonicalRepositoryPath(_ path: String?) -> String? {
   guard let path, !path.isEmpty else {
     return nil
@@ -449,6 +458,12 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// 即时禁用菜单，真正执行前仍由 Flutter 重新读取 Git 状态。
   private(set) var canStopTrackingFromMenu = false
 
+  /// Flutter's last validated Apply Patch availability for this Engine.
+  ///
+  /// 中文：此 Engine 最近一次由 Flutter 校验的“应用补丁”可用状态；菜单点击后
+  /// Flutter 仍会重新读取仓库 capability，避免使用过期快照执行写操作。
+  private(set) var canApplyPatchFromMenu = false
+
   /// 中文：创建独立工作区 Engine，并恢复共享的工作区窗口尺寸。
   ///
   /// English: Creates an independent workspace Engine and restores the shared
@@ -655,6 +670,7 @@ final class WorkspaceFlutterWindowController: NSWindowController,
         result(nil)
       case "setWorkspaceMenuState":
         canStopTrackingFromMenu = arguments?["canStopTracking"] as? Bool ?? false
+        canApplyPatchFromMenu = arguments?["canApplyPatch"] as? Bool ?? false
         result(nil)
       default:
         result(FlutterMethodNotImplemented)
@@ -961,6 +977,16 @@ final class WindowCoordinator {
       hasKeyWorkspace: currentWorkspaceController != nil,
       hasValidatedTrackedSelection:
         currentWorkspaceController?.canStopTrackingFromMenu == true
+    )
+  }
+
+  /// Whether the key workspace currently permits applying a patch.
+  /// 中文：当前前台工作区是否已由 Flutter 校验为允许应用补丁。
+  var canApplyPatchFromMenu: Bool {
+    gitDesktopCanPerformApplyPatchMenuAction(
+      hasKeyWorkspace: currentWorkspaceController != nil,
+      hasRepositoryMutationCapability:
+        currentWorkspaceController?.canApplyPatchFromMenu == true
     )
   }
 
@@ -1735,6 +1761,10 @@ class AppDelegate: FlutterAppDelegate {
   }
 
   @IBAction func applyPatchFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canApplyPatchFromMenu else {
+      NSSound.beep()
+      return
+    }
     windowCoordinator.performWorkspaceAction("applyPatch")
   }
 
@@ -1750,6 +1780,10 @@ class AppDelegate: FlutterAppDelegate {
   /// English: Delivers the native Stop Tracking action to the current key
   /// workspace's Flutter Engine.
   @IBAction func stopTrackingFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canStopTrackingFromMenu else {
+      NSSound.beep()
+      return
+    }
     windowCoordinator.performWorkspaceAction("stopTracking")
   }
 
@@ -1782,8 +1816,10 @@ class AppDelegate: FlutterAppDelegate {
     if menuItem.action == #selector(windowFeaturePendingFromMenu(_:)) {
       return gitDesktopCanPerformWindowMenuAction(NSApp.keyWindow)
     }
+    if menuItem.action == #selector(applyPatchFromMenu(_:)) {
+      return windowCoordinator.canApplyPatchFromMenu
+    }
     if menuItem.action == #selector(createPatchFromMenu(_:)) ||
-       menuItem.action == #selector(applyPatchFromMenu(_:)) ||
        menuItem.action == #selector(repositoryDetailsFromMenu(_:)) ||
        menuItem.action == #selector(repositoryFeaturePendingFromMenu(_:)) {
       return windowCoordinator.canPerformWorkspaceAction

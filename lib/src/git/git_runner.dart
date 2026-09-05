@@ -105,17 +105,51 @@ final class GitRunner {
     this.processTerminator = const DefaultGitProcessTerminator(),
     Map<String, String> baseEnvironment = const {},
   }) : baseEnvironment = Map<String, String>.unmodifiable({
+         ...baseEnvironment,
          'GIT_PAGER': 'cat',
          'GIT_TERMINAL_PROMPT': '0',
+         // Do not let an IDE or launching terminal redirect credentials to an
+         // unrelated helper. Interactive callers must opt in with the explicit
+         // invocation environment supplied by GitAskPassSession.
+         'GIT_ASKPASS': '',
+         'SSH_ASKPASS': '',
+         'GIT_ASKPASS_REQUIRE': 'never',
+         'SSH_ASKPASS_REQUIRE': 'never',
          'LC_ALL': 'C',
          'LANG': 'C',
          'NO_COLOR': '1',
-         ...baseEnvironment,
        });
 
   final String executable;
   final GitProcessTerminator processTerminator;
   final Map<String, String> baseEnvironment;
+  final Set<Process> _activeProcesses = <Process>{};
+  final Map<Process, Object> _processTrackingContexts = <Process, Object>{};
+  final Map<Process, Future<void>> _terminationFutures =
+      <Process, Future<void>>{};
+
+  /// 中文：终止此 Runner 启动的全部活动 Git 进程，并在指定时限内等待退出。
+  ///
+  /// English: Terminates every active Git process started by this runner and
+  /// waits up to [timeout] for their exit.
+  Future<bool> cancelAllAndWait({
+    Duration timeout = const Duration(seconds: 2),
+  }) async {
+    final processes = List<Process>.of(_activeProcesses);
+    if (processes.isEmpty) return true;
+    try {
+      await Future.wait<void>([
+        for (final process in processes)
+          Future<void>.sync(() async {
+            await _terminateProcess(process);
+            await process.exitCode;
+          }),
+      ]).timeout(timeout);
+      return true;
+    } on TimeoutException {
+      return false;
+    }
+  }
 
   /// 中文：在不经 Shell 的情况下执行 Git，并在输出上限内收集原始标准输出和错误输出。
   ///
@@ -141,6 +175,12 @@ final class GitRunner {
         runInShell: false,
         mode: ProcessStartMode.normal,
       );
+      _activeProcesses.add(process);
+      final terminator = processTerminator;
+      if (terminator is GitTrackedProcessTerminator) {
+        _processTrackingContexts[process] =
+            (terminator as GitTrackedProcessTerminator).track(process);
+      }
     } on ProcessException catch (error) {
       stopwatch.stop();
       throw GitProcessStartException(
@@ -156,12 +196,13 @@ final class GitRunner {
 
     var terminationRequested = false;
     var processHasExited = false;
+    Future<void>? terminationFuture;
     final registration = cancellationToken?.register(() {
       if (processHasExited) {
         return;
       }
       terminationRequested = true;
-      unawaited(Future<void>.sync(() => processTerminator.terminate(process)));
+      terminationFuture = _terminateProcess(process);
     });
 
     final stdoutCollector = _LimitedByteCollector(
@@ -190,11 +231,27 @@ final class GitRunner {
       // The process may already have closed its stdin.
     }
 
-    final exitCode = await process.exitCode;
-    processHasExited = true;
-    registration?.dispose();
-    await Future.wait<void>([stdoutDone, stderrDone]);
-    stopwatch.stop();
+    final int exitCode;
+    try {
+      exitCode = await process.exitCode;
+      processHasExited = true;
+      registration?.dispose();
+      await terminationFuture;
+      await Future.wait<void>([stdoutDone, stderrDone]);
+      stopwatch.stop();
+    } finally {
+      registration?.dispose();
+      _activeProcesses.remove(process);
+      final trackingContext = _processTrackingContexts.remove(process);
+      final terminator = processTerminator;
+      if (trackingContext != null &&
+          terminator is GitTrackedProcessTerminator) {
+        await (terminator as GitTrackedProcessTerminator).stopTracking(
+          trackingContext,
+        );
+      }
+      _terminationFutures.remove(process);
+    }
 
     final stdoutBytes = stdoutCollector.takeBytes();
     final stderrBytes = stderrCollector.takeBytes();
@@ -216,6 +273,25 @@ final class GitRunner {
       wasCancelled: terminationRequested,
       error: error,
     );
+  }
+
+  /// 中文：复用同一进程的终止任务，并在可用时携带已提前采集的进程树身份。
+  ///
+  /// English: Reuses one termination task per process and supplies the
+  /// proactively captured process-tree identities when available.
+  Future<void> _terminateProcess(Process process) {
+    return _terminationFutures.putIfAbsent(process, () async {
+      final terminator = processTerminator;
+      final context = _processTrackingContexts[process];
+      if (context != null && terminator is GitTrackedProcessTerminator) {
+        await (terminator as GitTrackedProcessTerminator).terminateTracked(
+          process,
+          context,
+        );
+      } else {
+        await terminator.terminate(process);
+      }
+    });
   }
 }
 

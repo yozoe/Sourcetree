@@ -33,6 +33,27 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testApplyPatchMenuRequiresKeyWorkspaceAndMutationCapability() {
+    XCTAssertFalse(
+      gitDesktopCanPerformApplyPatchMenuAction(
+        hasKeyWorkspace: false,
+        hasRepositoryMutationCapability: true
+      )
+    )
+    XCTAssertFalse(
+      gitDesktopCanPerformApplyPatchMenuAction(
+        hasKeyWorkspace: true,
+        hasRepositoryMutationCapability: false
+      )
+    )
+    XCTAssertTrue(
+      gitDesktopCanPerformApplyPatchMenuAction(
+        hasKeyWorkspace: true,
+        hasRepositoryMutationCapability: true
+      )
+    )
+  }
+
   func testWorkspaceArgumentsIdentifyTheEngineAndInitialRepository() {
     XCTAssertEqual(
       gitDesktopWorkspaceArguments(

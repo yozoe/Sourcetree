@@ -1,7 +1,9 @@
+import 'dart:io';
 import 'dart:ui' show PointerDeviceKind, SemanticsAction, Tristate;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/gestures.dart' show kSecondaryMouseButton;
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:git_desktop/src/app/git_askpass_prompt_coordinator.dart';
@@ -42,7 +44,173 @@ final class _CountingSessionStore implements RepositorySessionStore {
   Future<void> save(RepositorySessionSnapshot snapshot) async {}
 }
 
+final class _FailingAfterRestoreSessionStore implements RepositorySessionStore {
+  var saveCount = 0;
+
+  @override
+  Future<RepositorySessionSnapshot> load() async {
+    return const RepositorySessionSnapshot(
+      openRepositoryPaths: ['/tmp/library-one', '/tmp/library-two'],
+      activeRepositoryPath: '/tmp/library-one',
+    );
+  }
+
+  @override
+  Future<void> save(RepositorySessionSnapshot snapshot) async {
+    saveCount++;
+    if (saveCount > 1) throw const FileSystemException('private store path');
+  }
+}
+
 void main() {
+  testWidgets('reports recoverable failures from ordinary library saves', (
+    tester,
+  ) async {
+    final store = _FailingAfterRestoreSessionStore();
+    final container = ProviderContainer(
+      overrides: [repositorySessionStoreProvider.overrideWithValue(store)],
+    );
+    addTearDown(container.dispose);
+
+    await tester.pumpWidget(
+      UncontrolledProviderScope(
+        container: container,
+        child: const MaterialApp(home: RepositoryLibraryWindow()),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(store.saveCount, 1);
+
+    container
+        .read(repositoryLibraryProvider.notifier)
+        .select('/tmp/library-two');
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('已保留在当前窗口，但尚未写入磁盘'), findsOneWidget);
+    expect(find.textContaining('private store path'), findsNothing);
+  });
+
+  test('repository mutation boundary covers every live and paused state', () {
+    const runningStates = <RepositoryViewData>[
+      RepositoryViewData(
+        name: 'example',
+        path: '/tmp/example',
+        currentBranch: 'main',
+        isRefreshing: true,
+      ),
+      RepositoryViewData(
+        name: 'example',
+        path: '/tmp/example',
+        currentBranch: 'main',
+        isWorkingTreeBusy: true,
+      ),
+      RepositoryViewData(
+        name: 'example',
+        path: '/tmp/example',
+        currentBranch: 'main',
+        isFetching: true,
+      ),
+      RepositoryViewData(
+        name: 'example',
+        path: '/tmp/example',
+        currentBranch: 'main',
+        isPulling: true,
+      ),
+      RepositoryViewData(
+        name: 'example',
+        path: '/tmp/example',
+        currentBranch: 'main',
+        isPushing: true,
+      ),
+      RepositoryViewData(
+        name: 'example',
+        path: '/tmp/example',
+        currentBranch: 'main',
+        isStashing: true,
+      ),
+      RepositoryViewData(
+        name: 'example',
+        path: '/tmp/example',
+        currentBranch: 'main',
+        footer: RepositoryFooterViewData(operationLabel: '读取 Diff'),
+      ),
+    ];
+    const pausedStates = <RepositoryViewData>[
+      RepositoryViewData(
+        name: 'example',
+        path: '/tmp/example',
+        currentBranch: 'main',
+        isMergeInProgress: true,
+      ),
+      RepositoryViewData(
+        name: 'example',
+        path: '/tmp/example',
+        currentBranch: 'main',
+        isRebaseInProgress: true,
+      ),
+      RepositoryViewData(
+        name: 'example',
+        path: '/tmp/example',
+        currentBranch: 'main',
+        isCherryPickInProgress: true,
+      ),
+      RepositoryViewData(
+        name: 'example',
+        path: '/tmp/example',
+        currentBranch: 'main',
+        isRevertInProgress: true,
+      ),
+    ];
+
+    for (final repository in runningStates) {
+      expect(repository.hasRunningRepositoryTask, isTrue);
+      expect(repository.blocksRepositoryMutations, isTrue);
+    }
+    for (final repository in pausedStates) {
+      expect(repository.hasRunningRepositoryTask, isFalse);
+      expect(repository.blocksRepositoryMutations, isTrue);
+    }
+  });
+
+  test('uses operation-aware conflict version labels', () {
+    const branch = 'feature/topic';
+    expect(
+      conflictVersionLabels(
+        GitRepositoryOperationState.merge,
+        currentBranch: branch,
+      ),
+      ('当前分支版本 · feature/topic', '合并来源版本'),
+    );
+    expect(
+      conflictVersionLabels(
+        GitRepositoryOperationState.rebase,
+        currentBranch: branch,
+      ),
+      ('变基目标基线版本', '正在重放的提交版本'),
+    );
+    expect(
+      conflictVersionLabels(
+        GitRepositoryOperationState.cherryPick,
+        currentBranch: branch,
+      ),
+      ('当前分支版本 · feature/topic', '遴选提交版本'),
+    );
+    expect(
+      conflictVersionLabels(
+        GitRepositoryOperationState.revert,
+        currentBranch: branch,
+      ),
+      ('当前分支版本 · feature/topic', '待应用的回滚版本'),
+    );
+    expect(
+      conflictVersionLabels(
+        GitRepositoryOperationState.none,
+        currentBranch: branch,
+      ),
+      ('当前基线版本', '待应用版本'),
+    );
+  });
+
   testWidgets('shows supported actions on first launch', (tester) async {
     await tester.pumpWidget(const ProviderScope(child: GitDesktopApp()));
 
@@ -85,6 +253,130 @@ void main() {
         RepositoryAction.continueSequencer,
         RepositoryAction.abortSequencer,
       ]),
+    );
+  });
+
+  testWidgets(
+    'enlarged text expands dense toolbars and rows without overflow',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1600, 900));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      await tester.pumpWidget(
+        MaterialApp(
+          home: MediaQuery(
+            data: const MediaQueryData(textScaler: TextScaler.linear(2)),
+            child: RepositoryOverview(
+              data: RepositoryOverviewViewData.ready(
+                const RepositoryViewData(
+                  name: 'example',
+                  path: '/tmp/example',
+                  currentBranch: 'main',
+                  commits: [
+                    CommitViewData(
+                      oid: '0123456789abcdef',
+                      shortOid: '0123456',
+                      subject: 'Scaled history row',
+                      author: 'Test User',
+                      relativeDate: '今天',
+                    ),
+                  ],
+                ),
+              ),
+              callbacks: const RepositoryOverviewCallbacks(),
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      expect(tester.takeException(), isNull);
+      expect(
+        tester
+            .getSize(find.byKey(const ValueKey<String>('repository-toolbar')))
+            .height,
+        greaterThan(54),
+      );
+      expect(find.text('Scaled history row'), findsOneWidget);
+    },
+  );
+
+  testWidgets('model selection replaces stale local change highlighting', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    late StateSetter update;
+    var selectSecond = false;
+
+    RepositoryChangeViewData change(String path, bool selected) =>
+        RepositoryChangeViewData(
+          path: path,
+          kind: RepositoryChangeKind.modified,
+          isStaged: true,
+          isSelected: selected,
+        );
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: StatefulBuilder(
+          builder: (context, setState) {
+            update = setState;
+            final first = change('first.dart', !selectSecond);
+            final second = change('second.dart', selectSecond);
+            return RepositoryOverview(
+              data: RepositoryOverviewViewData.ready(
+                RepositoryViewData(
+                  name: 'example',
+                  path: '/tmp/example',
+                  currentBranch: 'main',
+                  refs: const [
+                    RepositoryRefViewData(
+                      id: 'workspace',
+                      label: '文件状态',
+                      kind: RepositoryRefKind.workspace,
+                      isSelected: true,
+                    ),
+                  ],
+                  changes: [first, second],
+                  selectedChange: selectSecond ? second : first,
+                ),
+              ),
+            );
+          },
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      tester
+          .getSemantics(
+            find.byKey(const ValueKey('change-tile-staged-first.dart')),
+          )
+          .flagsCollection
+          .isSelected,
+      Tristate.isTrue,
+    );
+    update(() => selectSecond = true);
+    await tester.pump();
+
+    expect(
+      tester
+          .getSemantics(
+            find.byKey(const ValueKey('change-tile-staged-first.dart')),
+          )
+          .flagsCollection
+          .isSelected,
+      Tristate.isFalse,
+    );
+    expect(
+      tester
+          .getSemantics(
+            find.byKey(const ValueKey('change-tile-staged-second.dart')),
+          )
+          .flagsCollection
+          .isSelected,
+      Tristate.isTrue,
     );
   });
 
@@ -191,6 +483,45 @@ void main() {
     await tester.pumpAndSettle();
   });
 
+  testWidgets(
+    'keeps equal parent basenames separate and supports keyboard open',
+    (tester) async {
+      String? selectedPath;
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RepositoryLibraryPage(
+            repositories: const [
+              RepositoryLibraryItem(path: '/work/team/repo-a', label: 'repo-a'),
+              RepositoryLibraryItem(
+                path: '/archive/team/repo-b',
+                label: 'repo-b',
+              ),
+            ],
+            activePath: null,
+            onRepositorySelected: (path) async => selectedPath = path,
+            onRepositoriesReordered: (_) {},
+          ),
+        ),
+      );
+
+      expect(find.text('/work/team'), findsOneWidget);
+      expect(find.text('/archive/team'), findsOneWidget);
+      final tile = find.byKey(
+        const ValueKey<String>('repository-library-tile:/work/team/repo-a'),
+      );
+      await tester.tap(tile);
+      await tester.sendKeyEvent(LogicalKeyboardKey.enter);
+      await tester.pump();
+      expect(selectedPath, '/work/team/repo-a');
+
+      selectedPath = null;
+      await tester.sendKeyEvent(LogicalKeyboardKey.space);
+      await tester.pump();
+      expect(selectedPath, '/work/team/repo-a');
+      await tester.pumpAndSettle();
+    },
+  );
+
   test('uses icon.png at the repository root as the custom icon path', () {
     const RepositoryLibraryItem repository = RepositoryLibraryItem(
       path: '/work/alpha/sample',
@@ -239,7 +570,7 @@ void main() {
     expect(find.byTooltip('当前分支 feature/library-status'), findsOneWidget);
   });
 
-  testWidgets('routes a one-time AskPass request through the controlled UI', (
+  testWidgets('routes sequential AskPass requests through the controlled UI', (
     tester,
   ) async {
     final container = ProviderContainer();
@@ -267,6 +598,20 @@ void main() {
 
     expect(await answer, 'not-retained');
     expect(container.read(gitAskPassPromptCoordinatorProvider), isNull);
+
+    final usernameAnswer = container
+        .read(gitAskPassPromptCoordinatorProvider.notifier)
+        .request(
+          GitAskPassRequest.decode(
+            '{"nonce":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","prompt":"Username for https://example.test:"}',
+          ),
+        );
+    await tester.pumpAndSettle();
+    expect(find.text('需要用户名'), findsOneWidget);
+    await tester.enterText(find.byType(TextField), 'git-user');
+    await tester.tap(find.text('继续'));
+    await tester.pumpAndSettle();
+    expect(await usernameAnswer, 'git-user');
   });
 
   testWidgets('dismisses the AskPass UI when its operation is cancelled', (
@@ -721,6 +1066,127 @@ void main() {
     expect(selectedAction, RepositoryCommitContextAction.tag);
   });
 
+  testWidgets('repository operation disables commit mutation actions', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    const commit = CommitViewData(
+      oid: '4f5e6b7c8d9e0f1a2b3c4d5e6f708192a3b4c5d6',
+      shortOid: '4f5e6b7c',
+      subject: 'Paused operation',
+      author: 'tester',
+      relativeDate: '今天',
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              isRebaseInProgress: true,
+              commits: [commit],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onCommitActivated: (_) {},
+            onCommitContextAction: (_, _) {},
+          ),
+        ),
+      ),
+    );
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('Paused operation')),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+    for (final label in ['检出…', '合并…', '变基…', '将当前分支重置到此次提交', '遴选']) {
+      final item = tester.widget<PopupMenuItem<RepositoryCommitContextAction>>(
+        find.widgetWithText(
+          PopupMenuItem<RepositoryCommitContextAction>,
+          label,
+        ),
+      );
+      expect(item.enabled, isFalse, reason: label);
+    }
+    expect(
+      tester
+          .widget<PopupMenuItem<RepositoryCommitContextAction>>(
+            find.widgetWithText(
+              PopupMenuItem<RepositoryCommitContextAction>,
+              '复制 SHA-1 到剪贴板',
+            ),
+          )
+          .enabled,
+      isTrue,
+    );
+  });
+
+  testWidgets('paused operation disables reference refresh and checkout', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    RepositoryRefViewData? activatedRef;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              isMergeInProgress: true,
+              disabledActions: {RepositoryAction.refresh},
+              refs: [
+                RepositoryRefViewData(
+                  id: 'refs/heads/feature/nested',
+                  label: 'feature/nested',
+                  kind: RepositoryRefKind.localBranch,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onRefActivated: (ref) => activatedRef = ref,
+            onRefContextAction: (_, _) {},
+          ),
+        ),
+      ),
+    );
+    await tester.tap(find.text('nested'));
+    await tester.pump(const Duration(milliseconds: 50));
+    await tester.tap(find.text('nested'));
+    await tester.pumpAndSettle();
+    expect(activatedRef, isNull);
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('nested')),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+    for (final label in ['切换到此分支', '刷新仓库']) {
+      expect(
+        tester
+            .widget<PopupMenuItem<RepositoryRefContextAction>>(
+              find.widgetWithText(
+                PopupMenuItem<RepositoryRefContextAction>,
+                label,
+              ),
+            )
+            .enabled,
+        isFalse,
+      );
+    }
+  });
+
   testWidgets('single-click selects a branch and double-click activates it', (
     tester,
   ) async {
@@ -756,6 +1222,7 @@ void main() {
           callbacks: RepositoryOverviewCallbacks(
             onRefSelected: (reference) => selectedReference = reference,
             onRefActivated: (reference) => activatedReference = reference,
+            onRefContextAction: (_, _) {},
           ),
         ),
       ),
@@ -784,6 +1251,25 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(activatedReference, featureBranch);
+
+    activatedReference = null;
+    final shortcuts = tester.widget<CallbackShortcuts>(
+      find
+          .ancestor(of: feature, matching: find.byType(CallbackShortcuts))
+          .first,
+    );
+    shortcuts.bindings[const SingleActivator(LogicalKeyboardKey.enter)]!();
+    expect(activatedReference, featureBranch);
+    final refSemantics = tester
+        .getSemantics(find.bySemanticsLabel('分支 select'))
+        .getSemanticsData();
+    expect(refSemantics.hasAction(SemanticsAction.longPress), isTrue);
+    shortcuts.bindings[const SingleActivator(
+      LogicalKeyboardKey.f10,
+      shift: true,
+    )]!();
+    await tester.pumpAndSettle();
+    expect(find.text('切换到此分支'), findsOneWidget);
   });
 
   testWidgets('renders slash-delimited branches as a collapsible directory', (
@@ -920,6 +1406,7 @@ void main() {
           ),
           callbacks: RepositoryOverviewCallbacks(
             onCommitActivated: (value) => activatedCommit = value,
+            onCommitContextAction: (_, _) {},
           ),
         ),
       ),
@@ -940,6 +1427,29 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(activatedCommit, commit);
+
+    activatedCommit = null;
+    final commitShortcuts = tester.widget<CallbackShortcuts>(
+      find
+          .ancestor(
+            of: find.text('测试提交'),
+            matching: find.byType(CallbackShortcuts),
+          )
+          .first,
+    );
+    commitShortcuts.bindings[const SingleActivator(
+      LogicalKeyboardKey.enter,
+    )]!();
+    expect(activatedCommit, commit);
+    final commitSemantics = tester
+        .getSemantics(find.bySemanticsLabel(RegExp('提交 4f5e6b7c')))
+        .getSemanticsData();
+    expect(commitSemantics.hasAction(SemanticsAction.longPress), isTrue);
+    commitShortcuts.bindings[const SingleActivator(
+      LogicalKeyboardKey.contextMenu,
+    )]!();
+    await tester.pumpAndSettle();
+    expect(find.text('检出…'), findsOneWidget);
   });
 
   testWidgets(
@@ -1034,10 +1544,27 @@ void main() {
       for (final label in const ['调整图表列宽度', '调整描述列宽度', '调整提交列宽度', '调整作者列宽度']) {
         final divider = find.bySemanticsLabel(label);
         expect(divider, findsOneWidget);
+        final semantics = tester.getSemantics(divider).getSemanticsData();
+        expect(semantics.hasAction(SemanticsAction.increase), isTrue);
+        expect(semantics.hasAction(SemanticsAction.decrease), isTrue);
         final before = tester.getCenter(divider).dx;
         await tester.drag(divider, const Offset(20, 0));
         await tester.pump();
         expect(tester.getCenter(divider).dx, greaterThan(before));
+        final primary = Theme.of(tester.element(divider)).colorScheme.primary;
+        expect(
+          find.descendant(
+            of: divider,
+            matching: find.byWidgetPredicate(
+              (widget) => widget is Container && widget.color == primary,
+            ),
+          ),
+          findsOneWidget,
+        );
+        final afterDrag = tester.getCenter(divider).dx;
+        await tester.sendKeyEvent(LogicalKeyboardKey.arrowRight);
+        await tester.pump();
+        expect(tester.getCenter(divider).dx, greaterThan(afterDrag));
       }
 
       final descriptionDivider = find.bySemanticsLabel('调整描述列宽度');
@@ -2100,6 +2627,8 @@ void main() {
       kind: RepositoryChangeKind.modified,
       isStaged: true,
     );
+    final longDiffLine =
+        '+final value = "${List.filled(80, 'long-value-').join()}";';
     await tester.pumpWidget(
       MaterialApp(
         home: RepositoryOverview(
@@ -2118,12 +2647,12 @@ void main() {
               ],
               changes: const [change],
               selectedChange: change,
-              diff: const DiffViewData(
+              diff: DiffViewData(
                 path: 'lib/example.dart',
                 lines: [
                   DiffLineViewData(
                     kind: DiffLineKind.addition,
-                    text: '+final fileStatus = true;',
+                    text: longDiffLine,
                   ),
                 ],
               ),
@@ -2139,7 +2668,25 @@ void main() {
 
     expect(find.text('文件状态'), findsWidgets);
     expect(find.text('lib/example.dart'), findsOneWidget);
-    expect(find.text('+final fileStatus = true;'), findsOneWidget);
+    final horizontal = find.byKey(const ValueKey('diff-horizontal-scroll'));
+    expect(horizontal, findsOneWidget);
+    final scrollable = find.descendant(
+      of: horizontal,
+      matching: find.byWidgetPredicate(
+        (widget) =>
+            widget is Scrollable && widget.axisDirection == AxisDirection.right,
+      ),
+    );
+    expect(
+      tester.state<ScrollableState>(scrollable).position.maxScrollExtent,
+      greaterThan(0),
+    );
+    await tester.drag(horizontal, const Offset(-240, 0));
+    await tester.pump();
+    expect(
+      tester.state<ScrollableState>(scrollable).position.pixels,
+      greaterThan(0),
+    );
     expect(find.text('提交信息'), findsOneWidget);
     expect(find.text('历史'), findsNothing);
     expect(find.text('提交详情'), findsNothing);

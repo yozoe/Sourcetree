@@ -5,6 +5,7 @@ import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'src/app/desktop_window_bridge.dart';
 import 'src/app/git_desktop_app.dart';
+import 'src/app/repository_library_controller.dart';
 import 'src/app/repository_session.dart';
 import 'src/app/theme_preferences.dart';
 
@@ -66,18 +67,61 @@ Future<void> _runGitDesktop({
 /// English: Cancels Engine-owned work and releases its Riverpod container
 /// before the native window host destroys the Flutter Engine.
 Future<void> _prepareEngineToClose(ProviderContainer container) async {
-  await container.read(repositorySessionProvider.notifier).prepareForShutdown();
-  runApp(const SizedBox.shrink());
-  try {
-    await WidgetsBinding.instance.endOfFrame.timeout(
-      const Duration(milliseconds: 500),
-    );
-  } on TimeoutException {
-    // Native shutdown also has a bounded timeout. Provider cleanup must still
-    // run when the window is no longer producing frames.
+  Object? firstError;
+  StackTrace? firstStackTrace;
+
+  void rememberError(Object error, StackTrace stackTrace) {
+    firstError ??= error;
+    firstStackTrace ??= stackTrace;
   }
-  DesktopWindowBridge.setPrepareToCloseHandler(null);
-  container.dispose();
+
+  try {
+    try {
+      await container
+          .read(repositorySessionProvider.notifier)
+          .prepareForShutdown();
+    } on Object catch (error, stackTrace) {
+      rememberError(error, stackTrace);
+    }
+    try {
+      await Future.wait<void>([
+        container.read(repositoryLibraryProvider.notifier).prepareForShutdown(),
+        container
+            .read(gitDesktopThemePreferencesProvider.notifier)
+            .prepareForShutdown(),
+      ]);
+    } on Object catch (error, stackTrace) {
+      rememberError(error, stackTrace);
+    }
+  } finally {
+    try {
+      runApp(const SizedBox.shrink());
+      try {
+        await WidgetsBinding.instance.endOfFrame.timeout(
+          const Duration(milliseconds: 500),
+        );
+      } on TimeoutException {
+        // Native shutdown also has a bounded timeout. Provider cleanup must
+        // still run when the window is no longer producing frames.
+      }
+    } on Object catch (error, stackTrace) {
+      rememberError(error, stackTrace);
+    }
+    try {
+      DesktopWindowBridge.setPrepareToCloseHandler(null);
+    } on Object catch (error, stackTrace) {
+      rememberError(error, stackTrace);
+    }
+    try {
+      container.dispose();
+    } on Object catch (error, stackTrace) {
+      rememberError(error, stackTrace);
+    }
+  }
+  final error = firstError;
+  if (error != null) {
+    Error.throwWithStackTrace(error, firstStackTrace ?? StackTrace.current);
+  }
 }
 
 /// Returns a value passed by the native host to this Flutter Engine.

@@ -184,6 +184,7 @@ final class RepositoryViewData {
     this.isPulling = false,
     this.isPushing = false,
     this.isStashing = false,
+    this.isMergeInProgress = false,
     this.isRebaseInProgress = false,
     this.isCherryPickInProgress = false,
     this.isRevertInProgress = false,
@@ -225,6 +226,7 @@ final class RepositoryViewData {
   final bool isPulling;
   final bool isPushing;
   final bool isStashing;
+  final bool isMergeInProgress;
   final bool isRebaseInProgress;
   final bool isCherryPickInProgress;
   final bool isRevertInProgress;
@@ -256,6 +258,30 @@ final class RepositoryViewData {
       .length;
 
   int get unstagedChangeCount => changes.length - stagedChangeCount;
+
+  /// Whether a live repository task currently owns the workspace mutation
+  /// boundary.
+  ///
+  /// 中文：当前是否有仍在运行的仓库任务占用工作区写入边界。
+  bool get hasRunningRepositoryTask =>
+      isRefreshing ||
+      isWorkingTreeBusy ||
+      isFetching ||
+      isPulling ||
+      isPushing ||
+      isStashing ||
+      footer.operationLabel != null;
+
+  /// Whether a repository task or recoverable Git operation currently owns
+  /// the workspace mutation boundary.
+  ///
+  /// 中文：当前是否有仓库任务或可恢复 Git 操作占用工作区写入边界。
+  bool get blocksRepositoryMutations =>
+      hasRunningRepositoryTask ||
+      isMergeInProgress ||
+      isRebaseInProgress ||
+      isCherryPickInProgress ||
+      isRevertInProgress;
 }
 
 final class RepositoryRefViewData {

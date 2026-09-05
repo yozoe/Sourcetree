@@ -15,8 +15,50 @@ import 'git_desktop_theme.dart';
 import 'git_askpass_prompt_coordinator.dart';
 import 'repository_library_controller.dart';
 import 'repository_session.dart';
+import 'repository_session_store.dart';
 import 'repository_view_mapper.dart';
 import 'theme_preferences.dart';
+
+/// Returns operation-aware names for Git index stages two and three.
+///
+/// 中文：返回与当前 Git 操作匹配的索引第二、第三阶段版本名称，避免在变基、
+/// 遴选或回滚时把 ours/theirs 误解为当前分支和合并来源。
+(String, String) conflictVersionLabels(
+  GitRepositoryOperationState operation, {
+  required String currentBranch,
+}) => switch (operation) {
+  GitRepositoryOperationState.merge => ('当前分支版本 · $currentBranch', '合并来源版本'),
+  GitRepositoryOperationState.rebase => ('变基目标基线版本', '正在重放的提交版本'),
+  GitRepositoryOperationState.cherryPick => (
+    '当前分支版本 · $currentBranch',
+    '遴选提交版本',
+  ),
+  GitRepositoryOperationState.revert => ('当前分支版本 · $currentBranch', '待应用的回滚版本'),
+  GitRepositoryOperationState.none => ('当前基线版本', '待应用版本'),
+};
+
+/// Returns native mutation-menu availability from the current repository
+/// capability snapshot.
+///
+/// 中文：根据当前仓库 capability 快照返回原生写操作菜单可用性；没有仓库、
+/// 后台任务或暂停中的 Git 操作都会关闭相关入口。
+({bool canApplyPatch, bool canStopTracking}) nativeWorkspaceMenuAvailability(
+  RepositorySessionState session,
+  RepositoryOverviewViewData overview,
+) {
+  final repository = overview.repository;
+  final canApplyPatch =
+      session.phase == RepositorySessionPhase.ready &&
+      repository != null &&
+      !repository.blocksRepositoryMutations;
+  return (
+    canApplyPatch: canApplyPatch,
+    canStopTracking:
+        canApplyPatch &&
+        (repository.selectedChange?.canStopTracking == true ||
+            session.selectedCommitFile?.file.path.isValidUtf8 == true),
+  );
+}
 
 class GitDesktopApp extends ConsumerStatefulWidget {
   const GitDesktopApp({
@@ -107,8 +149,6 @@ class RepositoryLibraryWindow extends ConsumerStatefulWidget {
 
 class _RepositoryLibraryWindowState
     extends ConsumerState<RepositoryLibraryWindow> {
-  late final Future<void> _restoreFuture;
-  Future<void> _repositoryRegistrationTail = Future<void>.value();
   bool _isDirectoryDropActive = false;
 
   /// 中文：首页窗口初始化时恢复本地仓库清单。
@@ -117,13 +157,48 @@ class _RepositoryLibraryWindowState
   @override
   void initState() {
     super.initState();
-    _restoreFuture = ref.read(repositoryLibraryProvider.notifier).restore();
+    unawaited(_restoreRepositoryLibrary());
     DesktopWindowBridge.setRepositoryOpenedHandler(_recordRepositoryOpened);
     DesktopWindowBridge.setRepositoryDirectoryDropHandlers(
       onDirectoriesDropped: _registerDroppedDirectories,
       onDragStateChanged: _updateDirectoryDropState,
     );
     unawaited(DesktopWindowBridge.repositoryLibraryReady().catchError((_) {}));
+  }
+
+  /// 中文：恢复首页仓库清单；损坏或暂时不可读时保留原文件并显示可恢复提示。
+  ///
+  /// English: Restores the home repository list, preserving an unreadable
+  /// snapshot and showing a recoverable error when loading fails.
+  Future<void> _restoreRepositoryLibrary() async {
+    try {
+      await ref.read(repositoryLibraryProvider.notifier).restore();
+    } on RepositorySessionLoadException {
+      if (!mounted) return;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('无法读取已保存的仓库清单；原文件已保留，可重新添加仓库进行恢复。')),
+        );
+      });
+    } on RepositoryLibraryPersistenceException {
+      // Persistence failures are reported by the provider listener so restore
+      // and later add/reorder/select writes share one recoverable error path.
+    }
+  }
+
+  /// 中文：显示仓库清单保存失败的可恢复提示，不暴露底层路径或异常详情。
+  /// English: Shows a recoverable repository-library persistence warning
+  /// without exposing storage paths or underlying exception details.
+  void _showRepositoryLibraryPersistenceFailure() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('仓库清单暂时无法保存；本次仓库更改已保留在当前窗口，但尚未写入磁盘。请检查磁盘空间或权限后再次调整清单。'),
+        ),
+      );
+    });
   }
 
   @override
@@ -133,28 +208,19 @@ class _RepositoryLibraryWindowState
     super.dispose();
   }
 
-  /// 中文：串行执行首页仓库清单变更，避免恢复、拖放和工作区回传相互覆盖。
-  ///
-  /// English: Serializes library mutations so restoration, directory drops and
-  /// workspace reports cannot overwrite one another.
-  Future<void> _enqueueRepositoryRegistration(Future<void> Function() action) {
-    final registration = _repositoryRegistrationTail.then((_) async {
-      await _restoreFuture;
-      if (!mounted) return;
-      await action();
-    });
-    _repositoryRegistrationTail = registration.catchError((_) {});
-    return registration;
-  }
-
   /// Adds a repository confirmed by a workspace to the live library and its
   /// persisted repository list.
-  Future<void> _recordRepositoryOpened(String repositoryPath) {
-    return _enqueueRepositoryRegistration(() async {
-      final controller = ref.read(repositoryLibraryProvider.notifier);
-      await controller.add(repositoryPath);
-      controller.select(repositoryPath);
-    });
+  ///
+  /// 中文：仅在首页完成登记和持久化后确认工作区回传；失败会保留原生重试记录。
+  Future<void> _recordRepositoryOpened(String repositoryPath) async {
+    final controller = ref.read(repositoryLibraryProvider.notifier);
+    final result = await controller.registerAndPersist(repositoryPath);
+    if (result != RepositoryLibraryRegistrationResult.added &&
+        result != RepositoryLibraryRegistrationResult.alreadyRegistered) {
+      throw StateError('Repository registration was not persisted.');
+    }
+    controller.select(repositoryPath);
+    await controller.flushPendingWrites();
   }
 
   /// 中文：处理原生窗口投递的目录，依次识别 Git 根目录后添加到首页清单。
@@ -165,20 +231,25 @@ class _RepositoryLibraryWindowState
     var added = 0;
     var alreadyRegistered = 0;
     var rejected = 0;
-    await _enqueueRepositoryRegistration(() async {
-      final controller = ref.read(repositoryLibraryProvider.notifier);
-      for (final directoryPath in directoryPaths) {
-        switch (await controller.add(directoryPath)) {
-          case RepositoryLibraryRegistrationResult.added:
-            added++;
-          case RepositoryLibraryRegistrationResult.alreadyRegistered:
-            alreadyRegistered++;
-          case RepositoryLibraryRegistrationResult.notRepository:
-          case RepositoryLibraryRegistrationResult.failed:
-            rejected++;
-        }
+    final controller = ref.read(repositoryLibraryProvider.notifier);
+    for (final directoryPath in directoryPaths) {
+      switch (await controller.add(directoryPath)) {
+        case RepositoryLibraryRegistrationResult.added:
+          added++;
+        case RepositoryLibraryRegistrationResult.alreadyRegistered:
+          alreadyRegistered++;
+        case RepositoryLibraryRegistrationResult.notRepository:
+        case RepositoryLibraryRegistrationResult.failed:
+          rejected++;
       }
-    });
+    }
+    try {
+      await controller.flushPendingWrites();
+    } on RepositoryLibraryPersistenceException {
+      // The provider listener explains that the additions remain in memory
+      // but were not saved, so do not also show a misleading success message.
+      return;
+    }
     if (!mounted) return;
     final message = switch ((added, alreadyRegistered, rejected)) {
       (0, 0, _) => '未添加目录：请拖入可读取的 Git 仓库。',
@@ -233,6 +304,16 @@ class _RepositoryLibraryWindowState
   /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
+    ref.listen<(int, String?)>(
+      repositoryLibraryProvider.select(
+        (state) => (state.persistenceFailureCount, state.persistenceError),
+      ),
+      (previous, next) {
+        if (next.$1 > (previous?.$1 ?? 0)) {
+          _showRepositoryLibraryPersistenceFailure();
+        }
+      },
+    );
     final repositories = ref.watch(
       repositoryLibraryProvider.select((state) => state.repositories),
     );
@@ -315,6 +396,7 @@ class _RepositoryWorkspaceScreenState
   bool _isSequencerPromptVisible = false;
   bool _hasHandledInitialAction = false;
   bool? _lastNativeStopTrackingAvailability;
+  bool? _lastNativeApplyPatchAvailability;
 
   /// 中文：在窗口首次绘制后执行首页请求的仓库操作；恢复窗口打开失败时清除其原生恢复记录。
   /// English: Starts the repository action requested by the library after the
@@ -369,24 +451,27 @@ class _RepositoryWorkspaceScreenState
     }
   }
 
-  /// Synchronizes native Stop Tracking menu availability with Flutter state.
+  /// Synchronizes native mutation-menu availability with Flutter state.
   ///
-  /// 中文：仅将当前选中文件的可用性快照交给 macOS 菜单；实际执行仍通过
-  /// [_stopTrackingChanges] 重新读取 Git 状态并显示确认窗口。
-  Future<void> _syncNativeStopTrackingAvailability(
+  /// 中文：将当前仓库写入边界与选中文件能力快照交给 macOS 菜单；实际执行仍会
+  /// 在 Flutter 入口重新读取状态，避免原生菜单使用过期快照。
+  Future<void> _syncNativeWorkspaceMenuAvailability(
     RepositorySessionState session,
     RepositoryOverviewViewData overview,
   ) async {
-    final selected = overview.repository?.selectedChange;
-    final canStopTracking =
-        session.phase == RepositorySessionPhase.ready &&
-        (selected?.canStopTracking == true ||
-            session.selectedCommitFile?.file.path.isValidUtf8 == true);
-    if (_lastNativeStopTrackingAvailability == canStopTracking) return;
+    final availability = nativeWorkspaceMenuAvailability(session, overview);
+    final canApplyPatch = availability.canApplyPatch;
+    final canStopTracking = availability.canStopTracking;
+    if (_lastNativeStopTrackingAvailability == canStopTracking &&
+        _lastNativeApplyPatchAvailability == canApplyPatch) {
+      return;
+    }
     _lastNativeStopTrackingAvailability = canStopTracking;
+    _lastNativeApplyPatchAvailability = canApplyPatch;
     try {
       await DesktopWindowBridge.setWorkspaceMenuState(
         canStopTracking: canStopTracking,
+        canApplyPatch: canApplyPatch,
       );
     } on Object {
       // The Engine can be closing while a state notification is in flight.
@@ -1968,14 +2053,24 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
-  /// 中文：从 macOS“动作”菜单打开补丁应用窗口，并根据用户选项检查或应用补丁。
-  /// English: Opens the patch-apply window from the native Action menu.
+  /// 中文：处理 macOS“动作”菜单的应用补丁请求；先复核实时仓库写入 capability，
+  /// 可写时才打开窗口并根据用户选项检查或应用补丁。
+  ///
+  /// English: Handles Apply Patch from the native Action menu, revalidating
+  /// the live repository mutation capability before opening the dialog.
   Future<void> _showApplyPatchDialog() async {
     final session = ref.read(repositorySessionProvider);
-    if (session.repository == null) {
+    final repository = mapRepositoryOverview(session).repository;
+    if (repository == null) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('请先打开一个仓库。')));
+      return;
+    }
+    if (repository.blocksRepositoryMutations) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('当前仓库正在执行任务或等待冲突恢复，暂时无法应用补丁。')),
+      );
       return;
     }
     final request = await showDialog<_PatchApplyRequest>(
@@ -2517,6 +2612,11 @@ class _RepositoryWorkspaceScreenState
       return;
     }
     final branch = ref.read(repositorySessionProvider).status?.branch.head;
+    final operation = ref.read(repositorySessionProvider).operationState;
+    final labels = conflictVersionLabels(
+      operation,
+      currentBranch: branch ?? '当前分支',
+    );
     final result = await showDialog<String>(
       context: context,
       barrierDismissible: false,
@@ -2526,6 +2626,8 @@ class _RepositoryWorkspaceScreenState
         oursText: versions.oursText,
         theirsText: versions.theirsText,
         workingText: versions.workingText,
+        oursLabel: labels.$1,
+        theirsLabel: labels.$2,
         isBinary: versions.isBinary,
         isTruncated: versions.isTruncated,
       ),
@@ -2986,7 +3088,7 @@ class _RepositoryWorkspaceScreenState
     final session = ref.watch(repositorySessionProvider);
     final controller = ref.read(repositorySessionProvider.notifier);
     final overview = mapRepositoryOverview(session);
-    unawaited(_syncNativeStopTrackingAvailability(session, overview));
+    unawaited(_syncNativeWorkspaceMenuAvailability(session, overview));
     return Scaffold(
       body: Stack(
         children: [

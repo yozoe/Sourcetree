@@ -1,5 +1,6 @@
 #include <ctype.h>
 #include <errno.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -141,10 +142,17 @@ static int parse_secret_response(char *response, char **secret) {
 int main(int argc, char *argv[]) {
   const char *socket_path = getenv("GIT_DESKTOP_ASKPASS_SOCKET");
   const char *nonce = getenv("GIT_DESKTOP_ASKPASS_NONCE");
+  const char *timeout_value = getenv("GIT_DESKTOP_ASKPASS_TIMEOUT_SECONDS");
+  char *timeout_end = NULL;
+  const unsigned long parsed_timeout =
+      timeout_value == NULL ? 0 : strtoul(timeout_value, &timeout_end, 10);
   const char *prompt = argc == 2 ? argv[1] : NULL;
   if (socket_path == NULL || socket_path[0] != '/' ||
       strlen(socket_path) >= sizeof(((struct sockaddr_un *)0)->sun_path) ||
-      !is_valid_nonce(nonce) || prompt == NULL || prompt[0] == '\0' ||
+      !is_valid_nonce(nonce) || timeout_value == NULL ||
+      timeout_end == timeout_value || *timeout_end != '\0' ||
+      parsed_timeout == 0 || parsed_timeout > UINT_MAX ||
+      prompt == NULL || prompt[0] == '\0' ||
       strlen(prompt) > kMaxPromptLength ||
       !is_private_current_user_socket(socket_path)) {
     fputs("AskPass is unavailable.\n", stderr);
@@ -153,7 +161,7 @@ int main(int argc, char *argv[]) {
 
   const int socket_fd = socket(AF_UNIX, SOCK_STREAM, 0);
   if (socket_fd < 0) return 1;
-  struct timeval timeout = {.tv_sec = 60, .tv_usec = 0};
+  struct timeval timeout = {.tv_sec = (time_t)parsed_timeout, .tv_usec = 0};
   (void)setsockopt(socket_fd, SOL_SOCKET, SO_RCVTIMEO, &timeout, sizeof(timeout));
   (void)setsockopt(socket_fd, SOL_SOCKET, SO_SNDTIMEO, &timeout, sizeof(timeout));
 
