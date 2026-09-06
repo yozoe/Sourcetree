@@ -8,6 +8,7 @@ import '../git/git.dart';
 import '../presentation/presentation.dart';
 import 'git_askpass_prompt_coordinator.dart';
 import 'git_sensitive_text_redactor.dart';
+import 'repository_change_monitor.dart';
 
 final gitRunnerProvider = Provider<GitRunner>((Ref ref) => GitRunner());
 
@@ -21,6 +22,10 @@ final gitRepositoryReaderProvider = Provider<GitRepositoryReader>(
 
 final gitRepositoryWriterProvider = Provider<GitRepositoryWriter>(
   (Ref ref) => GitRepositoryWriter(ref.watch(gitRunnerProvider)),
+);
+
+final repositoryChangeMonitorProvider = Provider<RepositoryChangeMonitor>(
+  (Ref ref) => RepositoryChangeMonitor(),
 );
 
 final repositorySessionProvider =
@@ -461,11 +466,13 @@ final class RepositorySessionController
     extends Notifier<RepositorySessionState> {
   static const int _historyPageSize = 100;
   static const int _historyPageReadLimit = _historyPageSize + 1;
+  static const Duration _automaticRefreshCooldown = Duration(seconds: 1);
 
   late GitRunner _runner;
   late GitRepositoryInspector _inspector;
   late GitRepositoryReader _reader;
   late GitRepositoryWriter _writer;
+  late RepositoryChangeMonitor _changeMonitor;
   int _repositoryGeneration = 0;
   int _historyGeneration = 0;
   int _diffGeneration = 0;
@@ -486,6 +493,12 @@ final class RepositorySessionController
   var _pushPreflightInProgress = false;
   var _pullPreflightInProgress = false;
   var _removeRemotePreflightInProgress = false;
+  var _automaticRefreshEnabled = false;
+  var _automaticRefreshInProgress = false;
+  var _automaticRefreshPending = false;
+  var _automaticRefreshNeedsMetadata = false;
+  var _automaticRefreshRequestVersion = 0;
+  DateTime? _lastAutomaticRefreshCompletedAt;
   static final Object _trackedGitTaskZoneKey = Object();
 
   bool get _isInsideTrackedGitTask =>
@@ -499,7 +512,11 @@ final class RepositorySessionController
     _inspector = ref.watch(gitRepositoryInspectorProvider);
     _reader = ref.watch(gitRepositoryReaderProvider);
     _writer = ref.watch(gitRepositoryWriterProvider);
-    ref.onDispose(_cancelActiveGitOperations);
+    _changeMonitor = ref.watch(repositoryChangeMonitorProvider);
+    ref.onDispose(() {
+      _cancelActiveGitOperations();
+      unawaited(_changeMonitor.stop());
+    });
     return const RepositorySessionState.empty();
   }
 
@@ -523,6 +540,14 @@ final class RepositorySessionController
     _commitGeneration++;
     _commitDiffGeneration++;
     _cancelActiveGitOperations();
+
+    if (remaining() > Duration.zero) {
+      try {
+        await _changeMonitor.stop().timeout(remaining());
+      } on TimeoutException {
+        // Provider disposal makes a final best-effort cancellation attempt.
+      }
+    }
 
     await _runner.cancelAllAndWait(timeout: remaining());
     if (_activeGitTasks.isNotEmpty && remaining() > Duration.zero) {
@@ -592,6 +617,198 @@ final class RepositorySessionController
     _stashCancellation?.cancel();
     _historyMutationCancellation?.cancel();
     _repositoryDetailsCancellation?.cancel();
+  }
+
+  /// Enables file-system invalidation for this Engine-owned repository session.
+  ///
+  /// The monitor follows repository switches and is released with the
+  /// provider. File events only request a refresh; Git remains authoritative.
+  ///
+  /// 中文：为当前 Engine 的仓库会话启用文件系统失效监听。监听会跟随仓库切换
+  /// 并随 Provider 释放；文件事件只触发刷新，最终状态仍以 Git 为准。
+  Future<void> enableAutomaticRefresh() async {
+    if (_isShuttingDown) return;
+    _automaticRefreshEnabled = true;
+    final repository = state.repository;
+    if (repository != null && state.phase == RepositorySessionPhase.ready) {
+      await _startRepositoryMonitor(repository, _repositoryGeneration);
+    }
+  }
+
+  /// Disables automatic refresh and drains the active directory subscriptions.
+  ///
+  /// 中文：关闭自动刷新并等待当前目录监听全部释放。
+  Future<void> disableAutomaticRefresh() async {
+    _automaticRefreshEnabled = false;
+    _automaticRefreshPending = false;
+    _automaticRefreshNeedsMetadata = false;
+    await _changeMonitor.stop();
+  }
+
+  /// Requests a coalesced refresh after an external invalidation or focus gain.
+  ///
+  /// Metadata invalidations reload refs and history; ordinary work-tree and
+  /// focus invalidations only read status, operation state, and the selected
+  /// working-tree Diff. Concurrent requests collapse into at most one follow-up.
+  ///
+  /// 中文：在外部变化或窗口重新聚焦后请求合并刷新。Git 元数据变化会重读引用
+  /// 和历史；普通工作区及聚焦兜底只重读状态、操作状态和当前工作区 Diff。
+  /// 并发请求最多合并为一次后续刷新。
+  void requestAutomaticRefresh({bool repositoryMetadataChanged = false}) {
+    if (!_automaticRefreshEnabled || _isShuttingDown) return;
+    _automaticRefreshRequestVersion++;
+    _automaticRefreshPending = true;
+    _automaticRefreshNeedsMetadata |= repositoryMetadataChanged;
+    if (!_automaticRefreshInProgress) {
+      unawaited(_drainAutomaticRefresh());
+    }
+  }
+
+  /// Installs the monitor only if an async repository open is still current.
+  ///
+  /// 中文：仅在异步仓库打开结果仍属于当前代际时安装目录监听。
+  Future<void> _startRepositoryMonitor(
+    GitRepository repository,
+    int repositoryGeneration,
+  ) async {
+    if (!_automaticRefreshEnabled ||
+        _isShuttingDown ||
+        repositoryGeneration != _repositoryGeneration) {
+      return;
+    }
+    try {
+      await _changeMonitor.start(
+        repository,
+        onChanged: (scope) => requestAutomaticRefresh(
+          repositoryMetadataChanged:
+              scope == RepositoryExternalChangeScope.repositoryMetadata,
+        ),
+      );
+    } on Object {
+      // File watching is opportunistic; focus and manual refresh remain safe.
+    }
+  }
+
+  /// Serializes automatic reads and waits out application-owned Git mutations.
+  ///
+  /// 中文：串行执行自动读取，并在应用自身 Git 写操作期间等待安全刷新时机。
+  Future<void> _drainAutomaticRefresh() async {
+    if (_automaticRefreshInProgress) return;
+    _automaticRefreshInProgress = true;
+    try {
+      while (_automaticRefreshPending &&
+          _automaticRefreshEnabled &&
+          !_isShuttingDown &&
+          ref.mounted) {
+        final repository = state.repository;
+        if (repository == null ||
+            state.phase == RepositorySessionPhase.empty ||
+            state.phase == RepositorySessionPhase.error) {
+          _automaticRefreshPending = false;
+          _automaticRefreshNeedsMetadata = false;
+          return;
+        }
+        if (_automaticRefreshIsBlocked) {
+          await Future<void>.delayed(const Duration(milliseconds: 200));
+          continue;
+        }
+        final lastCompletedAt = _lastAutomaticRefreshCompletedAt;
+        if (lastCompletedAt != null) {
+          final remainingCooldown =
+              _automaticRefreshCooldown -
+              DateTime.now().difference(lastCompletedAt);
+          if (remainingCooldown > Duration.zero) {
+            await Future<void>.delayed(remainingCooldown);
+            continue;
+          }
+        }
+        final reloadMetadata = _automaticRefreshNeedsMetadata;
+        _automaticRefreshPending = false;
+        _automaticRefreshNeedsMetadata = false;
+        try {
+          if (reloadMetadata) {
+            await refresh();
+          } else {
+            await _refreshWorkingTreeFromGit();
+          }
+        } finally {
+          _lastAutomaticRefreshCompletedAt = DateTime.now();
+        }
+      }
+    } finally {
+      _automaticRefreshInProgress = false;
+      if (_automaticRefreshPending &&
+          _automaticRefreshEnabled &&
+          !_isShuttingDown) {
+        unawaited(_drainAutomaticRefresh());
+      }
+    }
+  }
+
+  /// Whether an application-owned operation currently excludes auto refresh.
+  ///
+  /// 中文：判断应用自身操作当前是否要求延后自动刷新。
+  bool get _automaticRefreshIsBlocked =>
+      state.phase != RepositorySessionPhase.ready ||
+      state.isWorkingTreeBusy ||
+      state.isCloneRunning ||
+      state.isFetchRunning ||
+      state.isPullRunning ||
+      state.isPushRunning ||
+      state.isStashRunning ||
+      state.operations.any(
+        (operation) => operation.outcome == RepositoryOperationOutcome.running,
+      );
+
+  /// Reads only the Git state invalidated by ordinary external file changes.
+  ///
+  /// The history snapshot stays intact. A surviving working-tree selection is
+  /// restored and its Diff is re-read; a clean tree returns an uncommitted-row
+  /// selection to the latest commit.
+  ///
+  /// 中文：只读取普通外部文件变化影响的 Git 状态，保留历史快照。仍有效的
+  /// 工作区文件选择会恢复并重读 Diff；工作区变干净时回到最新提交。
+  Future<void> _refreshWorkingTreeFromGit() async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackVoidGitTask(_refreshWorkingTreeFromGit);
+    }
+    final repository = state.repository;
+    if (repository == null || state.phase != RepositorySessionPhase.ready) {
+      return;
+    }
+    final repositoryGeneration = _repositoryGeneration;
+    final previousSelection = state.selectedChange;
+    final previousRefId = state.selectedRefId;
+    try {
+      final results = await Future.wait<Object>([
+        _reader.readStatus(repository),
+        _reader.readOperationState(repository),
+      ]);
+      if (!_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
+        return;
+      }
+      final refreshed = await _finishWorkingTreeMutation(
+        repository: repository,
+        repositoryGeneration: repositoryGeneration,
+        previousSelection: previousSelection,
+        previousRefId: previousRefId,
+        validatedStatus: results[0] as GitStatusSnapshot,
+      );
+      if (refreshed &&
+          _isCurrentRepositoryRequest(repository, repositoryGeneration)) {
+        state = state.copyWith(
+          operationState: results[1] as GitRepositoryOperationState,
+        );
+      }
+    } on Object catch (error, stackTrace) {
+      if (!_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
+        return;
+      }
+      state = state.copyWith(
+        message: '自动刷新失败；当前内容已保留，可使用刷新按钮重试。',
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+    }
   }
 
   /// 中文：读取当前仓库的详情统计，不改变工作区的加载或错误状态。
@@ -740,7 +957,6 @@ final class RepositorySessionController
     if (normalizedPath.isEmpty) {
       return;
     }
-
     final previousSelection = preserveWorkingTreeSurface
         ? state.selectedChange
         : null;
@@ -772,6 +988,9 @@ final class RepositorySessionController
       if (repository == null) {
         throw const GitException('所选目录不在 Git 仓库中。');
       }
+
+      await _startRepositoryMonitor(repository, generation);
+      final refreshCoveredVersion = _automaticRefreshRequestVersion;
 
       final historyRevisionSnapshot = await _reader.readHistoryRevisionSnapshot(
         repository,
@@ -844,6 +1063,11 @@ final class RepositorySessionController
         gitVersion: results[9] as String,
         searchQuery: state.searchQuery,
       );
+      if (_automaticRefreshEnabled &&
+          refreshCoveredVersion == _automaticRefreshRequestVersion) {
+        _automaticRefreshPending = false;
+        _automaticRefreshNeedsMetadata = false;
+      }
       if (shouldRestoreWorkingTreeSurface) {
         await _restoreWorkingTreeSelectionAfterRefresh(
           previousSelection: previousSelection,

@@ -390,13 +390,15 @@ class RepositoryWorkspaceScreen extends ConsumerStatefulWidget {
 }
 
 class _RepositoryWorkspaceScreenState
-    extends ConsumerState<RepositoryWorkspaceScreen> {
+    extends ConsumerState<RepositoryWorkspaceScreen>
+    with WidgetsBindingObserver {
   bool _isAskPassDialogVisible = false;
   bool _isRebasePromptVisible = false;
   bool _isSequencerPromptVisible = false;
   bool _hasHandledInitialAction = false;
   bool? _lastNativeStopTrackingAvailability;
   bool? _lastNativeApplyPatchAvailability;
+  late RepositorySessionController _repositorySessionController;
 
   /// 中文：在窗口首次绘制后执行首页请求的仓库操作；恢复窗口打开失败时清除其原生恢复记录。
   /// English: Starts the repository action requested by the library after the
@@ -405,12 +407,32 @@ class _RepositoryWorkspaceScreenState
   @override
   void initState() {
     super.initState();
+    _repositorySessionController = ref.read(repositorySessionProvider.notifier);
+    WidgetsBinding.instance.addObserver(this);
     DesktopWindowBridge.setWorkspaceActionHandler(_handleWorkspaceMenuAction);
+    unawaited(_repositorySessionController.enableAutomaticRefresh());
     WidgetsBinding.instance.addPostFrameCallback((_) => _prepareWorkspace());
   }
 
+  /// Uses foreground activation as a full fallback for missed events.
+  ///
+  /// 中文：窗口从后台恢复时完整校准仓库，以补偿平台可能遗漏的文件事件。
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && mounted) {
+      _repositorySessionController.requestAutomaticRefresh(
+        repositoryMetadataChanged: true,
+      );
+    }
+  }
+
+  /// Releases the lifecycle observer and this window's automatic monitor.
+  ///
+  /// 中文：释放生命周期观察者和当前窗口拥有的自动刷新监听。
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    unawaited(_repositorySessionController.disableAutomaticRefresh());
     DesktopWindowBridge.setWorkspaceActionHandler(null);
     super.dispose();
   }

@@ -1,7 +1,9 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:git_desktop/src/app/repository_change_monitor.dart';
 import 'package:git_desktop/src/app/repository_session.dart';
 import 'package:git_desktop/src/app/repository_library_controller.dart';
 import 'package:git_desktop/src/app/repository_session_store.dart';
@@ -138,6 +140,121 @@ void main() {
       );
     },
   );
+
+  test(
+    'automatically refreshes external work-tree changes without reloading history',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      await repository.commit('Base');
+      final events = StreamController<FileSystemEvent>.broadcast();
+      addTearDown(events.close);
+      final monitor = RepositoryChangeMonitor(
+        debounceDelay: const Duration(milliseconds: 10),
+        maximumDelay: const Duration(milliseconds: 30),
+        watchDirectory: (_, _) => events.stream,
+      );
+      final container = ProviderContainer(
+        overrides: [repositoryChangeMonitorProvider.overrideWithValue(monitor)],
+      );
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.enableAutomaticRefresh();
+      await controller.openRepository(repository.workingDirectory.path);
+      final original = container.read(repositorySessionProvider);
+      final originalHistory = original.historyCommits;
+      final originalCommitId = original.selectedCommitId;
+      final phases = <RepositorySessionPhase>[];
+      final subscription = container.listen<RepositorySessionState>(
+        repositorySessionProvider,
+        (_, next) => phases.add(next.phase),
+      );
+      addTearDown(subscription.close);
+
+      await repository.writeFile('README.md', 'changed externally\n');
+      events.add(
+        FileSystemModifyEvent(
+          '${repository.workingDirectory.path}${Platform.pathSeparator}README.md',
+          false,
+          true,
+        ),
+      );
+
+      await _waitUntil(
+        () =>
+            container
+                .read(repositorySessionProvider)
+                .status
+                ?.entries
+                .any((entry) => entry.path.display == 'README.md') ??
+            false,
+      );
+      final refreshed = container.read(repositorySessionProvider);
+      expect(phases, isNotEmpty);
+      expect(
+        phases.every((phase) => phase == RepositorySessionPhase.ready),
+        isTrue,
+      );
+      expect(identical(refreshed.historyCommits, originalHistory), isTrue);
+      expect(refreshed.selectedCommitId, originalCommitId);
+      expect(refreshed.status!.isClean, isFalse);
+    },
+  );
+
+  test('automatically reloads history after external HEAD changes', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Base');
+    final events = StreamController<FileSystemEvent>.broadcast();
+    addTearDown(events.close);
+    final monitor = RepositoryChangeMonitor(
+      debounceDelay: const Duration(milliseconds: 10),
+      maximumDelay: const Duration(milliseconds: 30),
+      watchDirectory: (_, _) => events.stream,
+    );
+    final container = ProviderContainer(
+      overrides: [repositoryChangeMonitorProvider.overrideWithValue(monitor)],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.enableAutomaticRefresh();
+    await controller.openRepository(repository.workingDirectory.path);
+
+    await repository.writeFile('README.md', 'external commit\n');
+    final externalCommit = await repository.commit('External commit');
+    final watchedGitDirectory = container
+        .read(repositorySessionProvider)
+        .repository!
+        .gitDirectory;
+    events.add(
+      FileSystemModifyEvent(
+        '$watchedGitDirectory${Platform.pathSeparator}HEAD',
+        false,
+        true,
+      ),
+    );
+
+    await _waitUntil(
+      () =>
+          container
+              .read(repositorySessionProvider)
+              .historyCommits
+              .firstOrNull
+              ?.objectId ==
+          externalCommit,
+      diagnostic: () {
+        final state = container.read(repositorySessionProvider);
+        return 'phase=${state.phase}, message=${state.message}, '
+            'head=${state.status?.branch.objectId}, '
+            'history=${state.historyCommits.map((commit) => commit.objectId).toList()}';
+      },
+    );
+    final refreshed = container.read(repositorySessionProvider);
+    expect(refreshed.status!.branch.objectId, externalCommit);
+    expect(refreshed.selectedCommitId, externalCommit);
+  });
 
   test('clears a file selection that disappears during refresh', () async {
     final repository = await GitTestRepository.create();
@@ -3316,6 +3433,23 @@ while true; do sleep 1; done
       ]),
     );
   });
+}
+
+Future<void> _waitUntil(
+  bool Function() predicate, {
+  String Function()? diagnostic,
+}) async {
+  final deadline = DateTime.now().add(const Duration(seconds: 5));
+  while (!predicate()) {
+    if (DateTime.now().isAfter(deadline)) {
+      final details = diagnostic?.call();
+      fail(
+        'Timed out waiting for the automatic repository refresh.'
+        '${details == null ? '' : ' $details'}',
+      );
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 20));
+  }
 }
 
 final class _MemoryRepositorySessionStore implements RepositorySessionStore {

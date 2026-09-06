@@ -2,6 +2,7 @@
 
 ## Unreleased
 
+- 工作区新增自动刷新：监听当前 worktree 和实际 Git 管理目录，编辑器或其他工具修改文件后会防抖合并并轻量重读 Git status 与当前 Diff；HEAD、refs 或仓库操作元数据变化才重载历史。刷新读取期间继续监听并按事件代际补读，持续事件采用最大等待和完成后冷却抑制刷新风暴；应用 Git 写操作期间事件会延后合并，窗口恢复前台时完整校准状态、引用和历史，手动刷新入口继续保留。
 - 安全加固：Clone 拒绝 Git remote-helper 与未知协议；远端分支删除拒绝 option-shaped 远端名；Git 错误额外脱敏 SCP 凭据、OAuth/刷新令牌、AWS 签名、URL fragment 和 Cookie/API Key 头。
 - macOS 冲突写回恢复“完整临时文件 + fsync + 原子 rename”，发布前通过已打开文件的 device/inode 拒绝已检测到的并发替换，任何发布前故障均保留原文件；文件系统不提供按 inode 条件 rename，最终复核与 rename 间仍有极窄的非协作替换窗口。其他平台在等价安全句柄实现完成前拒绝内部冲突写回。Changes 删除逐级固定目录描述符并拒绝链接父级，目录无法安全递归时失败关闭。补丁在固定输出目录内写完后通过排他硬链接发布，不覆盖并发目标。
 - Git 进程树跟踪会立即读取首帧，并使用 macOS 内核微秒启动时间或 Linux `/proc` start tick 校验 PID；后续快照不重叠，避免高频 `ps` 队列。AskPass helper 与会话使用同一可配置超时，关闭异常不再中断 Socket、broker 和临时目录清理。
