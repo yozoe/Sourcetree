@@ -25,12 +25,24 @@ void main() {
       await DesktopWindowBridge.setWorkspaceMenuState(
         canStopTracking: false,
         canApplyPatch: true,
+        canCommit: true,
+        canFetch: true,
+        canPull: true,
+        canPush: true,
+        canCreateBranch: true,
+        canStash: true,
       );
 
       expect(receivedCall?.method, 'setWorkspaceMenuState');
       expect(receivedCall?.arguments, <String, bool>{
         'canStopTracking': false,
         'canApplyPatch': true,
+        'canCommit': true,
+        'canFetch': true,
+        'canPull': true,
+        'canPush': true,
+        'canCreateBranch': true,
+        'canStash': true,
       });
     },
   );

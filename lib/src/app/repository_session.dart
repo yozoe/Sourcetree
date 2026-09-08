@@ -10,6 +10,8 @@ import 'git_askpass_prompt_coordinator.dart';
 import 'git_sensitive_text_redactor.dart';
 import 'repository_change_monitor.dart';
 
+part 'repository_session_tasks.dart';
+
 final gitRunnerProvider = Provider<GitRunner>((Ref ref) => GitRunner());
 
 final gitRepositoryInspectorProvider = Provider<GitRepositoryInspector>(
@@ -479,16 +481,7 @@ final class RepositorySessionController
   int _commitGeneration = 0;
   int _commitDiffGeneration = 0;
   int _operationSequence = 0;
-  GitCancellationToken? _cloneCancellation;
-  GitCancellationToken? _fetchCancellation;
-  GitCancellationToken? _pullCancellation;
-  GitCancellationToken? _pushCancellation;
-  GitCancellationToken? _pushVerificationCancellation;
-  GitCancellationToken? _stashCancellation;
-  GitCancellationToken? _historyMutationCancellation;
-  GitCancellationToken? _repositoryDetailsCancellation;
-  final Set<Future<void>> _activeGitTasks = <Future<void>>{};
-  var _isShuttingDown = false;
+  final _taskTracker = _RepositoryTaskTracker();
   var _fetchPreflightInProgress = false;
   var _pushPreflightInProgress = false;
   var _pullPreflightInProgress = false;
@@ -499,10 +492,6 @@ final class RepositorySessionController
   var _automaticRefreshNeedsMetadata = false;
   var _automaticRefreshRequestVersion = 0;
   DateTime? _lastAutomaticRefreshCompletedAt;
-  static final Object _trackedGitTaskZoneKey = Object();
-
-  bool get _isInsideTrackedGitTask =>
-      Zone.current[_trackedGitTaskZoneKey] == this;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -526,98 +515,7 @@ final class RepositorySessionController
   /// their Git processes and AskPass sessions to release native resources.
   Future<void> prepareForShutdown({
     Duration timeout = const Duration(seconds: 2),
-  }) async {
-    final deadline = DateTime.now().add(timeout);
-    Duration remaining() {
-      final value = deadline.difference(DateTime.now());
-      return value.isNegative ? Duration.zero : value;
-    }
-
-    _isShuttingDown = true;
-    _repositoryGeneration++;
-    _historyGeneration++;
-    _diffGeneration++;
-    _commitGeneration++;
-    _commitDiffGeneration++;
-    _cancelActiveGitOperations();
-
-    if (remaining() > Duration.zero) {
-      try {
-        await _changeMonitor.stop().timeout(remaining());
-      } on TimeoutException {
-        // Provider disposal makes a final best-effort cancellation attempt.
-      }
-    }
-
-    await _runner.cancelAllAndWait(timeout: remaining());
-    if (_activeGitTasks.isNotEmpty && remaining() > Duration.zero) {
-      try {
-        await Future.wait<void>(
-          _activeGitTasks.toList(growable: false),
-        ).timeout(remaining());
-      } on TimeoutException {
-        // The outer native host also has a bounded watchdog. A final runner
-        // sweep below escalates any process still owned by this Engine.
-      }
-    }
-    // A tracked flow may perform a final Git refresh after its mutation exits.
-    await _runner.cancelAllAndWait(timeout: remaining());
-  }
-
-  /// Runs one application-layer Git flow under the Engine shutdown barrier.
-  ///
-  /// 中文：在 Engine 关闭屏障内执行一个应用层 Git 流程；关闭开始后
-  /// 不再启动新流程，已开始的流程完成前不释放 Engine。
-  Future<T?> _trackGitTask<T>(Future<T> Function() run) {
-    if (_isShuttingDown) return Future<T?>.value();
-    late final Future<void> completion;
-    final operation = runZoned(
-      run,
-      zoneValues: <Object?, Object?>{_trackedGitTaskZoneKey: this},
-    );
-    completion = operation
-        .then<void>((_) {}, onError: (Object error, StackTrace stackTrace) {})
-        .whenComplete(() => _activeGitTasks.remove(completion));
-    _activeGitTasks.add(completion);
-    return operation;
-  }
-
-  /// Runs a boolean Git entry point exactly once inside the shutdown barrier.
-  ///
-  /// 中文：确保返回布尔值的 Git 入口只在关闭屏障内执行一次；嵌套调用复用当前任务。
-  Future<bool> _trackBooleanGitTask(Future<bool> Function() run) async {
-    if (_isInsideTrackedGitTask) return run();
-    return await _trackGitTask<bool>(run) ?? false;
-  }
-
-  /// Runs a void Git entry point inside the shutdown barrier.
-  ///
-  /// 中文：确保无返回值的 Git 入口在关闭屏障内执行，嵌套读取复用当前任务。
-  Future<void> _trackVoidGitTask(Future<void> Function() run) async {
-    if (_isInsideTrackedGitTask) return run();
-    await _trackGitTask<void>(run);
-  }
-
-  /// Runs a value-producing Git entry point or reports shutdown cancellation.
-  ///
-  /// 中文：在关闭屏障内执行必须返回值的 Git 入口；关闭后新请求以取消错误结束。
-  Future<T> _trackRequiredGitTask<T>(Future<T> Function() run) async {
-    if (_isInsideTrackedGitTask) return run();
-    final result = await _trackGitTask<T>(run);
-    if (result == null) throw const GitCancelledException();
-    return result;
-  }
-
-  void _cancelActiveGitOperations() {
-    _cloneCancellation?.cancel();
-    _fetchCancellation?.cancel();
-    _pullCancellation?.cancel();
-    _pushCancellation?.cancel();
-    _pushVerificationCancellation?.cancel();
-    _stashCancellation?.cancel();
-    _historyMutationCancellation?.cancel();
-    _repositoryDetailsCancellation?.cancel();
-  }
+  }) => _prepareForShutdown(timeout: timeout);
 
   /// Enables file-system invalidation for this Engine-owned repository session.
   ///
@@ -787,18 +685,31 @@ final class RepositorySessionController
       if (!_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
         return;
       }
+      final refreshedStatus = results[0] as GitStatusSnapshot;
+      final refreshedOperationState = results[1] as GitRepositoryOperationState;
+      // A directory watch also observes ignored build output and editor
+      // metadata. Git remains the source of truth, but when it confirms that
+      // neither the work-tree snapshot nor operation state changed, avoid
+      // publishing a replacement session and rebuilding the workspace.
+      // A selected file is intentionally excluded: its contents may have
+      // changed while porcelain status remains `M`, so its Diff must reload.
+      if (previousSelection == null &&
+          _sameGitStatusSnapshot(state.status, refreshedStatus)) {
+        if (state.operationState != refreshedOperationState) {
+          state = state.copyWith(operationState: refreshedOperationState);
+        }
+        return;
+      }
       final refreshed = await _finishWorkingTreeMutation(
         repository: repository,
         repositoryGeneration: repositoryGeneration,
         previousSelection: previousSelection,
         previousRefId: previousRefId,
-        validatedStatus: results[0] as GitStatusSnapshot,
+        validatedStatus: refreshedStatus,
       );
       if (refreshed &&
           _isCurrentRepositoryRequest(repository, repositoryGeneration)) {
-        state = state.copyWith(
-          operationState: results[1] as GitRepositoryOperationState,
-        );
+        state = state.copyWith(operationState: refreshedOperationState);
       }
     } on Object catch (error, stackTrace) {
       if (!_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
@@ -810,6 +721,83 @@ final class RepositorySessionController
       );
     }
   }
+
+  /// Compares every status field that can affect repository presentation.
+  ///
+  /// 中文：比较所有会影响仓库呈现的状态字段；自动刷新在无文件选择时用它抑制
+  /// 忽略文件等无效事件产生的重复 session 发布。
+  bool _sameGitStatusSnapshot(
+    GitStatusSnapshot? current,
+    GitStatusSnapshot refreshed,
+  ) {
+    if (current == null ||
+        !_sameGitBranchStatus(current.branch, refreshed.branch) ||
+        !_sameGitStatusEntries(current.entries, refreshed.entries) ||
+        !_sameGitStatusEntries(
+          current.displayEntries,
+          refreshed.displayEntries,
+        ) ||
+        current.additionalHeaders.length !=
+            refreshed.additionalHeaders.length) {
+      return false;
+    }
+    for (final entry in current.additionalHeaders.entries) {
+      if (refreshed.additionalHeaders[entry.key] != entry.value) return false;
+    }
+    return true;
+  }
+
+  bool _sameGitBranchStatus(GitBranchStatus first, GitBranchStatus second) =>
+      first.objectId == second.objectId &&
+      first.head == second.head &&
+      first.upstream == second.upstream &&
+      first.ahead == second.ahead &&
+      first.behind == second.behind &&
+      first.isUpstreamGone == second.isUpstreamGone &&
+      first.stashCount == second.stashCount &&
+      first.isDetached == second.isDetached &&
+      first.isUnborn == second.isUnborn;
+
+  bool _sameGitStatusEntries(
+    List<GitStatusEntry> first,
+    List<GitStatusEntry> second,
+  ) {
+    if (first.length != second.length) return false;
+    for (var index = 0; index < first.length; index++) {
+      if (!_sameGitStatusEntry(first[index], second[index])) return false;
+    }
+    return true;
+  }
+
+  bool _sameGitStatusEntry(GitStatusEntry first, GitStatusEntry second) =>
+      first.kind == second.kind &&
+      first.path == second.path &&
+      first.originalPath == second.originalPath &&
+      first.indexStatus == second.indexStatus &&
+      first.workTreeStatus == second.workTreeStatus &&
+      _sameGitSubmoduleStatus(first.submodule, second.submodule) &&
+      first.renameOrCopyScore == second.renameOrCopyScore &&
+      first.headMode == second.headMode &&
+      first.indexMode == second.indexMode &&
+      first.workTreeMode == second.workTreeMode &&
+      first.headObjectId == second.headObjectId &&
+      first.indexObjectId == second.indexObjectId &&
+      first.stage1Mode == second.stage1Mode &&
+      first.stage2Mode == second.stage2Mode &&
+      first.stage3Mode == second.stage3Mode &&
+      first.stage1ObjectId == second.stage1ObjectId &&
+      first.stage2ObjectId == second.stage2ObjectId &&
+      first.stage3ObjectId == second.stage3ObjectId;
+
+  bool _sameGitSubmoduleStatus(
+    GitSubmoduleStatus? first,
+    GitSubmoduleStatus? second,
+  ) =>
+      first?.raw == second?.raw &&
+      first?.isSubmodule == second?.isSubmodule &&
+      first?.commitChanged == second?.commitChanged &&
+      first?.hasTrackedChanges == second?.hasTrackedChanges &&
+      first?.hasUntrackedChanges == second?.hasUntrackedChanges;
 
   /// 中文：读取当前仓库的详情统计，不改变工作区的加载或错误状态。
   ///
@@ -3160,11 +3148,14 @@ final class RepositorySessionController
     }
   }
 
-  /// Restores selected staged tracked paths to their HEAD versions.
+  /// Restores selected tracked paths to their HEAD versions.
   ///
-  /// 中文：在用户确认后重新读取 Git 状态，只将仍为已暂存普通已跟踪改动的路径
-  /// 恢复到 HEAD；索引和工作区都会恢复，不能用于未提交的新增、重命名、复制或
-  /// 冲突路径。
+  /// The selected staged or working-tree surface must still contain the same
+  /// supported change category when status is re-read after confirmation.
+  ///
+  /// 中文：在用户确认后重新读取 Git 状态，只将所选暂存区或工作区来源仍包含受
+  /// 支持改动类型的普通已跟踪路径恢复到 HEAD；索引和工作区都会恢复，不能用于
+  /// 未提交的新增、重命名、复制或冲突路径。
   Future<bool> resetChangesToHead(
     List<RepositoryChangeViewData> changes,
   ) async {
@@ -3218,14 +3209,24 @@ final class RepositorySessionController
         final entry = status.entries
             .where((candidate) => candidate.path.display == change.path)
             .firstOrNull;
+        final currentType = change.isStaged
+            ? entry?.indexStatus
+            : entry?.workTreeStatus;
+        final matchesSelectedKind = switch (change.kind) {
+          RepositoryChangeKind.modified =>
+            currentType == GitChangeType.modified ||
+                currentType == GitChangeType.typeChanged,
+          RepositoryChangeKind.deleted => currentType == GitChangeType.deleted,
+          _ => false,
+        };
         if (entry == null ||
             entry.isConflicted ||
             !entry.path.isValidUtf8 ||
             entry.kind != GitFileStatusKind.ordinary ||
-            !entry.hasStagedChange ||
-            entry.indexStatus == GitChangeType.added ||
-            entry.indexStatus == GitChangeType.renamed ||
-            entry.indexStatus == GitChangeType.copied) {
+            (change.isStaged
+                ? !entry.hasStagedChange
+                : !entry.hasWorkTreeChange) ||
+            !matchesSelectedKind) {
           return await rejectStaleSelection(status);
         }
         if (!paths.contains(entry.path)) paths.add(entry.path);

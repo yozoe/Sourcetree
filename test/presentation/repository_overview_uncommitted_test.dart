@@ -1359,6 +1359,98 @@ void main() {
     expect(resetChanges?.map((change) => change.path), ['config/local.json']);
   });
 
+  testWidgets('context menu resets selected unstaged tracked files', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    List<RepositoryChangeViewData>? resetChanges;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: [
+                RepositoryChangeViewData(
+                  path: 'lib/services/lark_service.dart',
+                  kind: RepositoryChangeKind.modified,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onChangeReset: (changes) => resetChanges = changes,
+          ),
+        ),
+      ),
+    );
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('lark_service.dart')),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('重置…'));
+    await tester.pumpAndSettle();
+
+    expect(resetChanges?.map((change) => change.path), [
+      'lib/services/lark_service.dart',
+    ]);
+  });
+
+  testWidgets('context menu does not enable reset for a non-UTF-8 path', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: [
+                RepositoryChangeViewData(
+                  path: 'invalid-path',
+                  kind: RepositoryChangeKind.modified,
+                  isPathValidUtf8: false,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(onChangeReset: (_) {}),
+        ),
+      ),
+    );
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('invalid-path')),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(
+      tester
+          .widget<MenuItemButton>(find.widgetWithText(MenuItemButton, '重置…'))
+          .onPressed,
+      isNull,
+    );
+  });
+
   testWidgets('shows stop-tracking results in normal Git status groups', (
     tester,
   ) async {

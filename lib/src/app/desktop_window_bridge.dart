@@ -56,10 +56,22 @@ final class DesktopWindowBridge {
   static Future<void> setWorkspaceMenuState({
     required bool canStopTracking,
     required bool canApplyPatch,
+    required bool canCommit,
+    required bool canFetch,
+    required bool canPull,
+    required bool canPush,
+    required bool canCreateBranch,
+    required bool canStash,
   }) {
     return _channel.invokeMethod<void>('setWorkspaceMenuState', <String, bool>{
       'canStopTracking': canStopTracking,
       'canApplyPatch': canApplyPatch,
+      'canCommit': canCommit,
+      'canFetch': canFetch,
+      'canPull': canPull,
+      'canPush': canPush,
+      'canCreateBranch': canCreateBranch,
+      'canStash': canStash,
     });
   }
 

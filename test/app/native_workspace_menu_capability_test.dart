@@ -39,11 +39,65 @@ void main() {
         isTrue,
       );
       expect(
+        nativeWorkspaceMenuAvailability(session, available).canFetch,
+        isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(session, available).canCommit,
+        isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(session, available).canPull,
+        isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(session, available).canPush,
+        isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(session, available).canCreateBranch,
+        isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(session, available).canStash,
+        isTrue,
+      );
+      expect(
         nativeWorkspaceMenuAvailability(session, fetching).canApplyPatch,
+        isFalse,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(session, fetching).canFetch,
+        isFalse,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(session, fetching).canCommit,
+        isFalse,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(session, fetching).canPull,
+        isFalse,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(session, fetching).canPush,
+        isFalse,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(session, fetching).canCreateBranch,
+        isFalse,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(session, fetching).canStash,
         isFalse,
       );
       expect(nativeWorkspaceMenuAvailability(session, paused), (
         canApplyPatch: false,
+        canCommit: false,
+        canCreateBranch: false,
+        canFetch: false,
+        canPull: false,
+        canPush: false,
+        canStash: false,
         canStopTracking: false,
       ));
     },

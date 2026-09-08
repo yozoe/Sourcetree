@@ -16,6 +16,7 @@ import 'git_askpass_prompt_coordinator.dart';
 import 'repository_library_controller.dart';
 import 'repository_session.dart';
 import 'repository_session_store.dart';
+import 'repository_trust.dart';
 import 'repository_view_mapper.dart';
 import 'theme_preferences.dart';
 
@@ -42,7 +43,17 @@ import 'theme_preferences.dart';
 ///
 /// 中文：根据当前仓库 capability 快照返回原生写操作菜单可用性；没有仓库、
 /// 后台任务或暂停中的 Git 操作都会关闭相关入口。
-({bool canApplyPatch, bool canStopTracking}) nativeWorkspaceMenuAvailability(
+({
+  bool canApplyPatch,
+  bool canCreateBranch,
+  bool canCommit,
+  bool canFetch,
+  bool canPull,
+  bool canPush,
+  bool canStash,
+  bool canStopTracking,
+})
+nativeWorkspaceMenuAvailability(
   RepositorySessionState session,
   RepositoryOverviewViewData overview,
 ) {
@@ -53,6 +64,36 @@ import 'theme_preferences.dart';
       !repository.blocksRepositoryMutations;
   return (
     canApplyPatch: canApplyPatch,
+    canFetch:
+        session.phase == RepositorySessionPhase.ready &&
+        repository != null &&
+        !repository.blocksRepositoryMutations &&
+        !repository.disabledActions.contains(RepositoryAction.fetch),
+    canCommit:
+        session.phase == RepositorySessionPhase.ready &&
+        repository != null &&
+        !repository.blocksRepositoryMutations &&
+        !repository.disabledActions.contains(RepositoryAction.commit),
+    canPull:
+        session.phase == RepositorySessionPhase.ready &&
+        repository != null &&
+        !repository.blocksRepositoryMutations &&
+        !repository.disabledActions.contains(RepositoryAction.pull),
+    canPush:
+        session.phase == RepositorySessionPhase.ready &&
+        repository != null &&
+        !repository.blocksRepositoryMutations &&
+        !repository.disabledActions.contains(RepositoryAction.push),
+    canCreateBranch:
+        session.phase == RepositorySessionPhase.ready &&
+        repository != null &&
+        !repository.blocksRepositoryMutations &&
+        !repository.disabledActions.contains(RepositoryAction.createBranch),
+    canStash:
+        session.phase == RepositorySessionPhase.ready &&
+        repository != null &&
+        !repository.blocksRepositoryMutations &&
+        !repository.disabledActions.contains(RepositoryAction.stash),
     canStopTracking:
         canApplyPatch &&
         (repository.selectedChange?.canStopTracking == true ||
@@ -398,6 +439,12 @@ class _RepositoryWorkspaceScreenState
   bool _hasHandledInitialAction = false;
   bool? _lastNativeStopTrackingAvailability;
   bool? _lastNativeApplyPatchAvailability;
+  bool? _lastNativeCommitAvailability;
+  bool? _lastNativeFetchAvailability;
+  bool? _lastNativePullAvailability;
+  bool? _lastNativePushAvailability;
+  bool? _lastNativeCreateBranchAvailability;
+  bool? _lastNativeStashAvailability;
   late RepositorySessionController _repositorySessionController;
 
   /// 中文：在窗口首次绘制后执行首页请求的仓库操作；恢复窗口打开失败时清除其原生恢复记录。
@@ -444,6 +491,68 @@ class _RepositoryWorkspaceScreenState
   Future<void> _handleWorkspaceMenuAction(String action) async {
     if (!mounted) return;
     switch (action) {
+      case 'refresh':
+        await ref.read(repositorySessionProvider.notifier).refresh();
+      case 'fetch':
+        final overview = mapRepositoryOverview(
+          ref.read(repositorySessionProvider),
+        );
+        if (overview.repository?.disabledActions.contains(
+              RepositoryAction.fetch,
+            ) ==
+            false) {
+          _showFetchDialog();
+        }
+      case 'commit':
+        final overview = mapRepositoryOverview(
+          ref.read(repositorySessionProvider),
+        );
+        if (overview.repository?.disabledActions.contains(
+              RepositoryAction.commit,
+            ) ==
+            false) {
+          _showCommitDialog();
+        }
+      case 'pull':
+        final overview = mapRepositoryOverview(
+          ref.read(repositorySessionProvider),
+        );
+        if (overview.repository?.disabledActions.contains(
+              RepositoryAction.pull,
+            ) ==
+            false) {
+          _confirmPull();
+        }
+      case 'push':
+        final overview = mapRepositoryOverview(
+          ref.read(repositorySessionProvider),
+        );
+        if (overview.repository?.disabledActions.contains(
+              RepositoryAction.push,
+            ) ==
+            false) {
+          _confirmPush();
+        }
+      case 'createBranch':
+        final overview = mapRepositoryOverview(
+          ref.read(repositorySessionProvider),
+        );
+        if (overview.repository?.disabledActions.contains(
+              RepositoryAction.createBranch,
+            ) ==
+            false) {
+          _showBranchManagerDialog();
+        }
+      case 'stash':
+        final overview = mapRepositoryOverview(
+          ref.read(repositorySessionProvider),
+        );
+        if (overview.repository?.disabledActions.contains(
+              RepositoryAction.stash,
+            ) ==
+            false) {
+          await _showCreateStashDialog();
+        }
       case 'createPatch':
         await _showCreatePatchDialog();
       case 'applyPatch':
@@ -483,17 +592,41 @@ class _RepositoryWorkspaceScreenState
   ) async {
     final availability = nativeWorkspaceMenuAvailability(session, overview);
     final canApplyPatch = availability.canApplyPatch;
+    final canCommit = availability.canCommit;
+    final canFetch = availability.canFetch;
+    final canPull = availability.canPull;
+    final canPush = availability.canPush;
+    final canCreateBranch = availability.canCreateBranch;
+    final canStash = availability.canStash;
     final canStopTracking = availability.canStopTracking;
     if (_lastNativeStopTrackingAvailability == canStopTracking &&
-        _lastNativeApplyPatchAvailability == canApplyPatch) {
+        _lastNativeApplyPatchAvailability == canApplyPatch &&
+        _lastNativeCommitAvailability == canCommit &&
+        _lastNativeFetchAvailability == canFetch &&
+        _lastNativePullAvailability == canPull &&
+        _lastNativePushAvailability == canPush &&
+        _lastNativeCreateBranchAvailability == canCreateBranch &&
+        _lastNativeStashAvailability == canStash) {
       return;
     }
     _lastNativeStopTrackingAvailability = canStopTracking;
     _lastNativeApplyPatchAvailability = canApplyPatch;
+    _lastNativeCommitAvailability = canCommit;
+    _lastNativeFetchAvailability = canFetch;
+    _lastNativePullAvailability = canPull;
+    _lastNativePushAvailability = canPush;
+    _lastNativeCreateBranchAvailability = canCreateBranch;
+    _lastNativeStashAvailability = canStash;
     try {
       await DesktopWindowBridge.setWorkspaceMenuState(
         canStopTracking: canStopTracking,
         canApplyPatch: canApplyPatch,
+        canCommit: canCommit,
+        canFetch: canFetch,
+        canPull: canPull,
+        canPush: canPush,
+        canCreateBranch: canCreateBranch,
+        canStash: canStash,
       );
     } on Object {
       // The Engine can be closing while a state notification is in flight.
@@ -610,6 +743,19 @@ class _RepositoryWorkspaceScreenState
     RepositorySessionState next,
   ) {
     _reportRepositoryStatus(previous, next);
+    final repository = next.repository;
+    if (next.phase == RepositorySessionPhase.ready && repository != null) {
+      unawaited(
+        ref
+            .read(repositoryTrustProvider.notifier)
+            .loadRepository(
+              RepositoryTrustId(
+                commonDirectory: repository.commonDirectory,
+                workTreeRoot: repository.workTreeRoot,
+              ),
+            ),
+      );
+    }
     final enteredRebase =
         next.operationState == GitRepositoryOperationState.rebase &&
         previous?.operationState != GitRepositoryOperationState.rebase;
@@ -2864,8 +3010,8 @@ class _RepositoryWorkspaceScreenState
 
   /// Confirms resetting selected tracked files to HEAD in index and work tree.
   ///
-  /// 中文：确认将所选已暂存已跟踪文件的索引和工作区同时恢复到 HEAD；执行前由
-  /// 应用层重新读取 Git 状态，避免确认期间的外部改动影响过期选择。
+  /// 中文：确认将所选已暂存或未暂存的已跟踪文件之索引和工作区同时恢复到
+  /// HEAD；执行前由应用层重新读取 Git 状态，避免确认期间的外部改动影响过期选择。
   Future<void> _resetChangesToHead(
     List<RepositoryChangeViewData> changes,
   ) async {
@@ -3986,6 +4132,7 @@ final class _RepositoryDetailsDialogState
     minimumSize: const Size(520, 420),
     builder: (context, _) {
       final details = _details;
+      final trust = ref.watch(repositoryTrustProvider);
       if (details == null) {
         return Column(
           children: [
@@ -4070,6 +4217,15 @@ final class _RepositoryDetailsDialogState
               padding: const EdgeInsets.fromLTRB(28, 18, 28, 12),
               child: Column(
                 children: [
+                  _RepositoryTrustControl(
+                    state: trust,
+                    onChanged: (status) => unawaited(
+                      ref
+                          .read(repositoryTrustProvider.notifier)
+                          .setStatus(status),
+                    ),
+                  ),
+                  const SizedBox(height: 16),
                   _RepositoryDetailsFacts(details: details),
                   const SizedBox(height: 16),
                   _RepositoryAuthorTable(
@@ -4091,6 +4247,61 @@ final class _RepositoryDetailsDialogState
     },
   );
 }
+
+final class _RepositoryTrustControl extends StatelessWidget {
+  const _RepositoryTrustControl({required this.state, required this.onChanged});
+
+  final RepositoryTrustState state;
+  final ValueChanged<RepositoryTrustStatus> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    final enabled = state.repository != null && !state.isLoading;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        border: Border.all(color: Theme.of(context).colorScheme.outlineVariant),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        child: Row(
+          children: [
+            const Icon(Icons.shield_outlined, size: 20),
+            const SizedBox(width: 10),
+            const Expanded(
+              child: Text(
+                '仓库信任',
+                style: TextStyle(fontWeight: FontWeight.w600),
+              ),
+            ),
+            DropdownButton<RepositoryTrustStatus>(
+              value: state.status,
+              onChanged: enabled
+                  ? (status) {
+                      if (status != null) onChanged(status);
+                    }
+                  : null,
+              items: [
+                for (final status in RepositoryTrustStatus.values)
+                  DropdownMenuItem(
+                    value: status,
+                    child: Text(_repositoryTrustStatusLabel(status)),
+                  ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _repositoryTrustStatusLabel(RepositoryTrustStatus status) =>
+    switch (status) {
+      RepositoryTrustStatus.unconfirmed => '未确认（默认限制）',
+      RepositoryTrustStatus.trusted => '信任',
+      RepositoryTrustStatus.restricted => '受限',
+    };
 
 final class _RepositoryDetailsFacts extends StatelessWidget {
   const _RepositoryDetailsFacts({required this.details});

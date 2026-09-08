@@ -6,6 +6,53 @@ import '../git/git.dart';
 import '../presentation/presentation.dart';
 import 'repository_session.dart';
 
+// Mapping runs for every session publication, including diff and operation
+// updates that do not alter history. Retain the graph for the immutable commit
+// page that the session already owns, so those publications do not rebuild
+// topology on the UI isolate.
+final _CommitGraphCache _commitGraphCache = _CommitGraphCache();
+
+final class _CommitGraphCache {
+  List<GitCommit>? _commits;
+  String? _headId;
+  bool? _isDetachedHead;
+  List<CommitGraphViewData>? _graph;
+
+  /// Returns graph rows for one immutable history page and HEAD position.
+  ///
+  /// 中文：返回一个不可变历史页及 HEAD 位置对应的提交图行；同一页在 Diff
+  /// 或操作状态更新时复用拓扑，避免在 UI Isolate 重复计算。
+  List<CommitGraphViewData> resolve({
+    required List<GitCommit> commits,
+    required String? headId,
+    required bool isDetachedHead,
+  }) {
+    final cached = _graph;
+    if (cached != null &&
+        identical(_commits, commits) &&
+        _headId == headId &&
+        _isDetachedHead == isDetachedHead) {
+      return cached;
+    }
+
+    final graph = List<CommitGraphViewData>.unmodifiable(
+      buildCommitGraph(
+        [
+          for (final commit in commits)
+            CommitGraphNode(oid: commit.objectId, parents: commit.parentIds),
+        ],
+        headId: headId,
+        isDetachedHead: isDetachedHead,
+      ),
+    );
+    _commits = commits;
+    _headId = headId;
+    _isDetachedHead = isDetachedHead;
+    _graph = graph;
+    return graph;
+  }
+}
+
 /// 中文：将数据映射为目标表示。
 /// English: Maps data to the target representation.
 RepositoryOverviewViewData mapRepositoryOverview(RepositorySessionState state) {
@@ -459,11 +506,8 @@ List<CommitViewData> _mapCommits(
   GitBranchStatus branch,
 ) {
   final query = state.searchQuery.trim().toLowerCase();
-  final graph = buildCommitGraph(
-    [
-      for (final commit in state.commits)
-        CommitGraphNode(oid: commit.objectId, parents: commit.parentIds),
-    ],
+  final graph = _commitGraphCache.resolve(
+    commits: state.commits,
     headId: branch.objectId,
     isDetachedHead: branch.isDetached,
   );

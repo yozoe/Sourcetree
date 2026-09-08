@@ -464,6 +464,42 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// Flutter 仍会重新读取仓库 capability，避免使用过期快照执行写操作。
   private(set) var canApplyPatchFromMenu = false
 
+  /// Flutter's last validated Fetch availability for this Engine.
+  ///
+  /// 中文：此 Engine 最近一次由 Flutter 校验的“抓取”可用状态；实际执行仍由
+  /// Flutter 在显示对话框前重读当前会话能力。
+  private(set) var canFetchFromMenu = false
+
+  /// Flutter's last validated Commit availability for this Engine.
+  ///
+  /// 中文：此 Engine 最近一次由 Flutter 校验的“提交”可用状态；实际写入前仍由
+  /// Flutter 的现有提交流程重新校验 Git 状态。
+  private(set) var canCommitFromMenu = false
+
+  /// Flutter's last validated Pull availability for this Engine.
+  ///
+  /// 中文：此 Engine 最近一次由 Flutter 校验的“拉取”可用状态；实际操作仍由
+  /// Flutter 的现有拉取确认流程重新校验 Git 状态。
+  private(set) var canPullFromMenu = false
+
+  /// Flutter's last validated Push availability for this Engine.
+  ///
+  /// 中文：此 Engine 最近一次由 Flutter 校验的“推送”可用状态；实际操作仍由
+  /// Flutter 的现有推送确认流程重新校验 Git 状态。
+  private(set) var canPushFromMenu = false
+
+  /// Flutter's last validated Branch availability for this Engine.
+  ///
+  /// 中文：此 Engine 最近一次由 Flutter 校验的“分支”可用状态；实际操作仍由
+  /// Flutter 的分支管理流程重新校验 Git 状态。
+  private(set) var canCreateBranchFromMenu = false
+
+  /// Flutter's last validated Stash availability for this Engine.
+  ///
+  /// 中文：此 Engine 最近一次由 Flutter 校验的“贮藏”可用状态；实际写入前仍由
+  /// Flutter 的贮藏创建流程重新校验 Git 状态。
+  private(set) var canStashFromMenu = false
+
   /// 中文：创建独立工作区 Engine，并恢复共享的工作区窗口尺寸。
   ///
   /// English: Creates an independent workspace Engine and restores the shared
@@ -671,6 +707,12 @@ final class WorkspaceFlutterWindowController: NSWindowController,
       case "setWorkspaceMenuState":
         canStopTrackingFromMenu = arguments?["canStopTracking"] as? Bool ?? false
         canApplyPatchFromMenu = arguments?["canApplyPatch"] as? Bool ?? false
+        canCommitFromMenu = arguments?["canCommit"] as? Bool ?? false
+        canFetchFromMenu = arguments?["canFetch"] as? Bool ?? false
+        canPullFromMenu = arguments?["canPull"] as? Bool ?? false
+        canPushFromMenu = arguments?["canPush"] as? Bool ?? false
+        canCreateBranchFromMenu = arguments?["canCreateBranch"] as? Bool ?? false
+        canStashFromMenu = arguments?["canStash"] as? Bool ?? false
         result(nil)
       default:
         result(FlutterMethodNotImplemented)
@@ -988,6 +1030,42 @@ final class WindowCoordinator {
       hasRepositoryMutationCapability:
         currentWorkspaceController?.canApplyPatchFromMenu == true
     )
+  }
+
+  /// Whether the key workspace currently permits opening the Fetch workflow.
+  /// 中文：当前前台工作区是否已由 Flutter 校验为允许打开抓取工作流。
+  var canFetchFromMenu: Bool {
+    currentWorkspaceController?.canFetchFromMenu == true
+  }
+
+  /// Whether the key workspace currently permits opening the Commit workflow.
+  /// 中文：当前前台工作区是否已由 Flutter 校验为允许打开提交工作流。
+  var canCommitFromMenu: Bool {
+    currentWorkspaceController?.canCommitFromMenu == true
+  }
+
+  /// Whether the key workspace currently permits opening the Pull workflow.
+  /// 中文：当前前台工作区是否已由 Flutter 校验为允许打开拉取工作流。
+  var canPullFromMenu: Bool {
+    currentWorkspaceController?.canPullFromMenu == true
+  }
+
+  /// Whether the key workspace currently permits opening the Push workflow.
+  /// 中文：当前前台工作区是否已由 Flutter 校验为允许打开推送工作流。
+  var canPushFromMenu: Bool {
+    currentWorkspaceController?.canPushFromMenu == true
+  }
+
+  /// Whether the key workspace currently permits opening Branch management.
+  /// 中文：当前前台工作区是否已由 Flutter 校验为允许打开分支管理。
+  var canCreateBranchFromMenu: Bool {
+    currentWorkspaceController?.canCreateBranchFromMenu == true
+  }
+
+  /// Whether the key workspace currently permits opening Stash creation.
+  /// 中文：当前前台工作区是否已由 Flutter 校验为允许打开贮藏创建。
+  var canStashFromMenu: Bool {
+    currentWorkspaceController?.canStashFromMenu == true
   }
 
   private var currentWorkspaceController: WorkspaceFlutterWindowController? {
@@ -1772,6 +1850,58 @@ class AppDelegate: FlutterAppDelegate {
     windowCoordinator.performWorkspaceAction("repositoryDetails")
   }
 
+  @IBAction func refreshRepositoryFromMenu(_ sender: Any?) {
+    windowCoordinator.performWorkspaceAction("refresh")
+  }
+
+  @IBAction func fetchRepositoryFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canFetchFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("fetch")
+  }
+
+  @IBAction func commitRepositoryFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canCommitFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("commit")
+  }
+
+  @IBAction func pullRepositoryFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canPullFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("pull")
+  }
+
+  @IBAction func pushRepositoryFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canPushFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("push")
+  }
+
+  @IBAction func createBranchRepositoryFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canCreateBranchFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("createBranch")
+  }
+
+  @IBAction func stashRepositoryFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canStashFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("stash")
+  }
+
   @IBAction func repositoryFeaturePendingFromMenu(_ sender: Any?) {
     windowCoordinator.performWorkspaceAction("repositoryFeaturePending")
   }
@@ -1821,11 +1951,30 @@ class AppDelegate: FlutterAppDelegate {
     }
     if menuItem.action == #selector(createPatchFromMenu(_:)) ||
        menuItem.action == #selector(repositoryDetailsFromMenu(_:)) ||
+       menuItem.action == #selector(refreshRepositoryFromMenu(_:)) ||
        menuItem.action == #selector(repositoryFeaturePendingFromMenu(_:)) {
       return windowCoordinator.canPerformWorkspaceAction
     }
     if menuItem.action == #selector(stopTrackingFromMenu(_:)) {
       return windowCoordinator.canStopTrackingFromMenu
+    }
+    if menuItem.action == #selector(fetchRepositoryFromMenu(_:)) {
+      return windowCoordinator.canFetchFromMenu
+    }
+    if menuItem.action == #selector(commitRepositoryFromMenu(_:)) {
+      return windowCoordinator.canCommitFromMenu
+    }
+    if menuItem.action == #selector(pullRepositoryFromMenu(_:)) {
+      return windowCoordinator.canPullFromMenu
+    }
+    if menuItem.action == #selector(pushRepositoryFromMenu(_:)) {
+      return windowCoordinator.canPushFromMenu
+    }
+    if menuItem.action == #selector(createBranchRepositoryFromMenu(_:)) {
+      return windowCoordinator.canCreateBranchFromMenu
+    }
+    if menuItem.action == #selector(stashRepositoryFromMenu(_:)) {
+      return windowCoordinator.canStashFromMenu
     }
     return true
   }

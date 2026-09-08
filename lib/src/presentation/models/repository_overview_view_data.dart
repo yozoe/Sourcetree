@@ -766,13 +766,14 @@ final class RepositoryChangeViewData {
       (kind == RepositoryChangeKind.modified ||
           (isStaged && kind == RepositoryChangeKind.added));
 
-  /// Whether this staged tracked change can be restored to HEAD.
+  /// Whether this tracked change can be restored to HEAD.
   ///
-  /// 中文：该已暂存的已跟踪改动是否可恢复到 HEAD。新增文件没有 HEAD 版本，
-  /// 因此不通过此入口重置，避免把“恢复”误解为删除未提交的新文件。
+  /// 中文：该已跟踪改动是否可恢复到 HEAD。已暂存和未暂存的修改、删除均可
+  /// 重置；新增文件没有 HEAD 版本，因此不通过此入口重置，避免把“恢复”误解为
+  /// 删除未提交的新文件。
   bool get canResetToHead =>
       isActionEnabled &&
-      isStaged &&
+      isPathValidUtf8 &&
       (kind == RepositoryChangeKind.modified ||
           kind == RepositoryChangeKind.deleted);
 }

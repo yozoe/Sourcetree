@@ -202,6 +202,49 @@ void main() {
     },
   );
 
+  test('suppresses unchanged automatic work-tree refresh publications', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Base');
+    final events = StreamController<FileSystemEvent>.broadcast();
+    addTearDown(events.close);
+    final monitor = RepositoryChangeMonitor(
+      debounceDelay: const Duration(milliseconds: 10),
+      maximumDelay: const Duration(milliseconds: 30),
+      watchDirectory: (_, _) => events.stream,
+    );
+    final container = ProviderContainer(
+      overrides: [repositoryChangeMonitorProvider.overrideWithValue(monitor)],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.enableAutomaticRefresh();
+    await controller.openRepository(repository.workingDirectory.path);
+    final original = container.read(repositorySessionProvider);
+    final emitted = <RepositorySessionState>[];
+    final subscription = container.listen<RepositorySessionState>(
+      repositorySessionProvider,
+      (_, next) => emitted.add(next),
+    );
+    addTearDown(subscription.close);
+
+    events.add(
+      FileSystemModifyEvent(
+        '${repository.workingDirectory.path}${Platform.pathSeparator}build-output.tmp',
+        false,
+        true,
+      ),
+    );
+    await Future<void>.delayed(const Duration(milliseconds: 80));
+
+    expect(emitted, isEmpty);
+    expect(
+      identical(container.read(repositorySessionProvider), original),
+      isTrue,
+    );
+  });
+
   test('automatically reloads history after external HEAD changes', () async {
     final repository = await GitTestRepository.create();
     addTearDown(repository.dispose);
@@ -1050,6 +1093,47 @@ void main() {
     expect(state.diff, isNull);
   });
 
+  test('resets unstaged tracked files to HEAD in index and work tree', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('modified.txt', 'base\n');
+    await repository.writeFile('deleted.txt', 'keep me\n');
+    await repository.commit('Add tracked files');
+    await repository.writeFile('modified.txt', 'changed\n');
+    await File(
+      '${repository.workingDirectory.path}${Platform.pathSeparator}deleted.txt',
+    ).delete();
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final overview = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!;
+    final unstaged = overview.changes
+        .where((change) => !change.isStaged)
+        .toList(growable: false);
+
+    expect(unstaged, hasLength(2));
+    expect(unstaged.every((change) => change.canResetToHead), isTrue);
+    controller.selectUncommittedChanges();
+    expect(await controller.resetChangesToHead(unstaged), isTrue);
+    expect(
+      await File(
+        '${repository.workingDirectory.path}${Platform.pathSeparator}modified.txt',
+      ).readAsString(),
+      'base\n',
+    );
+    expect(
+      await File(
+        '${repository.workingDirectory.path}${Platform.pathSeparator}deleted.txt',
+      ).readAsString(),
+      'keep me\n',
+    );
+    expect(container.read(repositorySessionProvider).status!.isClean, isTrue);
+  });
+
   test(
     'keeps uncommitted changes selected after resetting one of several files',
     () async {
@@ -1425,6 +1509,92 @@ void main() {
       expect(
         container.read(repositorySessionProvider).selectedRefId,
         'uncommitted',
+      );
+    },
+  );
+
+  test(
+    'refuses reset when an unstaged selection was staged after confirmation',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('config/local.json', '{"version": 1}\n');
+      await repository.commit('Add local config');
+      await repository.writeFile('config/local.json', '{"version": 2}\n');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      final overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      final previouslyUnstaged = overview.changes.single;
+      controller.selectUncommittedChanges();
+
+      await repository.runGit(['add', '--', 'config/local.json']);
+
+      expect(
+        await controller.resetChangesToHead([previouslyUnstaged]),
+        isFalse,
+      );
+      expect(
+        await File(
+          '${repository.workingDirectory.path}${Platform.pathSeparator}config'
+          '${Platform.pathSeparator}local.json',
+        ).readAsString(),
+        '{"version": 2}\n',
+      );
+      expect(
+        container
+            .read(repositorySessionProvider)
+            .status!
+            .entries
+            .single
+            .hasStagedChange,
+        isTrue,
+      );
+    },
+  );
+
+  test(
+    'refuses reset when an unstaged modification became a deletion',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('config/local.json', '{"version": 1}\n');
+      await repository.commit('Add local config');
+      await repository.writeFile('config/local.json', '{"version": 2}\n');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      final overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      final previouslyModified = overview.changes.single;
+      controller.selectUncommittedChanges();
+      final file = File(
+        '${repository.workingDirectory.path}${Platform.pathSeparator}config'
+        '${Platform.pathSeparator}local.json',
+      );
+
+      await file.delete();
+
+      expect(
+        await controller.resetChangesToHead([previouslyModified]),
+        isFalse,
+      );
+      expect(await file.exists(), isFalse);
+      expect(
+        container
+            .read(repositorySessionProvider)
+            .status!
+            .entries
+            .single
+            .workTreeStatus,
+        GitChangeType.deleted,
       );
     },
   );

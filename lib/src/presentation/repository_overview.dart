@@ -3160,17 +3160,19 @@ class _CommitRow extends StatelessWidget {
                   SizedBox(
                     width: widths.graph,
                     height: _scaledDenseHeight(context, _historyRowHeight),
-                    child: CustomPaint(
-                      key: const ValueKey<String>('commit-graph-canvas'),
-                      painter: _CommitGraphPainter(
-                        graph: commit.graph,
-                        colors: _graphColors(colors),
-                        workspaceRailColor: colors.onSurfaceVariant,
-                        backgroundColor: commit.isSelected
-                            ? colors.secondaryContainer
-                            : _graphBackground(colors),
-                        selected: commit.isSelected,
-                        compact: compactGraph,
+                    child: RepaintBoundary(
+                      child: CustomPaint(
+                        key: const ValueKey<String>('commit-graph-canvas'),
+                        painter: _CommitGraphPainter(
+                          graph: commit.graph,
+                          colors: _graphColors(colors),
+                          workspaceRailColor: colors.onSurfaceVariant,
+                          backgroundColor: commit.isSelected
+                              ? colors.secondaryContainer
+                              : _graphBackground(colors),
+                          selected: commit.isSelected,
+                          compact: compactGraph,
+                        ),
                       ),
                     ),
                   ),

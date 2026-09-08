@@ -1,0 +1,67 @@
+name: Quality
+
+on:
+  pull_request:
+  push:
+    branches: [main]
+  schedule:
+    - cron: '17 3 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  flutter:
+    name: Flutter quality
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.6'
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+      - run: dart format --output=none --set-exit-if-changed lib test integration_test tool
+      - run: flutter analyze
+      - run: dart analyze tool
+      - run: flutter test
+      - run: flutter build macos --debug
+
+  macos-native:
+    name: macOS native tests
+    if: github.event_name != 'pull_request'
+    runs-on: macos-14
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.6'
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+      - run: xcodebuild test -workspace macos/Runner.xcworkspace -scheme Runner -configuration Debug -destination 'platform=macOS'
+
+  macos-integration:
+    name: macOS integration tests
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    runs-on: macos-14
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.41.6'
+          channel: stable
+          cache: true
+
+      - run: flutter pub get
+      - run: flutter test integration_test/macos_core_workflow_test.dart -d macos
