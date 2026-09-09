@@ -1,6 +1,8 @@
 import 'dart:convert';
 
 /// A repository identity that remains distinct for linked worktrees.
+///
+/// 中文：能够区分关联工作树的仓库身份。
 final class GitRepositoryId {
   const GitRepositoryId({
     required this.commonDirectory,
@@ -27,6 +29,8 @@ final class GitRepositoryId {
 }
 
 /// A recognized Git repository or linked worktree.
+///
+/// 中文：由 Git 检查层识别出的仓库或关联工作树。
 final class GitRepository {
   const GitRepository({
     required this.id,

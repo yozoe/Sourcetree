@@ -12,6 +12,11 @@ import 'repository_change_monitor.dart';
 
 part 'repository_session_tasks.dart';
 
+/// Provides the Git runner used by repository-workspace providers.
+///
+/// 中文：提供仓库工作区各 provider 共用的 Git runner；具体的读取、写入、刷新和
+/// 生命周期协调由对应的仓库会话 controller 负责。
+
 final gitRunnerProvider = Provider<GitRunner>((Ref ref) => GitRunner());
 
 final gitRepositoryInspectorProvider = Provider<GitRepositoryInspector>(

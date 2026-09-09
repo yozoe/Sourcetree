@@ -1,7 +1,11 @@
 # Release Notes
 
+> 发布说明 / Release notes: 用户可见变化以中文记录，并提供英文对应摘要。
+
 ## Unreleased
 
+- 校对并补全核心 Git、AskPass、窗口桥接、会话存储和历史解析 API 的中英双语注释；README、实施规划、性能基线、AskPass、菜单、窗口模型、优化建议和本文件新增双语导语。
+  English: Proofread and completed bilingual comments for core Git, AskPass, window-bridge, session-store, and history-parser APIs; added bilingual introductions to the README, implementation plan, performance baseline, AskPass, menu, window-model, optimization, and release-note documents.
 - macOS 原生“仓库”菜单的“刷新”“抓取…”“拉取…”“推送…”和“提交…”现已交付：五者
   只作用于当前 key workspace；抓取、拉取、推送和提交复用既有对话框，并按 Flutter 的最新仓库
   capability 动态启用，避免后台任务、暂停操作、缺少远端/upstream 或无可推送/提交改动时误触发。

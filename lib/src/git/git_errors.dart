@@ -1,5 +1,8 @@
 import 'git_runner.dart';
 
+/// Stable categories used to classify Git process and command failures.
+///
+/// 中文：用于归类 Git 进程与命令失败的稳定错误类型。
 enum GitErrorKind {
   cancelled,
   executableNotFound,
@@ -16,6 +19,9 @@ enum GitErrorKind {
   unknown,
 }
 
+/// A classified non-zero Git command result.
+///
+/// 中文：已分类的非零 Git 命令结果。
 final class GitCommandError {
   const GitCommandError({
     required this.kind,
@@ -28,6 +34,9 @@ final class GitCommandError {
   final int exitCode;
 }
 
+/// Base exception for safe Git operations.
+///
+/// 中文：安全 Git 操作使用的基础异常类型。
 class GitException implements Exception {
   const GitException(this.message);
 

@@ -1,5 +1,11 @@
 # 性能基线
 
+> 性能基线 / Performance baseline：记录可重复的测量口径、环境和限制。
+> Records reproducible measurement definitions, environments, and limitations.
+
+> 性能基线 / Performance baseline：记录可重复的测量口径、环境和限制。
+> Records reproducible measurement definitions, environments, and limitations.
+
 ## 记录方式
 
 本记录只描述可重复的 Git 读取采样，不代表 Flutter 首次绘制、滚动帧时间、内存或 CPU 预算已

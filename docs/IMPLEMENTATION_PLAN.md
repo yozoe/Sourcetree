@@ -1,5 +1,9 @@
 # Flutter Git 桌面客户端实施规划
 
+> 文档说明：本规划记录可验收的当前实现与路线图；中文条目后附英文语义说明。
+> Documentation: This plan records verifiable implementation scope and roadmap items;
+> English meaning is provided alongside Chinese entries where the behavior is normative.
+
 - 版本：0.2
 - 日期：2026-08-24
 - 状态：P1 MVP 垂直闭环进行中

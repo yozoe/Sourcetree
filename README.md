@@ -1,5 +1,9 @@
 # Flutter Git 桌面客户端
 
+> 文档说明：本文以中文为主，并在关键能力、限制和验证入口处提供英文对应说明。
+> Documentation: This README is Chinese-first, with English counterparts for key capabilities,
+> limitations, and verification entry points.
+
 这是一个以 Flutter 独立实现的桌面 Git 客户端项目。产品会对齐
 Sourcetree 的核心工作流和信息密度，但不会复制其闭源代码、商标、
 品牌素材或私有服务。

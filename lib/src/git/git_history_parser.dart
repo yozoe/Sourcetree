@@ -6,6 +6,9 @@ import 'git_models.dart';
 /// The fixed format consumed by [GitHistoryParser].
 ///
 /// `git log -z` adds one NUL record separator after the final `%x00`.
+///
+/// 中文：供 [GitHistoryParser] 消费的固定字段格式；`git log -z` 会在最后一个
+/// `%x00` 后再附加一个 NUL 记录分隔符。
 const gitHistoryFormat =
     '%H%x00%P%x00%an%x00%ae%x00%aI%x00'
     '%cn%x00%ce%x00%cI%x00%s%x00%b%x00';
@@ -15,10 +18,15 @@ const gitHistoryFormat =
 /// Name-status data follows the ten NUL-delimited Git fields. The byte is
 /// deliberately outside normal text output so the parser can retain each
 /// path as Git reported it for `git log --follow`.
+///
+/// 中文：文件状态数据位于十个 NUL 分隔 Git 字段之后；起始字节不属于普通文本，
+/// 因而解析器可以保留 `git log --follow` 返回的原始路径。
 const gitFileHistoryFormat = '%x1e$gitHistoryFormat';
 
 /// Parses fixed-field, NUL-delimited history records without assuming an
 /// object ID length.
+///
+/// 中文：解析固定字段、NUL 分隔的历史记录，不假定对象 ID 的长度。
 final class GitHistoryParser {
   const GitHistoryParser();
 

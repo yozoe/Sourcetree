@@ -6,6 +6,8 @@ import 'package:path/path.dart' as path_utils;
 import 'package:path_provider/path_provider.dart';
 
 /// The non-sensitive workspace state retained between application launches.
+///
+/// 中文：在应用启动之间保留的非敏感工作区状态。
 final class RepositorySessionSnapshot {
   const RepositorySessionSnapshot({
     this.openRepositoryPaths = const [],
@@ -17,6 +19,9 @@ final class RepositorySessionSnapshot {
 }
 
 abstract interface class RepositorySessionStore {
+  /// Loads the persisted workspace snapshot, or the store's empty default.
+  ///
+  /// 中文：读取持久化工作区快照；无法读取时由实现报告明确的失败类型。
   Future<RepositorySessionSnapshot> load();
 
   /// 中文：保存当前数据。
@@ -24,6 +29,9 @@ abstract interface class RepositorySessionStore {
   Future<void> save(RepositorySessionSnapshot snapshot);
 }
 
+/// Reasons a persisted repository session could not be loaded safely.
+///
+/// 中文：持久化仓库会话无法安全加载的原因。
 enum RepositorySessionLoadFailureKind { invalidData, io }
 
 /// A persisted repository-session snapshot that could not be read safely.

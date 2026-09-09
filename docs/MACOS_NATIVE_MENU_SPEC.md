@@ -1,5 +1,11 @@
 # macOS 原生菜单开发规范
 
+> Native menu specification: user-visible behavior must stay consistent with code and release notes.
+> 用户可见行为必须与代码和发布说明保持一致。
+
+> Native menu specification: user-visible behavior must stay consistent with code and release notes.
+> 用户可见行为必须与代码和发布说明保持一致。
+
 - 版本：0.1
 - 日期：2026-08-24
 - 适用范围：macOS“仓库”“动作”“窗口”菜单

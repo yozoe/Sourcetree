@@ -5,6 +5,8 @@ import 'git_models.dart';
 
 /// Parses the byte-oriented output of
 /// `git status --porcelain=v2 -z --branch --show-stash`.
+///
+/// 中文：解析 `git status --porcelain=v2 -z --branch --show-stash` 的字节输出。
 final class GitStatusParser {
   const GitStatusParser();
 

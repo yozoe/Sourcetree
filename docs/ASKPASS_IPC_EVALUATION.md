@@ -1,5 +1,11 @@
 # 操作级 AskPass IPC 评估
 
+> AskPass IPC evaluation: this document records the security boundaries and verification conclusions.
+> 英文说明与中文结论保持一致。
+
+> AskPass IPC evaluation: this document records the security boundaries and verification conclusions.
+> 英文说明与中文结论保持一致。
+
 日期：2026-08-20  
 状态：macOS bundle 的用户主动远端操作已接入；发布与兼容性验证待完成
 

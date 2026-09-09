@@ -6,6 +6,9 @@ import 'package:flutter/services.dart';
 ///
 /// The single native process owns every window and Flutter Engine so repository
 /// workspaces remain isolated while sharing one application lifecycle.
+///
+/// 中文：将窗口管理请求从 Flutter 发送到 macOS 应用。单个原生进程拥有所有窗口
+/// 和 Flutter Engine，同时保持各仓库工作区隔离并共享应用生命周期。
 final class DesktopWindowBridge {
   const DesktopWindowBridge._();
 

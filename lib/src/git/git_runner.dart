@@ -6,8 +6,14 @@ import 'dart:typed_data';
 import 'git_cancellation.dart';
 import 'git_errors.dart';
 
+/// Controls whether a Git process inherits the host environment.
+///
+/// 中文：控制 Git 子进程是否继承宿主环境变量。
 enum GitEnvironmentPolicy { inherit, clean }
 
+/// Upper bounds for captured Git stdout and stderr.
+///
+/// 中文：Git 标准输出和标准错误的捕获上限。
 final class GitOutputLimit {
   const GitOutputLimit({
     this.stdoutBytes = 16 * 1024 * 1024,
@@ -18,6 +24,9 @@ final class GitOutputLimit {
   final int stderrBytes;
 }
 
+/// Immutable description of one Git process invocation.
+///
+/// 中文：一次 Git 子进程调用的不可变描述；参数按字面传递且不会经由 Shell。
 final class GitInvocation {
   GitInvocation({
     required List<String> arguments,
@@ -52,6 +61,9 @@ final class GitInvocation {
   final GitCancellationToken? cancellationToken;
 }
 
+/// Captured result of a completed or cancelled Git process.
+///
+/// 中文：已完成或已取消的 Git 子进程结果，保留原始输出字节和截断状态。
 final class GitResult {
   GitResult({
     required this.executable,
@@ -81,10 +93,19 @@ final class GitResult {
   final bool wasCancelled;
   final GitCommandError? error;
 
+  /// Whether the process exited successfully without cancellation.
+  ///
+  /// 中文：进程是否以成功状态退出且未被取消。
   bool get isSuccess => exitCode == 0 && !wasCancelled;
 
+  /// Decodes captured stdout as UTF-8, allowing malformed bytes.
+  ///
+  /// 中文：将捕获的标准输出按 UTF-8 解码，并允许异常字节。
   String get stdoutText => utf8.decode(stdoutBytes, allowMalformed: true);
 
+  /// Decodes captured stderr as UTF-8, allowing malformed bytes.
+  ///
+  /// 中文：将捕获的标准错误按 UTF-8 解码，并允许异常字节。
   String get stderrText => utf8.decode(stderrBytes, allowMalformed: true);
 
   /// 中文：当命令失败或被取消时，抛出包含执行上下文的异常。

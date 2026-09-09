@@ -8,10 +8,15 @@ import 'package:meta/meta.dart';
 
 import 'git_askpass_protocol.dart';
 
+/// Presents one validated prompt and returns an answer without retaining it.
+///
+/// 中文：展示一个已验证的提示并返回答案；实现不得持久化或记录答案。
 typedef GitAskPassPromptHandler =
     Future<String?> Function(GitAskPassRequest request);
 
-/// The non-secret state of one operation-scoped AskPass IPC session.
+/// Lifecycle states of an operation-scoped AskPass session.
+///
+/// 中文：一次操作级 AskPass 会话的生命周期状态。
 enum GitAskPassSessionStatus {
   waitingForConnection,
   waitingForResponse,

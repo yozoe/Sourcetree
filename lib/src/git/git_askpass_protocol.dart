@@ -4,6 +4,9 @@ import 'dart:convert';
 ///
 /// Secrets deliberately never appear in this value type. They are accepted by
 /// a future UI session only after the helper has authenticated with its nonce.
+///
+/// 中文：一次性 AskPass IPC 请求中的非机密部分。该类型绝不保存密码等机密，
+/// 只有 helper 通过 nonce 认证后，后续 UI 会话才会接收答案。
 final class GitAskPassRequest {
   const GitAskPassRequest({
     required this.nonce,

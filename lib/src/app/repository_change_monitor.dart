@@ -13,6 +13,8 @@ enum RepositoryExternalChangeScope { workingTree, repositoryMetadata }
 /// Creates a directory event stream for one monitored root.
 ///
 /// 中文：为一个监听根目录创建文件系统事件流；该边界允许测试注入确定性事件。
+/// English: Creates the stream used to observe one monitored root; tests may
+/// inject a deterministic implementation at this boundary.
 typedef RepositoryWatchStreamFactory =
     Stream<FileSystemEvent> Function(String path, bool recursive);
 

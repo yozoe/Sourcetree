@@ -9,6 +9,9 @@ import 'models/repository_overview_view_data.dart';
 
 export 'models/repository_overview_view_data.dart';
 
+/// Handles a toolbar or menu action selected in the repository overview.
+///
+/// 中文：处理仓库概览中选定的工具栏或菜单操作。
 typedef RepositoryActionCallback = void Function(RepositoryAction action);
 typedef RepositoryRefCallback = void Function(RepositoryRefViewData ref);
 typedef RepositoryRefContextActionCallback =

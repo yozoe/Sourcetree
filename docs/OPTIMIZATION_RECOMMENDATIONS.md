@@ -1,5 +1,9 @@
 # Sourcetree 桌面客户端优化建议
 
+> 文档说明：建议以当前代码和可重复验证为依据；英文说明与中文建议保持同一语义。
+> Documentation: Recommendations are grounded in the current code and reproducible checks;
+> English notes preserve the same meaning as the Chinese guidance.
+
 > 文档日期：2026-09-07
 >
 > 代码基线：`d564e90`（本文初始检查时的 `main` HEAD）
