@@ -428,7 +428,7 @@
                                 </connections>
                             </menuItem>
                             <menuItem title="显示标签页栏" id="GDA-window-show-tab-bar"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="toggleRepositoryTabBarFromMenu:" target="Voe-Tx-rLC" id="GDA-window-show-tab-bar-action"/></connections></menuItem>
-                            <menuItem title="显示所有标签页（待实现）" id="GDA-window-show-all-tabs"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="windowFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-window-show-all-tabs-action"/></connections></menuItem>
+                            <menuItem title="显示所有标签页" id="GDA-window-show-all-tabs"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="showAllRepositoryTabsFromMenu:" target="Voe-Tx-rLC" id="GDA-window-show-all-tabs-action"/></connections></menuItem>
                             <menuItem isSeparatorItem="YES" id="eu3-7i-yIM"/>
                             <menuItem title="置前全部窗口" id="LE2-aR-0XJ">
                                 <modifierMask key="keyEquivalentModifierMask"/>

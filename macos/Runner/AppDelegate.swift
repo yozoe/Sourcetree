@@ -1135,6 +1135,103 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   }
 }
 
+/// A transient native panel that dismisses through Escape as well as its
+/// standard close control.
+///
+/// 中文：可通过 Escape 或标准关闭按钮退出的短期原生面板。
+private final class GitDesktopWorkspaceTabOverviewPanel: NSPanel {
+  override func cancelOperation(_ sender: Any?) {
+    performClose(sender)
+  }
+}
+
+/// Owns the transient overview window without taking ownership of any
+/// workspace window or Flutter Engine.
+///
+/// 中文：持有短期标签总览窗口，但不接管任何工作区窗口或
+/// Flutter Engine 的生命周期。
+final class GitDesktopWorkspaceTabOverviewWindowController:
+  NSWindowController, NSWindowDelegate {
+  private weak var hostWindow: MainFlutterWindow?
+  var onClose: (() -> Void)?
+
+  init(
+    hostWindow: MainFlutterWindow,
+    windows: [MainFlutterWindow],
+    selectedWindow: MainFlutterWindow,
+    selectionHandler: @escaping (MainFlutterWindow) -> Void
+  ) {
+    self.hostWindow = hostWindow
+    let tabs = windows.map { window in
+      GitDesktopWorkspaceTabDefinition(
+        title: window.title,
+        isSelected: window === selectedWindow,
+        closeAction: {}
+      ) { [weak window] in
+        guard let window else { return }
+        selectionHandler(window)
+      }
+    }
+    let overviewView = GitDesktopWorkspaceTabOverviewView(tabs: tabs)
+    let height = min(520, max(280, 118 + (windows.count * 48)))
+    let panel = GitDesktopWorkspaceTabOverviewPanel(
+      contentRect: NSRect(x: 0, y: 0, width: 480, height: height),
+      styleMask: [.titled, .closable],
+      backing: .buffered,
+      defer: false
+    )
+    panel.title = "所有标签页"
+    panel.isReleasedWhenClosed = false
+    panel.contentView = overviewView
+    super.init(window: panel)
+    panel.delegate = self
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  /// Shows the overview centered above its owning workspace.
+  /// 中文：在所属工作区上方居中显示标签总览。
+  func present() {
+    guard let panel = window, let hostWindow else { return }
+    let frame = panel.frame
+    panel.setFrameOrigin(
+      NSPoint(
+        x: hostWindow.frame.midX - (frame.width / 2),
+        y: hostWindow.frame.midY - (frame.height / 2)
+      )
+    )
+    hostWindow.addChildWindow(panel, ordered: .above)
+    panel.makeKeyAndOrderFront(nil)
+    if let overview = panel.contentView as? GitDesktopWorkspaceTabOverviewView,
+       let selectedButton = overview.tabButtons.first(where: \.isSelectedTab) {
+      panel.makeFirstResponder(selectedButton)
+    }
+  }
+
+  /// Closes the overview and removes its child-window relationship.
+  /// 中文：关闭总览并移除它与工作区的子窗口关系。
+  func dismiss() {
+    if let panel = window {
+      hostWindow?.removeChildWindow(panel)
+      panel.close()
+    }
+  }
+
+  /// Releases the host relationship after either programmatic or user-driven
+  /// closure.
+  ///
+  /// 中文：程序或用户关闭总览后释放与宿主窗口的关系。
+  func windowWillClose(_ notification: Notification) {
+    if let panel = notification.object as? NSWindow {
+      hostWindow?.removeChildWindow(panel)
+    }
+    onClose?()
+    onClose = nil
+  }
+}
+
 final class WindowCoordinator {
   private weak var repositoryLibraryWindow: MainFlutterWindow?
   private var repositoryLibraryChannel: FlutterMethodChannel?
@@ -1156,6 +1253,8 @@ final class WindowCoordinator {
   private weak var selectedMergedWorkspaceWindow: MainFlutterWindow?
   private var isMergedWorkspaceTabStripVisible = true
   private var isActivatingMergedWorkspace = false
+  private var workspaceTabOverviewController:
+    GitDesktopWorkspaceTabOverviewWindowController?
   private let workspaceRestorationGate =
     GitDesktopWorkspaceRestorationGate()
   private var workspaceRestorationTimeoutWorkItem: DispatchWorkItem?
@@ -1751,6 +1850,7 @@ final class WindowCoordinator {
     guard controllers.count > 1 else {
       return
     }
+    dismissWorkspaceTabOverview()
     let windows = controllers.compactMap { $0.window as? MainFlutterWindow }
     guard windows.count > 1,
           let primary = activeWorkspaceWindow(from: controllers),
@@ -1794,6 +1894,7 @@ final class WindowCoordinator {
   }
 
   func workspaceWillClose(_ controller: WorkspaceFlutterWindowController) {
+    dismissWorkspaceTabOverview()
     let closingWindow = controller.window as? MainFlutterWindow
     closingWindow?.cancelPendingBringToFront()
     let closingFrame = closingWindow?.frame
@@ -1989,6 +2090,61 @@ final class WindowCoordinator {
     return true
   }
 
+  /// Presents an accessible overview for the current merged workspace group.
+  ///
+  /// 中文：为当前合并工作区组显示可键盘访问的标签总览。
+  func showCurrentMergedWorkspaceOverview() -> Bool {
+    guard let window = currentWorkspaceController?.window as? MainFlutterWindow
+    else {
+      return false
+    }
+    return showMergedWorkspaceOverview(from: window)
+  }
+
+  /// Presents the overview for [window]'s group; exposed to lifecycle tests
+  /// so selection and stale-window cleanup can be verified without launching
+  /// the application.
+  ///
+  /// 中文：显示 [window] 所在组的总览；对生命周期测试开放，以便在
+  /// 不启动应用的情况下验证选择和过期窗口清理。
+  @discardableResult
+  func showMergedWorkspaceOverview(from window: MainFlutterWindow) -> Bool {
+    let windows = mergedWorkspaceWindows
+    guard windows.count > 1,
+          windows.contains(where: { $0 === window }),
+          let selectedWindow = selectedMergedWorkspaceWindow,
+          windows.contains(where: { $0 === selectedWindow }) else {
+      return false
+    }
+    dismissWorkspaceTabOverview()
+    let controller = GitDesktopWorkspaceTabOverviewWindowController(
+      hostWindow: selectedWindow,
+      windows: windows,
+      selectedWindow: selectedWindow,
+      selectionHandler: { [weak self] requestedWindow in
+        self?.dismissWorkspaceTabOverview()
+        self?.activateMergedWorkspace(requestedWindow)
+      }
+    )
+    controller.onClose = { [weak self, weak controller] in
+      guard let self, self.workspaceTabOverviewController === controller else {
+        return
+      }
+      self.workspaceTabOverviewController = nil
+    }
+    workspaceTabOverviewController = controller
+    controller.present()
+    return true
+  }
+
+  /// Dismisses a transient overview before its group changes or shuts down.
+  /// 中文：在标签组变更或关闭前退出短期总览，避免保留过期窗口。
+  private func dismissWorkspaceTabOverview() {
+    let controller = workspaceTabOverviewController
+    workspaceTabOverviewController = nil
+    controller?.dismiss()
+  }
+
   /// 中文：从当前 key workspace 循环切换到相邻的合并标签。
   /// English: Selects an adjacent merged tab from the current key workspace.
   func selectAdjacentMergedWorkspaceFromMenu(offset: Int) -> Bool {
@@ -2071,6 +2227,7 @@ final class WindowCoordinator {
       return false
     }
 
+    dismissWorkspaceTabOverview()
     let detachedRepositoryPath = workspaceControllers().first {
       $0.window === detachedWindow
     }?.repositoryPath
@@ -2119,6 +2276,7 @@ final class WindowCoordinator {
     _ window: MainFlutterWindow,
     to destinationIndex: Int
   ) {
+    dismissWorkspaceTabOverview()
     let windowIdentifier = ObjectIdentifier(window)
     guard let sourceIndex = mergedWorkspaceOrder.firstIndex(
       of: windowIdentifier
@@ -2279,6 +2437,7 @@ final class WindowCoordinator {
       return
     }
     isTerminating = true
+    dismissWorkspaceTabOverview()
     let registered = workspaceIndex.allHosts
     let unregistered = Array(unregisteredWorkspaces.values)
     var seen: Set<ObjectIdentifier> = []
@@ -2606,6 +2765,15 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
   /// English: Shows or hides the current merged workspace's custom tab strip.
   @IBAction func toggleRepositoryTabBarFromMenu(_ sender: Any?) {
     if !windowCoordinator.toggleCurrentMergedWorkspaceTabStrip() {
+      NSSound.beep()
+    }
+  }
+
+  /// 中文：显示当前合并工作区组的可访问标签总览。
+  /// English: Shows the accessible tab overview for the current merged
+  /// workspace group.
+  @IBAction func showAllRepositoryTabsFromMenu(_ sender: Any?) {
+    if !windowCoordinator.showCurrentMergedWorkspaceOverview() {
       NSSound.beep()
     }
   }
@@ -3139,6 +3307,9 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
       menuItem.title = windowCoordinator.showsCurrentMergedWorkspaceTabStrip
         ? "隐藏标签页栏"
         : "显示标签页栏"
+      return windowCoordinator.canManageCurrentMergedWorkspace
+    }
+    if menuItem.action == #selector(showAllRepositoryTabsFromMenu(_:)) {
       return windowCoordinator.canManageCurrentMergedWorkspace
     }
     if menuItem.action == #selector(moveWindowToDisplayFromMenu(_:)) {

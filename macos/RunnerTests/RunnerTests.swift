@@ -545,6 +545,87 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue(controllers.allSatisfy { $0.window != nil })
   }
 
+  func testWorkspaceTabOverviewSelectsOneLiveGroupMember() throws {
+    let coordinator = WindowCoordinator()
+    let controllers = try (0..<3).map { index in
+      try WorkspaceFlutterWindowController(
+        repositoryPath: nil,
+        initialAction: nil,
+        coordinator: coordinator
+      )
+    }
+    defer { controllers.forEach { $0.close() } }
+    for (index, controller) in controllers.enumerated() {
+      coordinator.registerRepository("/tmp/overview-\(index)", for: controller)
+    }
+    let windows = try controllers.map {
+      try XCTUnwrap($0.window as? MainFlutterWindow)
+    }
+
+    coordinator.mergeAllWorkspaceWindows()
+    let selectedTitle = try XCTUnwrap(
+      windows[0].workspaceTabStripView?.tabButtons.first(
+        where: \.isSelectedTab
+      )?.title
+    )
+    let selectedWindow = try XCTUnwrap(
+      windows.first { $0.title == selectedTitle }
+    )
+    XCTAssertTrue(coordinator.showMergedWorkspaceOverview(from: selectedWindow))
+    let panel = try XCTUnwrap(selectedWindow.childWindows?.first)
+    XCTAssertEqual(panel.title, "所有标签页")
+    let overview = try XCTUnwrap(
+      panel.contentView as? GitDesktopWorkspaceTabOverviewView
+    )
+    overview.layoutSubtreeIfNeeded()
+    XCTAssertEqual(Set(overview.tabButtons.map(\.title)), Set(windows.map(\.title)))
+    XCTAssertEqual(overview.tabButtons.filter(\.isSelectedTab).count, 1)
+    XCTAssertTrue(overview.tabButtons.allSatisfy { $0.frame.width > 400 })
+    XCTAssertTrue(overview.tabButtons.allSatisfy { $0.frame.height == 42 })
+
+    let targetButton = try XCTUnwrap(
+      overview.tabButtons.first { $0.title == windows[2].title }
+    )
+    targetButton.performClick(nil)
+
+    XCTAssertTrue(windows[2].isVisible)
+    XCTAssertTrue(selectedWindow.childWindows?.isEmpty ?? true)
+    XCTAssertEqual(
+      windows[2].workspaceTabStripView?.tabButtons.map(\.isSelectedTab),
+      windows[2].workspaceTabStripView?.tabButtons.map { button in
+        button.title == windows[2].title
+      }
+    )
+  }
+
+  func testWorkspaceTabOverviewClosesBeforeItsGroupChanges() throws {
+    let coordinator = WindowCoordinator()
+    let controllers = try (0..<2).map { index in
+      try WorkspaceFlutterWindowController(
+        repositoryPath: nil,
+        initialAction: nil,
+        coordinator: coordinator
+      )
+    }
+    defer { controllers.forEach { $0.close() } }
+    for (index, controller) in controllers.enumerated() {
+      coordinator.registerRepository("/tmp/overview-close-\(index)", for: controller)
+    }
+    let windows = try controllers.map {
+      try XCTUnwrap($0.window as? MainFlutterWindow)
+    }
+
+    coordinator.mergeAllWorkspaceWindows()
+    XCTAssertTrue(coordinator.showMergedWorkspaceOverview(from: windows[0]))
+    XCTAssertFalse(windows[0].childWindows?.isEmpty ?? true)
+
+    XCTAssertTrue(coordinator.detachMergedWorkspace(windows[1]))
+
+    XCTAssertTrue(windows[0].childWindows?.isEmpty ?? true)
+    XCTAssertTrue(windows[1].childWindows?.isEmpty ?? true)
+    XCTAssertFalse(coordinator.showMergedWorkspaceOverview(from: windows[0]))
+  }
+
   func testWorkspaceWindowInstallsCustomStripWithoutReplacingNativeTitle() throws {
     let controller = try WorkspaceFlutterWindowController(
       repositoryPath: nil,

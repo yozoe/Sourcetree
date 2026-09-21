@@ -885,6 +885,137 @@ final class GitDesktopWorkspaceTabStripView: NSView, NSDraggingSource {
   }
 }
 
+/// A compact keyboard-focusable row in the merged-workspace overview.
+///
+/// 中文：合并工作区总览中的紧凑、可键盘聚焦行，点击只切换目标
+/// 窗口，不转移 Flutter Engine 或仓库会话所有权。
+final class GitDesktopWorkspaceTabOverviewButton: NSButton {
+  private let actionHandler: () -> Void
+  private(set) var isSelectedTab: Bool
+
+  init(title: String, isSelected: Bool, action: @escaping () -> Void) {
+    actionHandler = action
+    isSelectedTab = isSelected
+    super.init(frame: .zero)
+    self.title = title
+    toolTip = title
+    font = NSFont.systemFont(
+      ofSize: NSFont.systemFontSize,
+      weight: isSelected ? .semibold : .regular
+    )
+    alignment = .left
+    image = NSImage(
+      systemSymbolName: isSelected ? "circle.fill" : "circle",
+      accessibilityDescription: nil
+    )?.withSymbolConfiguration(
+      NSImage.SymbolConfiguration(pointSize: 7, weight: .semibold)
+    )
+    imagePosition = .imageLeading
+    imageHugsTitle = true
+    contentTintColor = isSelected ? .controlAccentColor : .tertiaryLabelColor
+    bezelStyle = .regularSquare
+    setButtonType(.momentaryPushIn)
+    target = self
+    self.action = #selector(activateTab)
+    setAccessibilityLabel(title)
+    setAccessibilityRole(.radioButton)
+    setAccessibilityValue(isSelected)
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+
+  @objc private func activateTab() {
+    actionHandler()
+  }
+}
+
+/// Lists every tab in one merged workspace group without embedding or moving
+/// any Flutter content.
+///
+/// 中文：列出一个合并工作区组的全部标签，不嵌入或移动任何
+/// Flutter 内容。
+final class GitDesktopWorkspaceTabOverviewView: NSView {
+  private(set) var tabButtons: [GitDesktopWorkspaceTabOverviewButton] = []
+
+  init(tabs: [GitDesktopWorkspaceTabDefinition]) {
+    super.init(frame: NSRect(x: 0, y: 0, width: 480, height: 360))
+
+    let titleLabel = NSTextField(labelWithString: "所有标签页")
+    titleLabel.font = NSFont.systemFont(ofSize: 17, weight: .semibold)
+    titleLabel.textColor = .labelColor
+
+    let subtitleLabel = NSTextField(
+      labelWithString: "选择一个仓库工作区，每个标签仍保留独立的 Git 会话。"
+    )
+    subtitleLabel.font = NSFont.systemFont(ofSize: 11)
+    subtitleLabel.textColor = .secondaryLabelColor
+    subtitleLabel.lineBreakMode = .byWordWrapping
+    subtitleLabel.maximumNumberOfLines = 2
+
+    let listStack = NSStackView()
+    listStack.orientation = .vertical
+    listStack.alignment = .leading
+    listStack.distribution = .fill
+    listStack.spacing = 6
+    listStack.translatesAutoresizingMaskIntoConstraints = false
+
+    for tab in tabs {
+      let button = GitDesktopWorkspaceTabOverviewButton(
+        title: tab.title,
+        isSelected: tab.isSelected,
+        action: tab.action
+      )
+      button.translatesAutoresizingMaskIntoConstraints = false
+      tabButtons.append(button)
+      listStack.addArrangedSubview(button)
+      NSLayoutConstraint.activate([
+        button.leadingAnchor.constraint(equalTo: listStack.leadingAnchor),
+        button.trailingAnchor.constraint(equalTo: listStack.trailingAnchor),
+        button.heightAnchor.constraint(equalToConstant: 42),
+      ])
+    }
+
+    let scrollView = NSScrollView()
+    scrollView.drawsBackground = false
+    scrollView.hasVerticalScroller = true
+    scrollView.autohidesScrollers = true
+    scrollView.documentView = listStack
+
+    let contentStack = NSStackView(views: [titleLabel, subtitleLabel, scrollView])
+    contentStack.orientation = .vertical
+    contentStack.alignment = .leading
+    contentStack.spacing = 8
+    contentStack.edgeInsets = NSEdgeInsets(top: 18, left: 18, bottom: 18, right: 18)
+    contentStack.translatesAutoresizingMaskIntoConstraints = false
+    addSubview(contentStack)
+
+    NSLayoutConstraint.activate([
+      listStack.leadingAnchor.constraint(
+        equalTo: scrollView.contentView.leadingAnchor
+      ),
+      listStack.topAnchor.constraint(equalTo: scrollView.contentView.topAnchor),
+      contentStack.leadingAnchor.constraint(equalTo: leadingAnchor),
+      contentStack.trailingAnchor.constraint(equalTo: trailingAnchor),
+      contentStack.topAnchor.constraint(equalTo: topAnchor),
+      contentStack.bottomAnchor.constraint(equalTo: bottomAnchor),
+      titleLabel.widthAnchor.constraint(equalTo: contentStack.widthAnchor, constant: -36),
+      subtitleLabel.widthAnchor.constraint(equalTo: contentStack.widthAnchor, constant: -36),
+      scrollView.widthAnchor.constraint(equalTo: contentStack.widthAnchor, constant: -36),
+      scrollView.heightAnchor.constraint(greaterThanOrEqualToConstant: 160),
+      listStack.widthAnchor.constraint(equalTo: scrollView.contentView.widthAnchor),
+    ])
+    setAccessibilityElement(true)
+    setAccessibilityRole(.group)
+    setAccessibilityLabel("所有标签页")
+  }
+
+  required init?(coder: NSCoder) {
+    nil
+  }
+}
+
 /// 中文：返回 Dock 图标在运行时 tile 中的绘制区域。图标资源自身已包含
 /// 光学安全边距，因此这里不再添加第二层缩进。
 ///
