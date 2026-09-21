@@ -5355,6 +5355,7 @@ class _RepositoryWorkspaceScreenState
                   unawaited(_showWorkingTreeReview(changes)),
               onChangeIgnore: (changes) =>
                   unawaited(_showIgnoreSelectedDialog(changes)),
+              onApplyPatch: () => unawaited(_showApplyPatchDialog()),
               onChangeRemove: (changes) => unawaited(_removeChanges(changes)),
               onChangeStopTracking: (changes) =>
                   unawaited(_stopTrackingChanges(changes)),

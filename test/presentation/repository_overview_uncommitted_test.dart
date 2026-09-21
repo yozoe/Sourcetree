@@ -905,6 +905,7 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(1280, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final invoked = <String, List<String>>{};
+    var applyPatchInvocations = 0;
 
     await tester.pumpWidget(
       MaterialApp(
@@ -937,6 +938,7 @@ void main() {
                 invoked['review'] = [for (final change in changes) change.path],
             onChangeIgnore: (changes) =>
                 invoked['ignore'] = [for (final change in changes) change.path],
+            onApplyPatch: () => applyPatchInvocations += 1,
           ),
         ),
       ),
@@ -959,6 +961,7 @@ void main() {
     await invoke('查看选中的修改日志…');
     await invoke('审查选定的项目');
     await invoke('忽略…');
+    await invoke('应用补丁…');
 
     expect(invoked, <String, List<String>>{
       'terminal': ['lib/main.dart'],
@@ -967,6 +970,7 @@ void main() {
       'review': ['lib/main.dart'],
       'ignore': ['lib/main.dart'],
     });
+    expect(applyPatchInvocations, 1);
   });
 
   testWidgets('working-tree read-only actions reject unsupported selections', (
