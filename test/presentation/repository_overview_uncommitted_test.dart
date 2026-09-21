@@ -718,7 +718,7 @@ void main() {
         '审查选定的项目',
         '重置到提交…',
         '打开当前版本',
-        '打开已选定版本（待实现）',
+        '打开已选定版本',
         '在 Finder 中显示',
         '复制路径到剪贴板',
         '快速查看',
@@ -782,6 +782,22 @@ void main() {
         selectedAction,
         RepositoryCommitFileContextAction.openCurrentVersion,
       );
+
+      final selectedVersionGesture = await tester.startGesture(
+        tester.getCenter(find.text('main.dart')),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await selectedVersionGesture.up();
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('打开已选定版本'));
+      await tester.pumpAndSettle();
+
+      expect(
+        selectedAction,
+        RepositoryCommitFileContextAction.openSelectedVersion,
+      );
     },
   );
 
@@ -834,6 +850,7 @@ void main() {
     expect(pending, findsOneWidget);
     expect(find.text('审查选定的项目（待实现）'), findsOneWidget);
     expect(find.text('打开当前版本（待实现）'), findsOneWidget);
+    expect(find.text('打开已选定版本（待实现）'), findsOneWidget);
     expect(find.text('在 Finder 中显示（待实现）'), findsOneWidget);
     expect(find.text('复制路径到剪贴板（待实现）'), findsOneWidget);
     expect(find.text('快速查看（待实现）'), findsOneWidget);

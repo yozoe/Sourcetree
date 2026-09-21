@@ -152,4 +152,26 @@ void main() {
       ],
     });
   });
+
+  test('sends binary historical content to its owning workspace', () async {
+    MethodCall? receivedCall;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          receivedCall = call;
+          return null;
+        });
+
+    await DesktopWindowBridge.openHistoricalFile(
+      repositoryRootPath: '/tmp/example-repository',
+      suggestedFileName: 'snapshot.bin',
+      bytes: Uint8List.fromList([0, 255, 10]),
+    );
+
+    expect(receivedCall?.method, 'openHistoricalFile');
+    expect(receivedCall?.arguments, <String, Object>{
+      'repositoryRootPath': '/tmp/example-repository',
+      'suggestedFileName': 'snapshot.bin',
+      'bytes': Uint8List.fromList([0, 255, 10]),
+    });
+  });
 }

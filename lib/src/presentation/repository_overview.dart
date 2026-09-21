@@ -4224,9 +4224,13 @@ class _CommitFileTile extends StatelessWidget {
           enabled: file.isPathValidUtf8,
         ),
         _commitFileContextMenuItem(
-          '打开已选定版本（待实现）',
+          file.isPathValidUtf8 && file.kind != RepositoryChangeKind.deleted
+              ? '打开已选定版本'
+              : '打开已选定版本（待实现）',
           RepositoryCommitFileContextAction.openSelectedVersion,
           invoke,
+          enabled:
+              file.isPathValidUtf8 && file.kind != RepositoryChangeKind.deleted,
         ),
         _commitFileContextMenuItem(
           file.isPathValidUtf8 ? '在 Finder 中显示' : '在 Finder 中显示（待实现）',

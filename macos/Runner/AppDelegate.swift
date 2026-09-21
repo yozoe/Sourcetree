@@ -171,6 +171,70 @@ final class GitDesktopQuickLookDataSource: NSObject, QLPreviewPanelDataSource {
   }
 }
 
+/// Owns private temporary files opened from immutable historical Git blobs.
+/// 中文：持有从不可变历史 Git blob 导出的私有临时文件。
+final class GitDesktopHistoricalFileStore {
+  private let baseDirectory: URL
+  private(set) var directories: [URL] = []
+
+  init(baseDirectory: URL = FileManager.default.temporaryDirectory) {
+    self.baseDirectory = baseDirectory
+  }
+
+  /// Creates one private file while preserving only the safe basename.
+  /// 中文：仅保留安全 basename，并创建权限受限的临时文件。
+  func createFile(suggestedName: String, data: Data) throws -> URL {
+    let fileName = URL(fileURLWithPath: suggestedName).lastPathComponent
+    guard !fileName.isEmpty, fileName != ".", fileName != ".." else {
+      throw CocoaError(.fileWriteInvalidFileName)
+    }
+    let directory = baseDirectory.appendingPathComponent(
+      "git-desktop-history-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    do {
+      try FileManager.default.createDirectory(
+        at: directory,
+        withIntermediateDirectories: false,
+        attributes: [.posixPermissions: 0o700]
+      )
+      let file = directory.appendingPathComponent(fileName, isDirectory: false)
+      try data.write(to: file, options: .atomic)
+      try FileManager.default.setAttributes(
+        [.posixPermissions: 0o600],
+        ofItemAtPath: file.path
+      )
+      directories.append(directory)
+      return file
+    } catch {
+      try? FileManager.default.removeItem(at: directory)
+      throw error
+    }
+  }
+
+  /// Removes every artifact owned by this workspace.
+  /// 中文：删除当前工作区持有的全部历史文件临时产物。
+  func removeAll() {
+    for directory in directories {
+      try? FileManager.default.removeItem(at: directory)
+    }
+    directories.removeAll()
+  }
+
+  /// Removes the directory containing one file created by this store.
+  /// 中文：删除由该存储创建的指定文件及其私有目录。
+  func removeFile(_ file: URL) {
+    let directory = file.deletingLastPathComponent()
+    guard let index = directories.firstIndex(of: directory) else { return }
+    try? FileManager.default.removeItem(at: directory)
+    directories.remove(at: index)
+  }
+
+  deinit {
+    removeAll()
+  }
+}
+
 func gitDesktopCanonicalRepositoryPath(_ path: String?) -> String? {
   guard let path, !path.isEmpty else {
     return nil
@@ -642,6 +706,7 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   private let flutterViewController: FlutterViewController
   private let windowChannel: FlutterMethodChannel
   private let quickLookDataSource = GitDesktopQuickLookDataSource()
+  private let historicalFileStore = GitDesktopHistoricalFileStore()
   private var didShutDownEngine = false
   private var isPreparingForShutdown = false
   private var isPreparedForShutdown = false
@@ -1037,6 +1102,8 @@ final class WorkspaceFlutterWindowController: NSWindowController,
         result(nil)
       case "performFileAction":
         performFileAction(arguments, result: result)
+      case "openHistoricalFile":
+        openHistoricalFile(arguments, result: result)
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -1168,6 +1235,61 @@ final class WorkspaceFlutterWindowController: NSWindowController,
     result(nil)
   }
 
+  /// Writes historical bytes to a private host-owned temporary file and opens
+  /// it with the system default application. The directory is retained until
+  /// this workspace shuts down so external applications can finish reading.
+  /// 中文：将历史字节写入宿主持有的私有临时文件并用默认应用打开；目录保留到
+  /// 当前工作区关闭，确保外部应用有足够时间完成读取。
+  private func openHistoricalFile(
+    _ arguments: [String: Any]?,
+    result: @escaping FlutterResult
+  ) {
+    let requestedRoot = gitDesktopCanonicalRepositoryPath(
+      arguments?["repositoryRootPath"] as? String
+    )
+    let ownedRoot = gitDesktopCanonicalRepositoryPath(repositoryPath)
+    guard requestedRoot != nil,
+          requestedRoot == ownedRoot,
+          let typedData = arguments?["bytes"] as? FlutterStandardTypedData,
+          typedData.data.count <= 16 * 1024 * 1024,
+          let requestedName = arguments?["suggestedFileName"] as? String else {
+      result(
+        FlutterError(
+          code: "invalid_historical_file",
+          message: "The historical file request is invalid.",
+          details: nil
+        )
+      )
+      return
+    }
+    do {
+      let file = try historicalFileStore.createFile(
+        suggestedName: requestedName,
+        data: typedData.data
+      )
+      guard NSWorkspace.shared.open(file) else {
+        historicalFileStore.removeFile(file)
+        result(
+          FlutterError(
+            code: "historical_file_open_failed",
+            message: "The historical file could not be opened.",
+            details: nil
+          )
+        )
+        return
+      }
+      result(nil)
+    } catch {
+      result(
+        FlutterError(
+          code: "historical_file_write_failed",
+          message: error.localizedDescription,
+          details: nil
+        )
+      )
+    }
+  }
+
   /// Replaces this Engine's complete native-menu snapshot atomically. Calls
   /// arriving after Engine shutdown are ignored so stale capability messages
   /// cannot revive actions for a closed workspace.
@@ -1286,6 +1408,8 @@ final class WorkspaceFlutterWindowController: NSWindowController,
       return
     }
     applyWorkspaceMenuState(nil)
+    quickLookDataSource.urls = []
+    historicalFileStore.removeAll()
     didShutDownEngine = true
     windowChannel.setMethodCallHandler(nil)
     window?.contentViewController = nil

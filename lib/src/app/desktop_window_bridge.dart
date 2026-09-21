@@ -75,6 +75,22 @@ final class DesktopWindowBridge {
     });
   }
 
+  /// Opens binary historical content through a host-owned private temporary
+  /// file that is removed when the workspace window closes.
+  ///
+  /// 中文：由宿主创建私有临时文件打开历史二进制内容；工作区窗口关闭时清理。
+  static Future<void> openHistoricalFile({
+    required String repositoryRootPath,
+    required String suggestedFileName,
+    required Uint8List bytes,
+  }) {
+    return _channel.invokeMethod<void>('openHistoricalFile', <String, Object>{
+      'repositoryRootPath': repositoryRootPath,
+      'suggestedFileName': suggestedFileName,
+      'bytes': bytes,
+    });
+  }
+
   /// Confirms that the home Engine can receive deferred repository
   /// registrations from active workspace windows.
   ///

@@ -33,6 +33,51 @@ void main() {
     ]);
   });
 
+  test('reads historical file bytes and rejects truncated blobs', () async {
+    const filePath = 'nested/a:b ü.bin';
+    final bytes = <int>[0, 1, 2, 255, 10, 128];
+    await File(
+      '${temporaryDirectory.path}${Platform.pathSeparator}nested'
+      '${Platform.pathSeparator}a:b ü.bin',
+    ).create(recursive: true).then((file) => file.writeAsBytes(bytes));
+    await File(
+      '${temporaryDirectory.path}${Platform.pathSeparator}empty.bin',
+    ).writeAsBytes(const <int>[]);
+    await _git(temporaryDirectory.path, ['add', '--', filePath, 'empty.bin']);
+    await _git(temporaryDirectory.path, ['commit', '--quiet', '-m', 'binary']);
+    final objectId = (await _git(temporaryDirectory.path, [
+      'rev-parse',
+      'HEAD',
+    ])).stdout.toString().trim();
+    final repository = (await inspector.inspect(temporaryDirectory.path))!;
+
+    expect(
+      await reader.readFileAtCommit(
+        repository,
+        objectId: objectId,
+        path: filePath,
+      ),
+      bytes,
+    );
+    expect(
+      await reader.readFileAtCommit(
+        repository,
+        objectId: objectId,
+        path: 'empty.bin',
+      ),
+      isEmpty,
+    );
+    await expectLater(
+      reader.readFileAtCommit(
+        repository,
+        objectId: objectId,
+        path: filePath,
+        maxBytes: 3,
+      ),
+      throwsA(isA<GitException>()),
+    );
+  });
+
   tearDown(() async {
     if (temporaryDirectory.existsSync()) {
       await temporaryDirectory.delete(recursive: true);

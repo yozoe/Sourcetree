@@ -451,6 +451,58 @@ void main() {
   });
 
   test(
+    'reads selected historical file bytes without changing selection',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      final binary = <int>[0, 255, 1, 10, 128];
+      final binaryFile = File(
+        '${repository.workingDirectory.path}${Platform.pathSeparator}archive'
+        '${Platform.pathSeparator}data.bin',
+      );
+      await binaryFile.parent.create(recursive: true);
+      await binaryFile.writeAsBytes(binary);
+      final commit = await repository.commit('Add binary file');
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      await controller.selectCommit(commit);
+
+      final bytes = await controller.readSelectedCommitFileBytes();
+
+      expect(bytes, binary);
+      final selected = container.read(repositorySessionProvider);
+      expect(selected.selectedCommitId, commit);
+      expect(
+        selected.selectedCommitFile?.file.path.display,
+        'archive/data.bin',
+      );
+    },
+  );
+
+  test('rejects opening a file from its deleting commit', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('removed.txt', 'before\n');
+    await repository.commit('Add file');
+    await File(
+      '${repository.workingDirectory.path}${Platform.pathSeparator}removed.txt',
+    ).delete();
+    final deletion = await repository.commit('Delete file');
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    await controller.selectCommit(deletion);
+
+    await expectLater(
+      controller.readSelectedCommitFileBytes(),
+      throwsA(isA<StateError>()),
+    );
+  });
+
+  test(
     'automatically refreshes external work-tree changes without reloading history',
     () async {
       final repository = await GitTestRepository.create();

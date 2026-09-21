@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:path/path.dart' as path_utils;
@@ -2644,6 +2645,54 @@ final class RepositorySessionController
       throw StateError('仓库已切换，无法继续审查。');
     }
     return diff;
+  }
+
+  /// Reads the currently selected historical file as binary-safe bytes after
+  /// validating the commit and file selection before and after the Git call.
+  ///
+  /// 中文：以二进制安全字节读取当前选择的历史文件，并在 Git 调用前后复核提交、
+  /// 文件与仓库代际；删除记录没有该提交版本，因此会被拒绝。
+  Future<Uint8List> readSelectedCommitFileBytes({
+    int maxBytes = 16 * 1024 * 1024,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackRequiredGitTask(
+        () => readSelectedCommitFileBytes(
+          maxBytes: maxBytes,
+          cancellationToken: cancellationToken,
+        ),
+      );
+    }
+    final repository = state.repository;
+    final selected = state.selectedCommitFile;
+    if (repository == null ||
+        state.phase != RepositorySessionPhase.ready ||
+        selected == null ||
+        !selected.file.path.isValidUtf8 ||
+        selected.file.kind == GitCommitChangeKind.deleted) {
+      throw StateError('当前没有可打开的历史文件版本。');
+    }
+    final repositoryGeneration = _repositoryGeneration;
+    final bytes = await _reader.readFileAtCommit(
+      repository,
+      objectId: selected.objectId,
+      path: selected.file.path.display,
+      maxBytes: maxBytes,
+      cancellationToken: cancellationToken,
+    );
+    if (cancellationToken?.isCancelled ?? false) {
+      throw const GitCancelledException();
+    }
+    final current = state.selectedCommitFile;
+    if (!ref.mounted ||
+        repositoryGeneration != _repositoryGeneration ||
+        state.repository?.id != repository.id ||
+        current?.objectId != selected.objectId ||
+        current?.file.path != selected.file.path) {
+      throw StateError('提交或文件选择已变化，无法打开历史版本。');
+    }
+    return bytes;
   }
 
   /// Reads a focused, read-only history for a selected historical file.

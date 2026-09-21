@@ -1,5 +1,6 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:path/path.dart' as path_utils;
 
@@ -145,6 +146,45 @@ final class GitRepositoryReader {
   final GitRunner runner;
   final GitStatusParser statusParser;
   final GitHistoryParser historyParser;
+
+  /// Reads one historical blob without text decoding or work-tree mutation.
+  /// Truncated output is rejected so callers never publish a partial file.
+  ///
+  /// 中文：以原始字节读取提交中的单个 blob，不进行文本解码或修改工作区；
+  /// 输出超过 [maxBytes] 时拒绝返回，避免调用方发布不完整文件。
+  Future<Uint8List> readFileAtCommit(
+    GitRepository repository, {
+    required String objectId,
+    required String path,
+    int maxBytes = 16 * 1024 * 1024,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    _validateObjectId(objectId);
+    if (path.isEmpty || path.contains('\u0000')) {
+      throw ArgumentError.value(path, 'path', 'A valid Git path is required.');
+    }
+    if (maxBytes <= 0) {
+      throw RangeError.value(maxBytes, 'maxBytes', 'Must be positive.');
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: ['--no-pager', 'cat-file', 'blob', '$objectId:$path'],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: GitOutputLimit(
+          stdoutBytes: maxBytes,
+          stderrBytes: 256 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Reading historical file');
+    if (result.stdoutTruncated) {
+      throw const GitException(
+        'The historical file exceeds the configured output limit.',
+      );
+    }
+    return result.stdoutBytes;
+  }
 
   /// 中文：读取仓库详情所需的真实 Git 统计和本地磁盘用量。
   ///

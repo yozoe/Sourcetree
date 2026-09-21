@@ -4947,6 +4947,10 @@ class _RepositoryWorkspaceScreenState
       unawaited(_copySelectedCommitFilePath(file));
       return;
     }
+    if (action == RepositoryCommitFileContextAction.openSelectedVersion) {
+      unawaited(_openSelectedCommitFileVersion(file));
+      return;
+    }
     if (action == RepositoryCommitFileContextAction.openCurrentVersion ||
         action == RepositoryCommitFileContextAction.revealInFinder ||
         action == RepositoryCommitFileContextAction.quickLook) {
@@ -4986,6 +4990,51 @@ class _RepositoryWorkspaceScreenState
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('无法复制路径到剪贴板。')));
+    }
+  }
+
+  /// Exports and opens the current historical-file selection without
+  /// modifying the repository. Git bytes remain binary-safe and the native
+  /// host owns the private temporary file until this workspace closes.
+  ///
+  /// 中文：在不修改仓库的前提下导出并打开当前历史文件选择。Git 内容保持
+  /// 二进制安全，私有临时文件由原生宿主持有并在工作区关闭时清理。
+  Future<void> _openSelectedCommitFileVersion(CommitFileViewData file) async {
+    final session = ref.read(repositorySessionProvider);
+    final selected = session.selectedCommitFile;
+    final root = session.repository?.workTreeRoot;
+    if (root == null ||
+        selected == null ||
+        !file.isPathValidUtf8 ||
+        file.kind == RepositoryChangeKind.deleted ||
+        selected.objectId != session.selectedCommitId ||
+        selected.file.path.display != file.path) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前没有可打开的历史文件版本。')));
+      return;
+    }
+    try {
+      final bytes = await ref
+          .read(repositorySessionProvider.notifier)
+          .readSelectedCommitFileBytes();
+      if (!mounted) return;
+      final current = ref.read(repositorySessionProvider);
+      if (current.repository?.workTreeRoot != root ||
+          current.selectedCommitFile?.objectId != selected.objectId ||
+          current.selectedCommitFile?.file.path != selected.file.path) {
+        throw StateError('The historical file selection changed.');
+      }
+      await DesktopWindowBridge.openHistoricalFile(
+        repositoryRootPath: root,
+        suggestedFileName: path_utils.basename(file.path),
+        bytes: bytes,
+      );
+    } on Object {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('无法打开所选历史版本；文件可能过大或选择已变化。')));
     }
   }
 

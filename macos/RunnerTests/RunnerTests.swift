@@ -188,6 +188,40 @@ class RunnerTests: XCTestCase {
     XCTAssertNil(targets.terminalDirectoryURL())
   }
 
+  func testHistoricalFileStoreUsesPrivatePermissionsAndCleansUp() throws {
+    let base = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "git-desktop-history-store-test-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    try FileManager.default.createDirectory(
+      at: base,
+      withIntermediateDirectories: true
+    )
+    defer { try? FileManager.default.removeItem(at: base) }
+    let store = GitDesktopHistoricalFileStore(baseDirectory: base)
+    let bytes = Data([0, 255, 10, 128])
+
+    let file = try store.createFile(
+      suggestedName: "../snapshot.bin",
+      data: bytes
+    )
+
+    XCTAssertEqual(file.lastPathComponent, "snapshot.bin")
+    XCTAssertEqual(try Data(contentsOf: file), bytes)
+    let fileAttributes = try FileManager.default.attributesOfItem(
+      atPath: file.path
+    )
+    let directoryAttributes = try FileManager.default.attributesOfItem(
+      atPath: file.deletingLastPathComponent().path
+    )
+    XCTAssertEqual(fileAttributes[.posixPermissions] as? NSNumber, 0o600)
+    XCTAssertEqual(directoryAttributes[.posixPermissions] as? NSNumber, 0o700)
+
+    let directory = file.deletingLastPathComponent()
+    store.removeAll()
+    XCTAssertFalse(FileManager.default.fileExists(atPath: directory.path))
+  }
+
   func testWorkspaceArgumentsIdentifyTheEngineAndInitialRepository() {
     XCTAssertEqual(
       gitDesktopWorkspaceArguments(
