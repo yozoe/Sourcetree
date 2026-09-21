@@ -746,6 +746,10 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// 中文：当前单个可见文件选择是否可读取修改日志。
   private(set) var canViewSelectedFileHistoryFromMenu = false
 
+  /// Whether Flutter can safely add ignore rules for the visible selection.
+  /// 中文：Flutter 是否可为当前可见选择安全添加忽略规则。
+  private(set) var canIgnoreSelectedFromMenu = false
+
   /// Flutter's last validated Stage Selected availability for this Engine.
   /// 中文：此 Engine 最近一次由 Flutter 校验的“添加到索引”可用状态。
   private(set) var canStageSelectedFromMenu = false
@@ -1028,6 +1032,8 @@ final class WorkspaceFlutterWindowController: NSWindowController,
         canTagFromMenu = arguments?["canTag"] as? Bool ?? false
         canViewSelectedFileHistoryFromMenu =
           arguments?["canViewSelectedFileHistory"] as? Bool ?? false
+        canIgnoreSelectedFromMenu =
+          arguments?["canIgnoreSelected"] as? Bool ?? false
         canStageSelectedFromMenu =
           arguments?["canStageSelected"] as? Bool ?? false
         canUnstageSelectedFromMenu =
@@ -1525,6 +1531,16 @@ final class WindowCoordinator {
       hasKeyWorkspace: currentWorkspaceController != nil,
       hasValidatedSelection:
         currentWorkspaceController?.canViewSelectedFileHistoryFromMenu == true
+    )
+  }
+
+  /// Whether the key workspace can add ignore rules for its current selection.
+  /// 中文：当前前台工作区是否可为当前选择添加忽略规则。
+  var canIgnoreSelectedFromMenu: Bool {
+    gitDesktopCanPerformSelectedChangeMenuAction(
+      hasKeyWorkspace: currentWorkspaceController != nil,
+      hasValidatedSelection:
+        currentWorkspaceController?.canIgnoreSelectedFromMenu == true
     )
   }
 
@@ -2799,6 +2815,16 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     windowCoordinator.performWorkspaceAction("viewSelectedFileHistory")
   }
 
+  /// Opens the ignore-rule preview for the key workspace's selection.
+  /// 中文：为当前前台工作区选择打开忽略规则预览。
+  @IBAction func ignoreSelectedFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canIgnoreSelectedFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("ignoreSelected")
+  }
+
   /// 中文：用系统默认应用打开当前工作区唯一选中的现存文件。
   /// English: Opens the single existing workspace selection in its default app.
   @IBAction func openSelectedFileFromMenu(_ sender: Any?) {
@@ -3099,6 +3125,9 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     }
     if menuItem.action == #selector(viewSelectedFileHistoryFromMenu(_:)) {
       return windowCoordinator.canViewSelectedFileHistoryFromMenu
+    }
+    if menuItem.action == #selector(ignoreSelectedFromMenu(_:)) {
+      return windowCoordinator.canIgnoreSelectedFromMenu
     }
     if menuItem.action == #selector(fetchRepositoryFromMenu(_:)) {
       return windowCoordinator.canFetchFromMenu

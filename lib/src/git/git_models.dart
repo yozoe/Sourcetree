@@ -164,6 +164,28 @@ enum GitChangeType {
   unknown,
 }
 
+/// The supported shapes of a generated Git ignore rule.
+/// 中文：应用可生成的 Git 忽略规则形式。
+enum GitIgnorePatternKind { exactPath, fileExtension }
+
+/// The supported repository-local destinations for ignore rules.
+/// 中文：忽略规则可写入的仓库本地目标。
+enum GitIgnoreDestination { repositoryGitignore, localExclude }
+
+/// The result of appending deduplicated rules to one ignore file.
+/// 中文：向一个忽略文件追加去重规则后的结果。
+final class GitIgnoreWriteResult {
+  const GitIgnoreWriteResult({
+    required this.targetPath,
+    required this.patterns,
+    required this.addedPatterns,
+  });
+
+  final String targetPath;
+  final List<String> patterns;
+  final List<String> addedPatterns;
+}
+
 extension GitChangeTypeParsing on GitChangeType {
   /// 中文：将 porcelain 状态字符转换为对应的文件改动类型；未知字符保留为 `unknown`。
   ///

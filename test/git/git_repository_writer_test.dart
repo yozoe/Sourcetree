@@ -22,6 +22,146 @@ void main() {
 
   tearDown(() => fixture.dispose());
 
+  test('builds literal ignore rules without treating paths as globs', () {
+    expect(
+      gitIgnorePatternsForPaths(const [
+        'build/[draft]*?.txt',
+        'notes ',
+      ], GitIgnorePatternKind.exactPath),
+      [r'/build/\[draft]\*\?.txt', r'/notes\ '],
+    );
+    expect(
+      gitIgnorePatternsForPaths(const [
+        'one/report.log',
+        'two/debug.log',
+      ], GitIgnorePatternKind.fileExtension),
+      [r'*.log'],
+    );
+    expect(
+      () => gitIgnorePatternsForPaths(const [
+        'README',
+      ], GitIgnorePatternKind.fileExtension),
+      throwsArgumentError,
+    );
+  });
+
+  test(
+    'appends repository ignore rules without replacing or duplicating',
+    () async {
+      await fixture.writeFile('.gitignore', '# existing\n*.cache');
+      await fixture.writeFile('build/result.log', 'generated\n');
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+      final path = GitPath.fromString('build/result.log');
+
+      final first = await writer.addIgnoreRules(
+        repository,
+        [path],
+        patternKind: GitIgnorePatternKind.exactPath,
+        destination: GitIgnoreDestination.repositoryGitignore,
+      );
+      final second = await writer.addIgnoreRules(
+        repository,
+        [path],
+        patternKind: GitIgnorePatternKind.exactPath,
+        destination: GitIgnoreDestination.repositoryGitignore,
+      );
+
+      expect(first.addedPatterns, ['/build/result.log']);
+      expect(second.addedPatterns, isEmpty);
+      expect(
+        await File(
+          '${fixture.workingDirectory.path}/.gitignore',
+        ).readAsString(),
+        '# existing\n*.cache\n/build/result.log\n',
+      );
+      final ignored = await fixture.runGit([
+        'check-ignore',
+        '--no-index',
+        'build/result.log',
+      ]);
+      expect(ignored.stdout.toString().trim(), 'build/result.log');
+    },
+  );
+
+  test('writes extension rules only to the local exclude file', () async {
+    await fixture.writeFile('logs/debug.log', 'generated\n');
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    final result = await writer.addIgnoreRules(
+      repository,
+      [GitPath.fromString('logs/debug.log')],
+      patternKind: GitIgnorePatternKind.fileExtension,
+      destination: GitIgnoreDestination.localExclude,
+    );
+
+    expect(result.addedPatterns, ['*.log']);
+    expect(
+      await File('${fixture.workingDirectory.path}/.gitignore').exists(),
+      isFalse,
+    );
+    final ignored = await fixture.runGit(['check-ignore', 'logs/debug.log']);
+    expect(ignored.stdout.toString().trim(), 'logs/debug.log');
+  });
+
+  test('refuses a symlinked repository ignore destination', () async {
+    if (!Platform.isMacOS) return;
+    final outside = await Directory.systemTemp.createTemp(
+      'git-desktop-ignore-outside-',
+    );
+    addTearDown(() => outside.delete(recursive: true));
+    final outsideFile = File('${outside.path}/keep.txt');
+    await outsideFile.writeAsString('keep\n');
+    await Link(
+      '${fixture.workingDirectory.path}/.gitignore',
+    ).create(outsideFile.path);
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await expectLater(
+      writer.addIgnoreRules(
+        repository,
+        [GitPath.fromString('ignored.txt')],
+        patternKind: GitIgnorePatternKind.exactPath,
+        destination: GitIgnoreDestination.repositoryGitignore,
+      ),
+      throwsA(isA<GitException>()),
+    );
+    expect(await outsideFile.readAsString(), 'keep\n');
+  });
+
+  test('does not overwrite ignore rules changed before publication', () async {
+    if (!Platform.isMacOS) return;
+    await fixture.writeFile('.gitignore', '# original\n');
+    await fixture.writeFile('output.log', 'generated\n');
+    final ignoreFile = File('${fixture.workingDirectory.path}/.gitignore');
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+    final racingWriter = GitRepositoryWriter(
+      GitRunner(),
+      beforeIgnoreRulesPublicationForTesting: () async {
+        await ignoreFile.writeAsString('# externally updated\n');
+      },
+    );
+
+    await expectLater(
+      racingWriter.addIgnoreRules(
+        repository,
+        [GitPath.fromString('output.log')],
+        patternKind: GitIgnorePatternKind.exactPath,
+        destination: GitIgnoreDestination.repositoryGitignore,
+      ),
+      throwsA(isA<GitException>()),
+    );
+
+    expect(await ignoreFile.readAsString(), '# externally updated\n');
+  });
+
   test('refuses removal through a symlinked work-tree parent', () async {
     if (!Platform.isMacOS) return;
     final outside = await Directory.systemTemp.createTemp(

@@ -91,6 +91,7 @@ bool _isLoadedAncestorOfHead({
   bool canUseConflictStage3,
   bool canFetch,
   bool canInteractiveRebase,
+  bool canIgnoreSelected,
   bool canMerge,
   bool canPull,
   bool canPush,
@@ -228,6 +229,17 @@ nativeWorkspaceMenuAvailability(
           candidateId: repository.selectedCommit!.oid,
           headId: repository.headOid!,
           commits: session.commits,
+        ),
+    canIgnoreSelected:
+        canApplyPatch &&
+        menuSelection.isNotEmpty &&
+        menuSelection.every(
+          (change) =>
+              change.isActionEnabled &&
+              change.isPathValidUtf8 &&
+              change.kind != RepositoryChangeKind.conflicted &&
+              !change.path.contains('\n') &&
+              !change.path.contains('\r'),
         ),
     canMerge:
         session.phase == RepositorySessionPhase.ready &&
@@ -716,6 +728,7 @@ class _RepositoryWorkspaceScreenState
   bool? _lastNativeUseConflictStage3Availability;
   bool? _lastNativeFetchAvailability;
   bool? _lastNativeInteractiveRebaseAvailability;
+  bool? _lastNativeIgnoreSelectedAvailability;
   bool? _lastNativeMergeAvailability;
   bool? _lastNativePullAvailability;
   bool? _lastNativePushAvailability;
@@ -855,6 +868,8 @@ class _RepositoryWorkspaceScreenState
         );
       case 'viewSelectedFileHistory':
         await _showNativeSelectedFileHistory();
+      case 'ignoreSelected':
+        await _showIgnoreSelectedDialog();
       case 'checkout':
         await _showCheckoutDialog();
       case 'merge':
@@ -1046,6 +1061,7 @@ class _RepositoryWorkspaceScreenState
     final canUseConflictStage3 = availability.canUseConflictStage3;
     final canFetch = availability.canFetch;
     final canInteractiveRebase = availability.canInteractiveRebase;
+    final canIgnoreSelected = availability.canIgnoreSelected;
     final canMerge = availability.canMerge;
     final canPull = availability.canPull;
     final canPush = availability.canPush;
@@ -1090,6 +1106,7 @@ class _RepositoryWorkspaceScreenState
         _lastNativeUseConflictStage3Availability == canUseConflictStage3 &&
         _lastNativeFetchAvailability == canFetch &&
         _lastNativeInteractiveRebaseAvailability == canInteractiveRebase &&
+        _lastNativeIgnoreSelectedAvailability == canIgnoreSelected &&
         _lastNativeMergeAvailability == canMerge &&
         _lastNativePullAvailability == canPull &&
         _lastNativePushAvailability == canPush &&
@@ -1121,6 +1138,7 @@ class _RepositoryWorkspaceScreenState
     _lastNativeUseConflictStage3Availability = canUseConflictStage3;
     _lastNativeFetchAvailability = canFetch;
     _lastNativeInteractiveRebaseAvailability = canInteractiveRebase;
+    _lastNativeIgnoreSelectedAvailability = canIgnoreSelected;
     _lastNativeMergeAvailability = canMerge;
     _lastNativePullAvailability = canPull;
     _lastNativePushAvailability = canPush;
@@ -1151,6 +1169,7 @@ class _RepositoryWorkspaceScreenState
         canUseConflictStage3: canUseConflictStage3,
         canFetch: canFetch,
         canInteractiveRebase: canInteractiveRebase,
+        canIgnoreSelected: canIgnoreSelected,
         canMerge: canMerge,
         canPull: canPull,
         canPush: canPush,
@@ -3800,6 +3819,157 @@ class _RepositoryWorkspaceScreenState
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('无法在 Finder 中显示所选文件。')));
+  }
+
+  /// Previews and appends ignore rules for the current validated selection.
+  /// Tracked paths remain in the index and are called out before confirmation.
+  ///
+  /// 中文：预览并为当前有效选择追加忽略规则；已跟踪路径仍保留在索引中，确认前会明确提示。
+  Future<void> _showIgnoreSelectedDialog() async {
+    final session = ref.read(repositorySessionProvider);
+    final overview = mapRepositoryOverview(session);
+    final selected = _nativeSelectedChanges(overview);
+    final availability = nativeWorkspaceMenuAvailability(
+      session,
+      overview,
+      selectedChanges: selected,
+    );
+    if (!availability.canIgnoreSelected || selected.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请选择可安全生成忽略规则的工作区文件。')));
+      return;
+    }
+
+    var patternKind = GitIgnorePatternKind.exactPath;
+    var destination = GitIgnoreDestination.repositoryGitignore;
+    final canIgnoreByExtension = selected.every(
+      (change) => path_utils.extension(change.path).isNotEmpty,
+    );
+    final containsTrackedPath = selected.any(
+      (change) => change.kind != RepositoryChangeKind.untracked,
+    );
+    final options =
+        await showDialog<
+          ({GitIgnorePatternKind patternKind, GitIgnoreDestination destination})
+        >(
+          context: context,
+          builder: (dialogContext) => StatefulBuilder(
+            builder: (context, setDialogState) {
+              final patterns = gitIgnorePatternsForPaths(
+                selected.map((change) => change.path),
+                patternKind,
+              );
+              return AlertDialog(
+                title: const Text('忽略所选文件'),
+                content: SizedBox(
+                  width: 520,
+                  child: SingleChildScrollView(
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        const Text('规则类型'),
+                        RadioGroup<GitIgnorePatternKind>(
+                          groupValue: patternKind,
+                          onChanged: (value) {
+                            if (value != null) {
+                              setDialogState(() => patternKind = value);
+                            }
+                          },
+                          child: Column(
+                            children: [
+                              const RadioListTile<GitIgnorePatternKind>(
+                                value: GitIgnorePatternKind.exactPath,
+                                title: Text('仅忽略所选路径'),
+                              ),
+                              RadioListTile<GitIgnorePatternKind>(
+                                value: GitIgnorePatternKind.fileExtension,
+                                enabled: canIgnoreByExtension,
+                                title: const Text('忽略相同扩展名的文件'),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text('写入位置'),
+                        RadioGroup<GitIgnoreDestination>(
+                          groupValue: destination,
+                          onChanged: (value) {
+                            if (value != null) {
+                              setDialogState(() => destination = value);
+                            }
+                          },
+                          child: const Column(
+                            children: [
+                              RadioListTile<GitIgnoreDestination>(
+                                value: GitIgnoreDestination.repositoryGitignore,
+                                title: Text('仓库根目录 .gitignore'),
+                                subtitle: Text('可提交并与协作者共享'),
+                              ),
+                              RadioListTile<GitIgnoreDestination>(
+                                value: GitIgnoreDestination.localExclude,
+                                title: Text('本机 .git/info/exclude'),
+                                subtitle: Text('仅此工作副本生效，不进入提交'),
+                              ),
+                            ],
+                          ),
+                        ),
+                        const SizedBox(height: 8),
+                        const Text('将追加以下规则：'),
+                        const SizedBox(height: 6),
+                        SelectableText(patterns.join('\n')),
+                        if (containsTrackedPath) ...[
+                          const SizedBox(height: 12),
+                          Text(
+                            '所选内容包含已跟踪文件。忽略规则不会停止追踪它们，已有改动仍会显示。',
+                            style: TextStyle(
+                              color: Theme.of(context).colorScheme.error,
+                            ),
+                          ),
+                        ],
+                      ],
+                    ),
+                  ),
+                ),
+                actions: [
+                  TextButton(
+                    onPressed: () => Navigator.of(dialogContext).pop(),
+                    child: const Text('取消'),
+                  ),
+                  FilledButton(
+                    onPressed: () => Navigator.of(
+                      dialogContext,
+                    ).pop((patternKind: patternKind, destination: destination)),
+                    child: const Text('添加规则'),
+                  ),
+                ],
+              );
+            },
+          ),
+        );
+    if (options == null || !mounted) return;
+
+    final result = await ref
+        .read(repositorySessionProvider.notifier)
+        .ignoreChanges(
+          selected,
+          patternKind: options.patternKind,
+          destination: options.destination,
+        );
+    if (!mounted) return;
+    final targetName =
+        options.destination == GitIgnoreDestination.repositoryGitignore
+        ? '.gitignore'
+        : '.git/info/exclude';
+    final message = result == null
+        ? '所选文件状态已变化，或忽略文件无法安全写入。'
+        : result.addedPatterns.isEmpty
+        ? '所选忽略规则已存在，未重复写入。'
+        : '已向 $targetName 添加 ${result.addedPatterns.length} 条规则。';
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
   }
 
   /// Confirms deletion of selected staged or unstaged working-tree files.

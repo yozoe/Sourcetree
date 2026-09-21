@@ -13,6 +13,61 @@ import 'git_errors.dart';
 import 'git_models.dart';
 import 'git_runner.dart';
 
+/// Builds deduplicated literal ignore rules for preview and file writing.
+/// 中文：为预览和文件写入生成一致、去重的字面量忽略规则。
+List<String> gitIgnorePatternsForPaths(
+  Iterable<String> paths,
+  GitIgnorePatternKind patternKind,
+) {
+  final patterns = <String>{};
+  for (final path in paths) {
+    if (path.isEmpty || path.contains('\n') || path.contains('\r')) {
+      throw ArgumentError.value(
+        path,
+        'paths',
+        'Git ignore paths must be non-empty single lines.',
+      );
+    }
+    switch (patternKind) {
+      case GitIgnorePatternKind.exactPath:
+        patterns.add('/${_escapeGitIgnoreLiteral(path)}');
+      case GitIgnorePatternKind.fileExtension:
+        final extension = path_utils.extension(path);
+        if (extension.isEmpty) {
+          throw ArgumentError.value(
+            path,
+            'paths',
+            'Every path must have a file extension.',
+          );
+        }
+        patterns.add('*${_escapeGitIgnoreLiteral(extension)}');
+    }
+  }
+  return List.unmodifiable(patterns);
+}
+
+String _escapeGitIgnoreLiteral(String value) {
+  final runes = value.runes.toList(growable: false);
+  var trailingSpaceStart = runes.length;
+  while (trailingSpaceStart > 0 && runes[trailingSpaceStart - 1] == 0x20) {
+    trailingSpaceStart--;
+  }
+  final escaped = StringBuffer();
+  for (var index = 0; index < runes.length; index++) {
+    final rune = runes[index];
+    final character = String.fromCharCode(rune);
+    if (character == r'\' ||
+        character == '*' ||
+        character == '?' ||
+        character == '[' ||
+        (rune == 0x20 && index >= trailingSpaceStart)) {
+      escaped.write(r'\');
+    }
+    escaped.write(character);
+  }
+  return escaped.toString();
+}
+
 /// Performs the explicitly confirmed Git mutations used by the desktop UI.
 ///
 /// Every method accepts literal inputs and never invokes a shell. Destructive
@@ -21,10 +76,115 @@ final class GitRepositoryWriter {
   GitRepositoryWriter(
     this.runner, {
     @visibleForTesting this.beforeConflictResultPublicationForTesting,
+    @visibleForTesting this.beforeIgnoreRulesPublicationForTesting,
   });
 
   final GitRunner runner;
+
+  /// Test seam invoked after a conflict result is durable but before publish.
+  /// 中文：冲突结果已持久化、尚未发布时调用的测试钩子。
   final FutureOr<void> Function()? beforeConflictResultPublicationForTesting;
+
+  /// Test seam invoked after ignore rules are durable but before publish.
+  /// 中文：忽略规则已持久化、尚未发布时调用的测试钩子。
+  final FutureOr<void> Function()? beforeIgnoreRulesPublicationForTesting;
+
+  /// Appends generated rules to `.gitignore` or `.git/info/exclude` without
+  /// replacing existing content. Existing identical rules are not duplicated.
+  ///
+  /// 中文：向 `.gitignore` 或 `.git/info/exclude` 追加生成的规则，不覆盖已有内容，
+  /// 且不会重复写入完全相同的规则。
+  Future<GitIgnoreWriteResult> addIgnoreRules(
+    GitRepository repository,
+    List<GitPath> paths, {
+    required GitIgnorePatternKind patternKind,
+    required GitIgnoreDestination destination,
+  }) async {
+    final workTreeRoot = repository.workTreeRoot;
+    if (workTreeRoot == null) {
+      throw const GitException('A working tree is required.');
+    }
+    if (paths.isEmpty) {
+      throw const GitException('At least one path is required.');
+    }
+    final displayPaths = [for (final path in paths) _requireUtf8Path(path)];
+    final patterns = gitIgnorePatternsForPaths(displayPaths, patternKind);
+
+    final targetPath = switch (destination) {
+      GitIgnoreDestination.repositoryGitignore => path_utils.join(
+        workTreeRoot,
+        '.gitignore',
+      ),
+      GitIgnoreDestination.localExclude => path_utils.join(
+        repository.commonDirectory,
+        'info',
+        'exclude',
+      ),
+    };
+    final target = File(targetPath);
+    final targetType = await FileSystemEntity.type(
+      targetPath,
+      followLinks: false,
+    );
+    if (targetType != FileSystemEntityType.notFound &&
+        targetType != FileSystemEntityType.file) {
+      throw const GitException('The ignore destination is not a regular file.');
+    }
+    final parent = target.parent;
+    final parentType = await FileSystemEntity.type(
+      parent.path,
+      followLinks: false,
+    );
+    if (parentType == FileSystemEntityType.notFound &&
+        destination == GitIgnoreDestination.localExclude) {
+      await parent.create(recursive: true);
+    } else if (parentType != FileSystemEntityType.directory) {
+      throw const GitException('The ignore destination directory is unsafe.');
+    }
+
+    final existingBytes = targetType == FileSystemEntityType.file
+        ? await target.readAsBytes()
+        : const <int>[];
+    final existingLines = <String>{
+      for (final line
+          in utf8
+              .decode(existingBytes, allowMalformed: true)
+              .split(RegExp(r'\r?\n')))
+        line,
+    };
+    final addedPatterns = patterns
+        .where((pattern) => !existingLines.contains(pattern))
+        .toList(growable: false);
+    if (addedPatterns.isEmpty) {
+      return GitIgnoreWriteResult(
+        targetPath: targetPath,
+        patterns: patterns,
+        addedPatterns: const [],
+      );
+    }
+
+    final updatedBytes = <int>[
+      ...existingBytes,
+      if (existingBytes.isNotEmpty && existingBytes.last != 0x0a) 0x0a,
+      ...utf8.encode('${addedPatterns.join('\n')}\n'),
+    ];
+    if (Platform.isMacOS) {
+      await _MacOsAtomicFileWriter.replace(
+        directoryPath: parent.path,
+        fileName: path_utils.basename(targetPath),
+        bytes: updatedBytes,
+        expectedExistingBytes: existingBytes,
+        beforePublicationForTesting: beforeIgnoreRulesPublicationForTesting,
+      );
+    } else {
+      await target.writeAsBytes(updatedBytes, flush: true);
+    }
+    return GitIgnoreWriteResult(
+      targetPath: targetPath,
+      patterns: patterns,
+      addedPatterns: List.unmodifiable(addedPatterns),
+    );
+  }
 
   /// 中文：暂存指定路径。
   /// English: Stages the specified path.
@@ -2725,6 +2885,11 @@ final class _MacOsAtomicFileWriter {
         ffi.IntPtr Function(ffi.Int32, ffi.Pointer<ffi.Uint8>, ffi.IntPtr),
         int Function(int, ffi.Pointer<ffi.Uint8>, int)
       >('write');
+  static final _read = _libc
+      .lookupFunction<
+        ffi.IntPtr Function(ffi.Int32, ffi.Pointer<ffi.Uint8>, ffi.IntPtr),
+        int Function(int, ffi.Pointer<ffi.Uint8>, int)
+      >('read');
   static final _fsync = _libc
       .lookupFunction<ffi.Int32 Function(ffi.Int32), int Function(int)>(
         'fsync',
@@ -2808,10 +2973,11 @@ final class _MacOsAtomicFileWriter {
     required String directoryPath,
     required String fileName,
     required List<int> bytes,
+    List<int>? expectedExistingBytes,
     FutureOr<void> Function()? beforePublicationForTesting,
   }) async {
     if (!Platform.isMacOS || fileName.isEmpty || fileName.contains('/')) {
-      throw const GitException('The conflict destination is invalid.');
+      throw const GitException('The file destination is invalid.');
     }
     ffi.Pointer<ffi.Uint8>? directoryPointer;
     ffi.Pointer<ffi.Uint8>? temporaryPointer;
@@ -2831,7 +2997,7 @@ final class _MacOsAtomicFileWriter {
       directoryPointer = null;
       if (directoryFd < 0) {
         throw const GitException(
-          'The conflict destination directory could not be secured.',
+          'The file destination directory could not be secured.',
         );
       }
 
@@ -2847,15 +3013,13 @@ final class _MacOsAtomicFileWriter {
         targetOriginallyExisted = true;
         final status = _malloc(256);
         if (status.address == 0) {
-          throw const GitException(
-            'Memory for conflict metadata is unavailable.',
-          );
+          throw const GitException('Memory for file metadata is unavailable.');
         }
         int targetMode;
         try {
           if (_fstat(targetFd, status) != 0) {
             throw const GitException(
-              'The conflict destination metadata could not be read.',
+              'The file destination metadata could not be read.',
             );
           }
           targetMode = (status.cast<ffi.Uint8>() + 4).cast<ffi.Uint16>().value;
@@ -2864,13 +3028,13 @@ final class _MacOsAtomicFileWriter {
         }
         if (targetMode & 0xf000 != 0x8000) {
           throw const GitException(
-            'The conflicted path is not a regular file.',
+            'The destination path is not a regular file.',
           );
         }
         existingMode = targetMode & 0x1ff;
       } else if (_errnoLocation().value != 2) {
         throw const GitException(
-          'The conflict destination could not be inspected safely.',
+          'The file destination could not be inspected safely.',
         );
       }
 
@@ -2882,17 +3046,17 @@ final class _MacOsAtomicFileWriter {
       );
       if (temporaryFd < 0) {
         throw const GitException(
-          'A private conflict-result file could not be created.',
+          'A private temporary file could not be created.',
         );
       }
       if (existingMode != null && _fchmod(temporaryFd, existingMode) != 0) {
         throw const GitException(
-          'The conflict-result permissions could not be secured.',
+          'The temporary-file permissions could not be secured.',
         );
       }
       _writeAll(temporaryFd, bytes);
       if (_fsync(temporaryFd) != 0) {
-        throw const GitException('The conflict result could not be flushed.');
+        throw const GitException('The file contents could not be flushed.');
       }
       _close(temporaryFd);
       temporaryFd = -1;
@@ -2906,13 +3070,19 @@ final class _MacOsAtomicFileWriter {
       if (targetOriginallyExisted) {
         if (currentFd < 0) {
           throw const GitException(
-            'The conflict destination changed while it was being saved.',
+            'The file destination changed while it was being saved.',
           );
         }
         try {
           if (!_sameFile(targetFd, currentFd)) {
             throw const GitException(
-              'The conflict destination changed while it was being saved.',
+              'The file destination changed while it was being saved.',
+            );
+          }
+          if (expectedExistingBytes != null &&
+              !_sameBytes(_readAll(currentFd), expectedExistingBytes)) {
+            throw const GitException(
+              'The file contents changed while they were being saved.',
             );
           }
         } finally {
@@ -2922,12 +3092,12 @@ final class _MacOsAtomicFileWriter {
         if (currentFd >= 0) {
           _close(currentFd);
           throw const GitException(
-            'The conflict destination changed while it was being saved.',
+            'The file destination changed while it was being saved.',
           );
         }
         if (_errnoLocation().value != 2) {
           throw const GitException(
-            'The conflict destination could not be revalidated safely.',
+            'The file destination could not be revalidated safely.',
           );
         }
       }
@@ -2939,7 +3109,7 @@ final class _MacOsAtomicFileWriter {
           ) !=
           0) {
         throw const GitException(
-          'The conflict result could not be published safely.',
+          'The file contents could not be published safely.',
         );
       }
       published = true;
@@ -2983,6 +3153,38 @@ final class _MacOsAtomicFileWriter {
     }
   }
 
+  /// Reads an already secured descriptor from its current offset through EOF.
+  /// 中文：从已安全打开的描述符当前位置读取到文件结尾。
+  static List<int> _readAll(int fileDescriptor) {
+    const chunkSize = 64 * 1024;
+    final pointer = _malloc(chunkSize).cast<ffi.Uint8>();
+    if (pointer.address == 0) {
+      throw const GitException('Memory for file verification is unavailable.');
+    }
+    final result = BytesBuilder(copy: false);
+    try {
+      while (true) {
+        final count = _read(fileDescriptor, pointer, chunkSize);
+        if (count < 0) {
+          throw const GitException('The file contents could not be verified.');
+        }
+        if (count == 0) break;
+        result.add(Uint8List.fromList(pointer.asTypedList(count)));
+      }
+      return result.takeBytes();
+    } finally {
+      _free(pointer.cast());
+    }
+  }
+
+  static bool _sameBytes(List<int> first, List<int> second) {
+    if (first.length != second.length) return false;
+    for (var index = 0; index < first.length; index++) {
+      if (first[index] != second[index]) return false;
+    }
+    return true;
+  }
+
   /// 中文：把全部字节写入已排他创建的文件描述符，短写或错误时立即拒绝发布。
   ///
   /// English: Writes every byte to an exclusively created descriptor and
@@ -2991,9 +3193,7 @@ final class _MacOsAtomicFileWriter {
     if (bytes.isEmpty) return;
     final pointer = _malloc(bytes.length).cast<ffi.Uint8>();
     if (pointer.address == 0) {
-      throw const GitException(
-        'Memory for the conflict result is unavailable.',
-      );
+      throw const GitException('Memory for the file contents is unavailable.');
     }
     try {
       pointer.asTypedList(bytes.length).setAll(0, bytes);
@@ -3005,7 +3205,7 @@ final class _MacOsAtomicFileWriter {
           bytes.length - offset,
         );
         if (written <= 0) {
-          throw const GitException('The conflict result could not be written.');
+          throw const GitException('The file contents could not be written.');
         }
         offset += written;
       }

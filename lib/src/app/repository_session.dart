@@ -2993,6 +2993,99 @@ final class RepositorySessionController
     }
   }
 
+  /// Adds ignore rules for the selected working-tree rows after re-reading
+  /// their current Git status. Tracked files remain tracked; this only edits
+  /// the chosen ignore file and refreshes the workspace.
+  ///
+  /// 中文：重新读取所选工作区条目的 Git 状态后追加忽略规则。已跟踪文件仍保持
+  /// 跟踪；该操作只编辑所选忽略文件并刷新工作区。
+  Future<GitIgnoreWriteResult?> ignoreChanges(
+    List<RepositoryChangeViewData> changes, {
+    required GitIgnorePatternKind patternKind,
+    required GitIgnoreDestination destination,
+  }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackGitTask<GitIgnoreWriteResult?>(
+        () => ignoreChanges(
+          changes,
+          patternKind: patternKind,
+          destination: destination,
+        ),
+      );
+    }
+    if (changes.isEmpty ||
+        state.phase != RepositorySessionPhase.ready ||
+        state.isWorkingTreeBusy) {
+      return null;
+    }
+
+    final previousSelection = state.selectedChange;
+    final previousRefId = state.selectedRefId;
+    await refresh();
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        state.phase != RepositorySessionPhase.ready) {
+      return null;
+    }
+
+    final paths = <GitPath>[];
+    for (final change in changes) {
+      final entry = status.displayEntries
+          .where((candidate) => candidate.path.display == change.path)
+          .firstOrNull;
+      final stillInSelectedSource = change.isStaged
+          ? entry?.hasStagedChange == true
+          : entry?.hasWorkTreeChange == true;
+      if (entry == null ||
+          !entry.path.isValidUtf8 ||
+          entry.isConflicted ||
+          !stillInSelectedSource ||
+          entry.path.display.contains('\n') ||
+          entry.path.display.contains('\r')) {
+        return null;
+      }
+      if (!paths.contains(entry.path)) paths.add(entry.path);
+    }
+    if (paths.isEmpty) return null;
+
+    final repositoryGeneration = _repositoryGeneration;
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isWorkingTreeBusy: true,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearMessage: true,
+    );
+    try {
+      final result = await _writer.addIgnoreRules(
+        repository,
+        paths,
+        patternKind: patternKind,
+        destination: destination,
+      );
+      await _finishWorkingTreeMutation(
+        repository: repository,
+        repositoryGeneration: repositoryGeneration,
+        previousSelection: previousSelection,
+        previousRefId: previousRefId,
+      );
+      return result;
+    } on Object catch (error, stackTrace) {
+      if (repositoryGeneration == _repositoryGeneration &&
+          state.repository?.id == repository.id) {
+        state = state.copyWith(
+          phase: RepositorySessionPhase.error,
+          isWorkingTreeBusy: false,
+          message: _friendlyError(error),
+          technicalDetails: _technicalDetails(error, stackTrace),
+        );
+      }
+      return null;
+    }
+  }
+
   /// Deletes selected staged or unstaged paths from the working tree.
   ///
   /// The Git index and commit history are left unchanged. Status is re-read

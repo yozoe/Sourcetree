@@ -142,6 +142,82 @@ void main() {
   );
 
   test(
+    'adds an ignore rule after revalidating the selected Git status row',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'tracked\n');
+      await repository.commit('Initial commit');
+      await repository.writeFile('output.log', 'generated\n');
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      controller.selectUncommittedChanges();
+      final overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      final output = overview.changes.singleWhere(
+        (change) => change.path == 'output.log',
+      );
+
+      final result = await controller.ignoreChanges(
+        [output],
+        patternKind: GitIgnorePatternKind.exactPath,
+        destination: GitIgnoreDestination.repositoryGitignore,
+      );
+
+      expect(result?.addedPatterns, ['/output.log']);
+      expect(
+        await File(
+          '${repository.workingDirectory.path}/.gitignore',
+        ).readAsString(),
+        '/output.log\n',
+      );
+      expect(
+        container
+            .read(repositorySessionProvider)
+            .status!
+            .entries
+            .any((entry) => entry.path.display == 'output.log'),
+        isFalse,
+      );
+    },
+  );
+
+  test(
+    'refuses an ignore request after its selected file disappears',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'tracked\n');
+      await repository.commit('Initial commit');
+      await repository.writeFile('stale.log', 'generated\n');
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      controller.selectUncommittedChanges();
+      final stale = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!.changes.singleWhere((change) => change.path == 'stale.log');
+      await File('${repository.workingDirectory.path}/stale.log').delete();
+
+      final result = await controller.ignoreChanges(
+        [stale],
+        patternKind: GitIgnorePatternKind.exactPath,
+        destination: GitIgnoreDestination.repositoryGitignore,
+      );
+
+      expect(result, isNull);
+      expect(
+        await File('${repository.workingDirectory.path}/.gitignore').exists(),
+        isFalse,
+      );
+    },
+  );
+
+  test(
     'automatically refreshes external work-tree changes without reloading history',
     () async {
       final repository = await GitTestRepository.create();
