@@ -720,7 +720,7 @@ void main() {
         '打开当前版本（待实现）',
         '打开已选定版本（待实现）',
         '在 Finder 中显示（待实现）',
-        '复制路径到剪贴板（待实现）',
+        '复制路径到剪贴板',
         '快速查看（待实现）',
         '外部差异比对（待实现）',
         '自定义操作（待实现）',
@@ -751,6 +751,20 @@ void main() {
 
       expect(selectedFile, commitFile);
       expect(selectedAction, RepositoryCommitFileContextAction.resetToCommit);
+
+      final copyGesture = await tester.startGesture(
+        tester.getCenter(find.text('main.dart')),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await copyGesture.up();
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('复制路径到剪贴板'));
+      await tester.pumpAndSettle();
+
+      expect(selectedFile, commitFile);
+      expect(selectedAction, RepositoryCommitFileContextAction.copyPath);
 
       final secondGesture = await tester.startGesture(
         tester.getCenter(find.text('main.dart')),
@@ -819,6 +833,7 @@ void main() {
     final pending = find.text('查看选中的修改日志…（待实现）');
     expect(pending, findsOneWidget);
     expect(find.text('审查选定的项目（待实现）'), findsOneWidget);
+    expect(find.text('复制路径到剪贴板（待实现）'), findsOneWidget);
     final reset = tester.widget<MenuItemButton>(
       find.widgetWithText(MenuItemButton, '重置到提交…（待实现）'),
     );

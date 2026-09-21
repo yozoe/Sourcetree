@@ -4827,9 +4827,47 @@ class _RepositoryWorkspaceScreenState
       unawaited(_resetSelectedCommitFileToCommit(file));
       return;
     }
+    if (action == RepositoryCommitFileContextAction.copyPath) {
+      unawaited(_copySelectedCommitFilePath(file));
+      return;
+    }
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text('“${file.path}”的该菜单功能待实现。')));
+  }
+
+  /// Copies the repository-relative path of the current historical-file
+  /// selection without reading or modifying the work tree.
+  ///
+  /// 中文：复制当前历史文件选择的仓库相对路径，不读取或修改工作区。执行前
+  /// 再次核对提交与路径选择，避免菜单打开后切换选择时复制过期内容。
+  Future<void> _copySelectedCommitFilePath(CommitFileViewData file) async {
+    final session = ref.read(repositorySessionProvider);
+    final selected = session.selectedCommitFile;
+    if (!file.isPathValidUtf8 ||
+        selected == null ||
+        selected.objectId != session.selectedCommitId ||
+        selected.file.path.display != file.path ||
+        !session.historyCommits.any(
+          (commit) => commit.objectId == selected.objectId,
+        )) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('提交或文件选择已变化，请重试。')));
+      return;
+    }
+    try {
+      await Clipboard.setData(ClipboardData(text: file.path));
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已复制仓库相对路径。')));
+    } on Object {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('无法复制路径到剪贴板。')));
+    }
   }
 
   /// Confirms restoring a historical file version into both the index and

@@ -4176,9 +4176,10 @@ class _CommitFileTile extends StatelessWidget {
           invoke,
         ),
         _commitFileContextMenuItem(
-          '复制路径到剪贴板（待实现）',
+          file.isPathValidUtf8 ? '复制路径到剪贴板' : '复制路径到剪贴板（待实现）',
           RepositoryCommitFileContextAction.copyPath,
           invoke,
+          enabled: file.isPathValidUtf8,
         ),
         _commitFileContextMenuItem(
           '快速查看（待实现）',
