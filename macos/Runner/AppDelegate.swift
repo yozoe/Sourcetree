@@ -741,6 +741,18 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// Flutter 显示影响确认并重新读取当前文件状态。
   private(set) var canRemoveSelectedFromMenu = false
 
+  /// Whether Flutter permits choosing a loaded commit for repository reset.
+  /// 中文：Flutter 是否允许为仓库级重置选择一个已加载提交。
+  private(set) var canResetRepositoryFromMenu = false
+
+  /// Whether every visible work-tree selection can be restored to HEAD.
+  /// 中文：当前全部可见工作区选择是否都可恢复到 HEAD。
+  private(set) var canResetSelectedFromMenu = false
+
+  /// Whether the visible history selection is a valid reset target.
+  /// 中文：当前可见历史提交选择是否是有效的重置目标。
+  private(set) var canResetToSelectedCommitFromMenu = false
+
   /// Flutter's last validated Branch availability for this Engine.
   ///
   /// 中文：此 Engine 最近一次由 Flutter 校验的“分支”可用状态；实际操作仍由
@@ -1071,6 +1083,12 @@ final class WorkspaceFlutterWindowController: NSWindowController,
     canPushFromMenu = arguments?["canPush"] as? Bool ?? false
     canRemoveSelectedFromMenu =
       arguments?["canRemoveSelected"] as? Bool ?? false
+    canResetRepositoryFromMenu =
+      arguments?["canResetRepository"] as? Bool ?? false
+    canResetSelectedFromMenu =
+      arguments?["canResetSelected"] as? Bool ?? false
+    canResetToSelectedCommitFromMenu =
+      arguments?["canResetToSelectedCommit"] as? Bool ?? false
     canCreateBranchFromMenu = arguments?["canCreateBranch"] as? Bool ?? false
     canStashFromMenu = arguments?["canStash"] as? Bool ?? false
     canTagFromMenu = arguments?["canTag"] as? Bool ?? false
@@ -1753,6 +1771,28 @@ final class WindowCoordinator {
       hasValidatedSelection:
         currentWorkspaceController?.canRemoveSelectedFromMenu == true
     )
+  }
+
+  /// Whether the key workspace can open the repository reset target picker.
+  /// 中文：当前前台工作区是否可打开仓库重置目标选择器。
+  var canResetRepositoryFromMenu: Bool {
+    currentWorkspaceController?.canResetRepositoryFromMenu == true
+  }
+
+  /// Whether the key workspace can reset all selected paths to HEAD.
+  /// 中文：当前前台工作区是否可将全部所选路径恢复到 HEAD。
+  var canResetSelectedFromMenu: Bool {
+    gitDesktopCanPerformSelectedChangeMenuAction(
+      hasKeyWorkspace: currentWorkspaceController != nil,
+      hasValidatedSelection:
+        currentWorkspaceController?.canResetSelectedFromMenu == true
+    )
+  }
+
+  /// Whether the key workspace can reset to its selected history commit.
+  /// 中文：当前前台工作区是否可重置到当前选择的历史提交。
+  var canResetToSelectedCommitFromMenu: Bool {
+    currentWorkspaceController?.canResetToSelectedCommitFromMenu == true
   }
 
   /// Resolves a key window only when it is still owned by this coordinator.
@@ -2928,6 +2968,36 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     windowCoordinator.performWorkspaceAction("commitSelected")
   }
 
+  /// Opens the repository-level reset target and mode flow.
+  /// 中文：打开仓库级重置的目标与模式选择流程。
+  @IBAction func resetRepositoryFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canResetRepositoryFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("resetRepository")
+  }
+
+  /// Restores the current work-tree selection to HEAD after confirmation.
+  /// 中文：确认后将当前工作区选择恢复到 HEAD。
+  @IBAction func resetSelectedFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canResetSelectedFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("resetSelected")
+  }
+
+  /// Resets the current branch to the visible selected history commit.
+  /// 中文：将当前分支重置到可见的已选历史提交。
+  @IBAction func resetToSelectedCommitFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canResetToSelectedCommitFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("resetToSelectedCommit")
+  }
+
   /// 中文：在当前 key workspace 打开已有 Git 能力支持的检出目标选择面板。
   /// English: Opens the checkout target picker in the key workspace, backed
   /// by the existing Git application-layer operations.
@@ -3392,6 +3462,15 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     }
     if menuItem.action == #selector(removeSelectedFromMenu(_:)) {
       return windowCoordinator.canRemoveSelectedFromMenu
+    }
+    if menuItem.action == #selector(resetRepositoryFromMenu(_:)) {
+      return windowCoordinator.canResetRepositoryFromMenu
+    }
+    if menuItem.action == #selector(resetSelectedFromMenu(_:)) {
+      return windowCoordinator.canResetSelectedFromMenu
+    }
+    if menuItem.action == #selector(resetToSelectedCommitFromMenu(_:)) {
+      return windowCoordinator.canResetToSelectedCommitFromMenu
     }
     if menuItem.action == #selector(continueRepositoryOperationFromMenu(_:)) {
       menuItem.title = windowCoordinator.activeRepositoryOperationFromMenu.map {

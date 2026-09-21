@@ -153,6 +153,33 @@ void main() {
           ),
         ),
       );
+      const filteredHistory = RepositoryOverviewViewData.ready(
+        RepositoryViewData(
+          name: 'example',
+          path: '/tmp/example',
+          currentBranch: 'main',
+          headOid: 'head123',
+          searchQuery: 'no visible matches',
+        ),
+      );
+      const detachedHistory = RepositoryOverviewViewData.ready(
+        RepositoryViewData(
+          name: 'example',
+          path: '/tmp/example',
+          currentBranch: 'HEAD',
+          headOid: 'head123',
+          isDetachedHead: true,
+          commits: [
+            CommitViewData(
+              oid: 'head123',
+              shortOid: 'head123',
+              subject: 'HEAD',
+              author: 'Author',
+              relativeDate: 'now',
+            ),
+          ],
+        ),
+      );
       const sideBranchRebaseSelection = RepositoryOverviewViewData.ready(
         RepositoryViewData(
           name: 'example',
@@ -295,6 +322,34 @@ void main() {
           rebaseSelection,
         ).canInteractiveRebase,
         isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          rebaseSelection,
+        ).canResetRepository,
+        isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          rebaseSelection,
+        ).canResetToSelectedCommit,
+        isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          filteredHistory,
+        ).canResetRepository,
+        isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          detachedHistory,
+        ).canResetRepository,
+        isFalse,
       );
       expect(
         nativeWorkspaceMenuAvailability(
@@ -518,6 +573,20 @@ void main() {
         nativeWorkspaceMenuAvailability(
           session,
           unstagedSelection,
+        ).canResetSelected,
+        isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          untrackedSelection,
+        ).canResetSelected,
+        isFalse,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          unstagedSelection,
         ).canUnstageSelected,
         isFalse,
       );
@@ -618,6 +687,9 @@ void main() {
         canPush: false,
         canReviewSelected: false,
         canRemoveSelected: false,
+        canResetRepository: false,
+        canResetSelected: false,
+        canResetToSelectedCommit: false,
         canStageSelected: false,
         canStash: false,
         canStopTracking: false,
@@ -1001,6 +1073,7 @@ void main() {
     expect(availability.canStageSelected, isFalse);
     expect(availability.canUnstageSelected, isFalse);
     expect(availability.canRemoveSelected, isFalse);
+    expect(availability.canResetSelected, isFalse);
     expect(availability.canStopTracking, isTrue);
     expect(targets.selectedFilePaths, ['/tmp/example/README.md']);
   });

@@ -5370,19 +5370,22 @@ final class RepositorySessionController
   Future<bool> resetCurrentBranchToCommit(
     String objectId, {
     required GitResetMode mode,
-  }) => _trackBooleanGitTask(
-    () => _runHistoryMutation(
-      objectId: objectId,
-      requireCleanWorkTree: false,
-      successMessage: '已重置当前分支。',
-      run: (repository, cancellation) => _writer.resetToCommit(
-        repository,
+  }) {
+    if (state.status?.branch.isDetached != false) return Future.value(false);
+    return _trackBooleanGitTask(
+      () => _runHistoryMutation(
         objectId: objectId,
-        mode: mode,
-        cancellationToken: cancellation,
+        requireCleanWorkTree: false,
+        successMessage: '已重置当前分支。',
+        run: (repository, cancellation) => _writer.resetToCommit(
+          repository,
+          objectId: objectId,
+          mode: mode,
+          cancellationToken: cancellation,
+        ),
       ),
-    ),
-  );
+    );
+  }
 
   /// Creates an inverse commit for one loaded historical commit. Conflicts
   /// stay in the repository for Git's normal recovery flow.

@@ -99,6 +99,9 @@ bool _isLoadedAncestorOfHead({
   bool canPush,
   bool canReviewSelected,
   bool canRemoveSelected,
+  bool canResetRepository,
+  bool canResetSelected,
+  bool canResetToSelectedCommit,
   bool canStageSelected,
   bool canStash,
   bool canStopTracking,
@@ -218,6 +221,17 @@ nativeWorkspaceMenuAvailability(
                 menuSelection.every(
                   (change) => change.isActionEnabled && change.isPathValidUtf8,
                 ));
+  final canResetRepository =
+      canApplyPatch &&
+      !repository.isDetachedHead &&
+      repository.headOid != null &&
+      session.commits.isNotEmpty;
+  final canResetToSelectedCommit =
+      canResetRepository &&
+      repository.selectedCommit != null &&
+      repository.commits.any(
+        (commit) => commit.oid == repository.selectedCommit!.oid,
+      );
   return (
     canAddRemote: canApplyPatch,
     canApplyPatch: canApplyPatch,
@@ -296,6 +310,13 @@ nativeWorkspaceMenuAvailability(
         menuSelection.every(
           (change) => change.isActionEnabled && change.isPathValidUtf8,
         ),
+    canResetRepository: canResetRepository,
+    canResetSelected:
+        canApplyPatch &&
+        repository.selectedCommit == null &&
+        menuSelection.isNotEmpty &&
+        menuSelection.every((change) => change.canResetToHead),
+    canResetToSelectedCommit: canResetToSelectedCommit,
     canStageSelected:
         canApplyPatch &&
         menuSelection.any(
@@ -765,6 +786,9 @@ class _RepositoryWorkspaceScreenState
   bool? _lastNativePushAvailability;
   bool? _lastNativeReviewSelectedAvailability;
   bool? _lastNativeRemoveSelectedAvailability;
+  bool? _lastNativeResetRepositoryAvailability;
+  bool? _lastNativeResetSelectedAvailability;
+  bool? _lastNativeResetToSelectedCommitAvailability;
   bool? _lastNativeStageSelectedAvailability;
   bool? _lastNativeCreateBranchAvailability;
   bool? _lastNativeStashAvailability;
@@ -908,6 +932,42 @@ class _RepositoryWorkspaceScreenState
         await _showMoveSelectedDialog();
       case 'reviewSelected':
         await _showNativeSelectedReview();
+      case 'resetRepository':
+        await _showRepositoryResetDialog();
+      case 'resetSelected':
+        final session = ref.read(repositorySessionProvider);
+        final overview = mapRepositoryOverview(session);
+        final selected = _nativeSelectedChanges(overview);
+        final availability = nativeWorkspaceMenuAvailability(
+          session,
+          overview,
+          selectedChanges: selected,
+        );
+        if (availability.canResetSelected && selected.isNotEmpty) {
+          await _resetChangesToHead(selected);
+          return;
+        }
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('请选择可恢复到 HEAD 的已跟踪修改或删除文件。')),
+        );
+      case 'resetToSelectedCommit':
+        final session = ref.read(repositorySessionProvider);
+        final overview = mapRepositoryOverview(session);
+        final availability = nativeWorkspaceMenuAvailability(
+          session,
+          overview,
+          selectedChanges: _nativeSelectedChanges(overview),
+        );
+        final selectedCommit = _selectedCommitForNativeAction(overview);
+        if (availability.canResetToSelectedCommit && selectedCommit != null) {
+          await _confirmResetCurrentBranch(selectedCommit);
+          return;
+        }
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('请选择一个已加载的历史提交。')));
       case 'checkout':
         await _showCheckoutDialog();
       case 'merge':
@@ -1107,6 +1167,9 @@ class _RepositoryWorkspaceScreenState
     final canPush = availability.canPush;
     final canReviewSelected = availability.canReviewSelected;
     final canRemoveSelected = availability.canRemoveSelected;
+    final canResetRepository = availability.canResetRepository;
+    final canResetSelected = availability.canResetSelected;
+    final canResetToSelectedCommit = availability.canResetToSelectedCommit;
     final canStageSelected = availability.canStageSelected;
     final canCreateBranch = availability.canCreateBranch;
     final canStash = availability.canStash;
@@ -1155,6 +1218,10 @@ class _RepositoryWorkspaceScreenState
         _lastNativePushAvailability == canPush &&
         _lastNativeReviewSelectedAvailability == canReviewSelected &&
         _lastNativeRemoveSelectedAvailability == canRemoveSelected &&
+        _lastNativeResetRepositoryAvailability == canResetRepository &&
+        _lastNativeResetSelectedAvailability == canResetSelected &&
+        _lastNativeResetToSelectedCommitAvailability ==
+            canResetToSelectedCommit &&
         _lastNativeStageSelectedAvailability == canStageSelected &&
         _lastNativeCreateBranchAvailability == canCreateBranch &&
         _lastNativeStashAvailability == canStash &&
@@ -1190,6 +1257,9 @@ class _RepositoryWorkspaceScreenState
     _lastNativePushAvailability = canPush;
     _lastNativeReviewSelectedAvailability = canReviewSelected;
     _lastNativeRemoveSelectedAvailability = canRemoveSelected;
+    _lastNativeResetRepositoryAvailability = canResetRepository;
+    _lastNativeResetSelectedAvailability = canResetSelected;
+    _lastNativeResetToSelectedCommitAvailability = canResetToSelectedCommit;
     _lastNativeStageSelectedAvailability = canStageSelected;
     _lastNativeCreateBranchAvailability = canCreateBranch;
     _lastNativeStashAvailability = canStash;
@@ -1224,6 +1294,9 @@ class _RepositoryWorkspaceScreenState
         canPush: canPush,
         canReviewSelected: canReviewSelected,
         canRemoveSelected: canRemoveSelected,
+        canResetRepository: canResetRepository,
+        canResetSelected: canResetSelected,
+        canResetToSelectedCommit: canResetToSelectedCommit,
         canStageSelected: canStageSelected,
         canCreateBranch: canCreateBranch,
         canStash: canStash,
@@ -2836,6 +2909,59 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
+  /// Lets the user choose one loaded commit before opening the shared reset
+  /// mode and impact confirmation flow.
+  ///
+  /// 中文：让用户先选择一个已加载提交，再进入共用的重置模式与影响确认流程。
+  Future<void> _showRepositoryResetDialog() async {
+    final session = ref.read(repositorySessionProvider);
+    final overview = mapRepositoryOverview(session);
+    final repository = overview.repository;
+    final availability = nativeWorkspaceMenuAvailability(
+      session,
+      overview,
+      selectedChanges: _nativeSelectedChanges(overview),
+    );
+    if (!availability.canResetRepository || repository == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前仓库没有可安全重置的提交。')));
+      return;
+    }
+    final targetId = await showDialog<String>(
+      context: context,
+      builder: (context) =>
+          _CommitBasePicker(commits: session.commits, title: '选择重置目标'),
+    );
+    if (targetId == null || !mounted) return;
+    GitCommit? targetCommit;
+    for (final commit in session.commits) {
+      if (commit.objectId == targetId) {
+        targetCommit = commit;
+        break;
+      }
+    }
+    if (targetCommit == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('目标提交已不在当前历史中，请刷新后重试。')));
+      return;
+    }
+    await _confirmResetCurrentBranch(
+      CommitViewData(
+        oid: targetCommit.objectId,
+        shortOid: targetCommit.objectId.substring(
+          0,
+          math.min(8, targetCommit.objectId.length),
+        ),
+        subject: targetCommit.subject,
+        author: targetCommit.author.name,
+        relativeDate: '',
+        parents: targetCommit.parentIds,
+      ),
+    );
+  }
+
   /// 中文：让用户选择重置模式，并在 hard 重置前明确说明可能丢失的改动。
   /// English: Lets the user choose a reset mode and explains data loss before
   /// a hard reset can be confirmed.
@@ -2843,18 +2969,51 @@ class _RepositoryWorkspaceScreenState
     final session = ref.read(repositorySessionProvider);
     final currentBranch = session.status?.branch.head;
     if (currentBranch == null) return;
+    final discardedTrackedPaths = _trackedResetDiscardPaths(session);
     final result = await showDialog<GitResetMode>(
       context: context,
       builder: (context) => _ResetCommitDialog(
         branchName: currentBranch,
         commit: commit,
-        hasWorkingChanges: !(session.status?.isClean ?? true),
+        discardedTrackedPaths: discardedTrackedPaths,
       ),
     );
     if (result == null || !mounted) return;
-    final completed = await ref
-        .read(repositorySessionProvider.notifier)
-        .resetCurrentBranchToCommit(commit.oid, mode: result);
+    final controller = ref.read(repositorySessionProvider.notifier);
+    await controller.refresh();
+    if (!mounted) return;
+    final refreshedSession = ref.read(repositorySessionProvider);
+    final refreshedOverview = mapRepositoryOverview(refreshedSession);
+    final refreshedAvailability = nativeWorkspaceMenuAvailability(
+      refreshedSession,
+      refreshedOverview,
+      selectedChanges: _nativeSelectedChanges(refreshedOverview),
+    );
+    final targetStillLoaded = refreshedSession.commits.any(
+      (candidate) => candidate.objectId == commit.oid,
+    );
+    if (!refreshedAvailability.canResetRepository ||
+        refreshedSession.status?.branch.head != currentBranch ||
+        !targetStillLoaded) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('仓库状态或目标提交已变化，请重新打开重置流程。')));
+      return;
+    }
+    final refreshedDiscardedPaths = _trackedResetDiscardPaths(refreshedSession);
+    final discardedPathSet = discardedTrackedPaths.toSet();
+    if (result == GitResetMode.hard &&
+        (discardedPathSet.length != refreshedDiscardedPaths.length ||
+            !discardedPathSet.containsAll(refreshedDiscardedPaths))) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('将丢弃的文件已变化，请重新检查列表并确认。')));
+      return;
+    }
+    final completed = await controller.resetCurrentBranchToCommit(
+      commit.oid,
+      mode: result,
+    );
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
@@ -2867,6 +3026,17 @@ class _RepositoryWorkspaceScreenState
       ),
     );
   }
+
+  /// Returns the unique tracked paths a hard reset would discard.
+  ///
+  /// 中文：返回 hard reset 会丢弃未提交改动的去重已跟踪路径列表。
+  List<String> _trackedResetDiscardPaths(RepositorySessionState session) =>
+      (<String>{
+        for (final change
+            in mapRepositoryOverview(session).repository?.changes ??
+                const <RepositoryChangeViewData>[])
+          if (change.kind != RepositoryChangeKind.untracked) change.path,
+      }.toList()..sort());
 
   /// 中文：确认后创建所选提交的反向提交，不移动已有分支历史。
   /// English: Confirms creation of an inverse commit without moving existing
@@ -5915,12 +6085,12 @@ final class _ResetCommitDialog extends StatefulWidget {
   const _ResetCommitDialog({
     required this.branchName,
     required this.commit,
-    required this.hasWorkingChanges,
+    required this.discardedTrackedPaths,
   });
 
   final String branchName;
   final CommitViewData commit;
-  final bool hasWorkingChanges;
+  final List<String> discardedTrackedPaths;
 
   @override
   State<_ResetCommitDialog> createState() => _ResetCommitDialogState();
@@ -5936,55 +6106,67 @@ final class _ResetCommitDialogState extends State<_ResetCommitDialog> {
     return AlertDialog(
       title: const Text('将当前分支重置到此次提交'),
       content: ConstrainedBox(
-        constraints: const BoxConstraints(maxWidth: 460),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text('将 ${widget.branchName} 重置到 ${widget.commit.shortOid}。'),
-            const SizedBox(height: 12),
-            RadioGroup<GitResetMode>(
-              groupValue: _mode,
-              onChanged: (value) => setState(() => _mode = value!),
-              child: Column(
-                children: const [
-                  RadioListTile<GitResetMode>(
-                    value: GitResetMode.soft,
-                    title: Text('软重置'),
-                    subtitle: Text('保留暂存区和工作区改动。'),
-                    contentPadding: EdgeInsets.zero,
-                  ),
-                  RadioListTile<GitResetMode>(
-                    value: GitResetMode.mixed,
-                    title: Text('混合重置'),
-                    subtitle: Text('保留工作区改动，但取消暂存。'),
-                    contentPadding: EdgeInsets.zero,
-                  ),
-                  RadioListTile<GitResetMode>(
-                    value: GitResetMode.hard,
-                    title: Text('硬重置'),
-                    subtitle: Text('丢弃已跟踪文件和暂存区的未提交改动。'),
-                    contentPadding: EdgeInsets.zero,
-                  ),
-                ],
-              ),
-            ),
-            if (isHard) ...[
-              const SizedBox(height: 6),
-              CheckboxListTile(
-                value: _hardResetAcknowledged,
-                onChanged: (value) =>
-                    setState(() => _hardResetAcknowledged = value ?? false),
-                title: Text(
-                  widget.hasWorkingChanges
-                      ? '我知道这会永久丢弃当前已跟踪的未提交改动'
-                      : '我知道硬重置会永久丢弃已跟踪的未提交改动',
+        constraints: const BoxConstraints(maxWidth: 460, maxHeight: 560),
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('将 ${widget.branchName} 重置到 ${widget.commit.shortOid}。'),
+              const SizedBox(height: 12),
+              RadioGroup<GitResetMode>(
+                groupValue: _mode,
+                onChanged: (value) => setState(() => _mode = value!),
+                child: Column(
+                  children: const [
+                    RadioListTile<GitResetMode>(
+                      value: GitResetMode.soft,
+                      title: Text('软重置'),
+                      subtitle: Text('保留暂存区和工作区改动。'),
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                    RadioListTile<GitResetMode>(
+                      value: GitResetMode.mixed,
+                      title: Text('混合重置'),
+                      subtitle: Text('保留工作区改动，但取消暂存。'),
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                    RadioListTile<GitResetMode>(
+                      value: GitResetMode.hard,
+                      title: Text('硬重置'),
+                      subtitle: Text('丢弃已跟踪文件和暂存区的未提交改动。'),
+                      contentPadding: EdgeInsets.zero,
+                    ),
+                  ],
                 ),
-                controlAffinity: ListTileControlAffinity.leading,
-                contentPadding: EdgeInsets.zero,
               ),
+              if (isHard) ...[
+                const SizedBox(height: 6),
+                Text(
+                  widget.discardedTrackedPaths.isEmpty
+                      ? '当前没有已跟踪的未提交改动。'
+                      : '以下已跟踪路径的未提交改动将永久丢失：\n'
+                            '${widget.discardedTrackedPaths.join('\n')}',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: Theme.of(context).colorScheme.error,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                CheckboxListTile(
+                  value: _hardResetAcknowledged,
+                  onChanged: (value) =>
+                      setState(() => _hardResetAcknowledged = value ?? false),
+                  title: Text(
+                    widget.discardedTrackedPaths.isNotEmpty
+                        ? '我知道这会永久丢弃当前已跟踪的未提交改动'
+                        : '我知道硬重置会永久丢弃已跟踪的未提交改动',
+                  ),
+                  controlAffinity: ListTileControlAffinity.leading,
+                  contentPadding: EdgeInsets.zero,
+                ),
+              ],
             ],
-          ],
+          ),
         ),
       ),
       actions: [
@@ -8660,14 +8842,15 @@ class _TagDialogState extends State<_TagDialog> {
 }
 
 class _CommitBasePicker extends StatelessWidget {
-  const _CommitBasePicker({required this.commits});
+  const _CommitBasePicker({required this.commits, this.title = '选择提交基点'});
 
   final List<GitCommit> commits;
+  final String title;
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('选择提交基点'),
+      title: Text(title),
       content: SizedBox(
         width: 520,
         height: 380,

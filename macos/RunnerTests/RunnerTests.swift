@@ -806,6 +806,9 @@ class RunnerTests: XCTestCase {
     first.applyWorkspaceMenuState([
       "canReviewSelected": true,
       "canPush": true,
+      "canResetRepository": true,
+      "canResetSelected": true,
+      "canResetToSelectedCommit": true,
       "repositoryRootPath": "/tmp/menu-first",
       "selectedFilePaths": ["/tmp/menu-first/README.md"],
       "hasFileSelection": true,
@@ -813,6 +816,9 @@ class RunnerTests: XCTestCase {
     second.applyWorkspaceMenuState([
       "canReviewSelected": false,
       "canPush": false,
+      "canResetRepository": false,
+      "canResetSelected": false,
+      "canResetToSelectedCommit": false,
       "repositoryRootPath": "/tmp/menu-second",
       "selectedFilePaths": [],
       "hasFileSelection": false,
@@ -828,8 +834,14 @@ class RunnerTests: XCTestCase {
     )
     XCTAssertTrue(first.canReviewSelectedFromMenu)
     XCTAssertTrue(first.canPushFromMenu)
+    XCTAssertTrue(first.canResetRepositoryFromMenu)
+    XCTAssertTrue(first.canResetSelectedFromMenu)
+    XCTAssertTrue(first.canResetToSelectedCommitFromMenu)
     XCTAssertFalse(second.canReviewSelectedFromMenu)
     XCTAssertFalse(second.canPushFromMenu)
+    XCTAssertFalse(second.canResetRepositoryFromMenu)
+    XCTAssertFalse(second.canResetSelectedFromMenu)
+    XCTAssertFalse(second.canResetToSelectedCommitFromMenu)
     XCTAssertEqual(
       first.fileMenuTargets.repositoryRootPath,
       "/tmp/menu-first"
@@ -845,11 +857,17 @@ class RunnerTests: XCTestCase {
     first.applyWorkspaceMenuState([
       "canReviewSelected": true,
       "canPush": true,
+      "canResetRepository": true,
+      "canResetSelected": true,
+      "canResetToSelectedCommit": true,
     ])
 
     XCTAssertNil(coordinator.workspaceController(forKeyWindow: firstWindow))
     XCTAssertFalse(first.canReviewSelectedFromMenu)
     XCTAssertFalse(first.canPushFromMenu)
+    XCTAssertFalse(first.canResetRepositoryFromMenu)
+    XCTAssertFalse(first.canResetSelectedFromMenu)
+    XCTAssertFalse(first.canResetToSelectedCommitFromMenu)
     XCTAssertNil(first.fileMenuTargets.repositoryRootPath)
     XCTAssertTrue(
       coordinator.workspaceController(forKeyWindow: secondWindow) === second

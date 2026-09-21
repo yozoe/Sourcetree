@@ -1443,6 +1443,66 @@ void main() {
     expect(container.read(repositorySessionProvider).status!.isClean, isTrue);
   });
 
+  test('mixed-resets the current branch to a loaded commit', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('tracked.txt', 'first\n');
+    final firstCommit = await repository.commit('First');
+    await repository.writeFile('tracked.txt', 'second\n');
+    await repository.commit('Second');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(
+      await controller.resetCurrentBranchToCommit(
+        firstCommit,
+        mode: GitResetMode.mixed,
+      ),
+      isTrue,
+    );
+    expect(
+      (await repository.runGit(['rev-parse', 'HEAD'])).stdout.toString().trim(),
+      firstCommit,
+    );
+    expect(
+      await File(
+        '${repository.workingDirectory.path}${Platform.pathSeparator}tracked.txt',
+      ).readAsString(),
+      'second\n',
+    );
+    expect(container.read(repositorySessionProvider).status!.isClean, isFalse);
+  });
+
+  test('refuses branch reset while HEAD is detached', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('tracked.txt', 'first\n');
+    final firstCommit = await repository.commit('First');
+    await repository.writeFile('tracked.txt', 'second\n');
+    final secondCommit = await repository.commit('Second');
+    await repository.runGit(['switch', '--detach', secondCommit]);
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(
+      await controller.resetCurrentBranchToCommit(
+        firstCommit,
+        mode: GitResetMode.hard,
+      ),
+      isFalse,
+    );
+    expect(
+      (await repository.runGit(['rev-parse', 'HEAD'])).stdout.toString().trim(),
+      secondCommit,
+    );
+  });
+
   test(
     'keeps uncommitted changes selected after resetting one of several files',
     () async {
