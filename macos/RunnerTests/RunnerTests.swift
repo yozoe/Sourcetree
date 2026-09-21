@@ -439,6 +439,57 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testRapidWorkspaceTabSwitchingKeepsOneCurrentEngine() throws {
+    let coordinator = WindowCoordinator()
+    let controllers = try (0..<3).map { index in
+      try WorkspaceFlutterWindowController(
+        repositoryPath: nil,
+        initialAction: nil,
+        coordinator: coordinator
+      )
+    }
+    defer { controllers.forEach { $0.close() } }
+    for (index, controller) in controllers.enumerated() {
+      coordinator.registerRepository("/tmp/rapid-tab-\(index)", for: controller)
+    }
+    let windows = try controllers.map {
+      try XCTUnwrap($0.window as? MainFlutterWindow)
+    }
+    coordinator.mergeAllWorkspaceWindows()
+
+    let orderedTitles = try XCTUnwrap(
+      windows[0].workspaceTabStripView?.tabButtons.map(\.title)
+    )
+    let orderedWindows = try orderedTitles.map { title in
+      try XCTUnwrap(windows.first { $0.title == title })
+    }
+    var currentIndex = try XCTUnwrap(
+      windows[0].workspaceTabStripView?.tabButtons.firstIndex(
+        where: \.isSelectedTab
+      )
+    )
+
+    for _ in 0..<12 {
+      let current = orderedWindows[currentIndex]
+      XCTAssertTrue(
+        coordinator.selectAdjacentMergedWorkspace(from: current, offset: 1)
+      )
+      currentIndex = (currentIndex + 1) % orderedWindows.count
+      let next = orderedWindows[currentIndex]
+      XCTAssertTrue(next.isVisible)
+      XCTAssertEqual(
+        next.workspaceTabStripView?.tabButtons.filter(\.isSelectedTab).count,
+        1
+      )
+      XCTAssertEqual(
+        next.workspaceTabStripView?.tabButtons.first(
+          where: \.isSelectedTab
+        )?.title,
+        next.title
+      )
+    }
+  }
+
   func testDetachedWindowFrameStaysInsideVisibleScreen() {
     XCTAssertEqual(
       gitDesktopDetachedWindowFrame(
@@ -616,8 +667,16 @@ class RunnerTests: XCTestCase {
     }
 
     coordinator.mergeAllWorkspaceWindows()
-    XCTAssertTrue(coordinator.showMergedWorkspaceOverview(from: windows[0]))
-    XCTAssertFalse(windows[0].childWindows?.isEmpty ?? true)
+    let selectedTitle = try XCTUnwrap(
+      windows[0].workspaceTabStripView?.tabButtons.first(
+        where: \.isSelectedTab
+      )?.title
+    )
+    let selectedWindow = try XCTUnwrap(
+      windows.first { $0.title == selectedTitle }
+    )
+    XCTAssertTrue(coordinator.showMergedWorkspaceOverview(from: selectedWindow))
+    XCTAssertFalse(selectedWindow.childWindows?.isEmpty ?? true)
 
     XCTAssertTrue(coordinator.detachMergedWorkspace(windows[1]))
 
@@ -724,6 +783,77 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue(index.host(for: "/tmp/example") === replacement)
     index.remove(replacement)
     XCTAssertNil(index.host(for: "/tmp/example"))
+  }
+
+  func testWorkspaceMenuSnapshotsStayIsolatedAndExpireWithTheirEngine() throws {
+    let coordinator = WindowCoordinator()
+    let first = try WorkspaceFlutterWindowController(
+      repositoryPath: nil,
+      initialAction: nil,
+      coordinator: coordinator
+    )
+    let second = try WorkspaceFlutterWindowController(
+      repositoryPath: nil,
+      initialAction: nil,
+      coordinator: coordinator
+    )
+    defer {
+      first.close()
+      second.close()
+    }
+    coordinator.registerRepository("/tmp/menu-first", for: first)
+    coordinator.registerRepository("/tmp/menu-second", for: second)
+    first.applyWorkspaceMenuState([
+      "canReviewSelected": true,
+      "canPush": true,
+      "repositoryRootPath": "/tmp/menu-first",
+      "selectedFilePaths": ["/tmp/menu-first/README.md"],
+      "hasFileSelection": true,
+    ])
+    second.applyWorkspaceMenuState([
+      "canReviewSelected": false,
+      "canPush": false,
+      "repositoryRootPath": "/tmp/menu-second",
+      "selectedFilePaths": [],
+      "hasFileSelection": false,
+    ])
+    let firstWindow = try XCTUnwrap(first.window)
+    let secondWindow = try XCTUnwrap(second.window)
+
+    XCTAssertTrue(
+      coordinator.workspaceController(forKeyWindow: firstWindow) === first
+    )
+    XCTAssertTrue(
+      coordinator.workspaceController(forKeyWindow: secondWindow) === second
+    )
+    XCTAssertTrue(first.canReviewSelectedFromMenu)
+    XCTAssertTrue(first.canPushFromMenu)
+    XCTAssertFalse(second.canReviewSelectedFromMenu)
+    XCTAssertFalse(second.canPushFromMenu)
+    XCTAssertEqual(
+      first.fileMenuTargets.repositoryRootPath,
+      "/tmp/menu-first"
+    )
+    XCTAssertEqual(
+      second.fileMenuTargets.repositoryRootPath,
+      "/tmp/menu-second"
+    )
+
+    first.windowWillClose(
+      Notification(name: NSWindow.willCloseNotification, object: firstWindow)
+    )
+    first.applyWorkspaceMenuState([
+      "canReviewSelected": true,
+      "canPush": true,
+    ])
+
+    XCTAssertNil(coordinator.workspaceController(forKeyWindow: firstWindow))
+    XCTAssertFalse(first.canReviewSelectedFromMenu)
+    XCTAssertFalse(first.canPushFromMenu)
+    XCTAssertNil(first.fileMenuTargets.repositoryRootPath)
+    XCTAssertTrue(
+      coordinator.workspaceController(forKeyWindow: secondWindow) === second
+    )
   }
 
   func testWorkspaceHistoryReturnsThePreviouslyFocusedRemainingWindow() {

@@ -1020,68 +1020,79 @@ final class WorkspaceFlutterWindowController: NSWindowController,
         )
         result(nil)
       case "setWorkspaceMenuState":
-        canAddRemoteFromMenu = arguments?["canAddRemote"] as? Bool ?? false
-        canStopTrackingFromMenu = arguments?["canStopTracking"] as? Bool ?? false
-        canApplyPatchFromMenu = arguments?["canApplyPatch"] as? Bool ?? false
-        canCheckoutFromMenu = arguments?["canCheckout"] as? Bool ?? false
-        canCommitAllFromMenu = arguments?["canCommitAll"] as? Bool ?? false
-        canCommitSelectedFromMenu =
-          arguments?["canCommitSelected"] as? Bool ?? false
-        let activeOperation =
-          (arguments?["activeRepositoryOperation"] as? String).flatMap(
-            GitDesktopRepositoryOperation.init(rawValue:)
-          )
-        activeRepositoryOperationFromMenu = activeOperation
-        canContinueOperationFromMenu = activeOperation != nil &&
-          (arguments?["canContinueOperation"] as? Bool ?? false)
-        canAbortOperationFromMenu = activeOperation != nil &&
-          (arguments?["canAbortOperation"] as? Bool ?? false)
-        canUseConflictStage2FromMenu =
-          arguments?["canUseConflictStage2"] as? Bool ?? false
-        canUseConflictStage3FromMenu =
-          arguments?["canUseConflictStage3"] as? Bool ?? false
-        canMarkConflictResolvedFromMenu =
-          arguments?["canMarkConflictResolved"] as? Bool ?? false
-        conflictStage2LabelFromMenu =
-          arguments?["conflictStage2Label"] as? String ?? "当前基线版本"
-        conflictStage3LabelFromMenu =
-          arguments?["conflictStage3Label"] as? String ?? "待应用版本"
-        canCommitFromMenu = arguments?["canCommit"] as? Bool ?? false
-        canFetchFromMenu = arguments?["canFetch"] as? Bool ?? false
-        canInteractiveRebaseFromMenu =
-          arguments?["canInteractiveRebase"] as? Bool ?? false
-        canMergeFromMenu = arguments?["canMerge"] as? Bool ?? false
-        canPullFromMenu = arguments?["canPull"] as? Bool ?? false
-        canPushFromMenu = arguments?["canPush"] as? Bool ?? false
-        canRemoveSelectedFromMenu =
-          arguments?["canRemoveSelected"] as? Bool ?? false
-        canCreateBranchFromMenu = arguments?["canCreateBranch"] as? Bool ?? false
-        canStashFromMenu = arguments?["canStash"] as? Bool ?? false
-        canTagFromMenu = arguments?["canTag"] as? Bool ?? false
-        canViewSelectedFileHistoryFromMenu =
-          arguments?["canViewSelectedFileHistory"] as? Bool ?? false
-        canIgnoreSelectedFromMenu =
-          arguments?["canIgnoreSelected"] as? Bool ?? false
-        canCopySelectedFromMenu =
-          arguments?["canCopySelected"] as? Bool ?? false
-        canMoveSelectedFromMenu =
-          arguments?["canMoveSelected"] as? Bool ?? false
-        canReviewSelectedFromMenu =
-          arguments?["canReviewSelected"] as? Bool ?? false
-        canStageSelectedFromMenu =
-          arguments?["canStageSelected"] as? Bool ?? false
-        canUnstageSelectedFromMenu =
-          arguments?["canUnstageSelected"] as? Bool ?? false
-        fileMenuTargets = GitDesktopWorkspaceFileMenuTargets(
-          repositoryRootPath: arguments?["repositoryRootPath"] as? String,
-          selectedFilePaths: arguments?["selectedFilePaths"] as? [String] ?? [],
-          hasFileSelection: arguments?["hasFileSelection"] as? Bool ?? false
-        )
+        applyWorkspaceMenuState(arguments)
         result(nil)
       default:
         result(FlutterMethodNotImplemented)
       }
     }
+  }
+
+  /// Replaces this Engine's complete native-menu snapshot atomically. Calls
+  /// arriving after Engine shutdown are ignored so stale capability messages
+  /// cannot revive actions for a closed workspace.
+  ///
+  /// 中文：原子替换此 Engine 的完整原生菜单快照；Engine 关闭后到达的
+  /// 过期消息会被忽略，不会重新启用已关闭工作区的操作。
+  func applyWorkspaceMenuState(_ arguments: [String: Any]?) {
+    guard !didShutDownEngine else { return }
+    canAddRemoteFromMenu = arguments?["canAddRemote"] as? Bool ?? false
+    canStopTrackingFromMenu = arguments?["canStopTracking"] as? Bool ?? false
+    canApplyPatchFromMenu = arguments?["canApplyPatch"] as? Bool ?? false
+    canCheckoutFromMenu = arguments?["canCheckout"] as? Bool ?? false
+    canCommitAllFromMenu = arguments?["canCommitAll"] as? Bool ?? false
+    canCommitSelectedFromMenu =
+      arguments?["canCommitSelected"] as? Bool ?? false
+    let activeOperation =
+      (arguments?["activeRepositoryOperation"] as? String).flatMap(
+        GitDesktopRepositoryOperation.init(rawValue:)
+      )
+    activeRepositoryOperationFromMenu = activeOperation
+    canContinueOperationFromMenu = activeOperation != nil &&
+      (arguments?["canContinueOperation"] as? Bool ?? false)
+    canAbortOperationFromMenu = activeOperation != nil &&
+      (arguments?["canAbortOperation"] as? Bool ?? false)
+    canUseConflictStage2FromMenu =
+      arguments?["canUseConflictStage2"] as? Bool ?? false
+    canUseConflictStage3FromMenu =
+      arguments?["canUseConflictStage3"] as? Bool ?? false
+    canMarkConflictResolvedFromMenu =
+      arguments?["canMarkConflictResolved"] as? Bool ?? false
+    conflictStage2LabelFromMenu =
+      arguments?["conflictStage2Label"] as? String ?? "当前基线版本"
+    conflictStage3LabelFromMenu =
+      arguments?["conflictStage3Label"] as? String ?? "待应用版本"
+    canCommitFromMenu = arguments?["canCommit"] as? Bool ?? false
+    canFetchFromMenu = arguments?["canFetch"] as? Bool ?? false
+    canInteractiveRebaseFromMenu =
+      arguments?["canInteractiveRebase"] as? Bool ?? false
+    canMergeFromMenu = arguments?["canMerge"] as? Bool ?? false
+    canPullFromMenu = arguments?["canPull"] as? Bool ?? false
+    canPushFromMenu = arguments?["canPush"] as? Bool ?? false
+    canRemoveSelectedFromMenu =
+      arguments?["canRemoveSelected"] as? Bool ?? false
+    canCreateBranchFromMenu = arguments?["canCreateBranch"] as? Bool ?? false
+    canStashFromMenu = arguments?["canStash"] as? Bool ?? false
+    canTagFromMenu = arguments?["canTag"] as? Bool ?? false
+    canViewSelectedFileHistoryFromMenu =
+      arguments?["canViewSelectedFileHistory"] as? Bool ?? false
+    canIgnoreSelectedFromMenu =
+      arguments?["canIgnoreSelected"] as? Bool ?? false
+    canCopySelectedFromMenu =
+      arguments?["canCopySelected"] as? Bool ?? false
+    canMoveSelectedFromMenu =
+      arguments?["canMoveSelected"] as? Bool ?? false
+    canReviewSelectedFromMenu =
+      arguments?["canReviewSelected"] as? Bool ?? false
+    canStageSelectedFromMenu =
+      arguments?["canStageSelected"] as? Bool ?? false
+    canUnstageSelectedFromMenu =
+      arguments?["canUnstageSelected"] as? Bool ?? false
+    fileMenuTargets = GitDesktopWorkspaceFileMenuTargets(
+      repositoryRootPath: arguments?["repositoryRootPath"] as? String,
+      selectedFilePaths: arguments?["selectedFilePaths"] as? [String] ?? [],
+      hasFileSelection: arguments?["hasFileSelection"] as? Bool ?? false
+    )
   }
 
   private func prepareForShutdown(completion: @escaping () -> Void) {
@@ -1128,6 +1139,7 @@ final class WorkspaceFlutterWindowController: NSWindowController,
     guard !didShutDownEngine else {
       return
     }
+    applyWorkspaceMenuState(nil)
     didShutDownEngine = true
     windowChannel.setMethodCallHandler(nil)
     window?.contentViewController = nil
@@ -1743,12 +1755,24 @@ final class WindowCoordinator {
     )
   }
 
-  private var currentWorkspaceController: WorkspaceFlutterWindowController? {
-    guard let keyWindow = NSApp.keyWindow as? MainFlutterWindow,
+  /// Resolves a key window only when it is still owned by this coordinator.
+  /// Closed Engines and unrelated app windows therefore cannot contribute a
+  /// stale menu snapshot.
+  ///
+  /// 中文：仅当 key window 仍由本协调器持有时返回工作区控制器；
+  /// 已关闭 Engine 和无关窗口无法提供过期菜单快照。
+  func workspaceController(
+    forKeyWindow keyWindow: NSWindow?
+  ) -> WorkspaceFlutterWindowController? {
+    guard let keyWindow = keyWindow as? MainFlutterWindow,
           keyWindow.role == .workspace else {
       return nil
     }
     return workspaceControllers().first { $0.window === keyWindow }
+  }
+
+  private var currentWorkspaceController: WorkspaceFlutterWindowController? {
+    workspaceController(forKeyWindow: NSApp.keyWindow)
   }
 
   func registerRepository(
