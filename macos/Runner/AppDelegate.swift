@@ -32,6 +32,26 @@ func gitDesktopCanPerformSelectedChangeMenuAction(
   hasKeyWorkspace && hasValidatedSelection
 }
 
+/// A recoverable Git operation reported by one Flutter workspace Engine.
+/// 中文：由单个 Flutter 工作区 Engine 上报、可继续或中止的 Git 操作。
+enum GitDesktopRepositoryOperation: String {
+  case merge
+  case rebase
+  case cherryPick
+  case revert
+
+  /// The localized operation name used by dynamic native menu labels.
+  /// 中文：动态原生菜单标题使用的本地化操作名称。
+  var menuName: String {
+    switch self {
+    case .merge: return "合并"
+    case .rebase: return "变基"
+    case .cherryPick: return "遴选"
+    case .revert: return "回滚"
+    }
+  }
+}
+
 /// Read-only file targets reported by one Flutter workspace Engine.
 /// 中文：单个 Flutter 工作区 Engine 上报的只读文件操作目标。
 struct GitDesktopWorkspaceFileMenuTargets {
@@ -652,6 +672,20 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// 中文：此 Engine 最近一次由 Flutter 校验的“提交选中项”可用状态。
   private(set) var canCommitSelectedFromMenu = false
 
+  /// The active recoverable Git operation and its latest validated actions.
+  /// 中文：当前可恢复 Git 操作及其最近一次校验的继续、中止能力。
+  private(set) var activeRepositoryOperationFromMenu: GitDesktopRepositoryOperation?
+  private(set) var canContinueOperationFromMenu = false
+  private(set) var canAbortOperationFromMenu = false
+
+  /// Flutter-validated actions and labels for the selected conflict file.
+  /// 中文：Flutter 为当前选中冲突文件校验的动作与版本标签。
+  private(set) var canUseConflictStage2FromMenu = false
+  private(set) var canUseConflictStage3FromMenu = false
+  private(set) var canMarkConflictResolvedFromMenu = false
+  private(set) var conflictStage2LabelFromMenu = "当前基线版本"
+  private(set) var conflictStage3LabelFromMenu = "待应用版本"
+
   /// Flutter's last validated Fetch availability for this Engine.
   ///
   /// 中文：此 Engine 最近一次由 Flutter 校验的“抓取”可用状态；实际执行仍由
@@ -957,6 +991,25 @@ final class WorkspaceFlutterWindowController: NSWindowController,
         canCommitAllFromMenu = arguments?["canCommitAll"] as? Bool ?? false
         canCommitSelectedFromMenu =
           arguments?["canCommitSelected"] as? Bool ?? false
+        let activeOperation =
+          (arguments?["activeRepositoryOperation"] as? String).flatMap(
+            GitDesktopRepositoryOperation.init(rawValue:)
+          )
+        activeRepositoryOperationFromMenu = activeOperation
+        canContinueOperationFromMenu = activeOperation != nil &&
+          (arguments?["canContinueOperation"] as? Bool ?? false)
+        canAbortOperationFromMenu = activeOperation != nil &&
+          (arguments?["canAbortOperation"] as? Bool ?? false)
+        canUseConflictStage2FromMenu =
+          arguments?["canUseConflictStage2"] as? Bool ?? false
+        canUseConflictStage3FromMenu =
+          arguments?["canUseConflictStage3"] as? Bool ?? false
+        canMarkConflictResolvedFromMenu =
+          arguments?["canMarkConflictResolved"] as? Bool ?? false
+        conflictStage2LabelFromMenu =
+          arguments?["conflictStage2Label"] as? String ?? "当前基线版本"
+        conflictStage3LabelFromMenu =
+          arguments?["conflictStage3Label"] as? String ?? "待应用版本"
         canCommitFromMenu = arguments?["canCommit"] as? Bool ?? false
         canFetchFromMenu = arguments?["canFetch"] as? Bool ?? false
         canInteractiveRebaseFromMenu =
@@ -1357,6 +1410,52 @@ final class WindowCoordinator {
   /// 中文：当前前台工作区是否有经过校验、可用于提交的可见文件选择。
   var canCommitSelectedFromMenu: Bool {
     currentWorkspaceController?.canCommitSelectedFromMenu == true
+  }
+
+  /// The key workspace's active recoverable Git operation.
+  /// 中文：当前前台工作区正在进行、可恢复的 Git 操作。
+  var activeRepositoryOperationFromMenu: GitDesktopRepositoryOperation? {
+    currentWorkspaceController?.activeRepositoryOperationFromMenu
+  }
+
+  /// Whether the active Git operation can continue after conflict resolution.
+  /// 中文：当前 Git 操作是否可在冲突解决后继续。
+  var canContinueOperationFromMenu: Bool {
+    activeRepositoryOperationFromMenu != nil &&
+      currentWorkspaceController?.canContinueOperationFromMenu == true
+  }
+
+  /// Whether the active Git operation can be aborted.
+  /// 中文：当前 Git 操作是否可中止。
+  var canAbortOperationFromMenu: Bool {
+    activeRepositoryOperationFromMenu != nil &&
+      currentWorkspaceController?.canAbortOperationFromMenu == true
+  }
+
+  /// Whether stage 2 exists for the selected unmerged path.
+  /// 中文：当前单个未合并路径是否存在可选的索引第二阶段版本。
+  var canUseConflictStage2FromMenu: Bool {
+    currentWorkspaceController?.canUseConflictStage2FromMenu == true
+  }
+
+  /// Whether stage 3 exists for the selected unmerged path.
+  /// 中文：当前单个未合并路径是否存在可选的索引第三阶段版本。
+  var canUseConflictStage3FromMenu: Bool {
+    currentWorkspaceController?.canUseConflictStage3FromMenu == true
+  }
+
+  /// Whether the selected unmerged path can be staged as resolved.
+  /// 中文：当前单个未合并路径是否可暂存并标记为已解决。
+  var canMarkConflictResolvedFromMenu: Bool {
+    currentWorkspaceController?.canMarkConflictResolvedFromMenu == true
+  }
+
+  var conflictStage2LabelFromMenu: String {
+    currentWorkspaceController?.conflictStage2LabelFromMenu ?? "当前基线版本"
+  }
+
+  var conflictStage3LabelFromMenu: String {
+    currentWorkspaceController?.conflictStage3LabelFromMenu ?? "待应用版本"
   }
 
   /// Whether the key workspace currently permits opening the Fetch workflow.
@@ -2624,6 +2723,56 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     windowCoordinator.performWorkspaceAction("repositoryFeaturePending")
   }
 
+  /// Continues the active Git operation in the key workspace.
+  /// 中文：继续当前前台工作区正在进行的 Git 操作。
+  @IBAction func continueRepositoryOperationFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canContinueOperationFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("continueOperation")
+  }
+
+  /// Requests confirmation before aborting the active Git operation.
+  /// 中文：在中止当前前台工作区的 Git 操作前请求影响确认。
+  @IBAction func abortRepositoryOperationFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canAbortOperationFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("abortOperation")
+  }
+
+  /// Uses index stage 2 for the key workspace's selected conflict file.
+  /// 中文：为当前前台工作区选中的冲突文件使用索引第二阶段版本。
+  @IBAction func useConflictStage2FromMenu(_ sender: Any?) {
+    guard windowCoordinator.canUseConflictStage2FromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("useConflictStage2")
+  }
+
+  /// Uses index stage 3 for the key workspace's selected conflict file.
+  /// 中文：为当前前台工作区选中的冲突文件使用索引第三阶段版本。
+  @IBAction func useConflictStage3FromMenu(_ sender: Any?) {
+    guard windowCoordinator.canUseConflictStage3FromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("useConflictStage3")
+  }
+
+  /// Stages the key workspace's selected conflict file as resolved.
+  /// 中文：将当前前台工作区选中的冲突文件暂存并标记为已解决。
+  @IBAction func markConflictResolvedFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canMarkConflictResolvedFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("markConflictResolved")
+  }
+
   /// 中文：用系统默认应用打开当前工作区唯一选中的现存文件。
   /// English: Opens the single existing workspace selection in its default app.
   @IBAction func openSelectedFileFromMenu(_ sender: Any?) {
@@ -2896,6 +3045,31 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     }
     if menuItem.action == #selector(removeSelectedFromMenu(_:)) {
       return windowCoordinator.canRemoveSelectedFromMenu
+    }
+    if menuItem.action == #selector(continueRepositoryOperationFromMenu(_:)) {
+      menuItem.title = windowCoordinator.activeRepositoryOperationFromMenu.map {
+        "继续\($0.menuName)"
+      } ?? "继续"
+      return windowCoordinator.canContinueOperationFromMenu
+    }
+    if menuItem.action == #selector(abortRepositoryOperationFromMenu(_:)) {
+      menuItem.title = windowCoordinator.activeRepositoryOperationFromMenu.map {
+        "中止\($0.menuName)"
+      } ?? "中止"
+      return windowCoordinator.canAbortOperationFromMenu
+    }
+    if menuItem.action == #selector(useConflictStage2FromMenu(_:)) {
+      menuItem.title =
+        "使用\(windowCoordinator.conflictStage2LabelFromMenu)（Git stage 2）"
+      return windowCoordinator.canUseConflictStage2FromMenu
+    }
+    if menuItem.action == #selector(useConflictStage3FromMenu(_:)) {
+      menuItem.title =
+        "使用\(windowCoordinator.conflictStage3LabelFromMenu)（Git stage 3）"
+      return windowCoordinator.canUseConflictStage3FromMenu
+    }
+    if menuItem.action == #selector(markConflictResolvedFromMenu(_:)) {
+      return windowCoordinator.canMarkConflictResolvedFromMenu
     }
     if menuItem.action == #selector(fetchRepositoryFromMenu(_:)) {
       return windowCoordinator.canFetchFromMenu

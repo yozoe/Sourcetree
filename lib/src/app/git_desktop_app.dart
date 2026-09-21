@@ -79,11 +79,16 @@ bool _isLoadedAncestorOfHead({
 ({
   bool canAddRemote,
   bool canApplyPatch,
+  bool canAbortOperation,
+  bool canMarkConflictResolved,
   bool canCheckout,
   bool canCommitAll,
   bool canCommitSelected,
   bool canCreateBranch,
   bool canCommit,
+  bool canContinueOperation,
+  bool canUseConflictStage2,
+  bool canUseConflictStage3,
   bool canFetch,
   bool canInteractiveRebase,
   bool canMerge,
@@ -151,12 +156,44 @@ nativeWorkspaceMenuAvailability(
       menuSelection.every(
         (change) => change.isActionEnabled && change.isPathValidUtf8,
       );
+  final hasRecoverableOperation =
+      repository != null &&
+      session.repository != null &&
+      session.operationState != GitRepositoryOperationState.none &&
+      session.phase != RepositorySessionPhase.loading &&
+      !session.isWorkingTreeBusy;
+  final selectedConflict =
+      repository?.selectedCommit == null &&
+          menuSelection.length == 1 &&
+          menuSelection.single.kind == RepositoryChangeKind.conflicted &&
+          menuSelection.single.isActionEnabled &&
+          menuSelection.single.isPathValidUtf8
+      ? session.status?.conflictedEntries
+            .where((entry) => entry.path.display == menuSelection.single.path)
+            .firstOrNull
+      : null;
+  final canResolveSelectedConflict =
+      repository != null &&
+      session.repository != null &&
+      session.phase != RepositorySessionPhase.loading &&
+      !session.isWorkingTreeBusy &&
+      selectedConflict != null;
   return (
     canAddRemote: canApplyPatch,
     canApplyPatch: canApplyPatch,
+    canAbortOperation: hasRecoverableOperation,
+    canMarkConflictResolved: canResolveSelectedConflict,
     canCheckout: canApplyPatch && hasCheckoutTarget,
     canCommitAll: canApplyPatch && commitAllChanges.isNotEmpty,
     canCommitSelected: canApplyPatch && canCommitSelection,
+    canContinueOperation:
+        hasRecoverableOperation &&
+        session.status != null &&
+        session.status!.conflictedEntries.isEmpty,
+    canUseConflictStage2:
+        canResolveSelectedConflict && selectedConflict.stage2ObjectId != null,
+    canUseConflictStage3:
+        canResolveSelectedConflict && selectedConflict.stage3ObjectId != null,
     canFetch:
         session.phase == RepositorySessionPhase.ready &&
         repository != null &&
@@ -655,9 +692,14 @@ class _RepositoryWorkspaceScreenState
   bool? _lastNativeStopTrackingAvailability;
   bool? _lastNativeApplyPatchAvailability;
   bool? _lastNativeCheckoutAvailability;
+  bool? _lastNativeAbortOperationAvailability;
+  bool? _lastNativeMarkConflictResolvedAvailability;
   bool? _lastNativeCommitAllAvailability;
   bool? _lastNativeCommitSelectedAvailability;
   bool? _lastNativeCommitAvailability;
+  bool? _lastNativeContinueOperationAvailability;
+  bool? _lastNativeUseConflictStage2Availability;
+  bool? _lastNativeUseConflictStage3Availability;
   bool? _lastNativeFetchAvailability;
   bool? _lastNativeInteractiveRebaseAvailability;
   bool? _lastNativeMergeAvailability;
@@ -669,6 +711,9 @@ class _RepositoryWorkspaceScreenState
   bool? _lastNativeStashAvailability;
   bool? _lastNativeTagAvailability;
   bool? _lastNativeUnstageSelectedAvailability;
+  String? _lastNativeActiveRepositoryOperation;
+  String? _lastNativeConflictStage2Label;
+  String? _lastNativeConflictStage3Label;
   String? _lastNativeFileTargetSignature;
   Set<String>? _nativeSelectedChangeKeys;
   String? _nativeSelectionRepositoryId;
@@ -777,6 +822,22 @@ class _RepositoryWorkspaceScreenState
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('请选择至少一个可提交的工作区文件。')));
+      case 'continueOperation':
+        await _continueActiveRepositoryOperation();
+      case 'abortOperation':
+        await _confirmAbortActiveRepositoryOperation();
+      case 'useConflictStage2':
+        await _resolveSelectedConflictFromNativeMenu(
+          RepositoryConflictAction.useOurs,
+        );
+      case 'useConflictStage3':
+        await _resolveSelectedConflictFromNativeMenu(
+          RepositoryConflictAction.useTheirs,
+        );
+      case 'markConflictResolved':
+        await _resolveSelectedConflictFromNativeMenu(
+          RepositoryConflictAction.markResolved,
+        );
       case 'checkout':
         await _showCheckoutDialog();
       case 'merge':
@@ -958,9 +1019,14 @@ class _RepositoryWorkspaceScreenState
     final canAddRemote = availability.canAddRemote;
     final canApplyPatch = availability.canApplyPatch;
     final canCheckout = availability.canCheckout;
+    final canAbortOperation = availability.canAbortOperation;
+    final canMarkConflictResolved = availability.canMarkConflictResolved;
     final canCommitAll = availability.canCommitAll;
     final canCommitSelected = availability.canCommitSelected;
     final canCommit = availability.canCommit;
+    final canContinueOperation = availability.canContinueOperation;
+    final canUseConflictStage2 = availability.canUseConflictStage2;
+    final canUseConflictStage3 = availability.canUseConflictStage3;
     final canFetch = availability.canFetch;
     final canInteractiveRebase = availability.canInteractiveRebase;
     final canMerge = availability.canMerge;
@@ -973,6 +1039,14 @@ class _RepositoryWorkspaceScreenState
     final canStopTracking = availability.canStopTracking;
     final canTag = availability.canTag;
     final canUnstageSelected = availability.canUnstageSelected;
+    final activeRepositoryOperation = switch (session.operationState) {
+      GitRepositoryOperationState.none => null,
+      final operation => operation.name,
+    };
+    final conflictLabels = conflictVersionLabels(
+      session.operationState,
+      currentBranch: session.status?.branch.head ?? '当前分支',
+    );
     final fileTargets = nativeWorkspaceMenuFileTargets(
       session,
       overview,
@@ -987,9 +1061,15 @@ class _RepositoryWorkspaceScreenState
         _lastNativeStopTrackingAvailability == canStopTracking &&
         _lastNativeApplyPatchAvailability == canApplyPatch &&
         _lastNativeCheckoutAvailability == canCheckout &&
+        _lastNativeAbortOperationAvailability == canAbortOperation &&
+        _lastNativeMarkConflictResolvedAvailability ==
+            canMarkConflictResolved &&
         _lastNativeCommitAllAvailability == canCommitAll &&
         _lastNativeCommitSelectedAvailability == canCommitSelected &&
         _lastNativeCommitAvailability == canCommit &&
+        _lastNativeContinueOperationAvailability == canContinueOperation &&
+        _lastNativeUseConflictStage2Availability == canUseConflictStage2 &&
+        _lastNativeUseConflictStage3Availability == canUseConflictStage3 &&
         _lastNativeFetchAvailability == canFetch &&
         _lastNativeInteractiveRebaseAvailability == canInteractiveRebase &&
         _lastNativeMergeAvailability == canMerge &&
@@ -1001,6 +1081,9 @@ class _RepositoryWorkspaceScreenState
         _lastNativeStashAvailability == canStash &&
         _lastNativeUnstageSelectedAvailability == canUnstageSelected &&
         _lastNativeTagAvailability == canTag &&
+        _lastNativeActiveRepositoryOperation == activeRepositoryOperation &&
+        _lastNativeConflictStage2Label == conflictLabels.$1 &&
+        _lastNativeConflictStage3Label == conflictLabels.$2 &&
         _lastNativeFileTargetSignature == fileTargetSignature) {
       return;
     }
@@ -1008,9 +1091,14 @@ class _RepositoryWorkspaceScreenState
     _lastNativeStopTrackingAvailability = canStopTracking;
     _lastNativeApplyPatchAvailability = canApplyPatch;
     _lastNativeCheckoutAvailability = canCheckout;
+    _lastNativeAbortOperationAvailability = canAbortOperation;
+    _lastNativeMarkConflictResolvedAvailability = canMarkConflictResolved;
     _lastNativeCommitAllAvailability = canCommitAll;
     _lastNativeCommitSelectedAvailability = canCommitSelected;
     _lastNativeCommitAvailability = canCommit;
+    _lastNativeContinueOperationAvailability = canContinueOperation;
+    _lastNativeUseConflictStage2Availability = canUseConflictStage2;
+    _lastNativeUseConflictStage3Availability = canUseConflictStage3;
     _lastNativeFetchAvailability = canFetch;
     _lastNativeInteractiveRebaseAvailability = canInteractiveRebase;
     _lastNativeMergeAvailability = canMerge;
@@ -1022,6 +1110,9 @@ class _RepositoryWorkspaceScreenState
     _lastNativeStashAvailability = canStash;
     _lastNativeUnstageSelectedAvailability = canUnstageSelected;
     _lastNativeTagAvailability = canTag;
+    _lastNativeActiveRepositoryOperation = activeRepositoryOperation;
+    _lastNativeConflictStage2Label = conflictLabels.$1;
+    _lastNativeConflictStage3Label = conflictLabels.$2;
     _lastNativeFileTargetSignature = fileTargetSignature;
     try {
       await DesktopWindowBridge.setWorkspaceMenuState(
@@ -1029,9 +1120,14 @@ class _RepositoryWorkspaceScreenState
         canStopTracking: canStopTracking,
         canApplyPatch: canApplyPatch,
         canCheckout: canCheckout,
+        canAbortOperation: canAbortOperation,
+        canMarkConflictResolved: canMarkConflictResolved,
         canCommitAll: canCommitAll,
         canCommitSelected: canCommitSelected,
         canCommit: canCommit,
+        canContinueOperation: canContinueOperation,
+        canUseConflictStage2: canUseConflictStage2,
+        canUseConflictStage3: canUseConflictStage3,
         canFetch: canFetch,
         canInteractiveRebase: canInteractiveRebase,
         canMerge: canMerge,
@@ -1043,6 +1139,9 @@ class _RepositoryWorkspaceScreenState
         canStash: canStash,
         canTag: canTag,
         canUnstageSelected: canUnstageSelected,
+        activeRepositoryOperation: activeRepositoryOperation,
+        conflictStage2Label: conflictLabels.$1,
+        conflictStage3Label: conflictLabels.$2,
         repositoryRootPath: fileTargets.repositoryRootPath,
         selectedFilePaths: fileTargets.selectedFilePaths,
         hasFileSelection: fileTargets.hasFileSelection,
@@ -1718,6 +1817,191 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
+  /// Routes the native Continue command to the currently active Git recovery
+  /// workflow after re-reading this workspace's operation marker.
+  ///
+  /// 中文：重新读取当前工作区操作标记后，将原生“继续”命令路由到对应恢复流程。
+  Future<void> _continueActiveRepositoryOperation() async {
+    final controller = ref.read(repositorySessionProvider.notifier);
+    await controller.refresh();
+    if (!mounted) return;
+    final session = ref.read(repositorySessionProvider);
+    final overview = mapRepositoryOverview(session);
+    final availability = nativeWorkspaceMenuAvailability(
+      session,
+      overview,
+      selectedChanges: _nativeSelectedChanges(overview),
+    );
+    if (session.phase != RepositorySessionPhase.ready ||
+        !availability.canContinueOperation) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            session.status?.conflictedEntries.isNotEmpty == true
+                ? '仍有未解决的冲突，全部解决并暂存后才能继续。'
+                : '当前没有可继续的 Git 操作。',
+          ),
+        ),
+      );
+      return;
+    }
+    switch (session.operationState) {
+      case GitRepositoryOperationState.merge:
+        await _continueMerge();
+      case GitRepositoryOperationState.rebase:
+        await _continueRebase();
+      case GitRepositoryOperationState.cherryPick:
+      case GitRepositoryOperationState.revert:
+        await _continueSequencer();
+      case GitRepositoryOperationState.none:
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('当前没有可继续的 Git 操作。')));
+    }
+  }
+
+  /// Routes the native Abort command to the confirmation appropriate for the
+  /// currently active Git recovery workflow.
+  ///
+  /// 中文：将原生“中止”命令路由到当前 Git 恢复流程对应的影响确认。
+  Future<void> _confirmAbortActiveRepositoryOperation() async {
+    final controller = ref.read(repositorySessionProvider.notifier);
+    await controller.refresh();
+    if (!mounted) return;
+    final session = ref.read(repositorySessionProvider);
+    final overview = mapRepositoryOverview(session);
+    final availability = nativeWorkspaceMenuAvailability(
+      session,
+      overview,
+      selectedChanges: _nativeSelectedChanges(overview),
+    );
+    if (session.phase != RepositorySessionPhase.ready ||
+        !availability.canAbortOperation) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前没有可中止的 Git 操作。')));
+      return;
+    }
+    switch (session.operationState) {
+      case GitRepositoryOperationState.merge:
+        await _confirmAbortMerge();
+      case GitRepositoryOperationState.rebase:
+        await _confirmAbortRebase();
+      case GitRepositoryOperationState.cherryPick:
+      case GitRepositoryOperationState.revert:
+        await _confirmAbortSequencer();
+      case GitRepositoryOperationState.none:
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('当前没有可中止的 Git 操作。')));
+    }
+  }
+
+  /// Re-reads Git state, resolves the current single conflict selection, and
+  /// applies one native conflict-menu action only when it remains valid.
+  ///
+  /// 中文：重新读取 Git 状态并解析当前单个冲突选择，仅在选择仍有效时执行原生冲突菜单动作。
+  Future<void> _resolveSelectedConflictFromNativeMenu(
+    RepositoryConflictAction action,
+  ) async {
+    final controller = ref.read(repositorySessionProvider.notifier);
+    await controller.refresh();
+    if (!mounted) return;
+    final session = ref.read(repositorySessionProvider);
+    final overview = mapRepositoryOverview(session);
+    final selected = _nativeSelectedChanges(overview);
+    final availability = nativeWorkspaceMenuAvailability(
+      session,
+      overview,
+      selectedChanges: selected,
+    );
+    final canPerform = switch (action) {
+      RepositoryConflictAction.useOurs => availability.canUseConflictStage2,
+      RepositoryConflictAction.useTheirs => availability.canUseConflictStage3,
+      RepositoryConflictAction.markResolved =>
+        availability.canMarkConflictResolved,
+      _ => false,
+    };
+    if (session.phase != RepositorySessionPhase.ready ||
+        !canPerform ||
+        selected.length != 1) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请选择一个仍处于未解决状态的冲突文件。')));
+      return;
+    }
+    final change = selected.single;
+    final resolved = await controller.resolveConflict(change, action);
+    if (!mounted) return;
+    final labels = conflictVersionLabels(
+      session.operationState,
+      currentBranch: session.status?.branch.head ?? '当前分支',
+    );
+    final success = switch (action) {
+      RepositoryConflictAction.useOurs => '已使用${labels.$1}解决 ${change.path}。',
+      RepositoryConflictAction.useTheirs => '已使用${labels.$2}解决 ${change.path}。',
+      RepositoryConflictAction.markResolved => '已将 ${change.path} 标记为已解决。',
+      _ => '已解决 ${change.path}。',
+    };
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(
+        SnackBar(content: Text(resolved ? success : '冲突状态已变化或操作失败，请查看仓库状态。')),
+      );
+  }
+
+  /// Continues a paused merge and reports Git's refreshed result.
+  /// 中文：继续暂停的合并，并显示 Git 刷新后的结果。
+  Future<void> _continueMerge() async {
+    final continued = await ref
+        .read(repositorySessionProvider.notifier)
+        .continueMerge();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(continued ? '已继续合并。' : '合并尚未完成，请处理冲突后重试。'),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  /// Explains merge-abort recovery before asking Git to restore prior state.
+  /// 中文：在请求 Git 恢复合并前状态之前，说明中止合并的影响。
+  Future<void> _confirmAbortMerge() async {
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (BuildContext context) => AlertDialog(
+        title: const Text('中止合并'),
+        content: const Text('Git 将尝试恢复到合并开始前的索引和工作区状态。若合并开始后又修改了文件，恢复可能失败。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('中止合并'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+    final aborted = await ref
+        .read(repositorySessionProvider.notifier)
+        .abortMerge();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(aborted ? '已中止合并。' : '中止合并失败，请查看仓库错误信息。'),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  /// Continues the paused rebase and reports Git's refreshed result.
+  /// 中文：继续暂停的变基，并显示 Git 刷新后的结果。
   Future<void> _continueRebase() async {
     final continued = await ref
         .read(repositorySessionProvider.notifier)
@@ -2364,7 +2648,7 @@ class _RepositoryWorkspaceScreenState
         content: Text(
           merged
               ? '已将提交 ${commit.shortOid} 合并到 $currentBranch。'
-              : '合并未完成；如存在冲突，请处理后使用 Git 命令行继续或中止合并，再刷新仓库。',
+              : '合并未完成；如存在冲突，请处理并暂存后从“动作”菜单继续或中止合并。',
         ),
         duration: const Duration(seconds: 4),
       ),
@@ -2815,7 +3099,7 @@ class _RepositoryWorkspaceScreenState
         content: Text(
           merged
               ? '已将 $sourceName 合并到 $currentBranch。'
-              : '合并未完成；如存在冲突，请处理后使用 Git 命令行继续或中止，再刷新仓库。',
+              : '合并未完成；如存在冲突，请处理并暂存后从“动作”菜单继续或中止合并。',
         ),
         duration: const Duration(seconds: 4),
       ),

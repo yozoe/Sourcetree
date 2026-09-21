@@ -3298,7 +3298,54 @@ while true; do sleep 1; done
       ).readAsString(),
       'merged in internal diff\n',
     );
+    expect(
+      container.read(repositorySessionProvider).operationState,
+      GitRepositoryOperationState.merge,
+    );
+
+    expect(await controller.continueMerge(), isTrue);
+
+    final completed = container.read(repositorySessionProvider);
+    expect(completed.phase, RepositorySessionPhase.ready);
+    expect(completed.operationState, GitRepositoryOperationState.none);
+    expect(completed.commits.first.parentIds, hasLength(2));
   });
+
+  test(
+    'aborts a conflicted merge and refreshes the repository session',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      await repository.commit('Initial commit');
+      await repository.runGit(['branch', 'feature/conflict']);
+      await repository.runGit(['switch', 'feature/conflict']);
+      await repository.writeFile('README.md', 'feature\n');
+      await repository.commit('Feature change');
+      await repository.runGit(['switch', 'main']);
+      await repository.writeFile('README.md', 'main\n');
+      final mainHead = await repository.commit('Main change');
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      expect(await controller.mergeLocalBranch('feature/conflict'), isFalse);
+
+      expect(await controller.abortMerge(), isTrue);
+
+      final state = container.read(repositorySessionProvider);
+      expect(state.phase, RepositorySessionPhase.ready);
+      expect(state.operationState, GitRepositoryOperationState.none);
+      expect(state.status!.isClean, isTrue);
+      expect(state.status!.branch.objectId, mainHead);
+      expect(
+        await File(
+          '${repository.workingDirectory.path}${Platform.pathSeparator}README.md',
+        ).readAsString(),
+        'main\n',
+      );
+    },
+  );
 
   test(
     'fetches all configured remotes and refreshes ahead-behind state',

@@ -544,13 +544,16 @@ void main() {
       expect(nativeWorkspaceMenuAvailability(session, paused), (
         canAddRemote: false,
         canApplyPatch: false,
+        canAbortOperation: false,
         canCheckout: false,
         canCommitAll: false,
         canCommitSelected: false,
         canCommit: false,
+        canContinueOperation: false,
         canCreateBranch: false,
         canFetch: false,
         canInteractiveRebase: false,
+        canMarkConflictResolved: false,
         canMerge: false,
         canPull: false,
         canPush: false,
@@ -560,9 +563,134 @@ void main() {
         canStopTracking: false,
         canTag: false,
         canUnstageSelected: false,
+        canUseConflictStage2: false,
+        canUseConflictStage3: false,
       ));
     },
   );
+
+  test('native recovery menus follow the active Git operation', () {
+    const repository = GitRepository(
+      id: GitRepositoryId(
+        commonDirectory: '/tmp/example/.git',
+        workTreeRoot: '/tmp/example',
+      ),
+      openedPath: '/tmp/example',
+      gitDirectory: '/tmp/example/.git',
+      commonDirectory: '/tmp/example/.git',
+      workTreeRoot: '/tmp/example',
+      isBare: false,
+      isInsideWorkTree: true,
+    );
+    final session = RepositorySessionState(
+      phase: RepositorySessionPhase.ready,
+      repository: repository,
+      operationState: GitRepositoryOperationState.rebase,
+      status: GitStatusSnapshot(
+        branch: const GitBranchStatus(head: 'main', objectId: 'head123'),
+        entries: const [],
+      ),
+    );
+    const overview = RepositoryOverviewViewData.ready(
+      RepositoryViewData(
+        name: 'example',
+        path: '/tmp/example',
+        currentBranch: 'main',
+        isRebaseInProgress: true,
+      ),
+    );
+
+    final available = nativeWorkspaceMenuAvailability(session, overview);
+
+    expect(available.canContinueOperation, isTrue);
+    expect(available.canAbortOperation, isTrue);
+    final conflicted = nativeWorkspaceMenuAvailability(
+      session.copyWith(
+        status: GitStatusSnapshot(
+          branch: const GitBranchStatus(head: 'main', objectId: 'head123'),
+          entries: [
+            GitStatusEntry(
+              kind: GitFileStatusKind.unmerged,
+              path: GitPath.fromString('conflicted.txt'),
+              indexStatus: GitChangeType.unmerged,
+              workTreeStatus: GitChangeType.unmerged,
+            ),
+          ],
+        ),
+      ),
+      overview,
+    );
+    expect(conflicted.canContinueOperation, isFalse);
+    expect(conflicted.canAbortOperation, isTrue);
+    final loading = nativeWorkspaceMenuAvailability(
+      session.copyWith(phase: RepositorySessionPhase.loading),
+      overview,
+    );
+    expect(loading.canContinueOperation, isFalse);
+    expect(loading.canAbortOperation, isFalse);
+  });
+
+  test('native conflict menu requires one current unmerged selection', () {
+    const repository = GitRepository(
+      id: GitRepositoryId(
+        commonDirectory: '/tmp/example/.git',
+        workTreeRoot: '/tmp/example',
+      ),
+      openedPath: '/tmp/example',
+      gitDirectory: '/tmp/example/.git',
+      commonDirectory: '/tmp/example/.git',
+      workTreeRoot: '/tmp/example',
+      isBare: false,
+      isInsideWorkTree: true,
+    );
+    final entry = GitStatusEntry(
+      kind: GitFileStatusKind.unmerged,
+      path: GitPath.fromString('conflicted.txt'),
+      indexStatus: GitChangeType.unmerged,
+      workTreeStatus: GitChangeType.unmerged,
+      stage2ObjectId: 'ours123',
+    );
+    final session = RepositorySessionState(
+      phase: RepositorySessionPhase.ready,
+      repository: repository,
+      operationState: GitRepositoryOperationState.merge,
+      status: GitStatusSnapshot(
+        branch: const GitBranchStatus(head: 'main', objectId: 'head123'),
+        entries: [entry],
+      ),
+    );
+    const conflict = RepositoryChangeViewData(
+      path: 'conflicted.txt',
+      kind: RepositoryChangeKind.conflicted,
+    );
+    const overview = RepositoryOverviewViewData.ready(
+      RepositoryViewData(
+        name: 'example',
+        path: '/tmp/example',
+        currentBranch: 'main',
+        changes: [conflict],
+        selectedChange: conflict,
+      ),
+    );
+
+    final available = nativeWorkspaceMenuAvailability(
+      session,
+      overview,
+      selectedChanges: const [conflict],
+    );
+
+    expect(available.canUseConflictStage2, isTrue);
+    expect(available.canUseConflictStage3, isFalse);
+    expect(available.canMarkConflictResolved, isTrue);
+
+    final noSelection = nativeWorkspaceMenuAvailability(
+      session,
+      overview,
+      selectedChanges: const [],
+    );
+    expect(noSelection.canUseConflictStage2, isFalse);
+    expect(noSelection.canMarkConflictResolved, isFalse);
+  });
 
   test('native file targets stay inside the current work tree', () {
     final repository = GitRepository(

@@ -1371,6 +1371,76 @@ void main() {
     },
   );
 
+  test('continues a conflicted merge after its resolution is staged', () async {
+    await fixture.writeFile('README.md', 'base\n');
+    await fixture.commit('Initial commit');
+    await fixture.runGit(['branch', 'feature/conflict']);
+    await fixture.runGit(['switch', 'feature/conflict']);
+    await fixture.writeFile('README.md', 'feature\n');
+    await fixture.commit('Feature change');
+    await fixture.runGit(['switch', 'main']);
+    await fixture.writeFile('README.md', 'main\n');
+    await fixture.commit('Main change');
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+    await expectLater(
+      writer.mergeLocalBranch(repository, sourceName: 'feature/conflict'),
+      throwsA(isA<GitCommandException>()),
+    );
+    await fixture.writeFile('README.md', 'resolved\n');
+    await fixture.runGit(['add', '--', 'README.md']);
+
+    await writer.continueMerge(repository);
+
+    expect(
+      await reader.readOperationState(repository),
+      GitRepositoryOperationState.none,
+    );
+    expect(
+      (await reader.readRecentHistory(repository)).first.parentIds,
+      hasLength(2),
+    );
+  });
+
+  test(
+    'aborts a conflicted merge and restores its original branch state',
+    () async {
+      await fixture.writeFile('README.md', 'base\n');
+      await fixture.commit('Initial commit');
+      await fixture.runGit(['branch', 'feature/conflict']);
+      await fixture.runGit(['switch', 'feature/conflict']);
+      await fixture.writeFile('README.md', 'feature\n');
+      await fixture.commit('Feature change');
+      await fixture.runGit(['switch', 'main']);
+      await fixture.writeFile('README.md', 'main\n');
+      final mainHead = await fixture.commit('Main change');
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+      await expectLater(
+        writer.mergeLocalBranch(repository, sourceName: 'feature/conflict'),
+        throwsA(isA<GitCommandException>()),
+      );
+
+      await writer.abortMerge(repository);
+
+      expect(
+        await reader.readOperationState(repository),
+        GitRepositoryOperationState.none,
+      );
+      expect((await reader.readStatus(repository)).isClean, isTrue);
+      expect(
+        (await fixture.runGit(['rev-parse', 'HEAD'])).stdout.toString().trim(),
+        mainHead,
+      );
+      expect(
+        await File('${fixture.workingDirectory.path}/README.md').readAsString(),
+        'main\n',
+      );
+    },
+  );
+
   test('initializes an empty directory without relying on a shell', () async {
     final directory = await Directory.systemTemp.createTemp(
       'git-desktop-init-',

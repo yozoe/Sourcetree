@@ -75,6 +75,17 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testRepositoryOperationMenuNamesUseStableProtocolIdentifiers() {
+    XCTAssertEqual(GitDesktopRepositoryOperation(rawValue: "merge")?.menuName, "合并")
+    XCTAssertEqual(GitDesktopRepositoryOperation(rawValue: "rebase")?.menuName, "变基")
+    XCTAssertEqual(
+      GitDesktopRepositoryOperation(rawValue: "cherryPick")?.menuName,
+      "遴选"
+    )
+    XCTAssertEqual(GitDesktopRepositoryOperation(rawValue: "revert")?.menuName, "回滚")
+    XCTAssertNil(GitDesktopRepositoryOperation(rawValue: "unknown"))
+  }
+
   func testWorkspaceFileMenuTargetsValidateExistenceAndRepositoryBoundary() throws {
     let root = FileManager.default.temporaryDirectory.appendingPathComponent(
       "git-desktop-native-file-menu-\(UUID().uuidString)",

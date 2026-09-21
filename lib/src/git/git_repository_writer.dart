@@ -1288,6 +1288,63 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Merging commit');
   }
 
+  /// Continues a paused merge after every conflict resolution is staged. A
+  /// no-op editor preserves Git's prepared merge message without blocking UI.
+  ///
+  /// 中文：在所有冲突解决结果已暂存后继续合并；使用无交互编辑器保留 Git
+  /// 准备的合并信息，避免阻塞界面。
+  Future<void> continueMerge(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+  }) => _runMergeRecoveryCommand(
+    repository,
+    argument: '--continue',
+    operation: 'Continuing merge',
+    useNoopEditor: true,
+    cancellationToken: cancellationToken,
+  );
+
+  /// Aborts a paused merge and asks Git to restore its pre-merge state.
+  /// 中文：中止暂停的合并，并由 Git 尝试恢复到合并前状态。
+  Future<void> abortMerge(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+  }) => _runMergeRecoveryCommand(
+    repository,
+    argument: '--abort',
+    operation: 'Aborting merge',
+    useNoopEditor: false,
+    cancellationToken: cancellationToken,
+  );
+
+  /// Runs one merge recovery command without a shell.
+  /// 中文：不经过 shell 执行一次合并恢复命令。
+  Future<void> _runMergeRecoveryCommand(
+    GitRepository repository, {
+    required String argument,
+    required String operation,
+    required bool useNoopEditor,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          if (useNoopEditor) ...['-c', 'core.editor=true'],
+          'merge',
+          argument,
+        ],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 1024 * 1024,
+          stderrBytes: 1024 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: operation);
+  }
+
   /// Initializes an existing empty directory without changing Git settings.
   /// 中文：初始化当前功能。
   /// English: Initializes the current feature.

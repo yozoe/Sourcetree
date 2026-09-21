@@ -1681,6 +1681,30 @@ final class RepositorySessionController
   Future<bool> abortRebase() =>
       _trackBooleanGitTask(() => _finishPausedRebase(abort: true));
 
+  /// Continues a paused merge after all conflict resolutions are staged.
+  /// 中文：在所有冲突解决结果已暂存后继续暂停的合并。
+  Future<bool> continueMerge() => _trackBooleanGitTask(
+    () => _finishPausedRepositoryOperation(
+      expectedState: GitRepositoryOperationState.merge,
+      successMessage: '已继续合并。',
+      conflictMessage: '合并仍有冲突。请解决冲突并暂存后继续，或选择中止合并。',
+      run: (repository, cancellation) =>
+          _writer.continueMerge(repository, cancellationToken: cancellation),
+    ),
+  );
+
+  /// Aborts a paused merge and asks Git to restore the pre-merge state.
+  /// 中文：中止暂停的合并，并由 Git 尝试恢复到合并前状态。
+  Future<bool> abortMerge() => _trackBooleanGitTask(
+    () => _finishPausedRepositoryOperation(
+      expectedState: GitRepositoryOperationState.merge,
+      successMessage: '已中止合并。',
+      conflictMessage: '中止合并失败；请检查当前工作区状态后重试。',
+      run: (repository, cancellation) =>
+          _writer.abortMerge(repository, cancellationToken: cancellation),
+    ),
+  );
+
   Future<bool> _finishPausedRebase({required bool abort}) async {
     final repository = state.repository;
     if (repository == null ||
@@ -1753,7 +1777,7 @@ final class RepositorySessionController
   /// Continues a paused cherry-pick after conflict fixes have been staged.
   /// 中文：暂存冲突修复后继续暂停的遴选。
   Future<bool> continueCherryPick() => _trackBooleanGitTask(
-    () => _finishPausedSequencer(
+    () => _finishPausedRepositoryOperation(
       expectedState: GitRepositoryOperationState.cherryPick,
       successMessage: '已继续遴选。',
       conflictMessage: '遴选仍有冲突。请解决冲突并暂存后继续，或选择中止遴选。',
@@ -1767,7 +1791,7 @@ final class RepositorySessionController
   /// Aborts a paused cherry-pick and restores its pre-pick branch state.
   /// 中文：中止暂停的遴选并恢复遴选前状态。
   Future<bool> abortCherryPick() => _trackBooleanGitTask(
-    () => _finishPausedSequencer(
+    () => _finishPausedRepositoryOperation(
       expectedState: GitRepositoryOperationState.cherryPick,
       successMessage: '已中止遴选。',
       conflictMessage: '遴选仍有冲突。',
@@ -1779,7 +1803,7 @@ final class RepositorySessionController
   /// Continues a paused revert after conflict fixes have been staged.
   /// 中文：暂存冲突修复后继续暂停的回滚。
   Future<bool> continueRevert() => _trackBooleanGitTask(
-    () => _finishPausedSequencer(
+    () => _finishPausedRepositoryOperation(
       expectedState: GitRepositoryOperationState.revert,
       successMessage: '已继续回滚。',
       conflictMessage: '回滚仍有冲突。请解决冲突并暂存后继续，或选择中止回滚。',
@@ -1791,7 +1815,7 @@ final class RepositorySessionController
   /// Aborts a paused revert and restores its pre-revert branch state.
   /// 中文：中止暂停的回滚并恢复回滚前状态。
   Future<bool> abortRevert() => _trackBooleanGitTask(
-    () => _finishPausedSequencer(
+    () => _finishPausedRepositoryOperation(
       expectedState: GitRepositoryOperationState.revert,
       successMessage: '已中止回滚。',
       conflictMessage: '回滚仍有冲突。',
@@ -1800,7 +1824,11 @@ final class RepositorySessionController
     ),
   );
 
-  Future<bool> _finishPausedSequencer({
+  /// Runs a paused merge, cherry-pick, or revert recovery command after
+  /// revalidating the operation marker, then refreshes authoritative state.
+  ///
+  /// 中文：复核操作标记后执行暂停中的合并、遴选或回滚恢复命令，并刷新真实状态。
+  Future<bool> _finishPausedRepositoryOperation({
     required GitRepositoryOperationState expectedState,
     required String successMessage,
     required String conflictMessage,
@@ -1809,7 +1837,8 @@ final class RepositorySessionController
     final repository = state.repository;
     if (repository == null ||
         state.operationState != expectedState ||
-        state.phase == RepositorySessionPhase.loading) {
+        state.phase == RepositorySessionPhase.loading ||
+        state.isWorkingTreeBusy) {
       return false;
     }
     final cancellation = GitCancellationToken();
@@ -4774,7 +4803,7 @@ final class RepositorySessionController
           hasConflicts ||
               (error is GitCommandException &&
                   error.kind == GitErrorKind.conflicts)
-          ? '合并遇到冲突。请处理冲突后使用 Git 命令行继续或中止合并，再刷新仓库。'
+          ? '合并遇到冲突。请处理并暂存冲突后，从“动作”菜单继续或中止合并。'
           : _friendlyError(error);
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
@@ -4825,7 +4854,7 @@ final class RepositorySessionController
           hasConflicts ||
               (error is GitCommandException &&
                   error.kind == GitErrorKind.conflicts)
-          ? '合并遇到冲突。请处理冲突后使用 Git 命令行继续或中止合并，再刷新仓库。'
+          ? '合并遇到冲突。请处理并暂存冲突后，从“动作”菜单继续或中止合并。'
           : _friendlyError(error);
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
@@ -4937,7 +4966,7 @@ final class RepositorySessionController
           objectId: objectId,
           requireCleanWorkTree: true,
           successMessage: '已创建回滚提交。',
-          conflictMessage: '回滚遇到冲突。请解决冲突后使用 Git 命令行继续或中止回滚，再刷新仓库。',
+          conflictMessage: '回滚遇到冲突。请解决并暂存冲突后，从“动作”菜单继续或中止回滚。',
           run: (repository, cancellation) => _writer.revertCommit(
             repository,
             objectId: objectId,
@@ -4955,7 +4984,7 @@ final class RepositorySessionController
           objectId: objectId,
           requireCleanWorkTree: true,
           successMessage: '已遴选提交。',
-          conflictMessage: '遴选遇到冲突。请解决冲突后使用 Git 命令行继续或中止遴选，再刷新仓库。',
+          conflictMessage: '遴选遇到冲突。请解决并暂存冲突后，从“动作”菜单继续或中止遴选。',
           run: (repository, cancellation) => _writer.cherryPickCommit(
             repository,
             objectId: objectId,
