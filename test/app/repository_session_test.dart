@@ -2220,6 +2220,208 @@ void main() {
     },
   );
 
+  test('commit all excludes a purely untracked file', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('tracked.txt', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.writeFile('tracked.txt', 'changed\n');
+    await repository.writeFile('untracked.txt', 'excluded\n');
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(
+      await controller.createCommitFromAllTracked('Commit tracked changes'),
+      isTrue,
+    );
+
+    expect(
+      (await repository.runGit(['show', 'HEAD:tracked.txt'])).stdout,
+      'changed\n',
+    );
+    final state = container.read(repositorySessionProvider);
+    expect(state.status!.entries.single.path.display, 'untracked.txt');
+  });
+
+  test(
+    'commit all revalidates that its previewed scope still exists',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('tracked.txt', 'base\n');
+      final originalHead = await repository.commit('Initial commit');
+      await repository.writeFile('tracked.txt', 'previewed change\n');
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      await repository.runGit(['restore', '--', 'tracked.txt']);
+
+      expect(
+        await controller.createCommitFromAllTracked('Stale commit all'),
+        isFalse,
+      );
+
+      expect(
+        (await repository.runGit([
+          'rev-parse',
+          'HEAD',
+        ])).stdout.toString().trim(),
+        originalHead,
+      );
+      expect(
+        container.read(repositorySessionProvider).phase,
+        RepositorySessionPhase.ready,
+      );
+    },
+  );
+
+  test('commit selection excludes an unrelated staged file', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('selected.txt', 'base\n');
+    await repository.writeFile('other.txt', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.writeFile('selected.txt', 'selected change\n');
+    await repository.writeFile('other.txt', 'other change\n');
+    await repository.runGit(['add', '--', 'other.txt']);
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final selected =
+        mapRepositoryOverview(container.read(repositorySessionProvider))
+            .repository!
+            .changes
+            .singleWhere((change) => change.path == 'selected.txt');
+
+    expect(
+      await controller.createCommitFromSelection('Commit selection', [
+        selected,
+      ]),
+      isTrue,
+    );
+
+    expect(
+      (await repository.runGit(['show', 'HEAD:selected.txt'])).stdout,
+      'selected change\n',
+    );
+    expect(
+      (await repository.runGit(['show', 'HEAD:other.txt'])).stdout,
+      'base\n',
+    );
+    final state = container.read(repositorySessionProvider);
+    expect(state.status!.stagedEntries.single.path.display, 'other.txt');
+  });
+
+  test('commit selection includes both sides of a staged rename', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('old-name.txt', 'content\n');
+    await repository.commit('Initial commit');
+    await repository.runGit(['mv', '--', 'old-name.txt', 'new-name.txt']);
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final selected = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.changes.single;
+
+    expect(
+      await controller.createCommitFromSelection('Commit rename', [selected]),
+      isTrue,
+    );
+
+    expect(
+      (await repository.runGit(['show', 'HEAD:new-name.txt'])).stdout,
+      'content\n',
+    );
+    expect(
+      (await repository.runGit([
+        'cat-file',
+        '-e',
+        'HEAD:old-name.txt',
+      ], throwOnError: false)).exitCode,
+      isNot(0),
+    );
+    expect(container.read(repositorySessionProvider).status!.entries, isEmpty);
+  });
+
+  test(
+    'failed selected new-file commit refreshes intent-to-add state',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('tracked.txt', 'base\n');
+      final originalHead = await repository.commit('Initial commit');
+      await repository.writeFile('new.txt', 'new content\n');
+      final hook = File(
+        '${repository.workingDirectory.path}/.git/hooks/pre-commit',
+      );
+      await hook.writeAsString('#!/bin/sh\nexit 1\n', flush: true);
+      final chmod = await Process.run('/bin/chmod', ['0755', hook.path]);
+      expect(chmod.exitCode, 0, reason: chmod.stderr.toString());
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      final selected = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!.changes.single;
+
+      expect(
+        await controller.createCommitFromSelection('Rejected by hook', [
+          selected,
+        ]),
+        isFalse,
+      );
+
+      expect(
+        (await repository.runGit([
+          'rev-parse',
+          'HEAD',
+        ])).stdout.toString().trim(),
+        originalHead,
+      );
+      final state = container.read(repositorySessionProvider);
+      expect(state.phase, RepositorySessionPhase.error);
+      expect(state.status!.entries.single.path.display, 'new.txt');
+      expect(state.status!.entries.single.hasWorkTreeChange, isTrue);
+    },
+  );
+
+  test('commit selection rejects a file changed after its preview', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('selected.txt', 'base\n');
+    final originalHead = await repository.commit('Initial commit');
+    await repository.writeFile('selected.txt', 'previewed change\n');
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final selected = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.changes.single;
+    await repository.runGit(['restore', '--', 'selected.txt']);
+
+    expect(
+      await controller.createCommitFromSelection('Stale selection', [selected]),
+      isFalse,
+    );
+    expect(
+      (await repository.runGit(['rev-parse', 'HEAD'])).stdout.toString().trim(),
+      originalHead,
+    );
+    expect(
+      container.read(repositorySessionProvider).phase,
+      RepositorySessionPhase.ready,
+    );
+  });
+
   test('amends the current commit and refreshes the session', () async {
     final repository = await GitTestRepository.create();
     addTearDown(repository.dispose);

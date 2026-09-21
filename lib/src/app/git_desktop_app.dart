@@ -80,6 +80,8 @@ bool _isLoadedAncestorOfHead({
   bool canAddRemote,
   bool canApplyPatch,
   bool canCheckout,
+  bool canCommitAll,
+  bool canCommitSelected,
   bool canCreateBranch,
   bool canCommit,
   bool canFetch,
@@ -135,10 +137,26 @@ nativeWorkspaceMenuAvailability(
                     );
               })) ||
           repository.commits.any((commit) => commit.oid != repository.headOid));
+  final commitAllChanges =
+      repository?.changes
+          .where(
+            (change) =>
+                change.isStaged ||
+                change.kind != RepositoryChangeKind.untracked,
+          )
+          .toList(growable: false) ??
+      const <RepositoryChangeViewData>[];
+  final canCommitSelection =
+      menuSelection.isNotEmpty &&
+      menuSelection.every(
+        (change) => change.isActionEnabled && change.isPathValidUtf8,
+      );
   return (
     canAddRemote: canApplyPatch,
     canApplyPatch: canApplyPatch,
     canCheckout: canApplyPatch && hasCheckoutTarget,
+    canCommitAll: canApplyPatch && commitAllChanges.isNotEmpty,
+    canCommitSelected: canApplyPatch && canCommitSelection,
     canFetch:
         session.phase == RepositorySessionPhase.ready &&
         repository != null &&
@@ -588,6 +606,8 @@ enum _RebasePromptAction { continueRebase, abort, cancel }
 
 enum _RepositoryCheckoutTargetKind { localBranch, remoteBranch, commit }
 
+enum _CommitScope { stagedIndex, allTracked, selectedPaths }
+
 typedef _RepositoryCheckoutTarget = ({
   String id,
   _RepositoryCheckoutTargetKind kind,
@@ -635,6 +655,8 @@ class _RepositoryWorkspaceScreenState
   bool? _lastNativeStopTrackingAvailability;
   bool? _lastNativeApplyPatchAvailability;
   bool? _lastNativeCheckoutAvailability;
+  bool? _lastNativeCommitAllAvailability;
+  bool? _lastNativeCommitSelectedAvailability;
   bool? _lastNativeCommitAvailability;
   bool? _lastNativeFetchAvailability;
   bool? _lastNativeInteractiveRebaseAvailability;
@@ -719,6 +741,42 @@ class _RepositoryWorkspaceScreenState
             false) {
           _showCommitDialog();
         }
+      case 'commitAll':
+        final session = ref.read(repositorySessionProvider);
+        final overview = mapRepositoryOverview(session);
+        final availability = nativeWorkspaceMenuAvailability(
+          session,
+          overview,
+          selectedChanges: _nativeSelectedChanges(overview),
+        );
+        if (availability.canCommitAll) {
+          await _showCommitDialog(scope: _CommitScope.allTracked);
+          return;
+        }
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('当前没有可由“提交所有”包含的已跟踪改动。')));
+      case 'commitSelected':
+        final session = ref.read(repositorySessionProvider);
+        final overview = mapRepositoryOverview(session);
+        final selected = _nativeSelectedChanges(overview);
+        final availability = nativeWorkspaceMenuAvailability(
+          session,
+          overview,
+          selectedChanges: selected,
+        );
+        if (availability.canCommitSelected) {
+          await _showCommitDialog(
+            scope: _CommitScope.selectedPaths,
+            selectedChanges: selected,
+          );
+          return;
+        }
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('请选择至少一个可提交的工作区文件。')));
       case 'checkout':
         await _showCheckoutDialog();
       case 'merge':
@@ -900,6 +958,8 @@ class _RepositoryWorkspaceScreenState
     final canAddRemote = availability.canAddRemote;
     final canApplyPatch = availability.canApplyPatch;
     final canCheckout = availability.canCheckout;
+    final canCommitAll = availability.canCommitAll;
+    final canCommitSelected = availability.canCommitSelected;
     final canCommit = availability.canCommit;
     final canFetch = availability.canFetch;
     final canInteractiveRebase = availability.canInteractiveRebase;
@@ -927,6 +987,8 @@ class _RepositoryWorkspaceScreenState
         _lastNativeStopTrackingAvailability == canStopTracking &&
         _lastNativeApplyPatchAvailability == canApplyPatch &&
         _lastNativeCheckoutAvailability == canCheckout &&
+        _lastNativeCommitAllAvailability == canCommitAll &&
+        _lastNativeCommitSelectedAvailability == canCommitSelected &&
         _lastNativeCommitAvailability == canCommit &&
         _lastNativeFetchAvailability == canFetch &&
         _lastNativeInteractiveRebaseAvailability == canInteractiveRebase &&
@@ -946,6 +1008,8 @@ class _RepositoryWorkspaceScreenState
     _lastNativeStopTrackingAvailability = canStopTracking;
     _lastNativeApplyPatchAvailability = canApplyPatch;
     _lastNativeCheckoutAvailability = canCheckout;
+    _lastNativeCommitAllAvailability = canCommitAll;
+    _lastNativeCommitSelectedAvailability = canCommitSelected;
     _lastNativeCommitAvailability = canCommit;
     _lastNativeFetchAvailability = canFetch;
     _lastNativeInteractiveRebaseAvailability = canInteractiveRebase;
@@ -965,6 +1029,8 @@ class _RepositoryWorkspaceScreenState
         canStopTracking: canStopTracking,
         canApplyPatch: canApplyPatch,
         canCheckout: canCheckout,
+        canCommitAll: canCommitAll,
+        canCommitSelected: canCommitSelected,
         canCommit: canCommit,
         canFetch: canFetch,
         canInteractiveRebase: canInteractiveRebase,
@@ -1089,8 +1155,8 @@ class _RepositoryWorkspaceScreenState
     _handleAction(action);
   }
 
-  /// 中文：显示相应界面或信息。
-  /// English: Shows the corresponding UI or information.
+  /// Shows one queued Git credential prompt and returns the submitted secret.
+  /// 中文：显示一个串行 Git 凭据提示，并返回用户提交的秘密值。
   Future<void> _showAskPassPrompt(GitAskPassRequest request) async {
     final secret = await showGitAskPassPromptDialog(context, request);
     if (!mounted) {
@@ -1830,20 +1896,37 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
-  /// 中文：显示相应界面或信息。
-  /// English: Shows the corresponding UI or information.
-  Future<void> _showCommitDialog() async {
+  /// Opens the standard, all-tracked, or selected-path commit workflow and
+  /// delegates the confirmed scope to the repository application layer.
+  ///
+  /// 中文：打开普通、全部已跟踪或所选路径提交流程，并将确认范围交给仓库应用层。
+  Future<void> _showCommitDialog({
+    _CommitScope scope = _CommitScope.stagedIndex,
+    List<RepositoryChangeViewData> selectedChanges = const [],
+  }) async {
     final result = await showDialog<_CommitDialogResult>(
       context: context,
-      builder: (BuildContext context) => const _CommitDialog(),
+      builder: (BuildContext context) =>
+          _CommitDialog(scope: scope, selectedChanges: selectedChanges),
     );
     if (result == null || !mounted) {
       return;
     }
 
-    final created = await ref
-        .read(repositorySessionProvider.notifier)
-        .createCommit(result.message, amend: result.amend);
+    final controller = ref.read(repositorySessionProvider.notifier);
+    final created = switch (scope) {
+      _CommitScope.stagedIndex => await controller.createCommit(
+        result.message,
+        amend: result.amend,
+      ),
+      _CommitScope.allTracked => await controller.createCommitFromAllTracked(
+        result.message,
+      ),
+      _CommitScope.selectedPaths => await controller.createCommitFromSelection(
+        result.message,
+        selectedChanges,
+      ),
+    };
     if (!mounted) {
       return;
     }
@@ -1860,9 +1943,14 @@ class _RepositoryWorkspaceScreenState
       );
       return;
     }
+    final failureMessage = switch (scope) {
+      _CommitScope.selectedPaths => '提交选中项未完成；Git 状态已刷新，所选新文件可能保留为待添加状态。',
+      _CommitScope.allTracked => '提交所有未完成；Git 状态已刷新，请查看仓库错误信息。',
+      _CommitScope.stagedIndex => '提交未完成，请查看仓库错误信息。',
+    };
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(
-        content: Text(created ? '已创建提交。' : '提交未完成，请查看仓库错误信息。'),
+        content: Text(created ? '已创建提交。' : failureMessage),
         duration: const Duration(seconds: 3),
       ),
     );
@@ -6217,7 +6305,13 @@ final class _CommitDialogResult {
 }
 
 class _CommitDialog extends ConsumerStatefulWidget {
-  const _CommitDialog();
+  const _CommitDialog({
+    this.scope = _CommitScope.stagedIndex,
+    this.selectedChanges = const [],
+  });
+
+  final _CommitScope scope;
+  final List<RepositoryChangeViewData> selectedChanges;
 
   /// 中文：创建关联的状态对象。
   /// English: Creates the associated state object.
@@ -8278,6 +8372,21 @@ class _CommitDialogState extends ConsumerState<_CommitDialog> {
     final changes = repository?.changes ?? const <RepositoryChangeViewData>[];
     final staged = changes.where((change) => change.isStaged).toList();
     final unstaged = changes.where((change) => !change.isStaged).toList();
+    final fixedScopeChanges = <RepositoryChangeViewData>[];
+    final fixedScopeSource = switch (widget.scope) {
+      _CommitScope.stagedIndex => const <RepositoryChangeViewData>[],
+      _CommitScope.allTracked => changes.where(
+        (change) =>
+            change.isStaged || change.kind != RepositoryChangeKind.untracked,
+      ),
+      _CommitScope.selectedPaths => widget.selectedChanges,
+    };
+    for (final change in fixedScopeSource) {
+      if (!fixedScopeChanges.any((item) => item.path == change.path)) {
+        fixedScopeChanges.add(change);
+      }
+    }
+    final hasFixedScope = widget.scope != _CommitScope.stagedIndex;
     final isBusy =
         session.phase == RepositorySessionPhase.loading ||
         session.operationState != GitRepositoryOperationState.none;
@@ -8302,11 +8411,14 @@ class _CommitDialogState extends ConsumerState<_CommitDialog> {
         !branch.isDetached &&
         (session.hasOriginRemote || branch.upstream != null);
     final amendAvailable =
+        !hasFixedScope &&
         !isBusy &&
         branch != null &&
         branch.objectId != null &&
         !branch.isDetached;
-    final canSubmit = staged.isNotEmpty || _amend;
+    final canSubmit = hasFixedScope
+        ? fixedScopeChanges.isNotEmpty
+        : staged.isNotEmpty || _amend;
     final pushOptionAvailable = pushAvailable && !_amend;
 
     Widget changeList(String title, List<RepositoryChangeViewData> entries) {
@@ -8360,8 +8472,19 @@ class _CommitDialogState extends ConsumerState<_CommitDialog> {
       );
     }
 
+    final title = switch (widget.scope) {
+      _CommitScope.stagedIndex => '提交工作区改动',
+      _CommitScope.allTracked => '提交所有已跟踪改动',
+      _CommitScope.selectedPaths => '提交选中项',
+    };
+    final scopeDescription = switch (widget.scope) {
+      _CommitScope.stagedIndex => '选择要提交的文件',
+      _CommitScope.allTracked => '以下已跟踪改动和已暂存文件将被提交；纯未跟踪文件不会包含。',
+      _CommitScope.selectedPaths => '只提交以下路径的当前完整内容；其他已暂存文件仍保留在索引中。',
+    };
+
     return AlertDialog(
-      title: const Text('提交工作区改动'),
+      title: Text(title),
       content: SizedBox(
         width: 760,
         height: 560,
@@ -8370,7 +8493,10 @@ class _CommitDialogState extends ConsumerState<_CommitDialog> {
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Text('选择要提交的文件', style: Theme.of(context).textTheme.titleSmall),
+              Text(
+                scopeDescription,
+                style: Theme.of(context).textTheme.titleSmall,
+              ),
               const SizedBox(height: 8),
               Expanded(
                 child: DecoratedBox(
@@ -8380,8 +8506,30 @@ class _CommitDialogState extends ConsumerState<_CommitDialog> {
                     ),
                     borderRadius: BorderRadius.circular(4),
                   ),
-                  child: changes.isEmpty
+                  child: (hasFixedScope ? fixedScopeChanges : changes).isEmpty
                       ? const Center(child: Text('工作区没有待提交的改动。'))
+                      : hasFixedScope
+                      ? ListView(
+                          padding: EdgeInsets.zero,
+                          children: [
+                            for (final change in fixedScopeChanges)
+                              ListTile(
+                                dense: true,
+                                visualDensity: VisualDensity.compact,
+                                leading: const Icon(
+                                  Icons.check_circle_outline,
+                                  size: 18,
+                                ),
+                                title: Text(
+                                  change.path,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                                subtitle: change.previousPath == null
+                                    ? null
+                                    : Text('来自 ${change.previousPath}'),
+                              ),
+                          ],
+                        )
                       : ListView(
                           padding: EdgeInsets.zero,
                           children: [
@@ -8447,7 +8595,11 @@ class _CommitDialogState extends ConsumerState<_CommitDialog> {
                       })
                     : null,
                 title: const Text('更正上一次提交'),
-                subtitle: amendAvailable ? null : const Text('当前分支没有可更正的提交。'),
+                subtitle: amendAvailable
+                    ? null
+                    : Text(
+                        hasFixedScope ? '范围提交不支持同时更正上一次提交。' : '当前分支没有可更正的提交。',
+                      ),
                 controlAffinity: ListTileControlAffinity.leading,
               ),
             ],

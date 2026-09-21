@@ -3760,6 +3760,163 @@ final class RepositorySessionController
       await _trackGitTask<bool>(() => _createCommit(message, amend: amend)) ??
       false;
 
+  /// Commits all tracked modifications and deletions together with files that
+  /// are already staged, while leaving purely untracked files untouched.
+  ///
+  /// 中文：提交全部已跟踪修改和删除以及此前已暂存的文件；纯未跟踪文件保持不变。
+  Future<bool> createCommitFromAllTracked(String message) =>
+      _trackBooleanGitTask(() => _createCommitFromAllTracked(message));
+
+  /// 中文：在关闭屏障内执行“提交所有”，并在执行前以及成功或失败后重读真实 Git 状态。
+  /// English: Performs Commit All inside the shutdown barrier and refreshes
+  /// real Git state before execution and after either success or failure.
+  Future<bool> _createCommitFromAllTracked(String message) async {
+    if (message.trim().isEmpty) {
+      throw ArgumentError.value(message, 'message', 'Commit message is empty.');
+    }
+    if (state.phase == RepositorySessionPhase.loading ||
+        state.isWorkingTreeBusy ||
+        state.operationState != GitRepositoryOperationState.none) {
+      return false;
+    }
+
+    await refresh();
+    final repository = state.repository;
+    final status = state.status;
+    final hasEligibleChange =
+        status?.entries.any(
+          (entry) =>
+              entry.hasStagedChange ||
+              entry.kind != GitFileStatusKind.untracked &&
+                  entry.hasWorkTreeChange,
+        ) ??
+        false;
+    if (repository == null ||
+        status == null ||
+        !hasEligibleChange ||
+        status.conflictedEntries.isNotEmpty ||
+        state.phase != RepositorySessionPhase.ready) {
+      return false;
+    }
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.createCommitFromAllTracked(repository, message: message);
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      await refresh();
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      return false;
+    }
+  }
+
+  /// Commits only the current work-tree versions of the selected visible file
+  /// paths, excluding every unrelated staged path from the new commit.
+  ///
+  /// 中文：仅提交所选可见文件路径的当前工作副本版本，并从新提交中排除所有未选中的已暂存路径。
+  Future<bool> createCommitFromSelection(
+    String message,
+    List<RepositoryChangeViewData> changes,
+  ) => _trackBooleanGitTask(() => _createCommitFromSelection(message, changes));
+
+  /// Revalidates the selected rows against a fresh status snapshot before a
+  /// path-only commit. Renames include both old and new paths.
+  ///
+  /// 中文：路径限定提交前基于最新状态复核所选行；重命名会同时包含旧路径和新路径。
+  Future<bool> _createCommitFromSelection(
+    String message,
+    List<RepositoryChangeViewData> changes,
+  ) async {
+    if (changes.isEmpty ||
+        message.trim().isEmpty ||
+        state.phase == RepositorySessionPhase.loading ||
+        state.isWorkingTreeBusy ||
+        state.operationState != GitRepositoryOperationState.none) {
+      return false;
+    }
+    if (changes.any(
+      (change) => !change.isActionEnabled || !change.isPathValidUtf8,
+    )) {
+      return false;
+    }
+
+    await refresh();
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        state.phase != RepositorySessionPhase.ready ||
+        status.conflictedEntries.isNotEmpty) {
+      return false;
+    }
+
+    final paths = <GitPath>[];
+    final untrackedPaths = <GitPath>[];
+    for (final change in changes) {
+      final entry = status.displayEntries
+          .where((candidate) => candidate.path.display == change.path)
+          .firstOrNull;
+      final stillInSelectedSource = change.isStaged
+          ? entry?.hasStagedChange == true
+          : entry?.hasWorkTreeChange == true;
+      if (entry == null ||
+          entry.isConflicted ||
+          !entry.path.isValidUtf8 ||
+          !stillInSelectedSource) {
+        return false;
+      }
+      if (!paths.contains(entry.path)) paths.add(entry.path);
+      final originalPath = entry.originalPath;
+      if (originalPath != null && !paths.contains(originalPath)) {
+        paths.add(originalPath);
+      }
+      if (entry.kind == GitFileStatusKind.untracked &&
+          !untrackedPaths.contains(entry.path)) {
+        untrackedPaths.add(entry.path);
+      }
+    }
+    if (paths.isEmpty) return false;
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    try {
+      await _writer.createCommitFromPaths(
+        repository,
+        message: message,
+        paths: paths,
+        untrackedPaths: untrackedPaths,
+      );
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      await refresh();
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: _friendlyError(error),
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      return false;
+    }
+  }
+
   /// 中文：执行提交写入并在完成后刷新状态。
   /// English: Performs the commit write and refreshes state after completion.
   Future<bool> _createCommit(String message, {required bool amend}) async {

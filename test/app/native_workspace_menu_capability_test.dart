@@ -70,6 +70,12 @@ void main() {
           name: 'example',
           path: '/tmp/example',
           currentBranch: 'main',
+          changes: [
+            RepositoryChangeViewData(
+              path: 'lib/example.dart',
+              kind: RepositoryChangeKind.modified,
+            ),
+          ],
           selectedChange: RepositoryChangeViewData(
             path: 'lib/example.dart',
             kind: RepositoryChangeKind.modified,
@@ -85,6 +91,42 @@ void main() {
             path: 'lib/example.dart',
             kind: RepositoryChangeKind.modified,
             isStaged: true,
+          ),
+        ),
+      );
+      const untrackedSelection = RepositoryOverviewViewData.ready(
+        RepositoryViewData(
+          name: 'example',
+          path: '/tmp/example',
+          currentBranch: 'main',
+          changes: [
+            RepositoryChangeViewData(
+              path: 'new.txt',
+              kind: RepositoryChangeKind.untracked,
+            ),
+          ],
+          selectedChange: RepositoryChangeViewData(
+            path: 'new.txt',
+            kind: RepositoryChangeKind.untracked,
+          ),
+        ),
+      );
+      const nonUtf8TrackedSelection = RepositoryOverviewViewData.ready(
+        RepositoryViewData(
+          name: 'example',
+          path: '/tmp/example',
+          currentBranch: 'main',
+          changes: [
+            RepositoryChangeViewData(
+              path: 'invalid-�.txt',
+              kind: RepositoryChangeKind.modified,
+              isPathValidUtf8: false,
+            ),
+          ],
+          selectedChange: RepositoryChangeViewData(
+            path: 'invalid-�.txt',
+            kind: RepositoryChangeKind.modified,
+            isPathValidUtf8: false,
           ),
         ),
       );
@@ -201,6 +243,14 @@ void main() {
       );
       expect(
         nativeWorkspaceMenuAvailability(session, available).canCheckout,
+        isFalse,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(session, available).canCommitAll,
+        isFalse,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(session, available).canCommitSelected,
         isFalse,
       );
       expect(
@@ -363,6 +413,48 @@ void main() {
         nativeWorkspaceMenuAvailability(
           session,
           unstagedSelection,
+        ).canCommitAll,
+        isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          unstagedSelection,
+        ).canCommitSelected,
+        isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          untrackedSelection,
+        ).canCommitAll,
+        isFalse,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          untrackedSelection,
+        ).canCommitSelected,
+        isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          nonUtf8TrackedSelection,
+        ).canCommitAll,
+        isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          nonUtf8TrackedSelection,
+        ).canCommitSelected,
+        isFalse,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          unstagedSelection,
         ).canRemoveSelected,
         isTrue,
       );
@@ -453,6 +545,8 @@ void main() {
         canAddRemote: false,
         canApplyPatch: false,
         canCheckout: false,
+        canCommitAll: false,
+        canCommitSelected: false,
         canCommit: false,
         canCreateBranch: false,
         canFetch: false,

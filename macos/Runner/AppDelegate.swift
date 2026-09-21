@@ -644,6 +644,14 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// 仍由 Flutter 显示影响说明并交给 Git 判断工作区改动是否可安全保留。
   private(set) var canCheckoutFromMenu = false
 
+  /// Flutter's last validated Commit All availability for this Engine.
+  /// 中文：此 Engine 最近一次由 Flutter 校验的“提交所有”可用状态。
+  private(set) var canCommitAllFromMenu = false
+
+  /// Flutter's last validated Commit Selected availability for this Engine.
+  /// 中文：此 Engine 最近一次由 Flutter 校验的“提交选中项”可用状态。
+  private(set) var canCommitSelectedFromMenu = false
+
   /// Flutter's last validated Fetch availability for this Engine.
   ///
   /// 中文：此 Engine 最近一次由 Flutter 校验的“抓取”可用状态；实际执行仍由
@@ -946,6 +954,9 @@ final class WorkspaceFlutterWindowController: NSWindowController,
         canStopTrackingFromMenu = arguments?["canStopTracking"] as? Bool ?? false
         canApplyPatchFromMenu = arguments?["canApplyPatch"] as? Bool ?? false
         canCheckoutFromMenu = arguments?["canCheckout"] as? Bool ?? false
+        canCommitAllFromMenu = arguments?["canCommitAll"] as? Bool ?? false
+        canCommitSelectedFromMenu =
+          arguments?["canCommitSelected"] as? Bool ?? false
         canCommitFromMenu = arguments?["canCommit"] as? Bool ?? false
         canFetchFromMenu = arguments?["canFetch"] as? Bool ?? false
         canInteractiveRebaseFromMenu =
@@ -1334,6 +1345,18 @@ final class WindowCoordinator {
   /// 中文：当前前台工作区是否至少有一个可选择的安全检出目标。
   var canCheckoutFromMenu: Bool {
     currentWorkspaceController?.canCheckoutFromMenu == true
+  }
+
+  /// Whether the key workspace has tracked content for Commit All.
+  /// 中文：当前前台工作区是否有可供“提交所有”处理的已跟踪内容。
+  var canCommitAllFromMenu: Bool {
+    currentWorkspaceController?.canCommitAllFromMenu == true
+  }
+
+  /// Whether the key workspace has a validated visible file selection.
+  /// 中文：当前前台工作区是否有经过校验、可用于提交的可见文件选择。
+  var canCommitSelectedFromMenu: Bool {
+    currentWorkspaceController?.canCommitSelectedFromMenu == true
   }
 
   /// Whether the key workspace currently permits opening the Fetch workflow.
@@ -2492,6 +2515,26 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     windowCoordinator.performWorkspaceAction("commit")
   }
 
+  /// Opens Commit All for the key workspace after Flutter validates its scope.
+  /// 中文：Flutter 校验提交范围后，在当前 key workspace 打开“提交所有”。
+  @IBAction func commitAllRepositoryFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canCommitAllFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("commitAll")
+  }
+
+  /// Opens Commit Selected for the key workspace's visible file selection.
+  /// 中文：为当前 key workspace 的可见文件选择打开“提交选中项”。
+  @IBAction func commitSelectedRepositoryFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canCommitSelectedFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("commitSelected")
+  }
+
   /// 中文：在当前 key workspace 打开已有 Git 能力支持的检出目标选择面板。
   /// English: Opens the checkout target picker in the key workspace, backed
   /// by the existing Git application-layer operations.
@@ -2859,6 +2902,12 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     }
     if menuItem.action == #selector(commitRepositoryFromMenu(_:)) {
       return windowCoordinator.canCommitFromMenu
+    }
+    if menuItem.action == #selector(commitAllRepositoryFromMenu(_:)) {
+      return windowCoordinator.canCommitAllFromMenu
+    }
+    if menuItem.action == #selector(commitSelectedRepositoryFromMenu(_:)) {
+      return windowCoordinator.canCommitSelectedFromMenu
     }
     if menuItem.action == #selector(checkoutRepositoryFromMenu(_:)) {
       return windowCoordinator.canCheckoutFromMenu

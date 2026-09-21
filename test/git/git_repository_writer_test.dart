@@ -606,6 +606,108 @@ void main() {
     },
   );
 
+  test(
+    'commit all includes tracked changes but excludes untracked files',
+    () async {
+      await fixture.writeFile('tracked.txt', 'base\n');
+      await fixture.writeFile('staged-new.txt', 'staged\n');
+      await fixture.runGit(['add', '--', 'tracked.txt']);
+      await fixture.commit('Initial commit');
+      await fixture.writeFile('tracked.txt', 'changed\n');
+      await fixture.runGit(['add', '--', 'staged-new.txt']);
+      await fixture.writeFile('untracked.txt', 'excluded\n');
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+
+      await writer.createCommitFromAllTracked(
+        repository,
+        message: 'Commit all tracked',
+      );
+
+      expect(
+        (await fixture.runGit(['show', 'HEAD:tracked.txt'])).stdout,
+        'changed\n',
+      );
+      expect(
+        (await fixture.runGit(['show', 'HEAD:staged-new.txt'])).stdout,
+        'staged\n',
+      );
+      expect(
+        (await fixture.runGit(['ls-tree', '--name-only', 'HEAD'])).stdout,
+        isNot(contains('untracked.txt')),
+      );
+      expect(
+        (await reader.readStatus(repository)).entries.single.path.display,
+        'untracked.txt',
+      );
+    },
+  );
+
+  test('path-only commit excludes unrelated staged files', () async {
+    await fixture.writeFile('selected.txt', 'base\n');
+    await fixture.writeFile('other.txt', 'base\n');
+    await fixture.runGit(['add', '--', 'selected.txt', 'other.txt']);
+    await fixture.commit('Initial commit');
+    await fixture.writeFile('selected.txt', 'selected change\n');
+    await fixture.writeFile('other.txt', 'other change\n');
+    await fixture.runGit(['add', '--', 'other.txt']);
+    await fixture.writeFile('new.txt', 'new file\n');
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await writer.createCommitFromPaths(
+      repository,
+      message: 'Commit selection',
+      paths: [
+        GitPath.fromString('selected.txt'),
+        GitPath.fromString('new.txt'),
+      ],
+      untrackedPaths: [GitPath.fromString('new.txt')],
+    );
+
+    expect(
+      (await fixture.runGit(['show', 'HEAD:selected.txt'])).stdout,
+      'selected change\n',
+    );
+    expect(
+      (await fixture.runGit(['show', 'HEAD:new.txt'])).stdout,
+      'new file\n',
+    );
+    expect((await fixture.runGit(['show', 'HEAD:other.txt'])).stdout, 'base\n');
+    final status = await reader.readStatus(repository);
+    expect(status.stagedEntries.single.path.display, 'other.txt');
+  });
+
+  test(
+    'path-only commit treats pathspec magic as a literal filename',
+    () async {
+      const selectedPath = ':(glob)selected-*.txt';
+      await fixture.writeFile(selectedPath, 'selected\n');
+      await fixture.writeFile('selected-other.txt', 'excluded\n');
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+
+      await writer.createCommitFromPaths(
+        repository,
+        message: 'Commit literal path',
+        paths: [GitPath.fromString(selectedPath)],
+        untrackedPaths: [GitPath.fromString(selectedPath)],
+      );
+
+      expect(
+        (await fixture.runGit(['show', 'HEAD:$selectedPath'])).stdout,
+        'selected\n',
+      );
+      expect(
+        (await fixture.runGit(['ls-tree', '--name-only', 'HEAD'])).stdout,
+        isNot(contains('selected-other.txt')),
+      );
+    },
+  );
+
   test('rejects an empty commit message before running Git', () async {
     final repository = (await inspector.inspect(
       fixture.workingDirectory.path,

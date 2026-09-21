@@ -459,12 +459,108 @@ final class GitRepositoryWriter {
   ///
   /// The message is sent through stdin rather than the command line, so it is
   /// not interpreted as an option and is not exposed in process arguments.
-  /// 中文：创建所需的对象或资源。
-  /// English: Creates the required object or resource.
+  ///
+  /// 中文：从当前索引创建提交且不跳过 Git hooks；[amend] 为真时更正当前
+  /// HEAD。提交信息通过标准输入传递，不进入进程参数。
   Future<void> createCommit(
     GitRepository repository, {
     required String message,
     bool amend = false,
+  }) => _runCommit(
+    repository,
+    message: message,
+    arguments: [if (amend) '--amend'],
+  );
+
+  /// Commits every tracked work-tree change together with the current index.
+  /// Untracked files remain excluded unless they were already staged.
+  ///
+  /// 中文：提交所有已跟踪工作区改动及当前索引内容；未跟踪文件只有在此前已暂存时才会包含。
+  Future<void> createCommitFromAllTracked(
+    GitRepository repository, {
+    required String message,
+  }) => _runCommit(repository, message: message, arguments: const ['--all']);
+
+  /// Commits the complete current work-tree versions of explicit paths while
+  /// leaving unrelated staged paths out of the commit. New untracked paths
+  /// are first marked intent-to-add so Git can include them with `--only`.
+  ///
+  /// 中文：仅提交明确路径当前工作副本的完整版本，不把其他已暂存路径带入提交；
+  /// 新的未跟踪路径先标记 intent-to-add，使 Git 可通过 `--only` 安全纳入。
+  Future<void> createCommitFromPaths(
+    GitRepository repository, {
+    required String message,
+    required List<GitPath> paths,
+    List<GitPath> untrackedPaths = const [],
+  }) async {
+    if (message.trim().isEmpty) {
+      throw ArgumentError.value(message, 'message', 'Commit message is empty.');
+    }
+    if (paths.isEmpty) {
+      throw ArgumentError.value(
+        paths,
+        'paths',
+        'At least one path is required.',
+      );
+    }
+    final displayPaths = <String>[];
+    for (final path in paths) {
+      final displayPath = _requireUtf8Path(path);
+      if (!displayPaths.contains(displayPath)) displayPaths.add(displayPath);
+    }
+    if (untrackedPaths.isNotEmpty) {
+      final untrackedDisplayPaths = <String>[];
+      for (final path in untrackedPaths) {
+        final displayPath = _requireUtf8Path(path);
+        if (!displayPaths.contains(displayPath)) {
+          throw ArgumentError.value(
+            untrackedPaths,
+            'untrackedPaths',
+            'Every untracked path must be included in paths.',
+          );
+        }
+        if (!untrackedDisplayPaths.contains(displayPath)) {
+          untrackedDisplayPaths.add(displayPath);
+        }
+      }
+      final intentResult = await runner.run(
+        GitInvocation(
+          arguments: [
+            '--no-pager',
+            '--literal-pathspecs',
+            'add',
+            '--intent-to-add',
+            '--',
+            ...untrackedDisplayPaths,
+          ],
+          workingDirectory: repository.commandDirectory,
+          outputLimit: const GitOutputLimit(
+            stdoutBytes: 256 * 1024,
+            stderrBytes: 512 * 1024,
+          ),
+        ),
+      );
+      intentResult.throwIfFailed(operation: 'Preparing selected new files');
+    }
+    await _runCommit(
+      repository,
+      message: message,
+      arguments: ['--only', '--', ...displayPaths],
+      useLiteralPathspecs: true,
+    );
+  }
+
+  /// Runs one non-interactive commit with a stdin message and Git hooks. When
+  /// [useLiteralPathspecs] is true, every path argument is interpreted
+  /// literally instead of as Git pathspec magic.
+  ///
+  /// 中文：使用标准输入提交信息并保留 Git hooks，执行一次非交互式提交；
+  /// [useLiteralPathspecs] 为真时，将所有路径参数按字面值解释。
+  Future<void> _runCommit(
+    GitRepository repository, {
+    required String message,
+    required List<String> arguments,
+    bool useLiteralPathspecs = false,
   }) async {
     if (message.trim().isEmpty) {
       throw ArgumentError.value(message, 'message', 'Commit message is empty.');
@@ -474,7 +570,13 @@ final class GitRepositoryWriter {
     );
     final result = await runner.run(
       GitInvocation(
-        arguments: ['--no-pager', 'commit', if (amend) '--amend', '--file=-'],
+        arguments: [
+          '--no-pager',
+          if (useLiteralPathspecs) '--literal-pathspecs',
+          'commit',
+          '--file=-',
+          ...arguments,
+        ],
         workingDirectory: repository.commandDirectory,
         stdinBytes: messageBytes,
         outputLimit: const GitOutputLimit(
