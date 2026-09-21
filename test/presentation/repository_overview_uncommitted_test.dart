@@ -968,6 +968,9 @@ void main() {
                 invoked['review'] = [for (final change in changes) change.path],
             onChangeIgnore: (changes) =>
                 invoked['ignore'] = [for (final change in changes) change.path],
+            onCreatePatch: (changes) => invoked['createPatch'] = [
+              for (final change in changes) change.path,
+            ],
             onApplyPatch: () => applyPatchInvocations += 1,
           ),
         ),
@@ -991,6 +994,7 @@ void main() {
     await invoke('查看选中的修改日志…');
     await invoke('审查选定的项目');
     await invoke('忽略…');
+    await invoke('创建补丁…');
     await invoke('应用补丁…');
 
     expect(invoked, <String, List<String>>{
@@ -999,6 +1003,7 @@ void main() {
       'history': ['lib/main.dart'],
       'review': ['lib/main.dart'],
       'ignore': ['lib/main.dart'],
+      'createPatch': ['lib/main.dart'],
     });
     expect(applyPatchInvocations, 1);
   });

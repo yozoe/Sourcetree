@@ -3200,6 +3200,34 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
+  /// Requests a destination and exports the selected tracked work-tree rows
+  /// relative to HEAD after the session revalidates their current Git state.
+  /// 中文：选择目标位置后，将所选已跟踪工作区行相对 HEAD 导出；会话层会先
+  /// 重新读取并验证当前 Git 状态。
+  Future<void> _createPatchForWorkingTreeChanges(
+    List<RepositoryChangeViewData> changes,
+  ) async {
+    if (changes.isEmpty) return;
+    final location = await getSaveLocation(
+      suggestedName: 'working-tree.patch',
+      acceptedTypeGroups: const [
+        XTypeGroup(label: 'Git patch', extensions: ['patch']),
+      ],
+    );
+    if (location == null || !mounted) return;
+    final completed = await ref
+        .read(repositorySessionProvider.notifier)
+        .createPatchForWorkingTreeChanges(changes, outputPath: location.path);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          completed ? '已创建工作区补丁：${location.path}' : '未能创建工作区补丁；选择或文件状态可能已变化。',
+        ),
+      ),
+    );
+  }
+
   String _safePatchFileStem(String subject) {
     final normalized = subject
         .replaceAll(RegExp(r'[^A-Za-z0-9._-]+'), '-')
@@ -5448,6 +5476,8 @@ class _RepositoryWorkspaceScreenState
                   unawaited(_showWorkingTreeReview(changes)),
               onChangeIgnore: (changes) =>
                   unawaited(_showIgnoreSelectedDialog(changes)),
+              onCreatePatch: (changes) =>
+                  unawaited(_createPatchForWorkingTreeChanges(changes)),
               onApplyPatch: () => unawaited(_showApplyPatchDialog()),
               onChangeRemove: (changes) => unawaited(_removeChanges(changes)),
               onChangeStopTracking: (changes) =>

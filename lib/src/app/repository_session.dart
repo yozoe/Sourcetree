@@ -5707,6 +5707,99 @@ final class RepositorySessionController
     createSeparateFiles: false,
   );
 
+  /// Revalidates selected tracked work-tree rows and exports their combined
+  /// state relative to HEAD without changing the repository.
+  /// 中文：重新验证所选已跟踪工作区行，并将它们相对 HEAD 的合并状态导出为
+  /// 补丁，不修改仓库。
+  Future<bool> createPatchForWorkingTreeChanges(
+    List<RepositoryChangeViewData> changes, {
+    required String outputPath,
+  }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(
+        () => createPatchForWorkingTreeChanges(changes, outputPath: outputPath),
+      );
+    }
+    if (changes.isEmpty ||
+        state.phase != RepositorySessionPhase.ready ||
+        state.isWorkingTreeBusy ||
+        state.operationState != GitRepositoryOperationState.none ||
+        changes.any(
+          (change) =>
+              !change.isActionEnabled ||
+              !change.isPathValidUtf8 ||
+              change.kind == RepositoryChangeKind.untracked ||
+              change.kind == RepositoryChangeKind.conflicted,
+        )) {
+      return false;
+    }
+    await refresh();
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        state.phase != RepositorySessionPhase.ready) {
+      return false;
+    }
+    final paths = <GitPath>[];
+    for (final change in changes) {
+      final entry = status.displayEntries
+          .where(
+            (candidate) =>
+                candidate.path.display == change.path &&
+                (change.isStaged
+                    ? candidate.hasStagedChange
+                    : candidate.hasWorkTreeChange),
+          )
+          .firstOrNull;
+      if (entry == null ||
+          entry.isConflicted ||
+          !entry.path.isValidUtf8 ||
+          entry.kind == GitFileStatusKind.untracked) {
+        return false;
+      }
+      if (!paths.contains(entry.path)) paths.add(entry.path);
+      final originalPath = entry.originalPath;
+      if (originalPath != null && !paths.contains(originalPath)) {
+        paths.add(originalPath);
+      }
+    }
+    final cancellation = GitCancellationToken();
+    _historyMutationCancellation = cancellation;
+    final operation = _startOperation(RepositoryOperationKind.history);
+    try {
+      await _writer.createWorkingTreePatch(
+        repository,
+        paths: paths,
+        outputPath: outputPath,
+        compareAgainstEmptyTree: status.branch.isUnborn,
+        cancellationToken: cancellation,
+      );
+      _completeOperation(
+        operation,
+        outcome: RepositoryOperationOutcome.succeeded,
+        message: '已创建工作区补丁。',
+      );
+      return true;
+    } on Object catch (error, stackTrace) {
+      final message = _friendlyError(error);
+      state = state.copyWith(
+        message: message,
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: message,
+      );
+      return false;
+    } finally {
+      if (identical(_historyMutationCancellation, cancellation)) {
+        _historyMutationCancellation = null;
+      }
+    }
+  }
+
   /// Exports loaded commits as one patch or individual patch files.
   /// 中文：将已加载提交导出为一个补丁或多个独立补丁文件，不修改 Git 仓库状态。
   Future<bool> createPatches(

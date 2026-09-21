@@ -2872,6 +2872,46 @@ index 0000000..0000000 100644
   );
 
   test(
+    'exports selected tracked work-tree changes without overwriting',
+    () async {
+      await fixture.writeFile('kept.txt', 'before\n');
+      await fixture.writeFile('other.txt', 'unchanged\n');
+      await fixture.commit('Base');
+      await fixture.writeFile('kept.txt', 'after\n');
+      await fixture.writeFile('other.txt', 'not exported\n');
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+      final outputDirectory = await Directory.systemTemp.createTemp(
+        'git-desktop-working-patch-',
+      );
+      addTearDown(() => outputDirectory.delete(recursive: true));
+      final output = '${outputDirectory.path}/working.patch';
+
+      await writer.createWorkingTreePatch(
+        repository,
+        paths: [GitPath.fromString('kept.txt')],
+        outputPath: output,
+      );
+
+      final patch = await File(output).readAsString();
+      expect(patch, contains('+after'));
+      expect(patch, isNot(contains('not exported')));
+      await fixture.writeFile('kept.txt', 'before\n');
+      final applyResult = await fixture.runGit(['apply', '--check', output]);
+      expect(applyResult.exitCode, 0);
+      await expectLater(
+        writer.createWorkingTreePatch(
+          repository,
+          paths: [GitPath.fromString('kept.txt')],
+          outputPath: output,
+        ),
+        throwsArgumentError,
+      );
+    },
+  );
+
+  test(
     'keeps an in-place modified published patch when the batch fails',
     () async {
       final commits = <String>[];

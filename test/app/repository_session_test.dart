@@ -510,6 +510,44 @@ void main() {
   });
 
   test(
+    'exports revalidated selected working-tree changes as a patch',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('selected.txt', 'before\n');
+      await repository.writeFile('other.txt', 'base\n');
+      await repository.commit('Base');
+      await repository.writeFile('selected.txt', 'after\n');
+      await repository.writeFile('other.txt', 'excluded\n');
+      final outputDirectory = await Directory.systemTemp.createTemp(
+        'git-desktop-session-working-patch-',
+      );
+      addTearDown(() => outputDirectory.delete(recursive: true));
+      final outputPath = '${outputDirectory.path}/selected.patch';
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      final overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      final selected = overview.changes.singleWhere(
+        (change) => change.path == 'selected.txt' && !change.isStaged,
+      );
+
+      expect(
+        await controller.createPatchForWorkingTreeChanges([
+          selected,
+        ], outputPath: outputPath),
+        isTrue,
+      );
+      final patch = await File(outputPath).readAsString();
+      expect(patch, contains('+after'));
+      expect(patch, isNot(contains('excluded')));
+    },
+  );
+
+  test(
     'automatically refreshes external work-tree changes without reloading history',
     () async {
       final repository = await GitTestRepository.create();

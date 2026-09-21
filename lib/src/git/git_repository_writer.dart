@@ -2363,6 +2363,103 @@ final class GitRepositoryWriter {
     cancellationToken: cancellationToken,
   );
 
+  /// Exports the selected tracked work-tree state relative to HEAD as one
+  /// binary-safe patch without overwriting an existing destination.
+  /// 中文：把所选已跟踪工作区路径相对 HEAD 的完整状态导出为二进制安全补丁，
+  /// 且绝不覆盖已有目标文件。
+  Future<void> createWorkingTreePatch(
+    GitRepository repository, {
+    required List<GitPath> paths,
+    required String outputPath,
+    bool compareAgainstEmptyTree = false,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final displayPaths = [for (final path in paths) _requireUtf8Path(path)];
+    if (displayPaths.isEmpty ||
+        displayPaths.toSet().length != displayPaths.length) {
+      throw ArgumentError.value(paths, 'paths', 'Unique paths are required.');
+    }
+    final target = outputPath.trim();
+    if (target.isEmpty) {
+      throw ArgumentError.value(
+        outputPath,
+        'outputPath',
+        'An output file is required.',
+      );
+    }
+    final type = await FileSystemEntity.type(target, followLinks: false);
+    if (type != FileSystemEntityType.notFound) {
+      throw ArgumentError.value(
+        outputPath,
+        'outputPath',
+        'The patch destination already exists.',
+      );
+    }
+    final parent = Directory(path_utils.dirname(target));
+    if (!await parent.exists()) {
+      throw ArgumentError.value(
+        outputPath,
+        'outputPath',
+        'The patch destination directory does not exist.',
+      );
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          '--no-optional-locks',
+          '--literal-pathspecs',
+          '-c',
+          'color.ui=false',
+          'diff',
+          '--binary',
+          '--full-index',
+          '--no-ext-diff',
+          '--no-textconv',
+          compareAgainstEmptyTree
+              ? '4b825dc642cb6eb9a060e54bf8d69288fbee4904'
+              : 'HEAD',
+          '--',
+          ...displayPaths,
+        ],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 16 * 1024 * 1024,
+          stderrBytes: 1024 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Creating working tree patch');
+    if (result.stdoutTruncated) {
+      throw const GitException(
+        'The generated patch exceeds the supported 16 MB limit.',
+      );
+    }
+    if (result.stdoutBytes.isEmpty) {
+      throw const GitException('The selected files have no patchable changes.');
+    }
+    final pinnedDirectory = Platform.isMacOS
+        ? _MacOsPinnedDirectory.open(parent.path)
+        : null;
+    try {
+      if (pinnedDirectory != null) {
+        pinnedDirectory.createExclusive(
+          path_utils.basename(target),
+          result.stdoutBytes,
+        );
+      } else {
+        await _writePatchAtomically(
+          parent,
+          path_utils.basename(target),
+          result.stdoutBytes,
+        );
+      }
+    } finally {
+      pinnedDirectory?.close();
+    }
+  }
+
   /// Writes selected commits to one combined mail patch, or one patch per
   /// commit below an existing output directory. Existing files are never
   /// overwritten, so a failed or repeated export cannot destroy a patch.
