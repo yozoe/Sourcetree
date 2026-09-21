@@ -742,6 +742,10 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// 选中提交或 HEAD 作为默认目标，并由应用层执行最终校验。
   private(set) var canTagFromMenu = false
 
+  /// Whether the current single visible file selection has readable history.
+  /// 中文：当前单个可见文件选择是否可读取修改日志。
+  private(set) var canViewSelectedFileHistoryFromMenu = false
+
   /// Flutter's last validated Stage Selected availability for this Engine.
   /// 中文：此 Engine 最近一次由 Flutter 校验的“添加到索引”可用状态。
   private(set) var canStageSelectedFromMenu = false
@@ -1022,6 +1026,8 @@ final class WorkspaceFlutterWindowController: NSWindowController,
         canCreateBranchFromMenu = arguments?["canCreateBranch"] as? Bool ?? false
         canStashFromMenu = arguments?["canStash"] as? Bool ?? false
         canTagFromMenu = arguments?["canTag"] as? Bool ?? false
+        canViewSelectedFileHistoryFromMenu =
+          arguments?["canViewSelectedFileHistory"] as? Bool ?? false
         canStageSelectedFromMenu =
           arguments?["canStageSelected"] as? Bool ?? false
         canUnstageSelectedFromMenu =
@@ -1510,6 +1516,16 @@ final class WindowCoordinator {
   /// 中文：当前前台工作区是否有可供标签管理使用的有效提交目标。
   var canTagFromMenu: Bool {
     currentWorkspaceController?.canTagFromMenu == true
+  }
+
+  /// Whether the key workspace can show history for its current file.
+  /// 中文：当前前台工作区是否可显示所选文件的修改日志。
+  var canViewSelectedFileHistoryFromMenu: Bool {
+    gitDesktopCanPerformSelectedChangeMenuAction(
+      hasKeyWorkspace: currentWorkspaceController != nil,
+      hasValidatedSelection:
+        currentWorkspaceController?.canViewSelectedFileHistoryFromMenu == true
+    )
   }
 
   /// Whether the key workspace has a Flutter-validated unstaged selection.
@@ -2773,6 +2789,16 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     windowCoordinator.performWorkspaceAction("markConflictResolved")
   }
 
+  /// Opens read-only history for the key workspace's selected file.
+  /// 中文：为当前前台工作区选中的文件打开只读修改日志。
+  @IBAction func viewSelectedFileHistoryFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canViewSelectedFileHistoryFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("viewSelectedFileHistory")
+  }
+
   /// 中文：用系统默认应用打开当前工作区唯一选中的现存文件。
   /// English: Opens the single existing workspace selection in its default app.
   @IBAction func openSelectedFileFromMenu(_ sender: Any?) {
@@ -3070,6 +3096,9 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     }
     if menuItem.action == #selector(markConflictResolvedFromMenu(_:)) {
       return windowCoordinator.canMarkConflictResolvedFromMenu
+    }
+    if menuItem.action == #selector(viewSelectedFileHistoryFromMenu(_:)) {
+      return windowCoordinator.canViewSelectedFileHistoryFromMenu
     }
     if menuItem.action == #selector(fetchRepositoryFromMenu(_:)) {
       return windowCoordinator.canFetchFromMenu

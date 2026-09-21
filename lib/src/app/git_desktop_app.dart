@@ -100,6 +100,7 @@ bool _isLoadedAncestorOfHead({
   bool canStopTracking,
   bool canTag,
   bool canUnstageSelected,
+  bool canViewSelectedFileHistory,
 })
 nativeWorkspaceMenuAvailability(
   RepositorySessionState session,
@@ -178,6 +179,18 @@ nativeWorkspaceMenuAvailability(
       session.phase != RepositorySessionPhase.loading &&
       !session.isWorkingTreeBusy &&
       selectedConflict != null;
+  final selectedCommitFile = session.selectedCommitFile;
+  final canViewSelectedFileHistory =
+      session.phase == RepositorySessionPhase.ready &&
+      repository != null &&
+      !session.isWorkingTreeBusy &&
+      ((repository.selectedCommit != null &&
+              selectedCommitFile?.objectId == session.selectedCommitId &&
+              selectedCommitFile?.file.path.isValidUtf8 == true) ||
+          (repository.selectedCommit == null &&
+              menuSelection.length == 1 &&
+              menuSelection.single.isPathValidUtf8 &&
+              menuSelection.single.kind != RepositoryChangeKind.untracked));
   return (
     canAddRemote: canApplyPatch,
     canApplyPatch: canApplyPatch,
@@ -268,6 +281,7 @@ nativeWorkspaceMenuAvailability(
     canUnstageSelected:
         canApplyPatch &&
         menuSelection.any((change) => change.canToggleStage && change.isStaged),
+    canViewSelectedFileHistory: canViewSelectedFileHistory,
   );
 }
 
@@ -711,6 +725,7 @@ class _RepositoryWorkspaceScreenState
   bool? _lastNativeStashAvailability;
   bool? _lastNativeTagAvailability;
   bool? _lastNativeUnstageSelectedAvailability;
+  bool? _lastNativeViewSelectedFileHistoryAvailability;
   String? _lastNativeActiveRepositoryOperation;
   String? _lastNativeConflictStage2Label;
   String? _lastNativeConflictStage3Label;
@@ -838,6 +853,8 @@ class _RepositoryWorkspaceScreenState
         await _resolveSelectedConflictFromNativeMenu(
           RepositoryConflictAction.markResolved,
         );
+      case 'viewSelectedFileHistory':
+        await _showNativeSelectedFileHistory();
       case 'checkout':
         await _showCheckoutDialog();
       case 'merge':
@@ -1039,6 +1056,7 @@ class _RepositoryWorkspaceScreenState
     final canStopTracking = availability.canStopTracking;
     final canTag = availability.canTag;
     final canUnstageSelected = availability.canUnstageSelected;
+    final canViewSelectedFileHistory = availability.canViewSelectedFileHistory;
     final activeRepositoryOperation = switch (session.operationState) {
       GitRepositoryOperationState.none => null,
       final operation => operation.name,
@@ -1080,6 +1098,8 @@ class _RepositoryWorkspaceScreenState
         _lastNativeCreateBranchAvailability == canCreateBranch &&
         _lastNativeStashAvailability == canStash &&
         _lastNativeUnstageSelectedAvailability == canUnstageSelected &&
+        _lastNativeViewSelectedFileHistoryAvailability ==
+            canViewSelectedFileHistory &&
         _lastNativeTagAvailability == canTag &&
         _lastNativeActiveRepositoryOperation == activeRepositoryOperation &&
         _lastNativeConflictStage2Label == conflictLabels.$1 &&
@@ -1109,6 +1129,7 @@ class _RepositoryWorkspaceScreenState
     _lastNativeCreateBranchAvailability = canCreateBranch;
     _lastNativeStashAvailability = canStash;
     _lastNativeUnstageSelectedAvailability = canUnstageSelected;
+    _lastNativeViewSelectedFileHistoryAvailability = canViewSelectedFileHistory;
     _lastNativeTagAvailability = canTag;
     _lastNativeActiveRepositoryOperation = activeRepositoryOperation;
     _lastNativeConflictStage2Label = conflictLabels.$1;
@@ -1139,6 +1160,7 @@ class _RepositoryWorkspaceScreenState
         canStash: canStash,
         canTag: canTag,
         canUnstageSelected: canUnstageSelected,
+        canViewSelectedFileHistory: canViewSelectedFileHistory,
         activeRepositoryOperation: activeRepositoryOperation,
         conflictStage2Label: conflictLabels.$1,
         conflictStage3Label: conflictLabels.$2,
@@ -4137,15 +4159,59 @@ class _RepositoryWorkspaceScreenState
       ).showSnackBar(const SnackBar(content: Text('当前没有可读取修改日志的仓库。')));
       return;
     }
+    await _showFileHistory(
+      path: file.path,
+      sourceCommitId: session.selectedCommitId,
+    );
+  }
+
+  /// Opens file history for the latest valid single selection exposed to the
+  /// native Action menu.
+  ///
+  /// 中文：为原生“动作”菜单当前仍有效的单个文件选择打开修改日志。
+  Future<void> _showNativeSelectedFileHistory() async {
+    final session = ref.read(repositorySessionProvider);
+    final overview = mapRepositoryOverview(session);
+    final selected = _nativeSelectedChanges(overview);
+    final availability = nativeWorkspaceMenuAvailability(
+      session,
+      overview,
+      selectedChanges: selected,
+    );
+    if (!availability.canViewSelectedFileHistory) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请选择一个可读取修改日志的已跟踪文件。')));
+      return;
+    }
+    final commitFile = session.selectedCommitFile?.file;
+    if (overview.repository?.selectedCommit != null && commitFile != null) {
+      await _showFileHistory(
+        path: commitFile.path.display,
+        sourceCommitId: session.selectedCommitId,
+      );
+      return;
+    }
+    if (selected.length == 1) {
+      await _showFileHistory(path: selected.single.path);
+    }
+  }
+
+  /// Opens the shared read-only history dialog for one validated Git path.
+  /// 中文：为一个已校验 Git 路径打开共用的只读修改日志窗口。
+  Future<void> _showFileHistory({
+    required String path,
+    String? sourceCommitId,
+  }) async {
     await showDialog<void>(
       context: context,
       builder: (context) => _FileHistoryDialog(
-        path: file.path,
+        path: path,
         loadHistory: (path, cancellationToken) => ref
             .read(repositorySessionProvider.notifier)
             .readFileHistory(
               path,
-              sourceCommitId: session.selectedCommitId,
+              sourceCommitId: sourceCommitId,
               cancellationToken: cancellationToken,
             ),
         loadCommitChanges: (commit, cancellationToken) => ref

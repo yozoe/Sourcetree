@@ -563,6 +563,7 @@ void main() {
         canStopTracking: false,
         canTag: false,
         canUnstageSelected: false,
+        canViewSelectedFileHistory: false,
         canUseConflictStage2: false,
         canUseConflictStage3: false,
       ));
@@ -692,6 +693,71 @@ void main() {
     expect(noSelection.canMarkConflictResolved, isFalse);
   });
 
+  test('native file history requires one visible UTF-8 tracked path', () {
+    const repository = GitRepository(
+      id: GitRepositoryId(
+        commonDirectory: '/tmp/example/.git',
+        workTreeRoot: '/tmp/example',
+      ),
+      openedPath: '/tmp/example',
+      gitDirectory: '/tmp/example/.git',
+      commonDirectory: '/tmp/example/.git',
+      workTreeRoot: '/tmp/example',
+      isBare: false,
+      isInsideWorkTree: true,
+    );
+    final session = RepositorySessionState(
+      phase: RepositorySessionPhase.ready,
+      repository: repository,
+      status: GitStatusSnapshot(
+        branch: const GitBranchStatus(head: 'main', objectId: 'head123'),
+        entries: const [],
+      ),
+    );
+    const tracked = RepositoryChangeViewData(
+      path: 'README.md',
+      kind: RepositoryChangeKind.modified,
+    );
+    const untracked = RepositoryChangeViewData(
+      path: 'new.txt',
+      kind: RepositoryChangeKind.untracked,
+    );
+    const overview = RepositoryOverviewViewData.ready(
+      RepositoryViewData(
+        name: 'example',
+        path: '/tmp/example',
+        currentBranch: 'main',
+        changes: [tracked, untracked],
+        selectedChange: tracked,
+      ),
+    );
+
+    expect(
+      nativeWorkspaceMenuAvailability(
+        session,
+        overview,
+        selectedChanges: const [tracked],
+      ).canViewSelectedFileHistory,
+      isTrue,
+    );
+    expect(
+      nativeWorkspaceMenuAvailability(
+        session,
+        overview,
+        selectedChanges: const [tracked, untracked],
+      ).canViewSelectedFileHistory,
+      isFalse,
+    );
+    expect(
+      nativeWorkspaceMenuAvailability(
+        session,
+        overview,
+        selectedChanges: const [untracked],
+      ).canViewSelectedFileHistory,
+      isFalse,
+    );
+  });
+
   test('native file targets stay inside the current work tree', () {
     final repository = GitRepository(
       id: const GitRepositoryId(
@@ -762,6 +828,7 @@ void main() {
     final session = RepositorySessionState(
       phase: RepositorySessionPhase.ready,
       repository: repository,
+      selectedCommitId: 'abc123',
       selectedCommitFile: SelectedCommitFile(
         objectId: 'abc123',
         file: GitCommitFileChange(
@@ -775,9 +842,26 @@ void main() {
         name: 'example',
         path: '/tmp/example',
         currentBranch: 'main',
+        selectedCommit: CommitDetailsViewData(
+          oid: 'abc123',
+          subject: 'Update README',
+          author: 'Tester',
+          authoredAt: '2026-09-21',
+        ),
+        selectedCommitFile: CommitFileViewData(
+          path: 'README.md',
+          kind: RepositoryChangeKind.modified,
+        ),
       ),
     );
 
+    expect(
+      nativeWorkspaceMenuAvailability(
+        session,
+        overview,
+      ).canViewSelectedFileHistory,
+      isTrue,
+    );
     final targets = nativeWorkspaceMenuFileTargets(session, overview);
     expect(targets.repositoryRootPath, '/tmp/example');
     expect(targets.selectedFilePaths, ['/tmp/example/README.md']);
