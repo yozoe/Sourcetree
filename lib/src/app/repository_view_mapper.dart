@@ -11,6 +11,95 @@ import 'repository_session.dart';
 // page that the session already owns, so those publications do not rebuild
 // topology on the UI isolate.
 final _CommitGraphCache _commitGraphCache = _CommitGraphCache();
+final _CommitReferenceIndexCache _commitReferenceIndexCache =
+    _CommitReferenceIndexCache();
+
+final class _CommitReferenceIndexCache {
+  List<GitLocalBranch>? _localBranches;
+  List<GitRemoteBranch>? _remoteBranches;
+  List<GitTag>? _tags;
+  GitStatusSnapshot? _status;
+  _CommitReferenceIndex? _index;
+
+  _CommitReferenceIndex resolve(RepositorySessionState state) {
+    if (_index != null &&
+        identical(_localBranches, state.localBranches) &&
+        identical(_remoteBranches, state.remoteBranches) &&
+        identical(_tags, state.tags) &&
+        identical(_status, state.status)) {
+      return _index!;
+    }
+    _localBranches = state.localBranches;
+    _remoteBranches = state.remoteBranches;
+    _tags = state.tags;
+    _status = state.status;
+    return _index = _CommitReferenceIndex(state);
+  }
+}
+
+/// Indexes references by target commit so history mapping does not rescan all
+/// branches and tags for every commit row.
+///
+/// 中文：按目标提交索引分支和标签，避免历史映射为每一行重复扫描全部引用。
+final class _CommitReferenceIndex {
+  _CommitReferenceIndex(RepositorySessionState state) {
+    if (state.status?.branch.isDetached == true) {
+      final objectId = state.status?.branch.objectId;
+      if (objectId != null) {
+        _references[objectId] = [
+          const CommitReferenceViewData(
+            label: 'HEAD',
+            kind: CommitReferenceKind.head,
+          ),
+        ];
+      }
+    }
+    for (final branch in state.localBranches) {
+      _add(
+        branch.objectId,
+        CommitReferenceViewData(
+          label: branch.name,
+          kind: CommitReferenceKind.localBranch,
+        ),
+      );
+    }
+    for (final branch in state.remoteBranches) {
+      _add(
+        branch.objectId,
+        CommitReferenceViewData(
+          label: branch.name,
+          kind: CommitReferenceKind.remoteBranch,
+        ),
+      );
+      (_remoteRefs[branch.objectId] ??= <String>[]).add(branch.name);
+    }
+    for (final tag in state.tags) {
+      _add(
+        tag.targetObjectId,
+        CommitReferenceViewData(label: tag.name, kind: CommitReferenceKind.tag),
+      );
+      (_tagRefs[tag.targetObjectId] ??= <String>[]).add(tag.name);
+    }
+  }
+
+  final _references = <String, List<CommitReferenceViewData>>{};
+  final _remoteRefs = <String, List<String>>{};
+  final _tagRefs = <String, List<String>>{};
+
+  void _add(String? objectId, CommitReferenceViewData reference) {
+    if (objectId == null) return;
+    (_references[objectId] ??= <CommitReferenceViewData>[]).add(reference);
+  }
+
+  List<CommitReferenceViewData> referencesFor(String objectId) =>
+      _references[objectId] ?? const <CommitReferenceViewData>[];
+
+  List<String> remoteRefsFor(String objectId) =>
+      _remoteRefs[objectId] ?? const <String>[];
+
+  List<String> tagRefsFor(String objectId) =>
+      _tagRefs[objectId] ?? const <String>[];
+}
 
 final class _CommitGraphCache {
   List<GitCommit>? _commits;
@@ -132,7 +221,11 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
       ? 'Detached HEAD'
       : branch.head ?? (branch.isUnborn ? '未创建提交' : '未知分支');
   final changes = _mapChanges(state);
-  final commits = _mapCommits(state, branch);
+  final commits = _mapCommits(
+    state,
+    branch,
+    _commitReferenceIndexCache.resolve(state),
+  );
   final selectedCommit = _findCommit(state.commits, state.selectedCommitId);
   final commitChanges = _mapCommitChanges(state);
   final runningOperation = _runningOperation(state.operations);
@@ -504,6 +597,7 @@ RepositoryOperationState _operationState(
 List<CommitViewData> _mapCommits(
   RepositorySessionState state,
   GitBranchStatus branch,
+  _CommitReferenceIndex references,
 ) {
   final query = state.searchQuery.trim().toLowerCase();
   final graph = _commitGraphCache.resolve(
@@ -525,16 +619,15 @@ List<CommitViewData> _mapCommits(
               : state.commits[index].subject,
           author: state.commits[index].author.name,
           relativeDate: _relativeDate(state.commits[index].author.when),
-          refs: _refLabelsForCommit(state, state.commits[index].objectId),
-          remoteRefs: _remoteRefsForCommit(
-            state,
-            state.commits[index].objectId,
-          ),
-          tagRefs: _tagRefsForCommit(state, state.commits[index].objectId),
-          references: _referencesForCommit(
-            state,
-            state.commits[index].objectId,
-          ),
+          refs: [
+            for (final reference in references.referencesFor(
+              state.commits[index].objectId,
+            ))
+              reference.label,
+          ],
+          remoteRefs: references.remoteRefsFor(state.commits[index].objectId),
+          tagRefs: references.tagRefsFor(state.commits[index].objectId),
+          references: references.referencesFor(state.commits[index].objectId),
           graph: graph[index],
           isHead: state.commits[index].objectId == branch.objectId,
           isSelected: state.commits[index].objectId == state.selectedCommitId,

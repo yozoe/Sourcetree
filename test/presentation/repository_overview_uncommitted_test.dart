@@ -798,6 +798,7 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(1280, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     final selected = <String>[];
+    List<RepositoryChangeViewData> menuSelection = const [];
 
     await tester.pumpWidget(
       MaterialApp(
@@ -824,6 +825,7 @@ void main() {
             onChangeSelected: (change) {
               if (change != null) selected.add(change.path);
             },
+            onChangeSelectionChanged: (changes) => menuSelection = changes,
           ),
         ),
       ),
@@ -837,6 +839,10 @@ void main() {
 
     expect(selected, containsAll(<String>['one.py', 'two.py']));
     expect(selected, hasLength(2));
+    expect(
+      menuSelection.map((change) => change.path),
+      containsAll(<String>['one.py', 'two.py']),
+    );
   });
 
   testWidgets('working-tree context menu stages all selected files', (

@@ -2571,6 +2571,7 @@ final class RepositorySessionController
   /// English: Updates the commit-history filter query without starting another
   /// Git read.
   void setSearchQuery(String query) {
+    if (query == state.searchQuery) return;
     state = state.copyWith(searchQuery: query);
   }
 

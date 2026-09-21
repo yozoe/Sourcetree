@@ -44,6 +44,16 @@ final class DesktopWindowBridge {
     });
   }
 
+  /// Reports a status refresh for an already registered workspace repository.
+  ///
+  /// 中文：上报已登记工作区的状态刷新；不会触发原生窗口去重或关闭逻辑。
+  static Future<void> repositoryStatusUpdated(String repositoryPath) {
+    return _channel.invokeMethod<void>(
+      'repositoryStatusUpdated',
+      <String, Object>{'repositoryPath': repositoryPath},
+    );
+  }
+
   /// Confirms that the home Engine can receive deferred repository
   /// registrations from active workspace windows.
   ///
@@ -61,21 +71,38 @@ final class DesktopWindowBridge {
     required bool canApplyPatch,
     required bool canCommit,
     required bool canFetch,
+    required bool canMerge,
     required bool canPull,
     required bool canPush,
+    required bool canRemoveSelected,
+    required bool canStageSelected,
     required bool canCreateBranch,
     required bool canStash,
+    required bool canTag,
+    required bool canUnstageSelected,
+    required String? repositoryRootPath,
+    required List<String> selectedFilePaths,
+    required bool hasFileSelection,
   }) {
-    return _channel.invokeMethod<void>('setWorkspaceMenuState', <String, bool>{
-      'canStopTracking': canStopTracking,
-      'canApplyPatch': canApplyPatch,
-      'canCommit': canCommit,
-      'canFetch': canFetch,
-      'canPull': canPull,
-      'canPush': canPush,
-      'canCreateBranch': canCreateBranch,
-      'canStash': canStash,
-    });
+    return _channel
+        .invokeMethod<void>('setWorkspaceMenuState', <String, Object?>{
+          'canStopTracking': canStopTracking,
+          'canApplyPatch': canApplyPatch,
+          'canCommit': canCommit,
+          'canFetch': canFetch,
+          'canMerge': canMerge,
+          'canPull': canPull,
+          'canPush': canPush,
+          'canRemoveSelected': canRemoveSelected,
+          'canStageSelected': canStageSelected,
+          'canCreateBranch': canCreateBranch,
+          'canStash': canStash,
+          'canTag': canTag,
+          'canUnstageSelected': canUnstageSelected,
+          'repositoryRootPath': repositoryRootPath,
+          'selectedFilePaths': selectedFilePaths,
+          'hasFileSelection': hasFileSelection,
+        });
   }
 
   /// 中文：报告启动恢复的仓库已无法由 Git 验证，以便原生宿主清除恢复记录并关闭该窗口。

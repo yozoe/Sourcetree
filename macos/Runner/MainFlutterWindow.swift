@@ -6,6 +6,71 @@ enum GitDesktopWindowRole {
   case workspace
 }
 
+enum GitDesktopWindowPlacement: Equatable {
+  case fill
+  case center
+  case leading
+  case trailing
+}
+
+/// 中文：按当前显示器可见区域计算填充、居中或左右贴靠的窗口位置。
+///
+/// English: Computes a fill, centered, or side-aligned window frame within the
+/// current display's visible area.
+func gitDesktopWindowFrame(
+  currentFrame: NSRect,
+  visibleFrame: NSRect,
+  minimumSize: NSSize,
+  placement: GitDesktopWindowPlacement
+) -> NSRect {
+  guard visibleFrame.width > 0, visibleFrame.height > 0 else {
+    return currentFrame
+  }
+  if placement == .fill {
+    return visibleFrame
+  }
+
+  let constrainedWidth = min(
+    visibleFrame.width,
+    max(minimumSize.width, currentFrame.width)
+  )
+  let constrainedHeight = min(
+    visibleFrame.height,
+    max(minimumSize.height, currentFrame.height)
+  )
+  let size: NSSize
+  switch placement {
+  case .leading, .trailing:
+    size = NSSize(
+      width: min(
+        visibleFrame.width,
+        max(minimumSize.width, floor(visibleFrame.width / 2))
+      ),
+      height: visibleFrame.height
+    )
+  case .center:
+    size = NSSize(width: constrainedWidth, height: constrainedHeight)
+  case .fill:
+    return visibleFrame
+  }
+
+  let originX: CGFloat
+  switch placement {
+  case .leading:
+    originX = visibleFrame.minX
+  case .trailing:
+    originX = visibleFrame.maxX - size.width
+  case .center:
+    originX = visibleFrame.midX - (size.width / 2)
+  case .fill:
+    originX = visibleFrame.minX
+  }
+  let originY = placement == .center
+    ? visibleFrame.midY - (size.height / 2)
+    : visibleFrame.minY
+  return NSRect(origin: NSPoint(x: originX, y: originY), size: size)
+}
+
 /// 中文：判断窗口菜单占位动作是否能安全显示在当前应用窗口中。
 ///
 /// English: Returns whether a pending Window-menu action can be presented in
@@ -15,6 +80,19 @@ func gitDesktopCanPerformWindowMenuAction(_ keyWindow: NSWindow?) -> Bool {
     return false
   }
   return keyWindow.attachedSheet == nil
+}
+
+/// 中文：判断当前应用窗口是否可接受非全屏的几何布局操作。
+///
+/// English: Returns whether the current app window can accept a non-fullscreen
+/// geometry placement command.
+func gitDesktopCanPerformWindowPlacement(_ keyWindow: NSWindow?) -> Bool {
+  guard gitDesktopCanPerformWindowMenuAction(keyWindow),
+        let keyWindow else {
+    return false
+  }
+  return keyWindow.styleMask.contains(.resizable) &&
+    !keyWindow.styleMask.contains(.fullScreen)
 }
 
 private let gitDesktopWorkspaceTabbingIdentifier =
@@ -72,6 +150,94 @@ func gitDesktopMovingItem<Element>(
   let element = result.remove(at: sourceIndex)
   result.insert(element, at: destinationIndex)
   return result
+}
+
+/// 中文：返回循环标签组中相对当前标签的目标索引。
+///
+/// English: Returns a wrapped destination index relative to the current tab
+/// in a merged workspace group.
+func gitDesktopAdjacentTabIndex(
+  currentIndex: Int,
+  tabCount: Int,
+  offset: Int
+) -> Int? {
+  guard tabCount > 1,
+        currentIndex >= 0,
+        currentIndex < tabCount,
+        offset != 0 else {
+    return nil
+  }
+  return ((currentIndex + offset) % tabCount + tabCount) % tabCount
+}
+
+/// 中文：为从标签组移出的窗口计算仍处于屏幕可见区域内的轻微错位位置。
+///
+/// English: Computes a slightly cascaded frame for a detached tab while
+/// keeping the complete window within the display's visible frame.
+func gitDesktopDetachedWindowFrame(
+  currentFrame: NSRect,
+  visibleFrame: NSRect,
+  offset: CGFloat = 24
+) -> NSRect {
+  guard visibleFrame.width > 0, visibleFrame.height > 0 else {
+    return currentFrame
+  }
+  let width = min(currentFrame.width, visibleFrame.width)
+  let height = min(currentFrame.height, visibleFrame.height)
+  let maximumX = max(visibleFrame.minX, visibleFrame.maxX - width)
+  let maximumY = max(visibleFrame.minY, visibleFrame.maxY - height)
+  return NSRect(
+    x: min(max(currentFrame.minX + offset, visibleFrame.minX), maximumX),
+    y: min(max(currentFrame.minY - offset, visibleFrame.minY), maximumY),
+    width: width,
+    height: height
+  )
+}
+
+/// 中文：把窗口按源屏幕中的相对中心位置移动到目标屏幕，并限制在目标可见区域。
+///
+/// English: Moves a window to a target display using its relative center on
+/// the source display, constraining the complete frame to the target's visible
+/// area.
+func gitDesktopWindowFrame(
+  moving currentFrame: NSRect,
+  from sourceVisibleFrame: NSRect,
+  to targetVisibleFrame: NSRect
+) -> NSRect {
+  guard sourceVisibleFrame.width > 0,
+        sourceVisibleFrame.height > 0,
+        targetVisibleFrame.width > 0,
+        targetVisibleFrame.height > 0 else {
+    return currentFrame
+  }
+  let width = min(currentFrame.width, targetVisibleFrame.width)
+  let height = min(currentFrame.height, targetVisibleFrame.height)
+  let relativeCenterX = min(
+    1,
+    max(0, (currentFrame.midX - sourceVisibleFrame.minX) /
+      sourceVisibleFrame.width)
+  )
+  let relativeCenterY = min(
+    1,
+    max(0, (currentFrame.midY - sourceVisibleFrame.minY) /
+      sourceVisibleFrame.height)
+  )
+  let proposedX = targetVisibleFrame.minX +
+    (targetVisibleFrame.width * relativeCenterX) - (width / 2)
+  let proposedY = targetVisibleFrame.minY +
+    (targetVisibleFrame.height * relativeCenterY) - (height / 2)
+  return NSRect(
+    x: min(
+      max(proposedX, targetVisibleFrame.minX),
+      targetVisibleFrame.maxX - width
+    ),
+    y: min(
+      max(proposedY, targetVisibleFrame.minY),
+      targetVisibleFrame.maxY - height
+    ),
+    width: width,
+    height: height
+  )
 }
 
 /// 中文：保存至多一个延迟窗口动作，并保证取消后的旧动作不会执行。

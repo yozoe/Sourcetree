@@ -66,6 +66,7 @@ final class RepositoryOverviewCallbacks {
     this.onCommitContextAction,
     this.onUncommittedChangesSelected,
     this.onChangeSelected,
+    this.onChangeSelectionChanged,
     this.onChangeStageToggled,
     this.onChangeGroupStageToggled,
     this.onConflictAction,
@@ -90,6 +91,7 @@ final class RepositoryOverviewCallbacks {
   final RepositoryCommitContextActionCallback? onCommitContextAction;
   final RepositoryUncommittedChangesCallback? onUncommittedChangesSelected;
   final RepositoryChangeCallback? onChangeSelected;
+  final ValueChanged<List<RepositoryChangeViewData>>? onChangeSelectionChanged;
   final RepositoryChangeStageCallback? onChangeStageToggled;
   final RepositoryChangeGroupStageCallback? onChangeGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
@@ -242,6 +244,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
       _WorkspaceChangesView(
         repository: repository,
         onSelected: widget.callbacks.onChangeSelected,
+        onSelectionChanged: widget.callbacks.onChangeSelectionChanged,
         onStageToggled: widget.callbacks.onChangeStageToggled,
         onGroupStageToggled: widget.callbacks.onChangeGroupStageToggled,
         onConflictAction: widget.callbacks.onConflictAction,
@@ -412,6 +415,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                             child: _SelectedChangesPane(
                               repository: repository,
                               onSelected: widget.callbacks.onChangeSelected,
+                              onSelectionChanged:
+                                  widget.callbacks.onChangeSelectionChanged,
                               onStageToggled:
                                   widget.callbacks.onChangeStageToggled,
                               onGroupStageToggled:
@@ -527,6 +532,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                         },
                         repository: repository,
                         onChangeSelected: widget.callbacks.onChangeSelected,
+                        onChangeSelectionChanged:
+                            widget.callbacks.onChangeSelectionChanged,
                         onChangeStageToggled:
                             widget.callbacks.onChangeStageToggled,
                         onChangeGroupStageToggled:
@@ -580,6 +587,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
       _CompactPane.changes => _SelectedChangesPane(
         repository: repository,
         onSelected: widget.callbacks.onChangeSelected,
+        onSelectionChanged: widget.callbacks.onChangeSelectionChanged,
         onStageToggled: widget.callbacks.onChangeStageToggled,
         onGroupStageToggled: widget.callbacks.onChangeGroupStageToggled,
         onConflictAction: widget.callbacks.onConflictAction,
@@ -1076,15 +1084,17 @@ class _RefsNavigation extends StatelessWidget {
             .where((RepositoryRefViewData ref) => ref.kind == kind)
             .toList(growable: false),
     };
-    final Map<RepositoryRefKind, List<Widget>> sectionTiles = {
-      for (final RepositoryRefKind kind in RepositoryRefKind.values)
-        kind: kind == RepositoryRefKind.remote
-            ? _buildRemoteTiles(
-                sections[RepositoryRefKind.remote]!,
-                sections[RepositoryRefKind.remoteBranch]!,
-              )
-            : _buildSectionTiles(kind, sections[kind]!),
-    };
+    // Keep only tree-shaped sections eager (local branches and remotes need
+    // their directory rows). Flat sections are built by the sliver lazily so
+    // large tag/stash lists do not allocate every row during one build.
+    final localBranchTiles = _buildSectionTiles(
+      RepositoryRefKind.localBranch,
+      sections[RepositoryRefKind.localBranch]!,
+    );
+    final remoteTiles = _buildRemoteTiles(
+      sections[RepositoryRefKind.remote]!,
+      sections[RepositoryRefKind.remoteBranch]!,
+    );
 
     return Material(
       color: Theme.of(context).colorScheme.surfaceContainerLowest,
@@ -1094,7 +1104,11 @@ class _RefsNavigation extends StatelessWidget {
             child: _PaneHeader(title: '仓库', icon: Icons.folder_open_outlined),
           ),
           for (final RepositoryRefKind kind in RepositoryRefKind.values)
-            if (sectionTiles[kind]!.isNotEmpty &&
+            if ((kind == RepositoryRefKind.localBranch
+                    ? localBranchTiles.isNotEmpty
+                    : kind == RepositoryRefKind.remote
+                    ? remoteTiles.isNotEmpty
+                    : sections[kind]!.isNotEmpty) &&
                 kind != RepositoryRefKind.stash &&
                 kind != RepositoryRefKind.remoteBranch) ...[
               SliverToBoxAdapter(
@@ -1104,17 +1118,30 @@ class _RefsNavigation extends StatelessWidget {
                 ),
               ),
               SliverList.builder(
-                itemCount: sectionTiles[kind]!.length,
-                itemBuilder: (BuildContext context, int index) {
-                  return sectionTiles[kind]![index];
-                },
+                itemCount: kind == RepositoryRefKind.localBranch
+                    ? localBranchTiles.length
+                    : kind == RepositoryRefKind.remote
+                    ? remoteTiles.length
+                    : sections[kind]!.length,
+                itemBuilder: (BuildContext context, int index) =>
+                    kind == RepositoryRefKind.localBranch
+                    ? localBranchTiles[index]
+                    : kind == RepositoryRefKind.remote
+                    ? remoteTiles[index]
+                    : _buildRefTile(sections[kind]![index]),
               ),
             ],
-          if (sectionTiles[RepositoryRefKind.stash]!.isNotEmpty)
+          if (sections[RepositoryRefKind.stash]!.isNotEmpty)
             SliverList.builder(
-              itemCount: sectionTiles[RepositoryRefKind.stash]!.length,
-              itemBuilder: (BuildContext context, int index) =>
-                  sectionTiles[RepositoryRefKind.stash]![index],
+              itemCount: sections[RepositoryRefKind.stash]!.length,
+              itemBuilder: (BuildContext context, int index) => _buildRefTile(
+                sections[RepositoryRefKind.stash]![index],
+                indent:
+                    sections[RepositoryRefKind.stash]![index].stashReference ==
+                        null
+                    ? 0
+                    : 1,
+              ),
             ),
           if (repository.refs.isEmpty)
             const SliverFillRemaining(
@@ -1150,7 +1177,13 @@ class _RefsNavigation extends StatelessWidget {
     return [
       for (final node in _buildLocalBranchTree(references))
         if (node.children.isEmpty)
-          _buildRefTile(node.reference!, label: node.label)
+          _buildRefTile(
+            node.reference!,
+            label: node.label,
+            // Local branch rows use the graph color only in history labels;
+            // keep the navigation text-first like Sourcetree.
+            showIcon: false,
+          )
         else
           _RefDirectoryTile(
             key: ValueKey<String>('ref-directory:${node.path}'),
@@ -1878,6 +1911,7 @@ class _RefDirectoryTileState extends State<_RefDirectoryTile> {
               ref: ref,
               label: widget.node.label,
               indent: childDepth,
+              showIcon: false,
               graphColor: widget.colorFor(ref),
               isSelected: widget.isSelected(ref),
               onPointerDown: widget.onSelected == null
@@ -1902,6 +1936,7 @@ class _RefDirectoryTileState extends State<_RefDirectoryTile> {
                 ref: child.reference!,
                 label: child.label,
                 indent: childDepth,
+                showIcon: false,
                 graphColor: widget.colorFor(child.reference!),
                 isSelected: widget.isSelected(child.reference!),
                 onPointerDown: widget.onSelected == null
@@ -2061,7 +2096,7 @@ class _RefTile extends StatelessWidget {
                     color: isSelected ? colors.secondaryContainer : null,
                     child: Row(
                       children: [
-                        if (showIcon)
+                        if (showIcon || ref.id == 'HEAD' || ref.isCurrent)
                           Icon(
                             key: ValueKey<String>('ref-nav-icon:${ref.id}'),
                             ref.isCurrent
@@ -2273,6 +2308,15 @@ class _HistoryPaneState extends State<_HistoryPane> {
   double? _authorColumnWidth;
   double? _dateColumnWidth;
 
+  // Building a fallback graph is O(n) in the loaded history.  Keep the
+  // derived value for the current immutable commit list so resizing columns
+  // or switching inspector tabs does not rebuild the whole graph.
+  List<CommitViewData>? _fallbackGraphCommits;
+  String? _fallbackGraphHeadId;
+  bool? _fallbackGraphDetachedHead;
+  Map<String, CommitGraphViewData> _fallbackGraphCache =
+      const <String, CommitGraphViewData>{};
+
   @override
   void initState() {
     super.initState();
@@ -2339,7 +2383,7 @@ class _HistoryPaneState extends State<_HistoryPane> {
               commit.graph.activeLanes.first == 0 &&
               commit.graph.parentLanes.length <= 1,
         )
-        ? _fallbackGraphsFor(
+        ? _fallbackGraphsForCached(
             commits,
             headId: widget.repository.headOid,
             isDetachedHead: widget.repository.isDetachedHead,
@@ -2711,6 +2755,32 @@ class _HistoryPaneState extends State<_HistoryPane> {
       for (var index = 0; index < commits.length; index++)
         commits[index].oid: graphs[index],
     };
+  }
+
+  /// 中文：缓存当前历史列表的后备 Graph，避免普通布局重建重复 O(n) 计算。
+  ///
+  /// English: Caches the fallback graph for the current history list so
+  /// routine layout rebuilds do not repeat the O(n) calculation.
+  Map<String, CommitGraphViewData> _fallbackGraphsForCached(
+    List<CommitViewData> commits, {
+    required String? headId,
+    required bool isDetachedHead,
+  }) {
+    if (identical(_fallbackGraphCommits, commits) &&
+        _fallbackGraphHeadId == headId &&
+        _fallbackGraphDetachedHead == isDetachedHead) {
+      return _fallbackGraphCache;
+    }
+    final next = _fallbackGraphsFor(
+      commits,
+      headId: headId,
+      isDetachedHead: isDetachedHead,
+    );
+    _fallbackGraphCommits = commits;
+    _fallbackGraphHeadId = headId;
+    _fallbackGraphDetachedHead = isDetachedHead;
+    _fallbackGraphCache = next;
+    return next;
   }
 }
 
@@ -3829,6 +3899,7 @@ class _SelectedChangesPane extends StatelessWidget {
   const _SelectedChangesPane({
     required this.repository,
     required this.onSelected,
+    required this.onSelectionChanged,
     required this.onStageToggled,
     required this.onGroupStageToggled,
     required this.onConflictAction,
@@ -3843,6 +3914,7 @@ class _SelectedChangesPane extends StatelessWidget {
 
   final RepositoryViewData repository;
   final RepositoryChangeCallback? onSelected;
+  final ValueChanged<List<RepositoryChangeViewData>>? onSelectionChanged;
   final RepositoryChangeStageCallback? onStageToggled;
   final RepositoryChangeGroupStageCallback? onGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
@@ -3869,6 +3941,7 @@ class _SelectedChangesPane extends StatelessWidget {
     return _ChangesPane(
       repository: repository,
       onSelected: onSelected,
+      onSelectionChanged: onSelectionChanged,
       onStageToggled: onStageToggled,
       onGroupStageToggled: onGroupStageToggled,
       onConflictAction: onConflictAction,
@@ -4203,6 +4276,7 @@ class _ChangesPane extends StatefulWidget {
   const _ChangesPane({
     required this.repository,
     required this.onSelected,
+    required this.onSelectionChanged,
     required this.onStageToggled,
     required this.onGroupStageToggled,
     required this.onConflictAction,
@@ -4215,6 +4289,7 @@ class _ChangesPane extends StatefulWidget {
 
   final RepositoryViewData repository;
   final RepositoryChangeCallback? onSelected;
+  final ValueChanged<List<RepositoryChangeViewData>>? onSelectionChanged;
   final RepositoryChangeStageCallback? onStageToggled;
   final RepositoryChangeGroupStageCallback? onGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
@@ -4260,6 +4335,7 @@ class _ChangesPaneState extends State<_ChangesPane> {
                           conflictActionsEnabled:
                               !repository.hasRunningRepositoryTask,
                           onSelected: widget.onSelected,
+                          onSelectionChanged: widget.onSelectionChanged,
                           onStageToggled: widget.onStageToggled,
                           onGroupStageToggled: widget.onGroupStageToggled,
                           onConflictAction: widget.onConflictAction,
@@ -4301,6 +4377,7 @@ class _ChangesPaneState extends State<_ChangesPane> {
                         conflictActionsEnabled:
                             !repository.hasRunningRepositoryTask,
                         onSelected: widget.onSelected,
+                        onSelectionChanged: widget.onSelectionChanged,
                         onStageToggled: widget.onStageToggled,
                         onGroupStageToggled: widget.onGroupStageToggled,
                         onConflictAction: widget.onConflictAction,
@@ -4344,6 +4421,7 @@ class _WorkspaceChangesView extends StatelessWidget {
   const _WorkspaceChangesView({
     required this.repository,
     required this.onSelected,
+    required this.onSelectionChanged,
     required this.onStageToggled,
     required this.onGroupStageToggled,
     required this.onConflictAction,
@@ -4357,6 +4435,7 @@ class _WorkspaceChangesView extends StatelessWidget {
 
   final RepositoryViewData repository;
   final RepositoryChangeCallback? onSelected;
+  final ValueChanged<List<RepositoryChangeViewData>>? onSelectionChanged;
   final RepositoryChangeStageCallback? onStageToggled;
   final RepositoryChangeGroupStageCallback? onGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
@@ -4381,6 +4460,7 @@ class _WorkspaceChangesView extends StatelessWidget {
           child: _ChangesPane(
             repository: repository,
             onSelected: onSelected,
+            onSelectionChanged: onSelectionChanged,
             onStageToggled: onStageToggled,
             onGroupStageToggled: onGroupStageToggled,
             onConflictAction: onConflictAction,
@@ -4429,6 +4509,7 @@ class _ChangeList extends StatefulWidget {
     required this.ordinaryMutationsEnabled,
     required this.conflictActionsEnabled,
     required this.onSelected,
+    required this.onSelectionChanged,
     required this.onStageToggled,
     required this.onGroupStageToggled,
     required this.onConflictAction,
@@ -4443,6 +4524,7 @@ class _ChangeList extends StatefulWidget {
   final bool ordinaryMutationsEnabled;
   final bool conflictActionsEnabled;
   final RepositoryChangeCallback? onSelected;
+  final ValueChanged<List<RepositoryChangeViewData>>? onSelectionChanged;
   final RepositoryChangeStageCallback? onStageToggled;
   final RepositoryChangeGroupStageCallback? onGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
@@ -4463,6 +4545,7 @@ class _ChangeListState extends State<_ChangeList> {
   void initState() {
     super.initState();
     _syncModelSelection();
+    _notifySelectionAfterFrame();
   }
 
   @override
@@ -4484,6 +4567,15 @@ class _ChangeListState extends State<_ChangeList> {
         ..clear()
         ..addAll(modelSelection);
     }
+    _notifySelectionAfterFrame();
+  }
+
+  /// Publishes the effective local multi-selection after the current build.
+  /// 中文：当前构建完成后发布文件列表的实际局部多选，供窗口级菜单状态使用。
+  void _notifySelectionAfterFrame() {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) widget.onSelectionChanged?.call(_selectedChanges);
+    });
   }
 
   void _syncModelSelection() {
@@ -4508,6 +4600,7 @@ class _ChangeListState extends State<_ChangeList> {
           ..add(key);
       });
       widget.onSelected?.call(change);
+      widget.onSelectionChanged?.call(_selectedChanges);
       return;
     }
 
@@ -4522,6 +4615,7 @@ class _ChangeListState extends State<_ChangeList> {
           ? null
           : selected.last,
     );
+    widget.onSelectionChanged?.call(_selectedChanges);
   }
 
   void _prepareContextMenu(RepositoryChangeViewData change) {
@@ -4534,6 +4628,7 @@ class _ChangeListState extends State<_ChangeList> {
       });
     }
     widget.onSelected?.call(change);
+    widget.onSelectionChanged?.call(_selectedChanges);
   }
 
   void _toggleSelectedStage(bool stage) {
@@ -5654,6 +5749,7 @@ class _TabbedInspector extends StatelessWidget {
     required this.onTabChanged,
     required this.repository,
     required this.onChangeSelected,
+    required this.onChangeSelectionChanged,
     required this.onChangeStageToggled,
     required this.onChangeGroupStageToggled,
     required this.onConflictAction,
@@ -5670,6 +5766,7 @@ class _TabbedInspector extends StatelessWidget {
   final ValueChanged<_InspectorTab> onTabChanged;
   final RepositoryViewData repository;
   final RepositoryChangeCallback? onChangeSelected;
+  final ValueChanged<List<RepositoryChangeViewData>>? onChangeSelectionChanged;
   final RepositoryChangeStageCallback? onChangeStageToggled;
   final RepositoryChangeGroupStageCallback? onChangeGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
@@ -5700,6 +5797,7 @@ class _TabbedInspector extends StatelessWidget {
             _InspectorTab.changes => _SelectedChangesPane(
               repository: repository,
               onSelected: onChangeSelected,
+              onSelectionChanged: onChangeSelectionChanged,
               onStageToggled: onChangeStageToggled,
               onGroupStageToggled: onChangeGroupStageToggled,
               onConflictAction: onConflictAction,

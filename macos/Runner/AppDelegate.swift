@@ -1,5 +1,6 @@
 import Cocoa
 import FlutterMacOS
+import QuickLookUI
 
 private let gitDesktopEngineCleanupTimeout: TimeInterval = 3.5
 private let gitDesktopWorkspaceRestorationTimeout: TimeInterval = 30
@@ -22,6 +23,118 @@ func gitDesktopCanPerformApplyPatchMenuAction(
   hasKeyWorkspace && hasRepositoryMutationCapability
 }
 
+/// Returns whether a native selected-file mutation may target the key window.
+/// 中文：判断原生选中文件写操作能否安全作用于当前前台工作区。
+func gitDesktopCanPerformSelectedChangeMenuAction(
+  hasKeyWorkspace: Bool,
+  hasValidatedSelection: Bool
+) -> Bool {
+  hasKeyWorkspace && hasValidatedSelection
+}
+
+/// Read-only file targets reported by one Flutter workspace Engine.
+/// 中文：单个 Flutter 工作区 Engine 上报的只读文件操作目标。
+struct GitDesktopWorkspaceFileMenuTargets {
+  let repositoryRootPath: String?
+  let selectedFilePaths: [String]
+  let hasFileSelection: Bool
+
+  /// 中文：规范化平台路径并拒绝仓库根目录以外或重复的选择。
+  /// English: Normalizes platform paths and rejects selections outside the
+  /// repository root or duplicate targets.
+  init(
+    repositoryRootPath: String?,
+    selectedFilePaths: [String],
+    hasFileSelection: Bool
+  ) {
+    let root = repositoryRootPath.map {
+      URL(fileURLWithPath: $0, isDirectory: true).standardizedFileURL.path
+    }
+    var seen: Set<String> = []
+    let validated = selectedFilePaths.compactMap { candidate -> String? in
+      guard let root else { return nil }
+      let path = URL(fileURLWithPath: candidate).standardizedFileURL.path
+      let separator = root == "/" ? root : root + "/"
+      guard path != root,
+            path.hasPrefix(separator),
+            seen.insert(path).inserted else {
+        return nil
+      }
+      return path
+    }
+    self.repositoryRootPath = root
+    self.selectedFilePaths = validated.count == selectedFilePaths.count
+      ? validated
+      : []
+    self.hasFileSelection = hasFileSelection
+  }
+
+  /// 中文：返回执行时仍存在的全部选中文件；部分失效时返回空集合。
+  /// English: Returns every selected path if all still exist at execution
+  /// time, otherwise an empty collection.
+  func existingSelectedURLs(
+    fileManager: FileManager = .default
+  ) -> [URL] {
+    guard hasFileSelection, !selectedFilePaths.isEmpty else { return [] }
+    let urls = selectedFilePaths.map { URL(fileURLWithPath: $0) }
+    return urls.allSatisfy { fileManager.fileExists(atPath: $0.path) }
+      ? urls
+      : []
+  }
+
+  /// 中文：返回仍存在的仓库根目录。
+  /// English: Returns the repository root while it remains a directory.
+  func existingRepositoryRootURL(
+    fileManager: FileManager = .default
+  ) -> URL? {
+    guard let repositoryRootPath else { return nil }
+    var isDirectory: ObjCBool = false
+    guard fileManager.fileExists(
+      atPath: repositoryRootPath,
+      isDirectory: &isDirectory
+    ), isDirectory.boolValue else {
+      return nil
+    }
+    return URL(fileURLWithPath: repositoryRootPath, isDirectory: true)
+  }
+
+  /// 中文：解析终端应打开的仓库目录或唯一选中文件所在目录。
+  /// English: Resolves the repository directory or the single selected file's
+  /// containing directory for Terminal.
+  func terminalDirectoryURL(
+    fileManager: FileManager = .default
+  ) -> URL? {
+    guard hasFileSelection else {
+      return existingRepositoryRootURL(fileManager: fileManager)
+    }
+    let urls = existingSelectedURLs(fileManager: fileManager)
+    guard urls.count == 1 else { return nil }
+    var isDirectory: ObjCBool = false
+    guard fileManager.fileExists(atPath: urls[0].path, isDirectory: &isDirectory)
+    else {
+      return nil
+    }
+    return isDirectory.boolValue ? urls[0] : urls[0].deletingLastPathComponent()
+  }
+}
+
+/// Owns the URLs shown by the shared macOS Quick Look panel.
+/// 中文：持有 macOS 共享 Quick Look 面板当前预览的文件 URL。
+final class GitDesktopQuickLookDataSource: NSObject, QLPreviewPanelDataSource {
+  var urls: [URL] = []
+
+  func numberOfPreviewItems(in panel: QLPreviewPanel!) -> Int {
+    urls.count
+  }
+
+  func previewPanel(
+    _ panel: QLPreviewPanel!,
+    previewItemAt index: Int
+  ) -> QLPreviewItem! {
+    urls[index] as NSURL
+  }
+}
+
 func gitDesktopCanonicalRepositoryPath(_ path: String?) -> String? {
   guard let path, !path.isEmpty else {
     return nil
@@ -30,6 +143,16 @@ func gitDesktopCanonicalRepositoryPath(_ path: String?) -> String? {
     .resolvingSymlinksInPath()
     .standardizedFileURL
     .path
+}
+
+/// Removes one explicitly detached workspace from the pending restored group.
+/// 中文：从待恢复的标签组意图中移除用户明确拆出的工作区，避免迟到验证撤销操作。
+func gitDesktopMergedWorkspacePaths(
+  _ paths: [String],
+  afterDetaching detachedPath: String?
+) -> [String] {
+  guard let detachedPath else { return paths }
+  return paths.filter { $0 != detachedPath }
 }
 
 func gitDesktopWorkspaceArguments(
@@ -121,13 +244,22 @@ final class GitDesktopWindowFocusHistory<Host: AnyObject> {
 /// Captures the restorable repository workspaces and merged-strip state.
 struct GitDesktopWorkspaceRestoreSnapshot {
   let paths: [String]
-  let restoresMergedWorkspaces: Bool
+  let mergedWorkspacePaths: [String]
+
+  var restoresMergedWorkspaces: Bool {
+    mergedWorkspacePaths.count > 1
+  }
 }
 
 struct GitDesktopWorkspaceRestorationCompletion: Equatable {
   let resolvedPaths: [String]
-  let unresolvedPaths: [String]
-  let shouldMerge: Bool
+  /// Paths that did not answer before the bounded wait; their windows remain open.
+  let timedOutPathsToKeepOpen: [String]
+  let mergedPathsToRestore: [String]
+
+  var shouldMerge: Bool {
+    mergedPathsToRestore.count > 1
+  }
 }
 
 enum GitDesktopWorkspaceRestorationResolution: Equatable {
@@ -144,7 +276,7 @@ final class GitDesktopWorkspaceRestorationGate {
   private var orderedPaths: [String] = []
   private var pendingPaths: Set<String> = []
   private var resolvedPaths: Set<String> = []
-  private var shouldMergeWhenFinished = false
+  private var mergedPaths: Set<String> = []
 
   var isWaiting: Bool {
     !pendingPaths.isEmpty
@@ -154,12 +286,17 @@ final class GitDesktopWorkspaceRestorationGate {
   ///
   /// English: Starts tracking a batch of restore paths and its intended merge
   /// state after verification.
-  func begin(paths: [String], shouldMerge: Bool) {
+  func begin(
+    paths: [String],
+    shouldMerge: Bool = false,
+    mergedPaths: [String]? = nil
+  ) {
     var seen: Set<String> = []
     orderedPaths = paths.filter { seen.insert($0).inserted }
     pendingPaths = Set(orderedPaths)
     resolvedPaths.removeAll()
-    shouldMergeWhenFinished = shouldMerge && pendingPaths.count > 1
+    let requestedMergedPaths = mergedPaths ?? (shouldMerge ? orderedPaths : [])
+    self.mergedPaths = Set(requestedMergedPaths).intersection(pendingPaths)
   }
 
   /// 中文：记录一个恢复路径已完成，并在最后一个路径完成时返回合并决策。
@@ -191,13 +328,15 @@ final class GitDesktopWorkspaceRestorationGate {
   private func finish() -> GitDesktopWorkspaceRestorationCompletion {
     let completion = GitDesktopWorkspaceRestorationCompletion(
       resolvedPaths: orderedPaths.filter { resolvedPaths.contains($0) },
-      unresolvedPaths: orderedPaths.filter { pendingPaths.contains($0) },
-      shouldMerge: shouldMergeWhenFinished
+      timedOutPathsToKeepOpen: orderedPaths.filter { pendingPaths.contains($0) },
+      mergedPathsToRestore: orderedPaths.filter {
+        resolvedPaths.contains($0) && mergedPaths.contains($0)
+      }
     )
     orderedPaths.removeAll()
     pendingPaths.removeAll()
     resolvedPaths.removeAll()
-    shouldMergeWhenFinished = false
+    mergedPaths.removeAll()
     return completion
   }
 }
@@ -211,6 +350,8 @@ final class GitDesktopWorkspaceRestorationGate {
 final class GitDesktopWorkspaceRestoreStore {
   private static let pathsKey = "gitDesktopOpenWorkspacePaths"
   private static let mergedWorkspacesKey = "gitDesktopRestoresMergedWorkspaces"
+  private static let mergedWorkspacePathsKey =
+    "gitDesktopMergedWorkspacePaths"
 
   private let defaults: UserDefaults
 
@@ -223,14 +364,23 @@ final class GitDesktopWorkspaceRestoreStore {
     else {
       return GitDesktopWorkspaceRestoreSnapshot(
         paths: [],
-        restoresMergedWorkspaces: false
+        mergedWorkspacePaths: []
       )
     }
     let paths = normalizedPaths(rawPaths)
+    let storedMergedPaths = defaults.array(
+      forKey: Self.mergedWorkspacePathsKey
+    ) as? [String]
+    let mergedCandidates = storedMergedPaths ?? (
+      defaults.bool(forKey: Self.mergedWorkspacesKey) ? paths : []
+    )
+    let pathSet = Set(paths)
+    let mergedPaths = normalizedPaths(mergedCandidates).filter {
+      pathSet.contains($0)
+    }
     return GitDesktopWorkspaceRestoreSnapshot(
       paths: paths,
-      restoresMergedWorkspaces:
-        paths.count > 1 && defaults.bool(forKey: Self.mergedWorkspacesKey)
+      mergedWorkspacePaths: mergedPaths.count > 1 ? mergedPaths : []
     )
   }
 
@@ -240,12 +390,22 @@ final class GitDesktopWorkspaceRestoreStore {
 
   func save(
     paths: [String],
-    restoresMergedWorkspaces: Bool = false
+    restoresMergedWorkspaces: Bool = false,
+    mergedWorkspacePaths: [String]? = nil
   ) {
     let normalized = normalizedPaths(paths)
+    let normalizedSet = Set(normalized)
+    let requestedMergedPaths = mergedWorkspacePaths ?? (
+      restoresMergedWorkspaces ? normalized : []
+    )
+    let merged = normalizedPaths(requestedMergedPaths).filter {
+      normalizedSet.contains($0)
+    }
+    let persistedMerged = merged.count > 1 ? merged : []
     defaults.set(normalized, forKey: Self.pathsKey)
+    defaults.set(persistedMerged, forKey: Self.mergedWorkspacePathsKey)
     defaults.set(
-      normalized.count > 1 && restoresMergedWorkspaces,
+      persistedMerged.count == normalized.count && normalized.count > 1,
       forKey: Self.mergedWorkspacesKey
     )
   }
@@ -451,6 +611,16 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   private var shutdownPreparationCompletions: [() -> Void] = []
 
   var repositoryPath: String?
+  let restoresPreviouslyOpenWorkspace: Bool
+  let restoresMergedWorkspace: Bool
+
+  /// Whether Flutter has successfully validated the repository for this
+  /// workspace. Unverified windows remain usable in the current process but
+  /// are excluded from the next-launch restore snapshot.
+  ///
+  /// 中文：Flutter 是否已成功验证此工作区仓库；未验证窗口可以继续留在当前进程，
+  /// 但不会写入下次启动恢复快照。
+  fileprivate(set) var hasVerifiedRepository = false
 
   /// Flutter's last validated Stop Tracking availability for this Engine.
   ///
@@ -470,6 +640,11 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// Flutter 在显示对话框前重读当前会话能力。
   private(set) var canFetchFromMenu = false
 
+  /// Flutter's last validated Merge availability for this Engine.
+  /// 中文：此 Engine 最近一次由 Flutter 校验的“合并”可用状态；执行时仍由
+  /// Flutter 显示来源与当前分支并交给 Git 判断冲突。
+  private(set) var canMergeFromMenu = false
+
   /// Flutter's last validated Commit availability for this Engine.
   ///
   /// 中文：此 Engine 最近一次由 Flutter 校验的“提交”可用状态；实际写入前仍由
@@ -488,6 +663,11 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// Flutter 的现有推送确认流程重新校验 Git 状态。
   private(set) var canPushFromMenu = false
 
+  /// Flutter's last validated Remove availability for this Engine.
+  /// 中文：此 Engine 最近一次由 Flutter 校验的“移除”可用状态；真正删除前仍由
+  /// Flutter 显示影响确认并重新读取当前文件状态。
+  private(set) var canRemoveSelectedFromMenu = false
+
   /// Flutter's last validated Branch availability for this Engine.
   ///
   /// 中文：此 Engine 最近一次由 Flutter 校验的“分支”可用状态；实际操作仍由
@@ -500,6 +680,27 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// Flutter 的贮藏创建流程重新校验 Git 状态。
   private(set) var canStashFromMenu = false
 
+  /// Flutter's last validated Tag availability for this Engine.
+  /// 中文：此 Engine 最近一次由 Flutter 校验的“标签”可用状态；面板使用当前
+  /// 选中提交或 HEAD 作为默认目标，并由应用层执行最终校验。
+  private(set) var canTagFromMenu = false
+
+  /// Flutter's last validated Stage Selected availability for this Engine.
+  /// 中文：此 Engine 最近一次由 Flutter 校验的“添加到索引”可用状态。
+  private(set) var canStageSelectedFromMenu = false
+
+  /// Flutter's last validated Unstage Selected availability for this Engine.
+  /// 中文：此 Engine 最近一次由 Flutter 校验的“从索引中取消暂存”可用状态。
+  private(set) var canUnstageSelectedFromMenu = false
+
+  /// Flutter-validated paths used only by read-only native file actions.
+  /// 中文：仅供原生只读文件动作使用、由 Flutter 校验的路径快照。
+  private(set) var fileMenuTargets = GitDesktopWorkspaceFileMenuTargets(
+    repositoryRootPath: nil,
+    selectedFilePaths: [],
+    hasFileSelection: false
+  )
+
   /// 中文：创建独立工作区 Engine，并恢复共享的工作区窗口尺寸。
   ///
   /// English: Creates an independent workspace Engine and restores the shared
@@ -508,6 +709,7 @@ final class WorkspaceFlutterWindowController: NSWindowController,
     repositoryPath: String?,
     initialAction: String?,
     restoresPreviouslyOpenWorkspace: Bool = false,
+    restoresMergedWorkspace: Bool = false,
     coordinator: WindowCoordinator
   ) throws {
     let project = FlutterDartProject()
@@ -554,6 +756,8 @@ final class WorkspaceFlutterWindowController: NSWindowController,
     self.flutterViewController = flutterViewController
     self.windowChannel = windowChannel
     self.repositoryPath = repositoryPath
+    self.restoresPreviouslyOpenWorkspace = restoresPreviouslyOpenWorkspace
+    self.restoresMergedWorkspace = restoresMergedWorkspace
     super.init(window: window)
 
     window.delegate = self
@@ -685,6 +889,24 @@ final class WorkspaceFlutterWindowController: NSWindowController,
           for: self
         )
         result(nil)
+      case "repositoryStatusUpdated":
+        guard let canonicalPath = gitDesktopCanonicalRepositoryPath(
+          repositoryPath
+        ) else {
+          result(
+            FlutterError(
+              code: "invalid_repository_registration",
+              message: GitDesktopWindowHostError
+                .invalidRepositoryRegistration.localizedDescription,
+              details: nil
+            )
+          )
+          return
+        }
+        // Status refreshes update the home library only; they never mutate
+        // workspace ownership and can therefore not close a tab.
+        coordinator.reportRepositoryStatus(canonicalPath)
+        result(nil)
       case "repositoryRestoreFailed":
         guard let canonicalPath = gitDesktopCanonicalRepositoryPath(
           repositoryPath
@@ -709,10 +931,23 @@ final class WorkspaceFlutterWindowController: NSWindowController,
         canApplyPatchFromMenu = arguments?["canApplyPatch"] as? Bool ?? false
         canCommitFromMenu = arguments?["canCommit"] as? Bool ?? false
         canFetchFromMenu = arguments?["canFetch"] as? Bool ?? false
+        canMergeFromMenu = arguments?["canMerge"] as? Bool ?? false
         canPullFromMenu = arguments?["canPull"] as? Bool ?? false
         canPushFromMenu = arguments?["canPush"] as? Bool ?? false
+        canRemoveSelectedFromMenu =
+          arguments?["canRemoveSelected"] as? Bool ?? false
         canCreateBranchFromMenu = arguments?["canCreateBranch"] as? Bool ?? false
         canStashFromMenu = arguments?["canStash"] as? Bool ?? false
+        canTagFromMenu = arguments?["canTag"] as? Bool ?? false
+        canStageSelectedFromMenu =
+          arguments?["canStageSelected"] as? Bool ?? false
+        canUnstageSelectedFromMenu =
+          arguments?["canUnstageSelected"] as? Bool ?? false
+        fileMenuTargets = GitDesktopWorkspaceFileMenuTargets(
+          repositoryRootPath: arguments?["repositoryRootPath"] as? String,
+          selectedFilePaths: arguments?["selectedFilePaths"] as? [String] ?? [],
+          hasFileSelection: arguments?["hasFileSelection"] as? Bool ?? false
+        )
         result(nil)
       default:
         result(FlutterMethodNotImplemented)
@@ -790,12 +1025,14 @@ final class WindowCoordinator {
   ] = [:]
   private var mergedWorkspaceOrder: [ObjectIdentifier] = []
   private weak var selectedMergedWorkspaceWindow: MainFlutterWindow?
+  private var isMergedWorkspaceTabStripVisible = true
   private var isActivatingMergedWorkspace = false
   private let workspaceRestorationGate =
     GitDesktopWorkspaceRestorationGate()
   private var workspaceRestorationTimeoutWorkItem: DispatchWorkItem?
   private var didRequestWorkspaceRestoration = false
   private var isTerminating = false
+  private var restoredMergedWorkspacePathOrder: [String] = []
 
   /// 中文：创建窗口协调器，并注入可独立测试的恢复、登记与尺寸偏好存储。
   ///
@@ -962,6 +1199,7 @@ final class WindowCoordinator {
     repositoryPath: String?,
     initialAction: String?,
     restoresPreviouslyOpenWorkspace: Bool = false,
+    restoresMergedWorkspace: Bool = false,
     completion: @escaping (Error?) -> Void
   ) {
     let canonicalPath = gitDesktopCanonicalRepositoryPath(repositoryPath)
@@ -982,6 +1220,7 @@ final class WindowCoordinator {
         repositoryPath: canonicalPath,
         initialAction: initialAction,
         restoresPreviouslyOpenWorkspace: restoresPreviouslyOpenWorkspace,
+        restoresMergedWorkspace: restoresMergedWorkspace,
         coordinator: self
       )
       if let canonicalPath {
@@ -1005,6 +1244,40 @@ final class WindowCoordinator {
   /// focus. A repository-library window must never mutate a background repo.
   func performWorkspaceAction(_ action: String) {
     currentWorkspaceController?.performWorkspaceAction(action)
+  }
+
+  /// Read-only file targets for the workspace that currently owns focus.
+  /// 中文：当前获得焦点的工作区提供的只读文件目标。
+  var currentWorkspaceFileMenuTargets: GitDesktopWorkspaceFileMenuTargets? {
+    currentWorkspaceController?.fileMenuTargets
+  }
+
+  /// 中文：当前选择是否可由系统默认应用打开。
+  /// English: Whether the current selection can be opened by its default app.
+  var canOpenSelectedFileFromMenu: Bool {
+    currentWorkspaceFileMenuTargets?.existingSelectedURLs().count == 1
+  }
+
+  /// 中文：当前文件选择或仓库根目录是否可在 Finder 中定位。
+  /// English: Whether Finder can reveal the selection or repository root.
+  var canRevealFileFromMenu: Bool {
+    guard let targets = currentWorkspaceFileMenuTargets else { return false }
+    if targets.hasFileSelection {
+      return !targets.existingSelectedURLs().isEmpty
+    }
+    return targets.existingRepositoryRootURL() != nil
+  }
+
+  /// 中文：当前工作区是否有可安全传给 Terminal 的单一目录。
+  /// English: Whether the workspace exposes one safe directory to Terminal.
+  var canOpenTerminalFromMenu: Bool {
+    currentWorkspaceFileMenuTargets?.terminalDirectoryURL() != nil
+  }
+
+  /// 中文：当前选择是否包含可由 Quick Look 预览的现存文件。
+  /// English: Whether the selection contains existing Quick Look targets.
+  var canQuickLookSelectedFilesFromMenu: Bool {
+    !(currentWorkspaceFileMenuTargets?.existingSelectedURLs().isEmpty ?? true)
   }
 
   /// Whether the native Action menu can safely address the key workspace.
@@ -1038,6 +1311,12 @@ final class WindowCoordinator {
     currentWorkspaceController?.canFetchFromMenu == true
   }
 
+  /// Whether the key workspace currently permits opening the Merge workflow.
+  /// 中文：当前前台工作区是否已由 Flutter 校验为允许打开分支合并流程。
+  var canMergeFromMenu: Bool {
+    currentWorkspaceController?.canMergeFromMenu == true
+  }
+
   /// Whether the key workspace currently permits opening the Commit workflow.
   /// 中文：当前前台工作区是否已由 Flutter 校验为允许打开提交工作流。
   var canCommitFromMenu: Bool {
@@ -1068,6 +1347,42 @@ final class WindowCoordinator {
     currentWorkspaceController?.canStashFromMenu == true
   }
 
+  /// Whether the key workspace currently has a valid target for tag management.
+  /// 中文：当前前台工作区是否有可供标签管理使用的有效提交目标。
+  var canTagFromMenu: Bool {
+    currentWorkspaceController?.canTagFromMenu == true
+  }
+
+  /// Whether the key workspace has a Flutter-validated unstaged selection.
+  /// 中文：当前前台工作区是否有经 Flutter 校验、可加入索引的未暂存选择。
+  var canStageSelectedFromMenu: Bool {
+    gitDesktopCanPerformSelectedChangeMenuAction(
+      hasKeyWorkspace: currentWorkspaceController != nil,
+      hasValidatedSelection:
+        currentWorkspaceController?.canStageSelectedFromMenu == true
+    )
+  }
+
+  /// Whether the key workspace has a Flutter-validated staged selection.
+  /// 中文：当前前台工作区是否有经 Flutter 校验、可从索引取消暂存的选择。
+  var canUnstageSelectedFromMenu: Bool {
+    gitDesktopCanPerformSelectedChangeMenuAction(
+      hasKeyWorkspace: currentWorkspaceController != nil,
+      hasValidatedSelection:
+        currentWorkspaceController?.canUnstageSelectedFromMenu == true
+    )
+  }
+
+  /// Whether the key workspace has a Flutter-validated removable selection.
+  /// 中文：当前前台工作区是否有经 Flutter 校验、可确认移除的工作区文件选择。
+  var canRemoveSelectedFromMenu: Bool {
+    gitDesktopCanPerformSelectedChangeMenuAction(
+      hasKeyWorkspace: currentWorkspaceController != nil,
+      hasValidatedSelection:
+        currentWorkspaceController?.canRemoveSelectedFromMenu == true
+    )
+  }
+
   private var currentWorkspaceController: WorkspaceFlutterWindowController? {
     guard let keyWindow = NSApp.keyWindow as? MainFlutterWindow,
           keyWindow.role == .workspace else {
@@ -1080,8 +1395,23 @@ final class WindowCoordinator {
     _ repositoryPath: String,
     for controller: WorkspaceFlutterWindowController
   ) {
+    // A workspace can switch repositories while an older Flutter state
+    // notification is still in flight. Ignore that stale notification rather
+    // than treating the current controller as a duplicate and closing it.
+    if let currentPath = controller.repositoryPath,
+       currentPath != repositoryPath,
+       controller.hasVerifiedRepository {
+      return
+    }
     if let existing = workspaceIndex.host(for: repositoryPath),
        existing !== controller {
+      // Automatic refreshes can re-report the current repository after the
+      // workspace has already been verified. That is a state notification,
+      // not a second open request; never close a live verified workspace for
+      // it. Only an unverified placeholder can be safely deduplicated here.
+      if controller.hasVerifiedRepository {
+        return
+      }
       workspaceHistory.markRecent(existing)
       existing.showAndActivate()
       reportRepositoryOpenedToLibrary(repositoryPath: repositoryPath)
@@ -1095,16 +1425,30 @@ final class WindowCoordinator {
     workspaceIndex.remove(controller)
     unregisteredWorkspaces.removeValue(forKey: ObjectIdentifier(controller))
     controller.repositoryPath = repositoryPath
+    controller.hasVerifiedRepository = true
     controller.window?.title = "\(URL(fileURLWithPath: repositoryPath).lastPathComponent) (Git)"
     if let window = controller.window as? MainFlutterWindow,
        mergedWorkspaceOrder.contains(ObjectIdentifier(window)) {
       refreshMergedWorkspaceTabStrips()
     }
     workspaceIndex.register(controller, for: repositoryPath)
-    mergeNewWorkspaceIntoExistingMergedGroupIfNeeded(controller)
+    if controller.restoresPreviouslyOpenWorkspace {
+      if controller.restoresMergedWorkspace &&
+          !workspaceRestorationGate.isWaiting {
+        mergeVerifiedRestoredWorkspaceGroupIfPossible()
+      }
+    } else {
+      mergeNewWorkspaceIntoExistingMergedGroupIfNeeded(controller)
+    }
     if !resolveRestoredRepository(repositoryPath) {
       persistOpenWorkspaces()
     }
+    reportRepositoryOpenedToLibrary(repositoryPath: repositoryPath)
+  }
+
+  /// Forwards a status refresh without re-registering or deduplicating a window.
+  /// 中文：仅转发状态刷新，不重新登记工作区，也不触发窗口去重关闭。
+  func reportRepositoryStatus(_ repositoryPath: String) {
     reportRepositoryOpenedToLibrary(repositoryPath: repositoryPath)
   }
 
@@ -1152,6 +1496,7 @@ final class WindowCoordinator {
           windows.contains(where: { $0 === primary }) else {
       return
     }
+    let wasAlreadyMerged = mergedWorkspaceWindows.count > 1
     let windowIdentifiers = Set(windows.map(ObjectIdentifier.init))
     for previousWindow in mergedWorkspaceWindows
     where !windowIdentifiers.contains(ObjectIdentifier(previousWindow)) {
@@ -1162,6 +1507,9 @@ final class WindowCoordinator {
     }
     mergedWorkspaceOrder = windows.map(ObjectIdentifier.init)
     selectedMergedWorkspaceWindow = primary
+    if !wasAlreadyMerged {
+      isMergedWorkspaceTabStripVisible = true
+    }
     let sharedFrame = primary.frame
     windows.forEach { $0.cancelPendingBringToFront() }
     for window in windows where window !== primary {
@@ -1207,6 +1555,7 @@ final class WindowCoordinator {
       remainingMergedWindows.forEach { $0.removeWorkspaceTabStrip() }
       mergedWorkspaceOrder.removeAll()
       selectedMergedWorkspaceWindow = nil
+      isMergedWorkspaceTabStripVisible = true
       if wasSelected, let remainingWindow = remainingMergedWindows.first {
         if let closingFrame {
           remainingWindow.setFrame(closingFrame, display: false)
@@ -1308,6 +1657,19 @@ final class WindowCoordinator {
     mergeWorkspaceWindows(mergedControllers)
   }
 
+  /// 中文：将恢复快照中明确属于同一组且已验证的窗口重新合并。
+  ///
+  /// English: Re-merges verified windows explicitly listed in the restored
+  /// group, without absorbing independently restored workspaces.
+  private func mergeVerifiedRestoredWorkspaceGroupIfPossible() {
+    let controllers = restoredMergedWorkspacePathOrder.compactMap {
+      workspaceIndex.host(for: $0)
+    }.filter(\.hasVerifiedRepository)
+    if controllers.count > 1 {
+      mergeWorkspaceWindows(controllers)
+    }
+  }
+
   /// Selects the current workspace as tab host, falling back to the most
   /// recently used live workspace.
   private func activeWorkspaceWindow(
@@ -1355,8 +1717,136 @@ final class WindowCoordinator {
           let currentIndex = windows.firstIndex(where: { $0 === window }) else {
       return false
     }
-    let targetIndex = (currentIndex + offset + windows.count) % windows.count
+    guard let targetIndex = gitDesktopAdjacentTabIndex(
+      currentIndex: currentIndex,
+      tabCount: windows.count,
+      offset: offset
+    ) else {
+      return false
+    }
     activateMergedWorkspace(windows[targetIndex])
+    return true
+  }
+
+  /// 中文：从当前 key workspace 循环切换到相邻的合并标签。
+  /// English: Selects an adjacent merged tab from the current key workspace.
+  func selectAdjacentMergedWorkspaceFromMenu(offset: Int) -> Bool {
+    guard let window = currentWorkspaceController?.window as? MainFlutterWindow
+    else {
+      return false
+    }
+    return selectAdjacentMergedWorkspace(from: window, offset: offset)
+  }
+
+  /// 中文：当前 key workspace 是否属于至少包含两个窗口的合并标签组。
+  /// English: Whether the key workspace belongs to a merged group of at least
+  /// two live windows.
+  var canManageCurrentMergedWorkspace: Bool {
+    guard let window = currentWorkspaceController?.window as? MainFlutterWindow
+    else {
+      return false
+    }
+    return canManageMergedWorkspace(window)
+  }
+
+  /// 中文：判断指定工作区窗口是否属于可操作的合并标签组。
+  /// English: Returns whether a workspace window belongs to a manageable
+  /// merged group.
+  private func canManageMergedWorkspace(_ window: MainFlutterWindow) -> Bool {
+    mergedWorkspaceWindows.count > 1 &&
+      mergedWorkspaceOrder.contains(ObjectIdentifier(window))
+  }
+
+  /// 中文：当前合并工作区是否显示自绘标签栏。
+  /// English: Whether the current merged workspace group shows its custom tab
+  /// strip.
+  var showsCurrentMergedWorkspaceTabStrip: Bool {
+    canManageCurrentMergedWorkspace && isMergedWorkspaceTabStripVisible
+  }
+
+  /// 中文：切换当前合并组的标签栏可见性，不改变窗口或 Engine 所有权。
+  /// English: Toggles the custom strip for the current merged group without
+  /// changing window or Engine ownership.
+  func toggleCurrentMergedWorkspaceTabStrip() -> Bool {
+    guard let window = currentWorkspaceController?.window as? MainFlutterWindow
+    else {
+      return false
+    }
+    return toggleMergedWorkspaceTabStrip(from: window)
+  }
+
+  /// 中文：切换指定合并工作区的标签栏，供菜单和生命周期测试共用。
+  /// English: Toggles the specified merged workspace's tab strip for both menu
+  /// routing and lifecycle tests.
+  @discardableResult
+  func toggleMergedWorkspaceTabStrip(from window: MainFlutterWindow) -> Bool {
+    guard canManageMergedWorkspace(window) else { return false }
+    isMergedWorkspaceTabStripVisible.toggle()
+    refreshMergedWorkspaceTabStrips()
+    return true
+  }
+
+  /// 中文：将当前标签从合并组移为独立窗口，同时保留其 Engine 和仓库会话。
+  ///
+  /// English: Detaches the current tab into a standalone window while keeping
+  /// its Flutter Engine and repository session alive.
+  func detachCurrentWorkspaceFromMergedGroup() -> Bool {
+    guard let detachedWindow = currentWorkspaceController?.window
+            as? MainFlutterWindow else {
+      return false
+    }
+    return detachMergedWorkspace(detachedWindow)
+  }
+
+  /// 中文：将指定工作区从合并组移出，供菜单和生命周期测试共用。
+  /// English: Detaches a specified workspace from its merged group for both
+  /// menu routing and lifecycle tests.
+  @discardableResult
+  func detachMergedWorkspace(_ detachedWindow: MainFlutterWindow) -> Bool {
+    guard canManageMergedWorkspace(detachedWindow),
+          let detachedIndex = mergedWorkspaceOrder.firstIndex(
+            of: ObjectIdentifier(detachedWindow)
+          ) else {
+      return false
+    }
+
+    let detachedRepositoryPath = workspaceControllers().first {
+      $0.window === detachedWindow
+    }?.repositoryPath
+    restoredMergedWorkspacePathOrder = gitDesktopMergedWorkspacePaths(
+      restoredMergedWorkspacePathOrder,
+      afterDetaching: detachedRepositoryPath
+    )
+    let sharedFrame = detachedWindow.frame
+    mergedWorkspaceOrder.remove(at: detachedIndex)
+    detachedWindow.removeWorkspaceTabStrip()
+    let remainingWindows = mergedWorkspaceWindows
+    if remainingWindows.count > 1 {
+      let nextIndex = min(detachedIndex, remainingWindows.count - 1)
+      let nextWindow = remainingWindows[nextIndex]
+      selectedMergedWorkspaceWindow = nextWindow
+      nextWindow.setFrame(sharedFrame, display: false)
+      refreshMergedWorkspaceTabStrips()
+      nextWindow.orderFront(nil)
+    } else {
+      remainingWindows.forEach { $0.removeWorkspaceTabStrip() }
+      mergedWorkspaceOrder.removeAll()
+      selectedMergedWorkspaceWindow = nil
+      isMergedWorkspaceTabStripVisible = true
+      if let remainingWindow = remainingWindows.first {
+        remainingWindow.setFrame(sharedFrame, display: false)
+        remainingWindow.orderFront(nil)
+      }
+    }
+
+    let detachedFrame = gitDesktopDetachedWindowFrame(
+      currentFrame: sharedFrame,
+      visibleFrame: (detachedWindow.screen ?? NSScreen.main)?.visibleFrame
+        ?? sharedFrame
+    )
+    detachedWindow.setFrame(detachedFrame, display: false)
+    detachedWindow.bringToFrontImmediately()
+    persistOpenWorkspaces()
     return true
   }
 
@@ -1423,6 +1913,10 @@ final class WindowCoordinator {
       windows.forEach { $0.removeWorkspaceTabStrip() }
       return
     }
+    guard isMergedWorkspaceTabStripVisible else {
+      windows.forEach { $0.removeWorkspaceTabStrip() }
+      return
+    }
     windows.forEach { candidate in
       candidate.configureWorkspaceTabStrip(
         windows: windows,
@@ -1480,6 +1974,11 @@ final class WindowCoordinator {
   /// English: Saves every live window size and waits for each Engine's bounded
   /// termination cleanup.
   func prepareForApplicationTermination(completion: @escaping () -> Void) {
+    // Persist the latest verified workspace order and merged-group flag before
+    // Engine shutdown begins. This covers restarts that happen before a prior
+    // tab or merge interaction has flushed its snapshot.
+    persistOpenWorkspaces()
+
     let registered = workspaceIndex.allHosts
     let unregistered = Array(unregisteredWorkspaces.values)
     var controllers: [WorkspaceFlutterWindowController] = []
@@ -1555,22 +2054,26 @@ final class WindowCoordinator {
       let restorablePaths = savedSnapshot.paths.filter {
         self.isReadableDirectory(at: $0)
       }
-      let restoresMergedWorkspaces =
-        savedSnapshot.restoresMergedWorkspaces && restorablePaths.count > 1
+      let restorablePathSet = Set(restorablePaths)
+      let mergedWorkspacePaths = savedSnapshot.mergedWorkspacePaths.filter {
+        restorablePathSet.contains($0)
+      }
+      self.restoredMergedWorkspacePathOrder = mergedWorkspacePaths
       self.workspaceRestoreStore.save(
         paths: restorablePaths,
-        restoresMergedWorkspaces: restoresMergedWorkspaces
+        mergedWorkspacePaths: mergedWorkspacePaths
       )
       self.workspaceRestorationGate.begin(
         paths: restorablePaths,
-        shouldMerge: restoresMergedWorkspaces
+        mergedPaths: mergedWorkspacePaths
       )
       self.scheduleWorkspaceRestorationTimeout()
       for repositoryPath in restorablePaths {
         self.openWorkspace(
           repositoryPath: repositoryPath,
           initialAction: nil,
-          restoresPreviouslyOpenWorkspace: true
+          restoresPreviouslyOpenWorkspace: true,
+          restoresMergedWorkspace: mergedWorkspacePaths.contains(repositoryPath)
         ) { [weak self] error in
           guard error != nil else {
             return
@@ -1623,29 +2126,19 @@ final class WindowCoordinator {
     )
   }
 
-  /// 中文：完成恢复批次，只合并已验证成员，并关闭超时成员。
+  /// 中文：完成恢复批次，只合并已验证成员；超时成员继续保持可见，允许迟到的
+  /// 仓库验证完成登记，避免后台初始化延迟擅自关闭用户窗口。
   ///
-  /// English: Finishes a restore batch by merging only verified members and
-  /// closing members that timed out.
+  /// English: Finishes a restore batch by merging only verified members while
+  /// keeping timed-out members visible so late repository validation can
+  /// still register them instead of closing a user-owned window.
   private func finishWorkspaceRestoration(
     _ completion: GitDesktopWorkspaceRestorationCompletion
   ) {
     workspaceRestorationTimeoutWorkItem?.cancel()
     workspaceRestorationTimeoutWorkItem = nil
 
-    for repositoryPath in completion.unresolvedPaths {
-      guard let controller = workspaceIndex.host(for: repositoryPath) else {
-        continue
-      }
-      workspaceIndex.remove(controller)
-      workspaceHistory.remove(controller)
-      (controller.window as? MainFlutterWindow)?.orderOut(nil)
-      DispatchQueue.main.async {
-        controller.requestClose()
-      }
-    }
-
-    let restoredControllers = completion.resolvedPaths.compactMap {
+    let restoredControllers = completion.mergedPathsToRestore.compactMap {
       workspaceIndex.host(for: $0)
     }
     if completion.shouldMerge, restoredControllers.count > 1 {
@@ -1671,7 +2164,10 @@ final class WindowCoordinator {
     guard !workspaceRestorationGate.isWaiting else {
       return
     }
-    let controllers = workspaceIndex.allHosts
+    let controllers = workspaceIndex.allHosts.filter { controller in
+      controller.hasVerifiedRepository ||
+        (isTerminating && controller.repositoryPath != nil)
+    }
     let controllerByWindowIdentifier = Dictionary(
       uniqueKeysWithValues: controllers.compactMap { controller in
         controller.window.map {
@@ -1690,22 +2186,8 @@ final class WindowCoordinator {
     }
     workspaceRestoreStore.save(
       paths: controllersInRestoreOrder.compactMap(\.repositoryPath),
-      restoresMergedWorkspaces: areAllWorkspaceWindowsMerged
+      mergedWorkspacePaths: mergedControllers.compactMap(\.repositoryPath)
     )
-  }
-
-  /// Whether every restorable repository workspace belongs to one merged strip.
-  private var areAllWorkspaceWindowsMerged: Bool {
-    // Empty workspaces are intentionally not persisted, so they must not make
-    // a persisted group of repository workspaces look unmerged.
-    let windows = workspaceIndex.allHosts.compactMap(\.window)
-    guard windows.count > 1 else {
-      return false
-    }
-    let mergedIdentifiers = Set(mergedWorkspaceOrder)
-    return windows.allSatisfy {
-      mergedIdentifiers.contains(ObjectIdentifier($0))
-    }
   }
 
   private func prepareRepositoryLibrary(
@@ -1763,8 +2245,9 @@ final class WindowCoordinator {
 }
 
 @main
-class AppDelegate: FlutterAppDelegate {
+class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
   let windowCoordinator = WindowCoordinator()
+  private let quickLookDataSource = GitDesktopQuickLookDataSource()
   private var shortcutEventMonitor: Any?
   private var isTerminationPreparationRunning = false
   private var isTerminationPrepared = false
@@ -1834,6 +2317,108 @@ class AppDelegate: FlutterAppDelegate {
     windowCoordinator.mergeAllWorkspaceWindows()
   }
 
+  /// 中文：循环切换到合并工作区组中的上一个标签。
+  /// English: Selects the previous tab in the merged workspace group.
+  @IBAction func selectPreviousRepositoryTabFromMenu(_ sender: Any?) {
+    if !windowCoordinator.selectAdjacentMergedWorkspaceFromMenu(offset: -1) {
+      NSSound.beep()
+    }
+  }
+
+  /// 中文：循环切换到合并工作区组中的下一个标签。
+  /// English: Selects the next tab in the merged workspace group.
+  @IBAction func selectNextRepositoryTabFromMenu(_ sender: Any?) {
+    if !windowCoordinator.selectAdjacentMergedWorkspaceFromMenu(offset: 1) {
+      NSSound.beep()
+    }
+  }
+
+  /// 中文：将当前工作区标签移出合并组并保留其独立 Engine。
+  /// English: Detaches the current workspace tab while preserving its Engine.
+  @IBAction func detachRepositoryTabFromMenu(_ sender: Any?) {
+    if !windowCoordinator.detachCurrentWorkspaceFromMergedGroup() {
+      NSSound.beep()
+    }
+  }
+
+  /// 中文：显示或隐藏当前合并工作区的自绘标签栏。
+  /// English: Shows or hides the current merged workspace's custom tab strip.
+  @IBAction func toggleRepositoryTabBarFromMenu(_ sender: Any?) {
+    if !windowCoordinator.toggleCurrentMergedWorkspaceTabStrip() {
+      NSSound.beep()
+    }
+  }
+
+  /// 中文：在“移动到显示器”子菜单展开时按当前在线屏幕重建菜单项。
+  ///
+  /// English: Rebuilds the Move to Display submenu from the currently online
+  /// screens whenever it opens.
+  func menuNeedsUpdate(_ menu: NSMenu) {
+    menu.removeAllItems()
+    let screens = NSScreen.screens
+    guard screens.count > 1 else {
+      let item = NSMenuItem(
+        title: "没有其他可用显示器",
+        action: nil,
+        keyEquivalent: ""
+      )
+      item.isEnabled = false
+      menu.addItem(item)
+      return
+    }
+    let currentScreenNumber = (NSApp.keyWindow?.screen?.deviceDescription[
+      NSDeviceDescriptionKey("NSScreenNumber")
+    ] as? NSNumber)?.uint32Value
+    let canMove = gitDesktopCanPerformWindowPlacement(NSApp.keyWindow)
+    for (index, screen) in screens.enumerated() {
+      guard let screenNumber = screen.deviceDescription[
+        NSDeviceDescriptionKey("NSScreenNumber")
+      ] as? NSNumber else {
+        continue
+      }
+      let suffix = screen === NSScreen.main ? "（主显示器）" : ""
+      let item = NSMenuItem(
+        title: "\(screen.localizedName)\(suffix)",
+        action: #selector(moveWindowToDisplayFromMenu(_:)),
+        keyEquivalent: ""
+      )
+      item.target = self
+      item.representedObject = screenNumber
+      item.tag = index
+      item.state = screenNumber.uint32Value == currentScreenNumber ? .on : .off
+      item.isEnabled = canMove && item.state != .on
+      menu.addItem(item)
+    }
+  }
+
+  /// 中文：将当前应用窗口移动到菜单项代表的在线显示器并保持完整可见。
+  ///
+  /// English: Moves the current app window to the represented online display
+  /// while keeping its full frame visible.
+  @IBAction func moveWindowToDisplayFromMenu(_ sender: Any?) {
+    guard let item = sender as? NSMenuItem,
+          let targetNumber = item.representedObject as? NSNumber,
+          let window = NSApp.keyWindow as? MainFlutterWindow,
+          gitDesktopCanPerformWindowPlacement(window),
+          let sourceScreen = window.screen ?? NSScreen.main,
+          let targetScreen = NSScreen.screens.first(where: { screen in
+            (screen.deviceDescription[
+              NSDeviceDescriptionKey("NSScreenNumber")
+            ] as? NSNumber)?.uint32Value == targetNumber.uint32Value
+          }),
+          targetScreen !== sourceScreen else {
+      NSSound.beep()
+      return
+    }
+    let targetFrame = gitDesktopWindowFrame(
+      moving: window.frame,
+      from: sourceScreen.visibleFrame,
+      to: targetScreen.visibleFrame
+    )
+    window.setFrame(targetFrame, display: true, animate: true)
+    windowCoordinator.saveContentSize(of: window, for: window.role)
+  }
+
   @IBAction func createPatchFromMenu(_ sender: Any?) {
     windowCoordinator.performWorkspaceAction("createPatch")
   }
@@ -1868,6 +2453,27 @@ class AppDelegate: FlutterAppDelegate {
       return
     }
     windowCoordinator.performWorkspaceAction("commit")
+  }
+
+  /// 中文：在当前 key workspace 打开已有的本地分支合并流程。
+  /// English: Opens the existing local-branch merge workflow in the key
+  /// workspace.
+  @IBAction func mergeRepositoryFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canMergeFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("merge")
+  }
+
+  /// 中文：在当前 key workspace 打开已有的标签管理流程。
+  /// English: Opens the existing tag-management workflow in the key workspace.
+  @IBAction func tagRepositoryFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canTagFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("tag")
   }
 
   @IBAction func pullRepositoryFromMenu(_ sender: Any?) {
@@ -1906,6 +2512,96 @@ class AppDelegate: FlutterAppDelegate {
     windowCoordinator.performWorkspaceAction("repositoryFeaturePending")
   }
 
+  /// 中文：用系统默认应用打开当前工作区唯一选中的现存文件。
+  /// English: Opens the single existing workspace selection in its default app.
+  @IBAction func openSelectedFileFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canOpenSelectedFileFromMenu,
+          let url = windowCoordinator.currentWorkspaceFileMenuTargets?
+            .existingSelectedURLs().first else {
+      NSSound.beep()
+      return
+    }
+    if !NSWorkspace.shared.open(url) {
+      showNativeFileActionError("无法使用系统默认应用打开所选文件。")
+    }
+  }
+
+  /// 中文：在 Finder 中定位当前文件选择；无选择时定位仓库根目录。
+  /// English: Reveals selected files in Finder, or the repository root when no
+  /// file is selected.
+  @IBAction func revealSelectedFileFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canRevealFileFromMenu,
+          let targets = windowCoordinator.currentWorkspaceFileMenuTargets else {
+      NSSound.beep()
+      return
+    }
+    let urls = targets.hasFileSelection
+      ? targets.existingSelectedURLs()
+      : [targets.existingRepositoryRootURL()].compactMap { $0 }
+    guard !urls.isEmpty else {
+      NSSound.beep()
+      return
+    }
+    NSWorkspace.shared.activateFileViewerSelecting(urls)
+  }
+
+  /// 中文：在系统 Terminal 中打开仓库或唯一选中文件所在目录。
+  /// English: Opens the repository or single selected file's directory in
+  /// macOS Terminal without constructing a shell command.
+  @IBAction func openSelectedDirectoryInTerminalFromMenu(_ sender: Any?) {
+    guard let directory = windowCoordinator.currentWorkspaceFileMenuTargets?
+      .terminalDirectoryURL(),
+      let terminal = NSWorkspace.shared.urlForApplication(
+        withBundleIdentifier: "com.apple.Terminal"
+      ) else {
+      NSSound.beep()
+      return
+    }
+    let configuration = NSWorkspace.OpenConfiguration()
+    configuration.activates = true
+    NSWorkspace.shared.open(
+      [directory],
+      withApplicationAt: terminal,
+      configuration: configuration
+    ) { [weak self] _, error in
+      guard error != nil else { return }
+      DispatchQueue.main.async {
+        self?.showNativeFileActionError("无法在 Terminal 中打开所选目录。")
+      }
+    }
+  }
+
+  /// 中文：在 macOS Quick Look 面板中预览当前选中的现存文件。
+  /// English: Previews the current existing file selection in the macOS Quick
+  /// Look panel.
+  @IBAction func quickLookSelectedFilesFromMenu(_ sender: Any?) {
+    let urls = windowCoordinator.currentWorkspaceFileMenuTargets?
+      .existingSelectedURLs() ?? []
+    guard windowCoordinator.canQuickLookSelectedFilesFromMenu,
+          !urls.isEmpty,
+          let panel = QLPreviewPanel.shared() else {
+      NSSound.beep()
+      return
+    }
+    quickLookDataSource.urls = urls
+    panel.dataSource = quickLookDataSource
+    panel.reloadData()
+    panel.makeKeyAndOrderFront(nil)
+  }
+
+  /// 中文：在当前工作区窗口中显示原生只读文件操作失败。
+  /// English: Presents a native read-only file-action failure in the current
+  /// workspace window.
+  private func showNativeFileActionError(_ message: String) {
+    guard let window = NSApp.keyWindow as? MainFlutterWindow else { return }
+    let alert = NSAlert()
+    alert.alertStyle = .warning
+    alert.messageText = "无法完成操作"
+    alert.informativeText = message
+    alert.addButton(withTitle: "好")
+    alert.beginSheetModal(for: window)
+  }
+
   /// 中文：将原生“停止追踪”动作投递到当前 key workspace 的 Flutter Engine。
   /// English: Delivers the native Stop Tracking action to the current key
   /// workspace's Flutter Engine.
@@ -1915,6 +2611,39 @@ class AppDelegate: FlutterAppDelegate {
       return
     }
     windowCoordinator.performWorkspaceAction("stopTracking")
+  }
+
+  /// 中文：暂存当前前台工作区中由 Flutter 校验的未暂存文件选择。
+  /// English: Stages the Flutter-validated unstaged file selection in the key
+  /// workspace.
+  @IBAction func stageSelectedFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canStageSelectedFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("stageSelected")
+  }
+
+  /// 中文：取消暂存当前前台工作区中由 Flutter 校验的已暂存文件选择。
+  /// English: Unstages the Flutter-validated staged file selection in the key
+  /// workspace.
+  @IBAction func unstageSelectedFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canUnstageSelectedFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("unstageSelected")
+  }
+
+  /// 中文：将原生“移除”动作投递到当前 key workspace，并由 Flutter 显示删除确认。
+  /// English: Delivers the native Remove action to the key workspace, where
+  /// Flutter presents the destructive-file confirmation.
+  @IBAction func removeSelectedFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canRemoveSelectedFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("removeSelected")
   }
 
   /// 中文：在当前应用窗口中显示尚未交付的窗口菜单提示，不依赖仓库工作区。
@@ -1935,6 +2664,51 @@ class AppDelegate: FlutterAppDelegate {
     alert.beginSheetModal(for: keyWindow)
   }
 
+  /// 中文：将当前应用窗口填充到所在显示器的可见工作区。
+  /// English: Fills the current app window into its display's visible frame.
+  @IBAction func fillWindowFromMenu(_ sender: Any?) {
+    performWindowPlacement(.fill)
+  }
+
+  /// 中文：在所在显示器的可见工作区内居中当前应用窗口。
+  /// English: Centers the current app window within its display's visible frame.
+  @IBAction func centerWindowFromMenu(_ sender: Any?) {
+    performWindowPlacement(.center)
+  }
+
+  /// 中文：将当前应用窗口靠齐所在显示器可见工作区左侧。
+  /// English: Aligns the current app window to the leading half of its display.
+  @IBAction func alignWindowLeadingFromMenu(_ sender: Any?) {
+    performWindowPlacement(.leading)
+  }
+
+  /// 中文：将当前应用窗口靠齐所在显示器可见工作区右侧。
+  /// English: Aligns the current app window to the trailing half of its display.
+  @IBAction func alignWindowTrailingFromMenu(_ sender: Any?) {
+    performWindowPlacement(.trailing)
+  }
+
+  /// 中文：校验当前窗口后应用布局，并保存其角色对应的内容尺寸偏好。
+  ///
+  /// English: Validates and applies a placement to the current window, then
+  /// persists the content-size preference for that window role.
+  private func performWindowPlacement(_ placement: GitDesktopWindowPlacement) {
+    guard let keyWindow = NSApp.keyWindow as? MainFlutterWindow,
+          gitDesktopCanPerformWindowPlacement(keyWindow),
+          let screen = keyWindow.screen ?? NSScreen.main else {
+      NSSound.beep()
+      return
+    }
+    let targetFrame = gitDesktopWindowFrame(
+      currentFrame: keyWindow.frame,
+      visibleFrame: screen.visibleFrame,
+      minimumSize: NSSize(width: 900, height: 600),
+      placement: placement
+    )
+    keyWindow.setFrame(targetFrame, display: true, animate: true)
+    windowCoordinator.saveContentSize(of: keyWindow, for: keyWindow.role)
+  }
+
   @IBAction func showRepositoryLibraryFromMenu(_ sender: Any?) {
     windowCoordinator.showRepositoryLibrary()
   }
@@ -1943,11 +2717,55 @@ class AppDelegate: FlutterAppDelegate {
     if menuItem.action == #selector(mergeAllRepositoryWindows(_:)) {
       return windowCoordinator.canMergeAllWorkspaceWindows
     }
+    if menuItem.action == #selector(selectPreviousRepositoryTabFromMenu(_:)) ||
+       menuItem.action == #selector(selectNextRepositoryTabFromMenu(_:)) ||
+       menuItem.action == #selector(detachRepositoryTabFromMenu(_:)) {
+      return windowCoordinator.canManageCurrentMergedWorkspace
+    }
+    if menuItem.action == #selector(toggleRepositoryTabBarFromMenu(_:)) {
+      menuItem.title = windowCoordinator.showsCurrentMergedWorkspaceTabStrip
+        ? "隐藏标签页栏"
+        : "显示标签页栏"
+      return windowCoordinator.canManageCurrentMergedWorkspace
+    }
+    if menuItem.action == #selector(moveWindowToDisplayFromMenu(_:)) {
+      guard let targetNumber = menuItem.representedObject as? NSNumber,
+            let sourceScreen = NSApp.keyWindow?.screen else {
+        return false
+      }
+      let sourceNumber = sourceScreen.deviceDescription[
+        NSDeviceDescriptionKey("NSScreenNumber")
+      ] as? NSNumber
+      return gitDesktopCanPerformWindowPlacement(NSApp.keyWindow) &&
+        NSScreen.screens.contains { screen in
+          (screen.deviceDescription[
+            NSDeviceDescriptionKey("NSScreenNumber")
+          ] as? NSNumber)?.uint32Value == targetNumber.uint32Value
+        } && sourceNumber?.uint32Value != targetNumber.uint32Value
+    }
     if menuItem.action == #selector(windowFeaturePendingFromMenu(_:)) {
       return gitDesktopCanPerformWindowMenuAction(NSApp.keyWindow)
     }
+    if menuItem.action == #selector(fillWindowFromMenu(_:)) ||
+       menuItem.action == #selector(centerWindowFromMenu(_:)) ||
+       menuItem.action == #selector(alignWindowLeadingFromMenu(_:)) ||
+       menuItem.action == #selector(alignWindowTrailingFromMenu(_:)) {
+      return gitDesktopCanPerformWindowPlacement(NSApp.keyWindow)
+    }
     if menuItem.action == #selector(applyPatchFromMenu(_:)) {
       return windowCoordinator.canApplyPatchFromMenu
+    }
+    if menuItem.action == #selector(openSelectedFileFromMenu(_:)) {
+      return windowCoordinator.canOpenSelectedFileFromMenu
+    }
+    if menuItem.action == #selector(revealSelectedFileFromMenu(_:)) {
+      return windowCoordinator.canRevealFileFromMenu
+    }
+    if menuItem.action == #selector(openSelectedDirectoryInTerminalFromMenu(_:)) {
+      return windowCoordinator.canOpenTerminalFromMenu
+    }
+    if menuItem.action == #selector(quickLookSelectedFilesFromMenu(_:)) {
+      return windowCoordinator.canQuickLookSelectedFilesFromMenu
     }
     if menuItem.action == #selector(createPatchFromMenu(_:)) ||
        menuItem.action == #selector(repositoryDetailsFromMenu(_:)) ||
@@ -1958,11 +2776,26 @@ class AppDelegate: FlutterAppDelegate {
     if menuItem.action == #selector(stopTrackingFromMenu(_:)) {
       return windowCoordinator.canStopTrackingFromMenu
     }
+    if menuItem.action == #selector(stageSelectedFromMenu(_:)) {
+      return windowCoordinator.canStageSelectedFromMenu
+    }
+    if menuItem.action == #selector(unstageSelectedFromMenu(_:)) {
+      return windowCoordinator.canUnstageSelectedFromMenu
+    }
+    if menuItem.action == #selector(removeSelectedFromMenu(_:)) {
+      return windowCoordinator.canRemoveSelectedFromMenu
+    }
     if menuItem.action == #selector(fetchRepositoryFromMenu(_:)) {
       return windowCoordinator.canFetchFromMenu
     }
     if menuItem.action == #selector(commitRepositoryFromMenu(_:)) {
       return windowCoordinator.canCommitFromMenu
+    }
+    if menuItem.action == #selector(mergeRepositoryFromMenu(_:)) {
+      return windowCoordinator.canMergeFromMenu
+    }
+    if menuItem.action == #selector(tagRepositoryFromMenu(_:)) {
+      return windowCoordinator.canTagFromMenu
     }
     if menuItem.action == #selector(pullRepositoryFromMenu(_:)) {
       return windowCoordinator.canPullFromMenu

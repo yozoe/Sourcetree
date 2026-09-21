@@ -54,6 +54,91 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testSelectedChangeMenuRequiresKeyWorkspaceAndValidatedSelection() {
+    XCTAssertFalse(
+      gitDesktopCanPerformSelectedChangeMenuAction(
+        hasKeyWorkspace: false,
+        hasValidatedSelection: true
+      )
+    )
+    XCTAssertFalse(
+      gitDesktopCanPerformSelectedChangeMenuAction(
+        hasKeyWorkspace: true,
+        hasValidatedSelection: false
+      )
+    )
+    XCTAssertTrue(
+      gitDesktopCanPerformSelectedChangeMenuAction(
+        hasKeyWorkspace: true,
+        hasValidatedSelection: true
+      )
+    )
+  }
+
+  func testWorkspaceFileMenuTargetsValidateExistenceAndRepositoryBoundary() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "git-desktop-native-file-menu-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    let nested = root.appendingPathComponent("Sources", isDirectory: true)
+    let file = nested.appendingPathComponent("main.swift")
+    try FileManager.default.createDirectory(
+      at: nested,
+      withIntermediateDirectories: true
+    )
+    try Data("test".utf8).write(to: file)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let selected = GitDesktopWorkspaceFileMenuTargets(
+      repositoryRootPath: root.path,
+      selectedFilePaths: [file.path],
+      hasFileSelection: true
+    )
+    XCTAssertEqual(selected.existingSelectedURLs(), [file])
+    XCTAssertEqual(selected.terminalDirectoryURL(), nested)
+
+    let noneSelected = GitDesktopWorkspaceFileMenuTargets(
+      repositoryRootPath: root.path,
+      selectedFilePaths: [],
+      hasFileSelection: false
+    )
+    XCTAssertEqual(noneSelected.existingRepositoryRootURL(), root)
+    XCTAssertEqual(noneSelected.terminalDirectoryURL(), root)
+
+    let escaped = GitDesktopWorkspaceFileMenuTargets(
+      repositoryRootPath: root.path,
+      selectedFilePaths: [root.deletingLastPathComponent().path],
+      hasFileSelection: true
+    )
+    XCTAssertTrue(escaped.selectedFilePaths.isEmpty)
+    XCTAssertTrue(escaped.existingSelectedURLs().isEmpty)
+    XCTAssertNil(escaped.terminalDirectoryURL())
+  }
+
+  func testWorkspaceFileMenuTargetsRejectPartialAndStaleSelections() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "git-desktop-native-file-stale-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    let existing = root.appendingPathComponent("exists.txt")
+    let missing = root.appendingPathComponent("missing.txt")
+    try FileManager.default.createDirectory(
+      at: root,
+      withIntermediateDirectories: true
+    )
+    try Data().write(to: existing)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let targets = GitDesktopWorkspaceFileMenuTargets(
+      repositoryRootPath: root.path,
+      selectedFilePaths: [existing.path, missing.path],
+      hasFileSelection: true
+    )
+
+    XCTAssertTrue(targets.existingSelectedURLs().isEmpty)
+    XCTAssertNil(targets.terminalDirectoryURL())
+  }
+
   func testWorkspaceArgumentsIdentifyTheEngineAndInitialRepository() {
     XCTAssertEqual(
       gitDesktopWorkspaceArguments(
@@ -312,6 +397,130 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testAdjacentTabIndexWrapsInBothDirections() {
+    XCTAssertEqual(
+      gitDesktopAdjacentTabIndex(currentIndex: 0, tabCount: 3, offset: -1),
+      2
+    )
+    XCTAssertEqual(
+      gitDesktopAdjacentTabIndex(currentIndex: 2, tabCount: 3, offset: 1),
+      0
+    )
+    XCTAssertEqual(
+      gitDesktopAdjacentTabIndex(currentIndex: 1, tabCount: 3, offset: 4),
+      2
+    )
+    XCTAssertNil(
+      gitDesktopAdjacentTabIndex(currentIndex: 0, tabCount: 1, offset: 1)
+    )
+  }
+
+  func testDetachedWindowFrameStaysInsideVisibleScreen() {
+    XCTAssertEqual(
+      gitDesktopDetachedWindowFrame(
+        currentFrame: NSRect(x: -1180, y: 80, width: 900, height: 650),
+        visibleFrame: NSRect(x: -1280, y: 25, width: 1280, height: 775)
+      ),
+      NSRect(x: -1156, y: 56, width: 900, height: 650)
+    )
+    XCTAssertEqual(
+      gitDesktopDetachedWindowFrame(
+        currentFrame: NSRect(x: 0, y: 0, width: 1600, height: 1000),
+        visibleFrame: NSRect(x: 0, y: 25, width: 1280, height: 775)
+      ),
+      NSRect(x: 0, y: 25, width: 1280, height: 775)
+    )
+  }
+
+  func testMovingWindowBetweenDisplaysPreservesRelativeCenterAndBounds() {
+    let moved = gitDesktopWindowFrame(
+      moving: NSRect(x: 480, y: 200, width: 960, height: 700),
+      from: NSRect(x: 0, y: 25, width: 1920, height: 1055),
+      to: NSRect(x: 1920, y: 0, width: 1280, height: 800)
+    )
+
+    XCTAssertEqual(moved.width, 960, accuracy: 0.01)
+    XCTAssertEqual(moved.height, 700, accuracy: 0.01)
+    XCTAssertEqual(moved.midX, 2560, accuracy: 0.01)
+    XCTAssertEqual(moved.midY, 398.1, accuracy: 0.1)
+    XCTAssertGreaterThanOrEqual(moved.minX, 1920)
+    XCTAssertLessThanOrEqual(moved.maxX, 3200)
+    XCTAssertGreaterThanOrEqual(moved.minY, 0)
+    XCTAssertLessThanOrEqual(moved.maxY, 800)
+
+    XCTAssertEqual(
+      gitDesktopWindowFrame(
+        moving: NSRect(x: 0, y: 25, width: 1600, height: 1000),
+        from: NSRect(x: 0, y: 25, width: 1920, height: 1055),
+        to: NSRect(x: -1024, y: 0, width: 1024, height: 700)
+      ).size,
+      NSSize(width: 1024, height: 700)
+    )
+  }
+
+  func testMergedWorkspaceTabToggleAndDetachmentKeepEnginesAlive() throws {
+    let suiteName = "git-desktop-tab-detach-test-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer { defaults.removePersistentDomain(forName: suiteName) }
+    let coordinator = WindowCoordinator(
+      workspaceRestoreStore: GitDesktopWorkspaceRestoreStore(defaults: defaults),
+      repositoryLibraryPendingStore:
+        GitDesktopRepositoryLibraryPendingStore(defaults: defaults),
+      windowSizeStore: GitDesktopWindowSizeStore(defaults: defaults)
+    )
+    let controllers = try (0..<3).map { index in
+      try WorkspaceFlutterWindowController(
+        repositoryPath: nil,
+        initialAction: nil,
+        coordinator: coordinator
+      )
+    }
+    defer { controllers.forEach { $0.close() } }
+    for (index, controller) in controllers.enumerated() {
+      coordinator.registerRepository("/tmp/tab-\(index)", for: controller)
+    }
+    let windows = try controllers.map {
+      try XCTUnwrap($0.window as? MainFlutterWindow)
+    }
+
+    coordinator.mergeAllWorkspaceWindows()
+    XCTAssertTrue(windows.allSatisfy { $0.workspaceTabStripView != nil })
+
+    XCTAssertTrue(coordinator.toggleMergedWorkspaceTabStrip(from: windows[1]))
+    XCTAssertTrue(windows.allSatisfy { $0.workspaceTabStripView == nil })
+    XCTAssertTrue(coordinator.selectAdjacentMergedWorkspace(from: windows[1], offset: 1))
+    XCTAssertTrue(coordinator.toggleMergedWorkspaceTabStrip(from: windows[1]))
+    XCTAssertTrue(windows.allSatisfy { $0.workspaceTabStripView != nil })
+
+    XCTAssertTrue(coordinator.detachMergedWorkspace(windows[1]))
+    XCTAssertNil(windows[1].workspaceTabStripView)
+    XCTAssertNotNil(controllers[1].window)
+    XCTAssertEqual(
+      windows.filter { $0.workspaceTabStripView != nil }.count,
+      2
+    )
+    let detachedSnapshot = GitDesktopWorkspaceRestoreStore(
+      defaults: defaults
+    ).snapshot
+    XCTAssertEqual(
+      Set(detachedSnapshot.paths),
+      Set(["/tmp/tab-0", "/tmp/tab-1", "/tmp/tab-2"])
+    )
+    XCTAssertEqual(
+      Set(detachedSnapshot.mergedWorkspacePaths),
+      Set(["/tmp/tab-0", "/tmp/tab-2"])
+    )
+    XCTAssertEqual(
+      Array(detachedSnapshot.paths.prefix(2)),
+      detachedSnapshot.mergedWorkspacePaths
+    )
+
+    let remaining = windows.first { $0 !== windows[1] }!
+    XCTAssertTrue(coordinator.detachMergedWorkspace(remaining))
+    XCTAssertTrue(windows.allSatisfy { $0.workspaceTabStripView == nil })
+    XCTAssertTrue(controllers.allSatisfy { $0.window != nil })
+  }
+
   func testWorkspaceWindowInstallsCustomStripWithoutReplacingNativeTitle() throws {
     let controller = try WorkspaceFlutterWindowController(
       repositoryPath: nil,
@@ -456,10 +665,62 @@ class RunnerTests: XCTestCase {
 
     XCTAssertEqual(store.paths, ["/tmp/example", "/tmp/other"])
     XCTAssertTrue(store.snapshot.restoresMergedWorkspaces)
+    XCTAssertEqual(
+      store.snapshot.mergedWorkspacePaths,
+      ["/tmp/example", "/tmp/other"]
+    )
+
+    store.save(
+      paths: ["/tmp/example", "/tmp/other", "/tmp/standalone"],
+      mergedWorkspacePaths: ["/tmp/other", "/tmp/example"]
+    )
+    XCTAssertEqual(
+      store.snapshot.mergedWorkspacePaths,
+      ["/tmp/other", "/tmp/example"]
+    )
+    XCTAssertTrue(store.snapshot.restoresMergedWorkspaces)
 
     store.save(paths: ["/tmp/example"], restoresMergedWorkspaces: true)
 
     XCTAssertFalse(store.snapshot.restoresMergedWorkspaces)
+  }
+
+  func testWorkspaceRestoreStoreMigratesLegacyAllMergedSnapshot() {
+    let suiteName = "git-desktop-workspace-restore-legacy-test-\(UUID().uuidString)"
+    let defaults = UserDefaults(suiteName: suiteName)!
+    defer {
+      defaults.removePersistentDomain(forName: suiteName)
+    }
+    defaults.set(
+      ["/tmp/first", "/tmp/second"],
+      forKey: "gitDesktopOpenWorkspacePaths"
+    )
+    defaults.set(true, forKey: "gitDesktopRestoresMergedWorkspaces")
+
+    let snapshot = GitDesktopWorkspaceRestoreStore(defaults: defaults).snapshot
+
+    XCTAssertEqual(snapshot.paths, ["/tmp/first", "/tmp/second"])
+    XCTAssertEqual(
+      snapshot.mergedWorkspacePaths,
+      ["/tmp/first", "/tmp/second"]
+    )
+  }
+
+  func testDetachedWorkspaceIsRemovedFromPendingRestoredGroup() {
+    XCTAssertEqual(
+      gitDesktopMergedWorkspacePaths(
+        ["/tmp/alpha", "/tmp/beta", "/tmp/gamma"],
+        afterDetaching: "/tmp/beta"
+      ),
+      ["/tmp/alpha", "/tmp/gamma"]
+    )
+    XCTAssertEqual(
+      gitDesktopMergedWorkspacePaths(
+        ["/tmp/alpha", "/tmp/gamma"],
+        afterDetaching: nil
+      ),
+      ["/tmp/alpha", "/tmp/gamma"]
+    )
   }
 
   func testPendingRepositoryLibraryStoreRetainsPathsUntilAcknowledged() {
@@ -589,8 +850,8 @@ class RunnerTests: XCTestCase {
       .finished(
         GitDesktopWorkspaceRestorationCompletion(
           resolvedPaths: ["/tmp/first", "/tmp/second"],
-          unresolvedPaths: [],
-          shouldMerge: true
+          timedOutPathsToKeepOpen: [],
+          mergedPathsToRestore: ["/tmp/first", "/tmp/second"]
         )
       )
     )
@@ -609,10 +870,10 @@ class RunnerTests: XCTestCase {
 
     XCTAssertEqual(completion.resolvedPaths, ["/tmp/second"])
     XCTAssertEqual(
-      completion.unresolvedPaths,
+      completion.timedOutPathsToKeepOpen,
       ["/tmp/first", "/tmp/third"]
     )
-    XCTAssertTrue(completion.shouldMerge)
+    XCTAssertFalse(completion.shouldMerge)
     XCTAssertFalse(gate.isWaiting)
     XCTAssertEqual(gate.resolve("/tmp/first"), .unrelated)
   }
@@ -631,6 +892,27 @@ class RunnerTests: XCTestCase {
 
     XCTAssertEqual(completion.resolvedPaths, ["/tmp/first", "/tmp/second"])
     XCTAssertFalse(completion.resolvedPaths.contains("/tmp/new-workspace"))
+  }
+
+  func testRestorationGateKeepsOnlyExplicitMergedWorkspaceMembers() {
+    let gate = GitDesktopWorkspaceRestorationGate()
+    gate.begin(
+      paths: ["/tmp/first", "/tmp/standalone", "/tmp/third"],
+      mergedPaths: ["/tmp/third", "/tmp/first"]
+    )
+
+    XCTAssertEqual(gate.resolve("/tmp/first"), .waiting)
+    XCTAssertEqual(gate.resolve("/tmp/standalone"), .waiting)
+    XCTAssertEqual(
+      gate.resolve("/tmp/third"),
+      .finished(
+        GitDesktopWorkspaceRestorationCompletion(
+          resolvedPaths: ["/tmp/first", "/tmp/standalone", "/tmp/third"],
+          timedOutPathsToKeepOpen: [],
+          mergedPathsToRestore: ["/tmp/first", "/tmp/third"]
+        )
+      )
+    )
   }
 
   func testRepositoryWindowShortcutRecognition() throws {
@@ -706,5 +988,86 @@ class RunnerTests: XCTestCase {
     XCTAssertTrue(gitDesktopCanPerformWindowMenuAction(workspace))
     XCTAssertFalse(gitDesktopCanPerformWindowMenuAction(nil))
     XCTAssertFalse(gitDesktopCanPerformWindowMenuAction(NSWindow()))
+  }
+
+  func testWindowPlacementRequiresResizableNonFullscreenAppWindow() {
+    let resizable = MainFlutterWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
+      styleMask: [.titled, .resizable],
+      backing: .buffered,
+      defer: false
+    )
+    let fixed = MainFlutterWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
+      styleMask: [.titled],
+      backing: .buffered,
+      defer: false
+    )
+    let fullscreen = MainFlutterWindow(
+      contentRect: NSRect(x: 0, y: 0, width: 1000, height: 700),
+      styleMask: [.titled, .resizable, .fullScreen],
+      backing: .buffered,
+      defer: false
+    )
+
+    XCTAssertTrue(gitDesktopCanPerformWindowPlacement(resizable))
+    XCTAssertFalse(gitDesktopCanPerformWindowPlacement(fixed))
+    XCTAssertFalse(gitDesktopCanPerformWindowPlacement(fullscreen))
+    XCTAssertFalse(gitDesktopCanPerformWindowPlacement(nil))
+  }
+
+  func testWindowPlacementUsesVisibleScreenBoundsAndMinimumWidth() {
+    let visibleFrame = NSRect(x: 120, y: 48, width: 1920, height: 1040)
+    let currentFrame = NSRect(x: 500, y: 300, width: 1100, height: 700)
+    let minimumSize = NSSize(width: 900, height: 600)
+
+    XCTAssertEqual(
+      gitDesktopWindowFrame(
+        currentFrame: currentFrame,
+        visibleFrame: visibleFrame,
+        minimumSize: minimumSize,
+        placement: .fill
+      ),
+      visibleFrame
+    )
+    XCTAssertEqual(
+      gitDesktopWindowFrame(
+        currentFrame: currentFrame,
+        visibleFrame: visibleFrame,
+        minimumSize: minimumSize,
+        placement: .center
+      ),
+      NSRect(x: 530, y: 218, width: 1100, height: 700)
+    )
+    XCTAssertEqual(
+      gitDesktopWindowFrame(
+        currentFrame: currentFrame,
+        visibleFrame: visibleFrame,
+        minimumSize: minimumSize,
+        placement: .leading
+      ),
+      NSRect(x: 120, y: 48, width: 960, height: 1040)
+    )
+    XCTAssertEqual(
+      gitDesktopWindowFrame(
+        currentFrame: currentFrame,
+        visibleFrame: visibleFrame,
+        minimumSize: minimumSize,
+        placement: .trailing
+      ),
+      NSRect(x: 1080, y: 48, width: 960, height: 1040)
+    )
+  }
+
+  func testWindowPlacementKeepsNarrowDisplaysUsable() {
+    let visibleFrame = NSRect(x: -1280, y: 25, width: 1280, height: 775)
+    let frame = gitDesktopWindowFrame(
+      currentFrame: NSRect(x: -1200, y: 100, width: 1000, height: 650),
+      visibleFrame: visibleFrame,
+      minimumSize: NSSize(width: 900, height: 600),
+      placement: .trailing
+    )
+
+    XCTAssertEqual(frame, NSRect(x: -900, y: 25, width: 900, height: 775))
   }
 }

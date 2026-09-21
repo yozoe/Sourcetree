@@ -1304,6 +1304,7 @@ void main() {
                   id: 'refs/heads/main',
                   label: 'main',
                   kind: RepositoryRefKind.localBranch,
+                  isCurrent: true,
                 ),
                 RepositoryRefViewData(
                   id: 'refs/heads/release',
@@ -1331,16 +1332,10 @@ void main() {
       const Color(0xFFF28C00),
     );
     expect(
-      tester
-          .widget<Icon>(
-            find.byKey(
-              const ValueKey<String>(
-                'ref-nav-icon:refs/heads/codex/conflict-demo',
-              ),
-            ),
-          )
-          .color,
-      const Color(0xFFF28C00),
+      find.byKey(
+        const ValueKey<String>('ref-nav-icon:refs/heads/codex/conflict-demo'),
+      ),
+      findsNothing,
     );
     expect(
       tester
@@ -1351,14 +1346,8 @@ void main() {
       const Color(0xFF0B6FCB),
     );
     expect(
-      tester
-          .widget<Icon>(
-            find.byKey(
-              const ValueKey<String>('ref-nav-icon:refs/heads/release'),
-            ),
-          )
-          .color,
-      const Color(0xFF2FA86F),
+      find.byKey(const ValueKey<String>('ref-nav-icon:refs/heads/release')),
+      findsNothing,
     );
 
     await tester.tap(find.text('codex'));

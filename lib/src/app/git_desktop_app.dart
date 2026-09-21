@@ -20,6 +20,12 @@ import 'repository_trust.dart';
 import 'repository_view_mapper.dart';
 import 'theme_preferences.dart';
 
+/// Builds a stable identity for a visible working-tree selection.
+///
+/// 中文：为可见工作区选择生成稳定标识，用于刷新后重新解析选中项。
+String _nativeChangeSelectionKey(RepositoryChangeViewData change) =>
+    '${change.isStaged ? 'staged' : 'unstaged'}\u0000${change.path}';
+
 /// Returns operation-aware names for Git index stages two and three.
 ///
 /// 中文：返回与当前 Git 操作匹配的索引第二、第三阶段版本名称，避免在变基、
@@ -48,20 +54,33 @@ import 'theme_preferences.dart';
   bool canCreateBranch,
   bool canCommit,
   bool canFetch,
+  bool canMerge,
   bool canPull,
   bool canPush,
+  bool canRemoveSelected,
+  bool canStageSelected,
   bool canStash,
   bool canStopTracking,
+  bool canTag,
+  bool canUnstageSelected,
 })
 nativeWorkspaceMenuAvailability(
   RepositorySessionState session,
-  RepositoryOverviewViewData overview,
-) {
+  RepositoryOverviewViewData overview, {
+  List<RepositoryChangeViewData>? selectedChanges,
+}) {
   final repository = overview.repository;
   final canApplyPatch =
       session.phase == RepositorySessionPhase.ready &&
       repository != null &&
       !repository.blocksRepositoryMutations;
+  final selectedChange = repository?.selectedChange;
+  // A selected commit replaces the working-tree list with committed files.
+  // Do not retain a now-hidden working-tree multi-selection as an actionable
+  // native menu target.
+  final menuSelection = repository?.selectedCommit == null
+      ? selectedChanges ?? [?selectedChange]
+      : const <RepositoryChangeViewData>[];
   return (
     canApplyPatch: canApplyPatch,
     canFetch:
@@ -69,6 +88,11 @@ nativeWorkspaceMenuAvailability(
         repository != null &&
         !repository.blocksRepositoryMutations &&
         !repository.disabledActions.contains(RepositoryAction.fetch),
+    canMerge:
+        session.phase == RepositorySessionPhase.ready &&
+        repository != null &&
+        !repository.blocksRepositoryMutations &&
+        !repository.disabledActions.contains(RepositoryAction.mergeBranch),
     canCommit:
         session.phase == RepositorySessionPhase.ready &&
         repository != null &&
@@ -84,6 +108,17 @@ nativeWorkspaceMenuAvailability(
         repository != null &&
         !repository.blocksRepositoryMutations &&
         !repository.disabledActions.contains(RepositoryAction.push),
+    canRemoveSelected:
+        canApplyPatch &&
+        menuSelection.isNotEmpty &&
+        menuSelection.every(
+          (change) => change.isActionEnabled && change.isPathValidUtf8,
+        ),
+    canStageSelected:
+        canApplyPatch &&
+        menuSelection.any(
+          (change) => change.canToggleStage && !change.isStaged,
+        ),
     canCreateBranch:
         session.phase == RepositorySessionPhase.ready &&
         repository != null &&
@@ -96,8 +131,82 @@ nativeWorkspaceMenuAvailability(
         !repository.disabledActions.contains(RepositoryAction.stash),
     canStopTracking:
         canApplyPatch &&
-        (repository.selectedChange?.canStopTracking == true ||
-            session.selectedCommitFile?.file.path.isValidUtf8 == true),
+        (session.selectedCommitFile?.file.path.isValidUtf8 == true ||
+            (menuSelection.isNotEmpty &&
+                menuSelection.every((change) => change.canStopTracking))),
+    canTag:
+        canApplyPatch &&
+        (session.selectedCommitId ?? session.status?.branch.objectId) != null,
+    canUnstageSelected:
+        canApplyPatch &&
+        menuSelection.any((change) => change.canToggleStage && change.isStaged),
+  );
+}
+
+/// Resolves the current Flutter file selection into absolute workspace paths
+/// for read-only native macOS actions.
+///
+/// 中文：将当前 Flutter 文件选择解析为工作区内的绝对路径，供 macOS 原生只读
+/// 动作使用；无效 UTF-8 或越界路径会保留“已有选择”状态但不向平台暴露路径。
+({
+  String? repositoryRootPath,
+  List<String> selectedFilePaths,
+  bool hasFileSelection,
+})
+nativeWorkspaceMenuFileTargets(
+  RepositorySessionState session,
+  RepositoryOverviewViewData overview, {
+  List<RepositoryChangeViewData>? selectedChanges,
+}) {
+  final root = session.repository?.workTreeRoot;
+  if (root == null) {
+    return (
+      repositoryRootPath: null,
+      selectedFilePaths: const [],
+      hasFileSelection: false,
+    );
+  }
+  // The commit-file pane replaces the working-tree pane. Prefer its visible
+  // selection even if a prior working-tree multi-selection remains cached.
+  final changes = overview.repository?.selectedCommit == null
+      ? selectedChanges ?? [?overview.repository?.selectedChange]
+      : const <RepositoryChangeViewData>[];
+  final hasChangeSelection = changes.isNotEmpty;
+  final commitPath = !hasChangeSelection
+      ? session.selectedCommitFile?.file.path
+      : null;
+  final hasFileSelection = hasChangeSelection || commitPath != null;
+  final relativePaths = hasChangeSelection
+      ? changes
+            .where((change) => change.isPathValidUtf8)
+            .map((change) => change.path)
+            .toList(growable: false)
+      : commitPath?.isValidUtf8 == true
+      ? [commitPath!.display]
+      : const <String>[];
+  if (relativePaths.length != (hasChangeSelection ? changes.length : 1)) {
+    return (
+      repositoryRootPath: root,
+      selectedFilePaths: const [],
+      hasFileSelection: hasFileSelection,
+    );
+  }
+  final resolved = <String>[];
+  for (final relativePath in relativePaths) {
+    final target = path_utils.normalize(path_utils.join(root, relativePath));
+    if (!path_utils.isWithin(root, target)) {
+      return (
+        repositoryRootPath: root,
+        selectedFilePaths: const [],
+        hasFileSelection: hasFileSelection,
+      );
+    }
+    resolved.add(target);
+  }
+  return (
+    repositoryRootPath: root,
+    selectedFilePaths: List.unmodifiable(resolved),
+    hasFileSelection: hasFileSelection,
   );
 }
 
@@ -441,10 +550,19 @@ class _RepositoryWorkspaceScreenState
   bool? _lastNativeApplyPatchAvailability;
   bool? _lastNativeCommitAvailability;
   bool? _lastNativeFetchAvailability;
+  bool? _lastNativeMergeAvailability;
   bool? _lastNativePullAvailability;
   bool? _lastNativePushAvailability;
+  bool? _lastNativeRemoveSelectedAvailability;
+  bool? _lastNativeStageSelectedAvailability;
   bool? _lastNativeCreateBranchAvailability;
   bool? _lastNativeStashAvailability;
+  bool? _lastNativeTagAvailability;
+  bool? _lastNativeUnstageSelectedAvailability;
+  String? _lastNativeFileTargetSignature;
+  Set<String>? _nativeSelectedChangeKeys;
+  String? _nativeSelectionRepositoryId;
+  String? _lastReportedRepositoryId;
   late RepositorySessionController _repositorySessionController;
 
   /// 中文：在窗口首次绘制后执行首页请求的仓库操作；恢复窗口打开失败时清除其原生恢复记录。
@@ -513,6 +631,29 @@ class _RepositoryWorkspaceScreenState
             false) {
           _showCommitDialog();
         }
+      case 'merge':
+        final overview = mapRepositoryOverview(
+          ref.read(repositorySessionProvider),
+        );
+        if (overview.repository?.disabledActions.contains(
+              RepositoryAction.mergeBranch,
+            ) ==
+            false) {
+          await _showMergeBranchDialog();
+        }
+      case 'tag':
+        final session = ref.read(repositorySessionProvider);
+        final overview = mapRepositoryOverview(session);
+        final targetCommitId =
+            session.selectedCommitId ?? session.status?.branch.objectId;
+        final availability = nativeWorkspaceMenuAvailability(
+          session,
+          overview,
+          selectedChanges: _nativeSelectedChanges(overview),
+        );
+        if (availability.canTag && targetCommitId != null) {
+          await _showTagDialog(defaultCommitId: targetCommitId);
+        }
       case 'pull':
         final overview = mapRepositoryOverview(
           ref.read(repositorySessionProvider),
@@ -565,20 +706,72 @@ class _RepositoryWorkspaceScreenState
         ).showSnackBar(const SnackBar(content: Text('该菜单功能待实现。')));
       case 'stopTracking':
         final session = ref.read(repositorySessionProvider);
-        if (session.selectedCommitFile?.file.path.isValidUtf8 == true) {
+        final overview = mapRepositoryOverview(session);
+        final selected = _nativeSelectedChanges(overview);
+        final availability = nativeWorkspaceMenuAvailability(
+          session,
+          overview,
+          selectedChanges: selected,
+        );
+        if (availability.canStopTracking &&
+            session.selectedCommitFile?.file.path.isValidUtf8 == true) {
           await _stopTrackingSelectedCommitFile();
           return;
         }
-        final selected = mapRepositoryOverview(
-          session,
-        ).repository?.selectedChange;
-        if (selected?.canStopTracking == true) {
-          await _stopTrackingChanges([selected!]);
+        if (availability.canStopTracking && selected.isNotEmpty) {
+          await _stopTrackingChanges(selected);
           return;
         }
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('请选择一个可停止追踪的已跟踪或已暂存文件。')));
+      case 'stageSelected':
+      case 'unstageSelected':
+        final session = ref.read(repositorySessionProvider);
+        final overview = mapRepositoryOverview(session);
+        final selected = _nativeSelectedChanges(overview);
+        final availability = nativeWorkspaceMenuAvailability(
+          session,
+          overview,
+          selectedChanges: selected,
+        );
+        final shouldStage = action == 'stageSelected';
+        final canPerform = shouldStage
+            ? availability.canStageSelected
+            : availability.canUnstageSelected;
+        final applicable = selected
+            .where(
+              (change) =>
+                  change.canToggleStage && change.isStaged != shouldStage,
+            )
+            .toList(growable: false);
+        if (canPerform && applicable.isNotEmpty) {
+          await ref
+              .read(repositorySessionProvider.notifier)
+              .toggleStageGroup(applicable, stage: shouldStage);
+          return;
+        }
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(
+            content: Text(shouldStage ? '请选择一个可暂存的文件。' : '请选择一个可取消暂存的文件。'),
+          ),
+        );
+      case 'removeSelected':
+        final session = ref.read(repositorySessionProvider);
+        final overview = mapRepositoryOverview(session);
+        final selected = _nativeSelectedChanges(overview);
+        final availability = nativeWorkspaceMenuAvailability(
+          session,
+          overview,
+          selectedChanges: selected,
+        );
+        if (availability.canRemoveSelected && selected.isNotEmpty) {
+          await _removeChanges(selected);
+          return;
+        }
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('请选择可安全移除的工作区文件。')));
     }
   }
 
@@ -590,48 +783,123 @@ class _RepositoryWorkspaceScreenState
     RepositorySessionState session,
     RepositoryOverviewViewData overview,
   ) async {
-    final availability = nativeWorkspaceMenuAvailability(session, overview);
+    final availability = nativeWorkspaceMenuAvailability(
+      session,
+      overview,
+      selectedChanges: _nativeSelectedChanges(overview),
+    );
     final canApplyPatch = availability.canApplyPatch;
     final canCommit = availability.canCommit;
     final canFetch = availability.canFetch;
+    final canMerge = availability.canMerge;
     final canPull = availability.canPull;
     final canPush = availability.canPush;
+    final canRemoveSelected = availability.canRemoveSelected;
+    final canStageSelected = availability.canStageSelected;
     final canCreateBranch = availability.canCreateBranch;
     final canStash = availability.canStash;
     final canStopTracking = availability.canStopTracking;
+    final canTag = availability.canTag;
+    final canUnstageSelected = availability.canUnstageSelected;
+    final fileTargets = nativeWorkspaceMenuFileTargets(
+      session,
+      overview,
+      selectedChanges: _nativeSelectedChanges(overview),
+    );
+    final fileTargetSignature = [
+      fileTargets.repositoryRootPath ?? '',
+      fileTargets.hasFileSelection.toString(),
+      ...fileTargets.selectedFilePaths,
+    ].join('\u0000');
     if (_lastNativeStopTrackingAvailability == canStopTracking &&
         _lastNativeApplyPatchAvailability == canApplyPatch &&
         _lastNativeCommitAvailability == canCommit &&
         _lastNativeFetchAvailability == canFetch &&
+        _lastNativeMergeAvailability == canMerge &&
         _lastNativePullAvailability == canPull &&
         _lastNativePushAvailability == canPush &&
+        _lastNativeRemoveSelectedAvailability == canRemoveSelected &&
+        _lastNativeStageSelectedAvailability == canStageSelected &&
         _lastNativeCreateBranchAvailability == canCreateBranch &&
-        _lastNativeStashAvailability == canStash) {
+        _lastNativeStashAvailability == canStash &&
+        _lastNativeUnstageSelectedAvailability == canUnstageSelected &&
+        _lastNativeTagAvailability == canTag &&
+        _lastNativeFileTargetSignature == fileTargetSignature) {
       return;
     }
     _lastNativeStopTrackingAvailability = canStopTracking;
     _lastNativeApplyPatchAvailability = canApplyPatch;
     _lastNativeCommitAvailability = canCommit;
     _lastNativeFetchAvailability = canFetch;
+    _lastNativeMergeAvailability = canMerge;
     _lastNativePullAvailability = canPull;
     _lastNativePushAvailability = canPush;
+    _lastNativeRemoveSelectedAvailability = canRemoveSelected;
+    _lastNativeStageSelectedAvailability = canStageSelected;
     _lastNativeCreateBranchAvailability = canCreateBranch;
     _lastNativeStashAvailability = canStash;
+    _lastNativeUnstageSelectedAvailability = canUnstageSelected;
+    _lastNativeTagAvailability = canTag;
+    _lastNativeFileTargetSignature = fileTargetSignature;
     try {
       await DesktopWindowBridge.setWorkspaceMenuState(
         canStopTracking: canStopTracking,
         canApplyPatch: canApplyPatch,
         canCommit: canCommit,
         canFetch: canFetch,
+        canMerge: canMerge,
         canPull: canPull,
         canPush: canPush,
+        canRemoveSelected: canRemoveSelected,
+        canStageSelected: canStageSelected,
         canCreateBranch: canCreateBranch,
         canStash: canStash,
+        canTag: canTag,
+        canUnstageSelected: canUnstageSelected,
+        repositoryRootPath: fileTargets.repositoryRootPath,
+        selectedFilePaths: fileTargets.selectedFilePaths,
+        hasFileSelection: fileTargets.hasFileSelection,
       );
     } on Object {
       // The Engine can be closing while a state notification is in flight.
       // Engine 可能正在关闭，状态通知在传输途中失效时无需更新已销毁的窗口。
     }
+  }
+
+  /// Resolves the visible multi-selection against the latest repository view.
+  ///
+  /// 中文：根据最新仓库视图重新解析可见多选，避免原生菜单使用刷新前的文件对象。
+  List<RepositoryChangeViewData> _nativeSelectedChanges(
+    RepositoryOverviewViewData overview,
+  ) {
+    final repository = overview.repository;
+    if (repository == null) return const [];
+    final keys = _nativeSelectionRepositoryId == repository.path
+        ? _nativeSelectedChangeKeys
+        : null;
+    if (keys == null) {
+      return [?repository.selectedChange];
+    }
+    return repository.changes
+        .where((change) => keys.contains(_nativeChangeSelectionKey(change)))
+        .toList(growable: false);
+  }
+
+  /// Updates this Engine's visible file selection for native menu actions.
+  ///
+  /// 中文：更新当前 Engine 提供给原生菜单动作的可见文件多选快照。
+  void _handleChangeSelectionChanged(List<RepositoryChangeViewData> changes) {
+    final session = ref.read(repositorySessionProvider);
+    _nativeSelectionRepositoryId = session.repository?.commandDirectory;
+    _nativeSelectedChangeKeys = {
+      for (final change in changes) _nativeChangeSelectionKey(change),
+    };
+    unawaited(
+      _syncNativeWorkspaceMenuAvailability(
+        session,
+        mapRepositoryOverview(session),
+      ),
+    );
   }
 
   /// 中文：从 macOS“仓库”菜单显示当前仓库的真实 Git 详情。
@@ -729,11 +997,26 @@ class _RepositoryWorkspaceScreenState
         identical(previous?.status, next.status)) {
       return;
     }
-    unawaited(
-      DesktopWindowBridge.repositoryOpened(
-        repository.commandDirectory,
-      ).catchError((_) {}),
-    );
+    final repositoryId = repository.id.toString();
+    if (_lastReportedRepositoryId == repositoryId) {
+      unawaited(
+        DesktopWindowBridge.repositoryStatusUpdated(
+          repository.commandDirectory,
+        ).catchError((_) {}),
+      );
+      return;
+    }
+    unawaited(() async {
+      try {
+        await DesktopWindowBridge.repositoryOpened(repository.commandDirectory);
+        if (mounted) {
+          _lastReportedRepositoryId = repositoryId;
+        }
+      } on Object {
+        // Retry registration on the next ready state if the native channel is
+        // temporarily unavailable during Engine startup or teardown.
+      }
+    }());
   }
 
   /// 中文：在变基因冲突暂停时提供继续、中止或稍后处理的操作提示。
@@ -1007,7 +1290,9 @@ class _RepositoryWorkspaceScreenState
       context: context,
       builder: (BuildContext context) => Consumer(
         builder: (BuildContext context, WidgetRef ref, Widget? child) {
-          final operations = ref.watch(repositorySessionProvider).operations;
+          final operations = ref.watch(
+            repositorySessionProvider.select((session) => session.operations),
+          );
           return AlertDialog(
             title: const Text('操作日志'),
             content: SizedBox(
@@ -2496,8 +2781,16 @@ class _RepositoryWorkspaceScreenState
         await _confirmCherryPickCommit(commit);
         return;
       case RepositoryCommitContextAction.tag:
-        break;
+        await _showTagDialog(defaultCommitId: commit.oid);
+        return;
     }
+  }
+
+  /// 中文：显示标签管理面板，并使用明确提交作为新标签的默认目标。
+  ///
+  /// English: Shows tag management with an explicit commit as the default
+  /// target for a newly created tag.
+  Future<void> _showTagDialog({required String defaultCommitId}) async {
     if (!mounted) return;
     final session = ref.read(repositorySessionProvider);
     final result = await showGeneralDialog<_TagDialogResult>(
@@ -2507,7 +2800,7 @@ class _RepositoryWorkspaceScreenState
       barrierColor: Colors.black.withValues(alpha: .24),
       transitionDuration: const Duration(milliseconds: 200),
       pageBuilder: (context, animation, secondaryAnimation) =>
-          _TagDialog(session: session, defaultCommitId: commit.oid),
+          _TagDialog(session: session, defaultCommitId: defaultCommitId),
       transitionBuilder: (context, animation, secondaryAnimation, child) =>
           FadeTransition(
             opacity: CurvedAnimation(parent: animation, curve: Curves.easeOut),
@@ -3288,6 +3581,7 @@ class _RepositoryWorkspaceScreenState
                   unawaited(controller.selectCommitFile(file)),
               onCommitFileContextAction: _handleCommitFileContextAction,
               onChangeSelected: controller.selectChange,
+              onChangeSelectionChanged: _handleChangeSelectionChanged,
               onChangeStageToggled: controller.toggleStage,
               onChangeGroupStageToggled: (changes, stage) =>
                   controller.toggleStageGroup(changes, stage: stage),
@@ -6661,12 +6955,22 @@ class _PushDialogState extends State<_PushDialog> {
         }
       }
     });
-    final remoteUrl = await widget.onRemoteChanged(remoteName);
-    if (!mounted || remoteName != _selectedRemote) return;
-    setState(() {
-      _remoteUrl = remoteUrl;
-      _isLoadingRemoteUrl = false;
-    });
+    try {
+      final remoteUrl = await widget.onRemoteChanged(remoteName);
+      if (!mounted || remoteName != _selectedRemote) return;
+      setState(() {
+        _remoteUrl = remoteUrl;
+        _isLoadingRemoteUrl = false;
+      });
+    } on Object {
+      // A failed read should not leave the dialog in a permanent loading
+      // state; a later remote change can retry the lookup.
+      if (!mounted || remoteName != _selectedRemote) return;
+      setState(() {
+        _remoteUrl = null;
+        _isLoadingRemoteUrl = false;
+      });
+    }
   }
 
   /// 中文：提交当前勾选的分支映射、跟踪设置和标签选项。
@@ -7347,7 +7651,21 @@ class _CommitDialogState extends ConsumerState<_CommitDialog> {
   /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
-    final session = ref.watch(repositorySessionProvider);
+    // The commit form only depends on work-tree status, branch/history data,
+    // and mutation gates. Avoid rebuilding it for Diff selection, pagination,
+    // operation-log, or other session fields that do not affect submission.
+    ref.watch(
+      repositorySessionProvider.select(
+        (session) => (
+          phase: session.phase,
+          operationState: session.operationState,
+          status: session.status,
+          commits: session.commits,
+          hasOriginRemote: session.hasOriginRemote,
+        ),
+      ),
+    );
+    final session = ref.read(repositorySessionProvider);
     final repository = mapRepositoryOverview(session).repository;
     final changes = repository?.changes ?? const <RepositoryChangeViewData>[];
     final staged = changes.where((change) => change.isStaged).toList();
