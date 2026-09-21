@@ -87,6 +87,7 @@ bool _isLoadedAncestorOfHead({
   bool canCreateBranch,
   bool canCommit,
   bool canContinueOperation,
+  bool canCopySelected,
   bool canUseConflictStage2,
   bool canUseConflictStage3,
   bool canFetch,
@@ -204,6 +205,18 @@ nativeWorkspaceMenuAvailability(
         hasRecoverableOperation &&
         session.status != null &&
         session.status!.conflictedEntries.isEmpty,
+    canCopySelected:
+        canApplyPatch &&
+        menuSelection.isNotEmpty &&
+        menuSelection.every(
+          (change) =>
+              change.isActionEnabled &&
+              change.isPathValidUtf8 &&
+              change.kind != RepositoryChangeKind.conflicted &&
+              change.kind != RepositoryChangeKind.deleted &&
+              !change.path.contains('\n') &&
+              !change.path.contains('\r'),
+        ),
     canUseConflictStage2:
         canResolveSelectedConflict && selectedConflict.stage2ObjectId != null,
     canUseConflictStage3:
@@ -724,6 +737,7 @@ class _RepositoryWorkspaceScreenState
   bool? _lastNativeCommitSelectedAvailability;
   bool? _lastNativeCommitAvailability;
   bool? _lastNativeContinueOperationAvailability;
+  bool? _lastNativeCopySelectedAvailability;
   bool? _lastNativeUseConflictStage2Availability;
   bool? _lastNativeUseConflictStage3Availability;
   bool? _lastNativeFetchAvailability;
@@ -870,6 +884,8 @@ class _RepositoryWorkspaceScreenState
         await _showNativeSelectedFileHistory();
       case 'ignoreSelected':
         await _showIgnoreSelectedDialog();
+      case 'copySelected':
+        await _showCopySelectedDialog();
       case 'checkout':
         await _showCheckoutDialog();
       case 'merge':
@@ -1057,6 +1073,7 @@ class _RepositoryWorkspaceScreenState
     final canCommitSelected = availability.canCommitSelected;
     final canCommit = availability.canCommit;
     final canContinueOperation = availability.canContinueOperation;
+    final canCopySelected = availability.canCopySelected;
     final canUseConflictStage2 = availability.canUseConflictStage2;
     final canUseConflictStage3 = availability.canUseConflictStage3;
     final canFetch = availability.canFetch;
@@ -1102,6 +1119,7 @@ class _RepositoryWorkspaceScreenState
         _lastNativeCommitSelectedAvailability == canCommitSelected &&
         _lastNativeCommitAvailability == canCommit &&
         _lastNativeContinueOperationAvailability == canContinueOperation &&
+        _lastNativeCopySelectedAvailability == canCopySelected &&
         _lastNativeUseConflictStage2Availability == canUseConflictStage2 &&
         _lastNativeUseConflictStage3Availability == canUseConflictStage3 &&
         _lastNativeFetchAvailability == canFetch &&
@@ -1134,6 +1152,7 @@ class _RepositoryWorkspaceScreenState
     _lastNativeCommitSelectedAvailability = canCommitSelected;
     _lastNativeCommitAvailability = canCommit;
     _lastNativeContinueOperationAvailability = canContinueOperation;
+    _lastNativeCopySelectedAvailability = canCopySelected;
     _lastNativeUseConflictStage2Availability = canUseConflictStage2;
     _lastNativeUseConflictStage3Availability = canUseConflictStage3;
     _lastNativeFetchAvailability = canFetch;
@@ -1165,6 +1184,7 @@ class _RepositoryWorkspaceScreenState
         canCommitSelected: canCommitSelected,
         canCommit: canCommit,
         canContinueOperation: canContinueOperation,
+        canCopySelected: canCopySelected,
         canUseConflictStage2: canUseConflictStage2,
         canUseConflictStage3: canUseConflictStage3,
         canFetch: canFetch,
@@ -3967,6 +3987,147 @@ class _RepositoryWorkspaceScreenState
         : result.addedPatterns.isEmpty
         ? '所选忽略规则已存在，未重复写入。'
         : '已向 $targetName 添加 ${result.addedPatterns.length} 条规则。';
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// Chooses one destination directory, previews every source-to-target
+  /// mapping, and copies the current validated file selection without
+  /// replacing any existing entry.
+  ///
+  /// 中文：选择一个目标目录并预览全部源与目标映射，再以不覆盖方式复制当前
+  /// 已校验的文件选择；确认后仍由会话层重新读取 Git 状态。
+  Future<void> _showCopySelectedDialog() async {
+    final session = ref.read(repositorySessionProvider);
+    final overview = mapRepositoryOverview(session);
+    final selected = _nativeSelectedChanges(overview);
+    final availability = nativeWorkspaceMenuAvailability(
+      session,
+      overview,
+      selectedChanges: selected,
+    );
+    if (!availability.canCopySelected || selected.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请选择可复制的现存工作区文件。')));
+      return;
+    }
+
+    final destination = await getDirectoryPath(confirmButtonText: '选择复制位置');
+    if (destination == null || !mounted) return;
+    final names = <String>{};
+    final selectedPaths = <String>{};
+    final duplicatePaths = <String>[];
+    final mappings = <({String source, String target})>[];
+    for (final change in selected) {
+      if (!selectedPaths.add(change.path)) continue;
+      final name = path_utils.basename(change.path);
+      if (!names.add(name.toLowerCase())) duplicatePaths.add(change.path);
+      mappings.add((
+        source: change.path,
+        target: path_utils.join(destination, name),
+      ));
+    }
+    if (duplicatePaths.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '多个所选文件具有相同名称，无法复制到同一目录：\n'
+            '${duplicatePaths.join('\n')}',
+          ),
+        ),
+      );
+      return;
+    }
+    final conflicts = <String>[];
+    for (final mapping in mappings) {
+      if (await FileSystemEntity.type(mapping.target, followLinks: false) !=
+          FileSystemEntityType.notFound) {
+        conflicts.add(mapping.target);
+      }
+    }
+    if (!mounted) return;
+    if (conflicts.isNotEmpty) {
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('目标文件已存在'),
+          content: SizedBox(
+            width: 520,
+            child: SingleChildScrollView(
+              child: SelectableText(
+                '为避免覆盖数据，本次不会复制任何文件。请选择其他目录，或先处理以下目标：\n\n'
+                '${conflicts.join('\n')}',
+              ),
+            ),
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('好'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('复制 ${mappings.length} 个文件'),
+        content: SizedBox(
+          width: 560,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('目标目录：$destination'),
+                const SizedBox(height: 12),
+                const Text('将创建以下文件（不会覆盖已有目标）：'),
+                const SizedBox(height: 6),
+                SelectableText(
+                  mappings
+                      .map((mapping) => '${mapping.source} → ${mapping.target}')
+                      .join('\n'),
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('复制'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+
+    final result = await ref
+        .read(repositorySessionProvider.notifier)
+        .copyChanges(selected, destinationDirectory: destination);
+    if (!mounted) return;
+    final String message;
+    if (result == null) {
+      message = '未能复制所选文件；仓库状态可能已变化，请刷新后重试。';
+    } else if (result.conflictingPaths.isNotEmpty) {
+      message = '目标在确认后出现同名文件，本次未复制任何内容。';
+    } else if (result.failedPaths.isNotEmpty) {
+      message = result.copiedPaths.isEmpty
+          ? '未能复制 ${result.failedPaths.length} 个文件；源文件可能已变化或不是普通文件。'
+          : '已复制 ${result.copiedPaths.length} 个文件，另有 '
+                '${result.failedPaths.length} 个失败；请检查目标目录。';
+    } else {
+      message = '已复制 ${result.copiedPaths.length} 个文件。';
+    }
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text(message)));

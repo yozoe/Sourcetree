@@ -385,7 +385,7 @@
                             <menuItem title="查看选中的修改日志…" id="GDA-action-selected-log"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="viewSelectedFileHistoryFromMenu:" target="Voe-Tx-rLC" id="GDA-action-selected-log-action"/></connections></menuItem>
                             <menuItem title="审查选定项目（待实现）" id="GDA-action-review"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-review-action"/></connections></menuItem>
                             <menuItem isSeparatorItem="YES" id="GDA-action-separator-5"/>
-                            <menuItem title="复制…（待实现）" id="GDA-action-copy"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-copy-action"/></connections></menuItem>
+                            <menuItem title="复制…" id="GDA-action-copy"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="copySelectedFromMenu:" target="Voe-Tx-rLC" id="GDA-action-copy-action"/></connections></menuItem>
                             <menuItem title="移动…（待实现）" id="GDA-action-move"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-action-move-action"/></connections></menuItem>
                         </items>
                     </menu>

@@ -1,13 +1,64 @@
+import 'dart:async';
 import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:git_desktop/src/app/repository_session.dart';
+import 'package:git_desktop/src/app/repository_view_mapper.dart';
 import 'package:git_desktop/src/git/git.dart';
 
 import '../support/git_test_repository.dart';
 
 void main() {
+  test('shutdown cancels and joins an in-flight file copy', () async {
+    if (!Platform.isMacOS) return;
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('base');
+    await repository.writeFile('copy.txt', 'copy me\n');
+    final destination = await Directory.systemTemp.createTemp(
+      'git-desktop-copy-shutdown-',
+    );
+    addTearDown(() => destination.delete(recursive: true));
+    final copyPrepared = Completer<void>();
+    final releaseCopy = Completer<void>();
+    final runner = GitRunner();
+    final container = ProviderContainer(
+      overrides: [
+        gitRunnerProvider.overrideWithValue(runner),
+        gitRepositoryWriterProvider.overrideWithValue(
+          GitRepositoryWriter(
+            runner,
+            beforeCopyPublicationForTesting: () async {
+              copyPrepared.complete();
+              await releaseCopy.future;
+            },
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    controller.selectUncommittedChanges();
+    final selected = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.changes.singleWhere((change) => change.path == 'copy.txt');
+
+    final copy = controller.copyChanges([
+      selected,
+    ], destinationDirectory: destination.path);
+    await copyPrepared.future;
+    final shutdown = controller.prepareForShutdown();
+    await Future<void>.delayed(Duration.zero);
+    releaseCopy.complete();
+
+    await shutdown;
+    expect(await copy, isNull);
+    expect(await destination.list().isEmpty, isTrue);
+  });
+
   test(
     'shutdown cancels and joins an in-flight checkout without a token',
     () async {

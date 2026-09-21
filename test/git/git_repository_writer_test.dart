@@ -162,6 +162,185 @@ void main() {
     expect(await ignoreFile.readAsString(), '# externally updated\n');
   });
 
+  test('copies work-tree files without changing their sources', () async {
+    if (!Platform.isMacOS) return;
+    final executable = await fixture.writeFile('one/report.txt', 'first\n');
+    final chmod = await Process.run('/bin/chmod', ['0751', executable.path]);
+    expect(chmod.exitCode, 0, reason: chmod.stderr.toString());
+    await fixture.writeFile('two/data.bin', 'second\n');
+    final destination = await Directory.systemTemp.createTemp(
+      'git-desktop-copy-target-',
+    );
+    addTearDown(() => destination.delete(recursive: true));
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    final result = await writer.copyWorkingTreeFiles(repository, [
+      GitPath.fromString('one/report.txt'),
+      GitPath.fromString('two/data.bin'),
+    ], destinationDirectory: destination.path);
+
+    expect(result.copiedPaths, ['one/report.txt', 'two/data.bin']);
+    expect(result.hasFailures, isFalse);
+    expect(
+      await File('${destination.path}/report.txt').readAsString(),
+      'first\n',
+    );
+    expect(
+      (await File('${destination.path}/report.txt').stat()).mode & 0x1ff,
+      0x1e9,
+    );
+    expect(
+      await File('${destination.path}/data.bin').readAsString(),
+      'second\n',
+    );
+    expect(
+      await File(
+        '${fixture.workingDirectory.path}/one/report.txt',
+      ).readAsString(),
+      'first\n',
+    );
+  });
+
+  test('preflights every copy conflict before creating files', () async {
+    if (!Platform.isMacOS) return;
+    await fixture.writeFile('one.txt', 'one\n');
+    await fixture.writeFile('two.txt', 'two\n');
+    final destination = await Directory.systemTemp.createTemp(
+      'git-desktop-copy-conflict-',
+    );
+    addTearDown(() => destination.delete(recursive: true));
+    await File('${destination.path}/two.txt').writeAsString('keep\n');
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    final result = await writer.copyWorkingTreeFiles(repository, [
+      GitPath.fromString('one.txt'),
+      GitPath.fromString('two.txt'),
+    ], destinationDirectory: destination.path);
+
+    expect(result.copiedPaths, isEmpty);
+    expect(result.conflictingPaths, ['two.txt']);
+    expect(await File('${destination.path}/one.txt').exists(), isFalse);
+    expect(await File('${destination.path}/two.txt').readAsString(), 'keep\n');
+  });
+
+  test('deduplicates paths and rejects colliding destination names', () async {
+    if (!Platform.isMacOS) return;
+    await fixture.writeFile('one/report.txt', 'one\n');
+    await fixture.writeFile('two/REPORT.txt', 'two\n');
+    final destination = await Directory.systemTemp.createTemp(
+      'git-desktop-copy-duplicate-',
+    );
+    addTearDown(() => destination.delete(recursive: true));
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    final duplicate = await writer.copyWorkingTreeFiles(repository, [
+      GitPath.fromString('one/report.txt'),
+      GitPath.fromString('one/report.txt'),
+    ], destinationDirectory: destination.path);
+    expect(duplicate.copiedPaths, ['one/report.txt']);
+
+    await File('${destination.path}/report.txt').delete();
+    final collision = await writer.copyWorkingTreeFiles(repository, [
+      GitPath.fromString('one/report.txt'),
+      GitPath.fromString('two/REPORT.txt'),
+    ], destinationDirectory: destination.path);
+    expect(collision.copiedPaths, isEmpty);
+    expect(collision.conflictingPaths, ['two/REPORT.txt']);
+    expect(await destination.list().isEmpty, isTrue);
+  });
+
+  test('cancels file copying before publishing a destination', () async {
+    if (!Platform.isMacOS) return;
+    await fixture.writeFile('cancel.txt', 'keep source\n');
+    final destination = await Directory.systemTemp.createTemp(
+      'git-desktop-copy-cancel-',
+    );
+    addTearDown(() => destination.delete(recursive: true));
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+    final cancellation = GitCancellationToken();
+    final cancellingWriter = GitRepositoryWriter(
+      GitRunner(),
+      beforeCopyPublicationForTesting: cancellation.cancel,
+    );
+
+    await expectLater(
+      cancellingWriter.copyWorkingTreeFiles(
+        repository,
+        [GitPath.fromString('cancel.txt')],
+        destinationDirectory: destination.path,
+        cancellationToken: cancellation,
+      ),
+      throwsA(isA<GitCancelledException>()),
+    );
+
+    expect(await destination.list().isEmpty, isTrue);
+  });
+
+  test('reports a destination created during copy as a conflict', () async {
+    if (!Platform.isMacOS) return;
+    await fixture.writeFile('raced.txt', 'source\n');
+    final destination = await Directory.systemTemp.createTemp(
+      'git-desktop-copy-race-',
+    );
+    addTearDown(() => destination.delete(recursive: true));
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+    final racedTarget = File('${destination.path}/raced.txt');
+    final racingWriter = GitRepositoryWriter(
+      GitRunner(),
+      beforeCopyPublicationForTesting: () =>
+          racedTarget.writeAsString('external\n'),
+    );
+
+    final result = await racingWriter.copyWorkingTreeFiles(repository, [
+      GitPath.fromString('raced.txt'),
+    ], destinationDirectory: destination.path);
+
+    expect(result.copiedPaths, isEmpty);
+    expect(result.conflictingPaths, ['raced.txt']);
+    expect(result.failedPaths, isEmpty);
+    expect(await racedTarget.readAsString(), 'external\n');
+    expect(await destination.list().length, 1);
+  });
+
+  test('does not follow a symlink selected as a copy source', () async {
+    if (!Platform.isMacOS) return;
+    final outside = await Directory.systemTemp.createTemp(
+      'git-desktop-copy-outside-',
+    );
+    addTearDown(() => outside.delete(recursive: true));
+    final outsideFile = File('${outside.path}/secret.txt');
+    await outsideFile.writeAsString('outside\n');
+    await Link(
+      '${fixture.workingDirectory.path}/linked.txt',
+    ).create(outsideFile.path);
+    final destination = await Directory.systemTemp.createTemp(
+      'git-desktop-copy-link-target-',
+    );
+    addTearDown(() => destination.delete(recursive: true));
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    final result = await writer.copyWorkingTreeFiles(repository, [
+      GitPath.fromString('linked.txt'),
+    ], destinationDirectory: destination.path);
+
+    expect(result.copiedPaths, isEmpty);
+    expect(result.failedPaths, ['linked.txt']);
+    expect(await destination.list().isEmpty, isTrue);
+    expect(await outsideFile.readAsString(), 'outside\n');
+  });
+
   test('refuses removal through a symlinked work-tree parent', () async {
     if (!Platform.isMacOS) return;
     final outside = await Directory.systemTemp.createTemp(

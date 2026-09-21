@@ -186,6 +186,28 @@ final class GitIgnoreWriteResult {
   final List<String> addedPatterns;
 }
 
+/// The per-path outcome of copying work-tree files without overwriting.
+/// 中文：以不覆盖方式复制工作区文件后的逐路径结果。
+final class GitWorkingTreeCopyResult {
+  GitWorkingTreeCopyResult({
+    required this.destinationDirectory,
+    required List<String> copiedPaths,
+    required List<String> conflictingPaths,
+    required List<String> failedPaths,
+  }) : copiedPaths = List.unmodifiable(copiedPaths),
+       conflictingPaths = List.unmodifiable(conflictingPaths),
+       failedPaths = List.unmodifiable(failedPaths);
+
+  final String destinationDirectory;
+  final List<String> copiedPaths;
+  final List<String> conflictingPaths;
+  final List<String> failedPaths;
+
+  /// Whether any selected path was not copied.
+  /// 中文：是否至少有一个所选路径未被复制。
+  bool get hasFailures => conflictingPaths.isNotEmpty || failedPaths.isNotEmpty;
+}
+
 extension GitChangeTypeParsing on GitChangeType {
   /// 中文：将 porcelain 状态字符转换为对应的文件改动类型；未知字符保留为 `unknown`。
   ///

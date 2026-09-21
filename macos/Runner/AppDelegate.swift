@@ -102,6 +102,22 @@ struct GitDesktopWorkspaceFileMenuTargets {
       : []
   }
 
+  /// Returns every selected path only when all are existing regular files.
+  /// 中文：仅当全部选择仍是普通文件时返回其 URL；目录、链接和失效选择均拒绝。
+  func existingRegularFileURLs(
+    fileManager: FileManager = .default
+  ) -> [URL] {
+    let urls = existingSelectedURLs(fileManager: fileManager)
+    guard !urls.isEmpty else { return [] }
+    for url in urls {
+      guard let attributes = try? fileManager.attributesOfItem(atPath: url.path),
+            attributes[.type] as? FileAttributeType == .typeRegular else {
+        return []
+      }
+    }
+    return urls
+  }
+
   /// 中文：返回仍存在的仓库根目录。
   /// English: Returns the repository root while it remains a directory.
   func existingRepositoryRootURL(
@@ -750,6 +766,10 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// 中文：Flutter 是否可为当前可见选择安全添加忽略规则。
   private(set) var canIgnoreSelectedFromMenu = false
 
+  /// Whether Flutter can safely copy the visible work-tree selection.
+  /// 中文：Flutter 是否允许复制当前可见的工作区文件选择。
+  private(set) var canCopySelectedFromMenu = false
+
   /// Flutter's last validated Stage Selected availability for this Engine.
   /// 中文：此 Engine 最近一次由 Flutter 校验的“添加到索引”可用状态。
   private(set) var canStageSelectedFromMenu = false
@@ -1034,6 +1054,8 @@ final class WorkspaceFlutterWindowController: NSWindowController,
           arguments?["canViewSelectedFileHistory"] as? Bool ?? false
         canIgnoreSelectedFromMenu =
           arguments?["canIgnoreSelected"] as? Bool ?? false
+        canCopySelectedFromMenu =
+          arguments?["canCopySelected"] as? Bool ?? false
         canStageSelectedFromMenu =
           arguments?["canStageSelected"] as? Bool ?? false
         canUnstageSelectedFromMenu =
@@ -1542,6 +1564,19 @@ final class WindowCoordinator {
       hasValidatedSelection:
         currentWorkspaceController?.canIgnoreSelectedFromMenu == true
     )
+  }
+
+  /// Whether the key workspace can copy every currently selected local file.
+  /// 中文：当前前台工作区是否可复制全部当前选中的本地文件。
+  var canCopySelectedFromMenu: Bool {
+    guard gitDesktopCanPerformSelectedChangeMenuAction(
+      hasKeyWorkspace: currentWorkspaceController != nil,
+      hasValidatedSelection:
+        currentWorkspaceController?.canCopySelectedFromMenu == true
+    ), let targets = currentWorkspaceFileMenuTargets else {
+      return false
+    }
+    return !targets.existingRegularFileURLs().isEmpty
   }
 
   /// Whether the key workspace has a Flutter-validated unstaged selection.
@@ -2825,6 +2860,16 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     windowCoordinator.performWorkspaceAction("ignoreSelected")
   }
 
+  /// Opens the copy preview for the key workspace's selected local files.
+  /// 中文：为当前前台工作区选中的本地文件打开复制预览。
+  @IBAction func copySelectedFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canCopySelectedFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("copySelected")
+  }
+
   /// 中文：用系统默认应用打开当前工作区唯一选中的现存文件。
   /// English: Opens the single existing workspace selection in its default app.
   @IBAction func openSelectedFileFromMenu(_ sender: Any?) {
@@ -3128,6 +3173,9 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     }
     if menuItem.action == #selector(ignoreSelectedFromMenu(_:)) {
       return windowCoordinator.canIgnoreSelectedFromMenu
+    }
+    if menuItem.action == #selector(copySelectedFromMenu(_:)) {
+      return windowCoordinator.canCopySelectedFromMenu
     }
     if menuItem.action == #selector(fetchRepositoryFromMenu(_:)) {
       return windowCoordinator.canFetchFromMenu

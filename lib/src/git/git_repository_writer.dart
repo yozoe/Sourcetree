@@ -77,6 +77,7 @@ final class GitRepositoryWriter {
     this.runner, {
     @visibleForTesting this.beforeConflictResultPublicationForTesting,
     @visibleForTesting this.beforeIgnoreRulesPublicationForTesting,
+    @visibleForTesting this.beforeCopyPublicationForTesting,
   });
 
   final GitRunner runner;
@@ -88,6 +89,10 @@ final class GitRepositoryWriter {
   /// Test seam invoked after ignore rules are durable but before publish.
   /// 中文：忽略规则已持久化、尚未发布时调用的测试钩子。
   final FutureOr<void> Function()? beforeIgnoreRulesPublicationForTesting;
+
+  /// Test seam invoked after copied bytes are durable but before publication.
+  /// 中文：复制内容已持久化、尚未发布时调用的测试钩子。
+  final FutureOr<void> Function()? beforeCopyPublicationForTesting;
 
   /// Appends generated rules to `.gitignore` or `.git/info/exclude` without
   /// replacing existing content. Existing identical rules are not duplicated.
@@ -184,6 +189,126 @@ final class GitRepositoryWriter {
       patterns: patterns,
       addedPatterns: List.unmodifiable(addedPatterns),
     );
+  }
+
+  /// Copies regular work-tree files into one existing directory without ever
+  /// replacing a destination. All destination-name conflicts are detected
+  /// before copying begins; a race discovered while publishing one file is
+  /// reported as a per-path conflict. Copying is cooperatively cancellable.
+  ///
+  /// 中文：把普通工作区文件复制到一个既有目录且绝不覆盖目标。开始前先检查
+  /// 全部目标名称冲突；发布单个文件时发现的竞态按路径报告冲突。复制支持协作取消。
+  Future<GitWorkingTreeCopyResult> copyWorkingTreeFiles(
+    GitRepository repository,
+    List<GitPath> paths, {
+    required String destinationDirectory,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final workTreeRoot = repository.workTreeRoot;
+    if (workTreeRoot == null) {
+      throw const GitException('A working tree is required.');
+    }
+    if (paths.isEmpty) {
+      throw const GitException('At least one path is required.');
+    }
+    if (!Platform.isMacOS) {
+      throw const GitException(
+        'Safe file copying is unavailable on this platform.',
+      );
+    }
+    final canonicalRoot = await Directory(workTreeRoot).resolveSymbolicLinks();
+    final canonicalDestination = await Directory(
+      destinationDirectory,
+    ).resolveSymbolicLinks();
+    final destinationType = await FileSystemEntity.type(
+      canonicalDestination,
+      followLinks: false,
+    );
+    if (destinationType != FileSystemEntityType.directory) {
+      throw const GitException('The copy destination is not a directory.');
+    }
+
+    final relativePaths = <String>[];
+    final seenPaths = <String>{};
+    final destinationNames = <String>{};
+    final duplicateNames = <String>[];
+    for (final path in paths) {
+      final relativePath = _requireUtf8Path(path);
+      final components = path_utils
+          .split(path_utils.normalize(relativePath))
+          .where((component) => component != '.')
+          .toList(growable: false);
+      if (path_utils.isAbsolute(relativePath) ||
+          components.isEmpty ||
+          components.contains('..')) {
+        throw const GitException('A copy source is outside the work tree.');
+      }
+      if (!seenPaths.add(relativePath)) continue;
+      final name = components.last;
+      if (!destinationNames.add(name.toLowerCase())) {
+        duplicateNames.add(relativePath);
+      }
+      relativePaths.add(relativePath);
+    }
+    if (duplicateNames.isNotEmpty) {
+      return GitWorkingTreeCopyResult(
+        destinationDirectory: canonicalDestination,
+        copiedPaths: const [],
+        conflictingPaths: duplicateNames,
+        failedPaths: const [],
+      );
+    }
+
+    final destination = _MacOsPinnedDirectory.open(canonicalDestination);
+    try {
+      final conflictingPaths = <String>[];
+      for (final relativePath in relativePaths) {
+        if (destination.containsEntry(path_utils.basename(relativePath))) {
+          conflictingPaths.add(relativePath);
+        }
+      }
+      if (conflictingPaths.isNotEmpty) {
+        return GitWorkingTreeCopyResult(
+          destinationDirectory: canonicalDestination,
+          copiedPaths: const [],
+          conflictingPaths: conflictingPaths,
+          failedPaths: const [],
+        );
+      }
+
+      final copiedPaths = <String>[];
+      final racedConflictingPaths = <String>[];
+      final failedPaths = <String>[];
+      for (final relativePath in relativePaths) {
+        if (cancellationToken?.isCancelled == true) {
+          throw const GitCancelledException();
+        }
+        try {
+          await _MacOsSecureFileCopy.copy(
+            workTreeRoot: canonicalRoot,
+            relativePath: relativePath,
+            destination: destination,
+            cancellationToken: cancellationToken,
+            beforePublicationForTesting: beforeCopyPublicationForTesting,
+          );
+          copiedPaths.add(relativePath);
+        } on GitCancelledException {
+          rethrow;
+        } on _CopyDestinationConflictException {
+          racedConflictingPaths.add(relativePath);
+        } on Object {
+          failedPaths.add(relativePath);
+        }
+      }
+      return GitWorkingTreeCopyResult(
+        destinationDirectory: canonicalDestination,
+        copiedPaths: copiedPaths,
+        conflictingPaths: racedConflictingPaths,
+        failedPaths: failedPaths,
+      );
+    } finally {
+      destination.close();
+    }
   }
 
   /// 中文：暂存指定路径。
@@ -3278,6 +3403,145 @@ final class _MacOsPinnedDirectory {
     }
   }
 
+  /// Returns whether [fileName] already names any destination entry.
+  /// 中文：判断 [fileName] 是否已指向任意目标条目；无法安全检查时按存在处理。
+  bool containsEntry(String fileName) {
+    if (_fileDescriptor < 0 || !_isValidLeafName(fileName)) {
+      throw const GitException('The copy destination is invalid.');
+    }
+    final pointer = _MacOsAtomicFileWriter._nativeString(fileName);
+    try {
+      final descriptor = _MacOsAtomicFileWriter._openAtExisting(
+        _fileDescriptor,
+        pointer,
+        _MacOsAtomicFileWriter._oReadOnly |
+            _MacOsAtomicFileWriter._oNonBlock |
+            _MacOsAtomicFileWriter._oNoFollow |
+            _MacOsAtomicFileWriter._oCloseOnExec,
+      );
+      if (descriptor >= 0) {
+        _MacOsAtomicFileWriter._close(descriptor);
+        return true;
+      }
+      return _MacOsAtomicFileWriter._errnoLocation().value != 2;
+    } finally {
+      _MacOsAtomicFileWriter._free(pointer.cast());
+    }
+  }
+
+  /// Copies one secured regular-file descriptor through a private temporary
+  /// file and links it to [fileName] only if that destination remains absent.
+  ///
+  /// 中文：把一个已安全打开的普通文件描述符复制到私有临时文件，仅当
+  /// [fileName] 仍不存在时才发布；取消或失败会清理临时文件。
+  Future<void> copyRegularFileExclusive({
+    required String fileName,
+    required int sourceFileDescriptor,
+    required int sourceMode,
+    GitCancellationToken? cancellationToken,
+    FutureOr<void> Function()? beforePublicationForTesting,
+  }) async {
+    if (_fileDescriptor < 0 || !_isValidLeafName(fileName)) {
+      throw const GitException('The copy destination is invalid.');
+    }
+    final targetPointer = _MacOsAtomicFileWriter._nativeString(fileName);
+    final temporaryPointer = _MacOsAtomicFileWriter._nativeString(
+      _MacOsAtomicFileWriter._temporaryName(),
+    );
+    var temporaryFd = -1;
+    ffi.Pointer<ffi.Uint8>? buffer;
+    try {
+      temporaryFd = _MacOsAtomicFileWriter._openAtCreate(
+        _fileDescriptor,
+        temporaryPointer,
+        _MacOsAtomicFileWriter._oWriteOnly |
+            _MacOsAtomicFileWriter._oCreate |
+            _MacOsAtomicFileWriter._oExclusive |
+            _MacOsAtomicFileWriter._oNoFollow |
+            _MacOsAtomicFileWriter._oCloseOnExec,
+        0x180,
+      );
+      if (temporaryFd < 0) {
+        throw const GitException('A private copy file could not be created.');
+      }
+      const chunkSize = 256 * 1024;
+      buffer = _MacOsAtomicFileWriter._malloc(chunkSize).cast<ffi.Uint8>();
+      if (buffer.address == 0) {
+        throw const GitException('Memory for file copying is unavailable.');
+      }
+      while (true) {
+        if (cancellationToken?.isCancelled == true) {
+          throw const GitCancelledException();
+        }
+        final read = _MacOsAtomicFileWriter._read(
+          sourceFileDescriptor,
+          buffer,
+          chunkSize,
+        );
+        if (read < 0) {
+          throw const GitException('The copy source could not be read.');
+        }
+        if (read == 0) break;
+        var offset = 0;
+        while (offset < read) {
+          final written = _MacOsAtomicFileWriter._write(
+            temporaryFd,
+            buffer + offset,
+            read - offset,
+          );
+          if (written <= 0) {
+            throw const GitException('The copied file could not be written.');
+          }
+          offset += written;
+        }
+        await Future<void>.delayed(Duration.zero);
+      }
+      if (cancellationToken?.isCancelled == true) {
+        throw const GitCancelledException();
+      }
+      if (_MacOsAtomicFileWriter._fchmod(temporaryFd, sourceMode) != 0) {
+        throw const GitException(
+          'The copied file permissions could not be set.',
+        );
+      }
+      if (_MacOsAtomicFileWriter._fsync(temporaryFd) != 0) {
+        throw const GitException('The copied file could not be flushed.');
+      }
+      _MacOsAtomicFileWriter._close(temporaryFd);
+      temporaryFd = -1;
+      await beforePublicationForTesting?.call();
+      if (cancellationToken?.isCancelled == true) {
+        throw const GitCancelledException();
+      }
+      if (_MacOsAtomicFileWriter._linkAt(
+            _fileDescriptor,
+            temporaryPointer,
+            _fileDescriptor,
+            targetPointer,
+            0,
+          ) !=
+          0) {
+        if (_MacOsAtomicFileWriter._errnoLocation().value == 17) {
+          throw const _CopyDestinationConflictException();
+        }
+        throw const GitException(
+          'The copied file could not be published safely.',
+        );
+      }
+      if (_MacOsAtomicFileWriter._fsync(_fileDescriptor) != 0) {
+        throw const GitException(
+          'The copy destination directory could not be flushed.',
+        );
+      }
+    } finally {
+      if (buffer != null) _MacOsAtomicFileWriter._free(buffer.cast());
+      if (temporaryFd >= 0) _MacOsAtomicFileWriter._close(temporaryFd);
+      _MacOsAtomicFileWriter._unlinkAt(_fileDescriptor, temporaryPointer, 0);
+      _MacOsAtomicFileWriter._free(targetPointer.cast());
+      _MacOsAtomicFileWriter._free(temporaryPointer.cast());
+    }
+  }
+
   /// Creates [fileName] exclusively and durably writes [bytes].
   /// 中文：排他创建 [fileName] 并持久写入 [bytes]，同名目标存在时绝不覆盖。
   void createExclusive(String fileName, List<int> bytes) {
@@ -3347,6 +3611,123 @@ final class _MacOsPinnedDirectory {
     _MacOsAtomicFileWriter._close(_fileDescriptor);
     _fileDescriptor = -1;
   }
+
+  static bool _isValidLeafName(String fileName) =>
+      fileName.isNotEmpty &&
+      fileName != '.' &&
+      fileName != '..' &&
+      !fileName.contains('/');
+}
+
+/// Copies a regular file through descriptor-relative macOS paths.
+/// 中文：通过相对目录描述符安全复制普通文件。
+final class _MacOsSecureFileCopy {
+  /// Copies [relativePath] below [workTreeRoot] into [destination].
+  /// 中文：把 [workTreeRoot] 下的 [relativePath] 复制到 [destination]。
+  static Future<void> copy({
+    required String workTreeRoot,
+    required String relativePath,
+    required _MacOsPinnedDirectory destination,
+    GitCancellationToken? cancellationToken,
+    FutureOr<void> Function()? beforePublicationForTesting,
+  }) async {
+    final components = path_utils
+        .split(path_utils.normalize(relativePath))
+        .where((component) => component != '.')
+        .toList(growable: false);
+    if (components.isEmpty || components.contains('..')) {
+      throw const GitException('The copy source is invalid.');
+    }
+    final rootPointer = _MacOsAtomicFileWriter._nativeString(workTreeRoot);
+    var currentFd = -1;
+    var sourceFd = -1;
+    try {
+      currentFd = _MacOsAtomicFileWriter._open(
+        rootPointer,
+        _MacOsAtomicFileWriter._oReadOnly |
+            _MacOsAtomicFileWriter._oDirectory |
+            _MacOsAtomicFileWriter._oNoFollow |
+            _MacOsAtomicFileWriter._oCloseOnExec,
+      );
+      if (currentFd < 0) {
+        throw const GitException('The work tree could not be secured.');
+      }
+      for (final component in components.take(components.length - 1)) {
+        final pointer = _MacOsAtomicFileWriter._nativeString(component);
+        try {
+          final nextFd = _MacOsAtomicFileWriter._openAtExisting(
+            currentFd,
+            pointer,
+            _MacOsAtomicFileWriter._oReadOnly |
+                _MacOsAtomicFileWriter._oDirectory |
+                _MacOsAtomicFileWriter._oNoFollow |
+                _MacOsAtomicFileWriter._oCloseOnExec,
+          );
+          if (nextFd < 0) {
+            throw const GitException(
+              'A copy-source parent changed or is not a safe directory.',
+            );
+          }
+          _MacOsAtomicFileWriter._close(currentFd);
+          currentFd = nextFd;
+        } finally {
+          _MacOsAtomicFileWriter._free(pointer.cast());
+        }
+      }
+      final leafPointer = _MacOsAtomicFileWriter._nativeString(components.last);
+      try {
+        sourceFd = _MacOsAtomicFileWriter._openAtExisting(
+          currentFd,
+          leafPointer,
+          _MacOsAtomicFileWriter._oReadOnly |
+              _MacOsAtomicFileWriter._oNonBlock |
+              _MacOsAtomicFileWriter._oNoFollow |
+              _MacOsAtomicFileWriter._oCloseOnExec,
+        );
+      } finally {
+        _MacOsAtomicFileWriter._free(leafPointer.cast());
+      }
+      if (sourceFd < 0) {
+        throw const GitException('The copy source is unavailable or unsafe.');
+      }
+      final status = _MacOsAtomicFileWriter._malloc(256);
+      if (status.address == 0) {
+        throw const GitException('Memory for copy metadata is unavailable.');
+      }
+      int sourceMode;
+      try {
+        if (_MacOsAtomicFileWriter._fstat(sourceFd, status) != 0) {
+          throw const GitException(
+            'The copy source metadata could not be read.',
+          );
+        }
+        sourceMode = (status.cast<ffi.Uint8>() + 4).cast<ffi.Uint16>().value;
+      } finally {
+        _MacOsAtomicFileWriter._free(status);
+      }
+      if (sourceMode & 0xf000 != 0x8000) {
+        throw const GitException('The copy source is not a regular file.');
+      }
+      await destination.copyRegularFileExclusive(
+        fileName: components.last,
+        sourceFileDescriptor: sourceFd,
+        sourceMode: sourceMode & 0x1ff,
+        cancellationToken: cancellationToken,
+        beforePublicationForTesting: beforePublicationForTesting,
+      );
+    } finally {
+      if (sourceFd >= 0) _MacOsAtomicFileWriter._close(sourceFd);
+      if (currentFd >= 0) _MacOsAtomicFileWriter._close(currentFd);
+      _MacOsAtomicFileWriter._free(rootPointer.cast());
+    }
+  }
+}
+
+/// Indicates that exclusive publication lost a race to an existing target.
+/// 中文：表示排他发布时目标已被其他写入者抢先创建。
+final class _CopyDestinationConflictException extends GitException {
+  const _CopyDestinationConflictException()
+    : super('The copy destination already exists.');
 }
 
 /// Removes a leaf through a descriptor-pinned macOS directory chain.

@@ -106,7 +106,20 @@ class RunnerTests: XCTestCase {
       hasFileSelection: true
     )
     XCTAssertEqual(selected.existingSelectedURLs(), [file])
+    XCTAssertEqual(selected.existingRegularFileURLs(), [file])
     XCTAssertEqual(selected.terminalDirectoryURL(), nested)
+
+    let link = nested.appendingPathComponent("linked.swift")
+    try FileManager.default.createSymbolicLink(
+      atPath: link.path,
+      withDestinationPath: file.path
+    )
+    let linkedSelection = GitDesktopWorkspaceFileMenuTargets(
+      repositoryRootPath: root.path,
+      selectedFilePaths: [link.path],
+      hasFileSelection: true
+    )
+    XCTAssertTrue(linkedSelection.existingRegularFileURLs().isEmpty)
 
     let noneSelected = GitDesktopWorkspaceFileMenuTargets(
       repositoryRootPath: root.path,

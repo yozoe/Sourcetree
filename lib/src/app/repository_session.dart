@@ -3086,6 +3086,114 @@ final class RepositorySessionController
     }
   }
 
+  /// Copies the selected working-tree files into [destinationDirectory]
+  /// without overwriting existing entries. The selected rows are re-read from
+  /// Git before copying, and the repository is refreshed after any result.
+  ///
+  /// 中文：把所选工作区文件复制到 [destinationDirectory] 且不覆盖已有条目。
+  /// 复制前重新读取并复核 Git 条目，结束后刷新仓库真实状态。
+  Future<GitWorkingTreeCopyResult?> copyChanges(
+    List<RepositoryChangeViewData> changes, {
+    required String destinationDirectory,
+  }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackGitTask<GitWorkingTreeCopyResult?>(
+        () => copyChanges(changes, destinationDirectory: destinationDirectory),
+      );
+    }
+    if (changes.isEmpty ||
+        state.phase != RepositorySessionPhase.ready ||
+        state.isWorkingTreeBusy) {
+      return null;
+    }
+
+    final previousSelection = state.selectedChange;
+    final previousRefId = state.selectedRefId;
+    await refresh();
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        state.phase != RepositorySessionPhase.ready) {
+      return null;
+    }
+
+    final paths = <GitPath>[];
+    for (final change in changes) {
+      final entry = status.displayEntries
+          .where((candidate) => candidate.path.display == change.path)
+          .firstOrNull;
+      final stillInSelectedSource = change.isStaged
+          ? entry?.hasStagedChange == true
+          : entry?.hasWorkTreeChange == true;
+      if (entry == null ||
+          !entry.path.isValidUtf8 ||
+          entry.isConflicted ||
+          !stillInSelectedSource ||
+          entry.path.display.contains('\n') ||
+          entry.path.display.contains('\r')) {
+        return null;
+      }
+      if (!paths.contains(entry.path)) paths.add(entry.path);
+    }
+    if (paths.isEmpty) return null;
+
+    final repositoryGeneration = _repositoryGeneration;
+    final cancellation = GitCancellationToken();
+    _copyCancellation?.cancel();
+    _copyCancellation = cancellation;
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isWorkingTreeBusy: true,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearMessage: true,
+    );
+    try {
+      final result = await _writer.copyWorkingTreeFiles(
+        repository,
+        paths,
+        destinationDirectory: destinationDirectory,
+        cancellationToken: cancellation,
+      );
+      if (cancellation.isCancelled ||
+          !_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
+        return null;
+      }
+      await _finishWorkingTreeMutation(
+        repository: repository,
+        repositoryGeneration: repositoryGeneration,
+        previousSelection: previousSelection,
+        previousRefId: previousRefId,
+      );
+      return result;
+    } on GitCancelledException {
+      if (_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
+        await _finishWorkingTreeMutation(
+          repository: repository,
+          repositoryGeneration: repositoryGeneration,
+          previousSelection: previousSelection,
+          previousRefId: previousRefId,
+        );
+      }
+      return null;
+    } on Object catch (error, stackTrace) {
+      if (_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
+        state = state.copyWith(
+          phase: RepositorySessionPhase.error,
+          isWorkingTreeBusy: false,
+          message: _friendlyError(error),
+          technicalDetails: _technicalDetails(error, stackTrace),
+        );
+      }
+      return null;
+    } finally {
+      if (identical(_copyCancellation, cancellation)) {
+        _copyCancellation = null;
+      }
+    }
+  }
+
   /// Deletes selected staged or unstaged paths from the working tree.
   ///
   /// The Git index and commit history are left unchanged. Status is re-read
