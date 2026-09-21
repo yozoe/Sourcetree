@@ -2532,6 +2532,120 @@ final class RepositorySessionController
     }
   }
 
+  /// Reads a read-only Diff for one working-tree review target after checking
+  /// that the path still belongs to the selected staged or unstaged surface.
+  /// The result is cancelled or rejected when the workspace changes.
+  ///
+  /// 中文：复核路径仍属于所选暂存或未暂存来源后，为工作区审查目标读取只读
+  /// Diff；窗口关闭、取消或仓库切换后不会返回过期结果。
+  Future<GitUnifiedDiff> readWorkingTreeReviewDiff(
+    RepositoryChangeViewData change, {
+    required GitCancellationToken cancellationToken,
+  }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackRequiredGitTask(
+        () => readWorkingTreeReviewDiff(
+          change,
+          cancellationToken: cancellationToken,
+        ),
+      );
+    }
+    final repository = state.repository;
+    if (repository == null || state.phase != RepositorySessionPhase.ready) {
+      throw StateError('当前没有可审查的工作区。');
+    }
+    final repositoryGeneration = _repositoryGeneration;
+    final status = await _reader.readStatus(
+      repository,
+      cancellationToken: cancellationToken,
+    );
+    if (cancellationToken.isCancelled) {
+      throw const GitCancelledException();
+    }
+    if (!ref.mounted ||
+        repositoryGeneration != _repositoryGeneration ||
+        state.repository?.id != repository.id) {
+      throw StateError('仓库已切换，无法继续审查。');
+    }
+    final entry = status.displayEntries
+        .where((candidate) => candidate.path.display == change.path)
+        .firstOrNull;
+    final stillInSelectedSource = change.isStaged
+        ? entry?.hasStagedChange == true
+        : entry?.hasWorkTreeChange == true;
+    if (entry == null ||
+        !entry.path.isValidUtf8 ||
+        !stillInSelectedSource ||
+        (change.kind == RepositoryChangeKind.untracked) !=
+            (entry.kind == GitFileStatusKind.untracked)) {
+      throw StateError('所选文件状态已变化，无法继续审查。');
+    }
+    final diff = entry.kind == GitFileStatusKind.untracked
+        ? await _reader.readUntrackedFileDiff(
+            repository,
+            path: entry.path.display,
+            cancellationToken: cancellationToken,
+          )
+        : await _reader.readUnifiedDiff(
+            repository,
+            path: entry.path.display,
+            source: change.isStaged
+                ? GitDiffSource.staged
+                : GitDiffSource.workingTree,
+            cancellationToken: cancellationToken,
+          );
+    if (cancellationToken.isCancelled) {
+      throw const GitCancelledException();
+    }
+    if (!ref.mounted ||
+        repositoryGeneration != _repositoryGeneration ||
+        state.repository?.id != repository.id) {
+      throw StateError('仓库已切换，无法继续审查。');
+    }
+    return diff;
+  }
+
+  /// Reads a historical file Diff for the built-in review without changing
+  /// the main workspace selection.
+  ///
+  /// 中文：为内置审查读取历史提交中的文件 Diff，不改变主工作区选择。
+  Future<GitUnifiedDiff> readCommitReviewDiff(
+    GitCommit commit, {
+    required String path,
+    required GitCancellationToken cancellationToken,
+  }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackRequiredGitTask(
+        () => readCommitReviewDiff(
+          commit,
+          path: path,
+          cancellationToken: cancellationToken,
+        ),
+      );
+    }
+    final repository = state.repository;
+    if (repository == null || state.phase != RepositorySessionPhase.ready) {
+      throw StateError('当前没有可审查的提交。');
+    }
+    final repositoryGeneration = _repositoryGeneration;
+    final diff = await _reader.readCommitUnifiedDiff(
+      repository,
+      objectId: commit.objectId,
+      parentObjectId: commit.parentIds.firstOrNull,
+      path: path,
+      cancellationToken: cancellationToken,
+    );
+    if (cancellationToken.isCancelled) {
+      throw const GitCancelledException();
+    }
+    if (!ref.mounted ||
+        repositoryGeneration != _repositoryGeneration ||
+        state.repository?.id != repository.id) {
+      throw StateError('仓库已切换，无法继续审查。');
+    }
+    return diff;
+  }
+
   /// Reads a focused, read-only history for a selected historical file.
   ///
   /// The result belongs to the repository that was active when the request

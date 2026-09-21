@@ -715,7 +715,7 @@ void main() {
 
       for (final label in <String>[
         '查看选中的修改日志…',
-        '审查选定的项目（待实现）',
+        '审查选定的项目',
         '重置到提交…（待实现）',
         '打开当前版本（待实现）',
         '打开已选定版本（待实现）',
@@ -728,6 +728,23 @@ void main() {
         expect(find.text(label), findsOneWidget);
       }
       expect(selectedFile, commitFile);
+
+      await tester.tap(find.text('审查选定的项目'));
+      await tester.pumpAndSettle();
+
+      expect(selectedFile, commitFile);
+      expect(
+        selectedAction,
+        RepositoryCommitFileContextAction.reviewSelectedItem,
+      );
+
+      final secondGesture = await tester.startGesture(
+        tester.getCenter(find.text('main.dart')),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await secondGesture.up();
+      await tester.pumpAndSettle();
 
       await tester.tap(find.text('打开当前版本（待实现）'));
       await tester.pumpAndSettle();
@@ -787,6 +804,7 @@ void main() {
 
     final pending = find.text('查看选中的修改日志…（待实现）');
     expect(pending, findsOneWidget);
+    expect(find.text('审查选定的项目（待实现）'), findsOneWidget);
     await tester.tap(pending);
     await tester.pumpAndSettle();
     expect(selectedAction, isNull);

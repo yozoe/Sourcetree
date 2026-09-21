@@ -346,6 +346,110 @@ void main() {
     expect(await destination.list().isEmpty, isTrue);
   });
 
+  test('reads a working-tree review without changing its selection', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'before\n');
+    await repository.commit('Initial commit');
+    await repository.writeFile('README.md', 'after\n');
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    controller.selectUncommittedChanges();
+    final change = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.changes.singleWhere((change) => change.path == 'README.md');
+    final selectionBefore = container
+        .read(repositorySessionProvider)
+        .selectedChange;
+
+    final diff = await controller.readWorkingTreeReviewDiff(
+      change,
+      cancellationToken: GitCancellationToken(),
+    );
+
+    expect(diff.text, contains('-before'));
+    expect(diff.text, contains('+after'));
+    expect(
+      container.read(repositorySessionProvider).selectedChange,
+      same(selectionBefore),
+    );
+
+    final cancellation = GitCancellationToken()..cancel();
+    await expectLater(
+      controller.readWorkingTreeReviewDiff(
+        change,
+        cancellationToken: cancellation,
+      ),
+      throwsA(isA<GitCancelledException>()),
+    );
+  });
+
+  test('rejects a working-tree review whose selected source changed', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'before\n');
+    await repository.commit('Initial commit');
+    await repository.writeFile('README.md', 'after\n');
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    controller.selectUncommittedChanges();
+    final unstaged =
+        mapRepositoryOverview(
+          container.read(repositorySessionProvider),
+        ).repository!.changes.singleWhere(
+          (change) => change.path == 'README.md' && !change.isStaged,
+        );
+    await repository.runGit(['add', '--', 'README.md']);
+
+    await expectLater(
+      controller.readWorkingTreeReviewDiff(
+        unstaged,
+        cancellationToken: GitCancellationToken(),
+      ),
+      throwsA(isA<StateError>()),
+    );
+  });
+
+  test('reads a commit review without changing the main commit Diff', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'reviewed\n');
+    await repository.commit('Reviewed commit');
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final session = container.read(repositorySessionProvider);
+    final commit = session.commits.first;
+    final selectedDiffBefore = session.commitDiff;
+
+    final diff = await controller.readCommitReviewDiff(
+      commit,
+      path: 'README.md',
+      cancellationToken: GitCancellationToken(),
+    );
+
+    expect(diff.text, contains('+reviewed'));
+    expect(
+      container.read(repositorySessionProvider).commitDiff,
+      same(selectedDiffBefore),
+    );
+
+    final cancellation = GitCancellationToken()..cancel();
+    await expectLater(
+      controller.readCommitReviewDiff(
+        commit,
+        path: 'README.md',
+        cancellationToken: cancellation,
+      ),
+      throwsA(isA<GitCancelledException>()),
+    );
+  });
+
   test(
     'automatically refreshes external work-tree changes without reloading history',
     () async {

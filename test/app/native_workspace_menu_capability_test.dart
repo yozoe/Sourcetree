@@ -461,6 +461,13 @@ void main() {
       expect(
         nativeWorkspaceMenuAvailability(
           session,
+          untrackedSelection,
+        ).canReviewSelected,
+        isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
           nonUtf8TrackedSelection,
         ).canCommitAll,
         isTrue,
@@ -491,6 +498,13 @@ void main() {
           session,
           nonUtf8TrackedSelection,
         ).canMoveSelected,
+        isFalse,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          nonUtf8TrackedSelection,
+        ).canReviewSelected,
         isFalse,
       );
       expect(
@@ -602,6 +616,7 @@ void main() {
         canMerge: false,
         canPull: false,
         canPush: false,
+        canReviewSelected: false,
         canRemoveSelected: false,
         canStageSelected: false,
         canStash: false,
@@ -906,6 +921,22 @@ void main() {
         overview,
       ).canViewSelectedFileHistory,
       isTrue,
+    );
+    expect(
+      nativeWorkspaceMenuAvailability(session, overview).canReviewSelected,
+      isTrue,
+    );
+    expect(
+      nativeWorkspaceMenuAvailability(
+        RepositorySessionState(
+          phase: RepositorySessionPhase.ready,
+          repository: repository,
+          selectedCommitId: 'def456',
+          selectedCommitFile: session.selectedCommitFile,
+        ),
+        overview,
+      ).canReviewSelected,
+      isFalse,
     );
     final targets = nativeWorkspaceMenuFileTargets(session, overview);
     expect(targets.repositoryRootPath, '/tmp/example');

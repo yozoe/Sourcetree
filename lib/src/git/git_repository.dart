@@ -470,9 +470,16 @@ final class GitRepositoryReader {
     }
   }
 
-  /// 中文：读取所需的数据。
-  /// English: Reads the required data.
-  Future<GitStatusSnapshot> readStatus(GitRepository repository) async {
+  /// Reads the repository's porcelain-v2 status snapshot without changing
+  /// the index or work tree. [cancellationToken] stops the Git subprocess when
+  /// the owning view or Engine becomes invalid.
+  ///
+  /// 中文：以 porcelain-v2 读取仓库状态快照，不修改索引或工作区；
+  /// 所属视图或 Engine 失效时，[cancellationToken] 会停止 Git 子进程。
+  Future<GitStatusSnapshot> readStatus(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+  }) async {
     final result = await runner.run(
       GitInvocation(
         arguments: const [
@@ -490,6 +497,7 @@ final class GitRepositoryReader {
           '--untracked-files=all',
         ],
         workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
         outputLimit: const GitOutputLimit(
           stdoutBytes: 32 * 1024 * 1024,
           stderrBytes: 512 * 1024,
@@ -1358,15 +1366,19 @@ final class GitRepositoryReader {
   /// Reads a unified diff for one literal path.
   ///
   /// The path is always placed after `--`; wildcard/pathspec magic and
-  /// external diff/textconv execution are disabled.
-  /// 中文：读取所需的数据。
-  /// English: Reads the required data.
+  /// external diff/textconv execution are disabled. [cancellationToken]
+  /// terminates the read when its owning view or Engine becomes invalid.
+  ///
+  /// 中文：为一个字面路径读取 Unified Diff；路径始终放在 `--`
+  /// 之后，禁用通配路径语义、外部 Diff 和 textconv。所属视图或 Engine
+  /// 失效时，[cancellationToken] 会终止本次读取。
   Future<GitUnifiedDiff> readUnifiedDiff(
     GitRepository repository, {
     required String path,
     GitDiffSource source = GitDiffSource.workingTree,
     int contextLines = 3,
     int maxOutputBytes = 4 * 1024 * 1024,
+    GitCancellationToken? cancellationToken,
   }) async {
     if (path.contains('\u0000')) {
       throw ArgumentError.value(path, 'path', 'Git paths cannot contain NUL.');
@@ -1400,6 +1412,7 @@ final class GitRepositoryReader {
           path,
         ],
         workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
         outputLimit: GitOutputLimit(
           stdoutBytes: maxOutputBytes,
           stderrBytes: 512 * 1024,
@@ -1424,13 +1437,17 @@ final class GitRepositoryReader {
   ///
   /// `git diff` normally omits untracked paths. No-index mode gives the UI the
   /// same full-file addition patch Git would produce after the path is staged,
-  /// without changing the repository index.
-  /// 中文：把未跟踪文件与空文件比较，在不修改暂存区的前提下生成整文件新增补丁。
+  /// without changing the repository index. [cancellationToken] terminates
+  /// the no-index subprocess when its owning view or Engine becomes invalid.
+  ///
+  /// 中文：把未跟踪文件与空文件比较，在不修改暂存区的前提下生成整文件
+  /// 新增补丁；所属视图或 Engine 失效时，[cancellationToken] 会终止子进程。
   Future<GitUnifiedDiff> readUntrackedFileDiff(
     GitRepository repository, {
     required String path,
     int contextLines = 3,
     int maxOutputBytes = 4 * 1024 * 1024,
+    GitCancellationToken? cancellationToken,
   }) async {
     if (path.contains('\u0000')) {
       throw ArgumentError.value(path, 'path', 'Git paths cannot contain NUL.');
@@ -1465,6 +1482,7 @@ final class GitRepositoryReader {
           path,
         ],
         workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
         outputLimit: GitOutputLimit(
           stdoutBytes: maxOutputBytes,
           stderrBytes: 512 * 1024,

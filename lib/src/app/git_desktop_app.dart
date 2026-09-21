@@ -97,6 +97,7 @@ bool _isLoadedAncestorOfHead({
   bool canMerge,
   bool canPull,
   bool canPush,
+  bool canReviewSelected,
   bool canRemoveSelected,
   bool canStageSelected,
   bool canStash,
@@ -206,6 +207,17 @@ nativeWorkspaceMenuAvailability(
               menuSelection.length == 1 &&
               menuSelection.single.isPathValidUtf8 &&
               menuSelection.single.kind != RepositoryChangeKind.untracked));
+  final canReviewSelected =
+      session.phase == RepositorySessionPhase.ready &&
+      repository != null &&
+      !session.isWorkingTreeBusy &&
+      (repository.selectedCommit != null
+          ? session.selectedCommitFile?.objectId == session.selectedCommitId &&
+                repository.selectedCommitFile?.isPathValidUtf8 == true
+          : menuSelection.isNotEmpty &&
+                menuSelection.every(
+                  (change) => change.isActionEnabled && change.isPathValidUtf8,
+                ));
   return (
     canAddRemote: canApplyPatch,
     canApplyPatch: canApplyPatch,
@@ -277,6 +289,7 @@ nativeWorkspaceMenuAvailability(
         repository != null &&
         !repository.blocksRepositoryMutations &&
         !repository.disabledActions.contains(RepositoryAction.push),
+    canReviewSelected: canReviewSelected,
     canRemoveSelected:
         canApplyPatch &&
         menuSelection.isNotEmpty &&
@@ -750,6 +763,7 @@ class _RepositoryWorkspaceScreenState
   bool? _lastNativeMergeAvailability;
   bool? _lastNativePullAvailability;
   bool? _lastNativePushAvailability;
+  bool? _lastNativeReviewSelectedAvailability;
   bool? _lastNativeRemoveSelectedAvailability;
   bool? _lastNativeStageSelectedAvailability;
   bool? _lastNativeCreateBranchAvailability;
@@ -892,6 +906,8 @@ class _RepositoryWorkspaceScreenState
         await _showCopySelectedDialog();
       case 'moveSelected':
         await _showMoveSelectedDialog();
+      case 'reviewSelected':
+        await _showNativeSelectedReview();
       case 'checkout':
         await _showCheckoutDialog();
       case 'merge':
@@ -1089,6 +1105,7 @@ class _RepositoryWorkspaceScreenState
     final canMerge = availability.canMerge;
     final canPull = availability.canPull;
     final canPush = availability.canPush;
+    final canReviewSelected = availability.canReviewSelected;
     final canRemoveSelected = availability.canRemoveSelected;
     final canStageSelected = availability.canStageSelected;
     final canCreateBranch = availability.canCreateBranch;
@@ -1136,6 +1153,7 @@ class _RepositoryWorkspaceScreenState
         _lastNativeMergeAvailability == canMerge &&
         _lastNativePullAvailability == canPull &&
         _lastNativePushAvailability == canPush &&
+        _lastNativeReviewSelectedAvailability == canReviewSelected &&
         _lastNativeRemoveSelectedAvailability == canRemoveSelected &&
         _lastNativeStageSelectedAvailability == canStageSelected &&
         _lastNativeCreateBranchAvailability == canCreateBranch &&
@@ -1170,6 +1188,7 @@ class _RepositoryWorkspaceScreenState
     _lastNativeMergeAvailability = canMerge;
     _lastNativePullAvailability = canPull;
     _lastNativePushAvailability = canPush;
+    _lastNativeReviewSelectedAvailability = canReviewSelected;
     _lastNativeRemoveSelectedAvailability = canRemoveSelected;
     _lastNativeStageSelectedAvailability = canStageSelected;
     _lastNativeCreateBranchAvailability = canCreateBranch;
@@ -1203,6 +1222,7 @@ class _RepositoryWorkspaceScreenState
         canMerge: canMerge,
         canPull: canPull,
         canPush: canPush,
+        canReviewSelected: canReviewSelected,
         canRemoveSelected: canRemoveSelected,
         canStageSelected: canStageSelected,
         canCreateBranch: canCreateBranch,
@@ -4619,8 +4639,8 @@ class _RepositoryWorkspaceScreenState
   /// Routes one historical-file context-menu action through the application
   /// layer.
   ///
-  /// 中文：将历史提交文件右键菜单动作路由至应用层。查看修改日志只读取 Git
-  /// 历史和 Diff；其他待实现动作仍只显示无副作用提示。
+  /// 中文：将历史提交文件右键菜单动作路由至应用层。查看修改日志和审查只读取
+  /// Git 历史与 Diff；其他待实现动作仍只显示无副作用提示。
   void _handleCommitFileContextAction(
     CommitFileViewData file,
     RepositoryCommitFileContextAction action,
@@ -4629,9 +4649,101 @@ class _RepositoryWorkspaceScreenState
       unawaited(_showSelectedFileHistory(file));
       return;
     }
+    if (action == RepositoryCommitFileContextAction.reviewSelectedItem) {
+      unawaited(_showCommitFileReview(file));
+      return;
+    }
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text('“${file.path}”的该菜单功能待实现。')));
+  }
+
+  /// Opens the built-in review for the latest valid native-menu selection.
+  /// Working-tree multi-selection and the selected historical file both use
+  /// cancellable, read-only Git queries without changing the main selection.
+  ///
+  /// 中文：为原生菜单当前仍有效的选择打开内置审查。工作区多选和历史提交
+  /// 文件都使用可取消的只读 Git 查询，不改变主工作区选择。
+  Future<void> _showNativeSelectedReview() async {
+    final session = ref.read(repositorySessionProvider);
+    final overview = mapRepositoryOverview(session);
+    final availability = nativeWorkspaceMenuAvailability(
+      session,
+      overview,
+      selectedChanges: _nativeSelectedChanges(overview),
+    );
+    if (!availability.canReviewSelected) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请选择至少一个可审查的文件。')));
+      return;
+    }
+    final repository = overview.repository!;
+    if (repository.selectedCommit != null) {
+      final file = repository.selectedCommitFile;
+      if (file != null) await _showCommitFileReview(file);
+      return;
+    }
+    final controller = ref.read(repositorySessionProvider.notifier);
+    final selected = _nativeSelectedChanges(overview);
+    await _showReviewDialog([
+      for (final change in selected)
+        _RepositoryReviewTarget(
+          id: '${change.isStaged ? 'staged' : 'working'}:${change.path}',
+          path: change.path,
+          sourceLabel: change.isStaged ? '已暂存' : '工作区',
+          loadDiff: (cancellationToken) => controller.readWorkingTreeReviewDiff(
+            change,
+            cancellationToken: cancellationToken,
+          ),
+        ),
+    ]);
+  }
+
+  /// Opens the built-in review for one file in the selected commit.
+  /// 中文：为当前选中提交中的一个文件打开内置审查。
+  Future<void> _showCommitFileReview(CommitFileViewData file) async {
+    final session = ref.read(repositorySessionProvider);
+    final objectId = session.selectedCommitId;
+    final commit = objectId == null
+        ? null
+        : session.commits
+              .where((candidate) => candidate.objectId == objectId)
+              .firstOrNull;
+    if (!file.isPathValidUtf8 || commit == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前没有可审查的提交文件。')));
+      return;
+    }
+    final shortId = commit.objectId.substring(
+      0,
+      math.min(8, commit.objectId.length),
+    );
+    final controller = ref.read(repositorySessionProvider.notifier);
+    await _showReviewDialog([
+      _RepositoryReviewTarget(
+        id: '${commit.objectId}:${file.path}',
+        path: file.path,
+        sourceLabel: '提交 $shortId',
+        loadDiff: (cancellationToken) => controller.readCommitReviewDiff(
+          commit,
+          path: file.path,
+          cancellationToken: cancellationToken,
+        ),
+      ),
+    ]);
+  }
+
+  /// Presents the shared, read-only review surface for [targets].
+  /// 中文：为 [targets] 打开共用的只读审查界面。
+  Future<void> _showReviewDialog(List<_RepositoryReviewTarget> targets) async {
+    if (targets.isEmpty || !mounted) return;
+    await showDialog<void>(
+      context: context,
+      builder: (context) => _RepositoryReviewDialog(targets: targets),
+    );
   }
 
   /// Opens a focused, read-only history window for one historical file.
@@ -5010,6 +5122,293 @@ final class _RepositoryCheckoutDialogState
 /// 中文：一个文件的 Sourcetree 风格聚焦只读历史界面。对话框只拥有短暂的
 /// 展示状态；每一条提交、改动摘要和 Diff 都由应用层回调读取，因此不会修改
 /// 仓库状态或覆盖主工作区选择。
+final class _RepositoryReviewTarget {
+  const _RepositoryReviewTarget({
+    required this.id,
+    required this.path,
+    required this.sourceLabel,
+    required this.loadDiff,
+  });
+
+  final String id;
+  final String path;
+  final String sourceLabel;
+  final Future<GitUnifiedDiff> Function(GitCancellationToken cancellationToken)
+  loadDiff;
+}
+
+/// A focused read-only review for one or more selected Git file diffs.
+/// 中文：用于审查一个或多个所选 Git 文件差异的聚焦只读界面。
+final class _RepositoryReviewDialog extends StatefulWidget {
+  const _RepositoryReviewDialog({required this.targets});
+
+  final List<_RepositoryReviewTarget> targets;
+
+  @override
+  State<_RepositoryReviewDialog> createState() =>
+      _RepositoryReviewDialogState();
+}
+
+final class _RepositoryReviewDialogState
+    extends State<_RepositoryReviewDialog> {
+  final Map<String, GitUnifiedDiff> _loadedDiffs = {};
+  _RepositoryReviewTarget? _selectedTarget;
+  GitCancellationToken? _cancellation;
+  Object? _error;
+  var _isLoading = false;
+  var _generation = 0;
+
+  /// Starts the first cancellable Diff read owned by this dialog.
+  /// 中文：启动由当前弹窗持有的首次可取消 Diff 读取。
+  @override
+  void initState() {
+    super.initState();
+    _selectedTarget = widget.targets.first;
+    unawaited(_loadTarget(widget.targets.first));
+  }
+
+  /// Cancels an outstanding Diff read before destroying dialog-local state.
+  /// 中文：销毁弹窗局部状态前取消仍在执行的 Diff 读取。
+  @override
+  void dispose() {
+    _generation++;
+    _cancellation?.cancel();
+    super.dispose();
+  }
+
+  /// Selects [target], invalidates an older read, and caches its loaded Diff.
+  /// 中文：选择 [target]、使旧读取失效，并缓存已读取的 Diff。
+  Future<void> _loadTarget(_RepositoryReviewTarget target) async {
+    final generation = ++_generation;
+    _cancellation?.cancel();
+    final cached = _loadedDiffs[target.id];
+    if (cached != null) {
+      setState(() {
+        _selectedTarget = target;
+        _error = null;
+        _isLoading = false;
+      });
+      return;
+    }
+    final cancellation = GitCancellationToken();
+    _cancellation = cancellation;
+    setState(() {
+      _selectedTarget = target;
+      _error = null;
+      _isLoading = true;
+    });
+    try {
+      final diff = await target.loadDiff(cancellation);
+      if (!mounted || cancellation.isCancelled || generation != _generation) {
+        return;
+      }
+      setState(() {
+        _loadedDiffs[target.id] = diff;
+        _isLoading = false;
+      });
+    } on Object catch (error) {
+      if (!mounted || cancellation.isCancelled || generation != _generation) {
+        return;
+      }
+      setState(() {
+        _error = error;
+        _isLoading = false;
+      });
+    } finally {
+      if (identical(_cancellation, cancellation)) {
+        _cancellation = null;
+      }
+    }
+  }
+
+  /// Builds the bounded two-pane review dialog.
+  /// 中文：构建具有尺寸边界的双栏审查弹窗。
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Dialog(
+      insetPadding: const EdgeInsets.all(24),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 1180, maxHeight: 760),
+        child: SizedBox(
+          width: 1080,
+          height: 680,
+          child: Column(
+            children: [
+              Container(
+                height: 42,
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                color: colors.surfaceContainerHigh,
+                child: Row(
+                  children: [
+                    const Icon(Icons.rate_review_outlined, size: 19),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        '审查选定项目',
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: '关闭',
+                      icon: const Icon(Icons.close, size: 19),
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
+                  ],
+                ),
+              ),
+              Divider(height: 1, color: colors.outlineVariant),
+              Expanded(
+                child: Row(
+                  children: [
+                    SizedBox(width: 280, child: _buildTargetList(context)),
+                    VerticalDivider(width: 1, color: colors.outlineVariant),
+                    Expanded(child: _buildDiffPane(context)),
+                  ],
+                ),
+              ),
+              Divider(height: 1, color: colors.outlineVariant),
+              Container(
+                height: 46,
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                color: colors.surfaceContainerLow,
+                child: Row(
+                  children: [
+                    Text(
+                      '${widget.targets.length} 个文件 · 只读，不会暂存或提交',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: const Text('关闭'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  /// Builds the compact file navigator for this review selection.
+  /// 中文：为当前审查选择构建紧凑文件导航列表。
+  Widget _buildTargetList(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return Column(
+      children: [
+        Container(
+          height: 31,
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          color: colors.surfaceContainerHigh,
+          alignment: Alignment.centerLeft,
+          child: const Text('文件'),
+        ),
+        Divider(height: 1, color: colors.outlineVariant),
+        Expanded(
+          child: ListView.builder(
+            itemCount: widget.targets.length,
+            itemExtent: 48,
+            itemBuilder: (context, index) {
+              final target = widget.targets[index];
+              final selected = target.id == _selectedTarget?.id;
+              final name = path_utils.basename(target.path);
+              final parent = path_utils.dirname(target.path);
+              return InkWell(
+                onTap: () => unawaited(_loadTarget(target)),
+                child: Container(
+                  color: selected ? colors.primary : null,
+                  padding: const EdgeInsets.symmetric(horizontal: 10),
+                  alignment: Alignment.centerLeft,
+                  child: DefaultTextStyle(
+                    style: Theme.of(context).textTheme.bodySmall!.copyWith(
+                      color: selected ? colors.onPrimary : colors.onSurface,
+                    ),
+                    child: Column(
+                      mainAxisSize: MainAxisSize.min,
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(
+                          name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        Text(
+                          parent == '.'
+                              ? target.sourceLabel
+                              : '$parent · ${target.sourceLabel}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: TextStyle(
+                            color: selected
+                                ? colors.onPrimary.withValues(alpha: 0.78)
+                                : colors.onSurfaceVariant,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+              );
+            },
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// Builds loading, error, empty, or read-only Diff content.
+  /// 中文：构建加载、错误、空结果或只读 Diff 内容。
+  Widget _buildDiffPane(BuildContext context) {
+    final target = _selectedTarget;
+    if (target == null) {
+      return const _FileHistoryMessage(
+        icon: Icons.touch_app_outlined,
+        title: '选择文件',
+        message: '从左侧选择文件以审查其差异。',
+      );
+    }
+    if (_isLoading) {
+      return const Center(child: CircularProgressIndicator.adaptive());
+    }
+    if (_error != null) {
+      return _FileHistoryMessage(
+        icon: Icons.error_outline,
+        title: '无法读取差异',
+        message: _error.toString(),
+      );
+    }
+    final diff = _loadedDiffs[target.id];
+    if (diff == null || diff.text.isEmpty) {
+      return const _FileHistoryMessage(
+        icon: Icons.difference_outlined,
+        title: '没有可显示的文本差异',
+        message: '文件可能是二进制内容，或当前来源中没有文本改动。',
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Container(
+          padding: const EdgeInsets.fromLTRB(14, 9, 14, 8),
+          color: Theme.of(context).colorScheme.surfaceContainerHigh,
+          child: Text(
+            '${target.path} · ${target.sourceLabel}'
+            '${diff.isTruncated ? ' · 已截断' : ''}',
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: Theme.of(context).textTheme.titleSmall,
+          ),
+        ),
+        Divider(height: 1, color: Theme.of(context).colorScheme.outlineVariant),
+        Expanded(child: _FileHistoryDiff(text: diff.text)),
+      ],
+    );
+  }
+}
+
 final class _FileHistoryDialog extends StatefulWidget {
   const _FileHistoryDialog({
     required this.path,

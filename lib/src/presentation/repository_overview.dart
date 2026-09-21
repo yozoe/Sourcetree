@@ -4134,9 +4134,10 @@ class _CommitFileTile extends StatelessWidget {
           enabled: file.isPathValidUtf8,
         ),
         _commitFileContextMenuItem(
-          '审查选定的项目（待实现）',
+          file.isPathValidUtf8 ? '审查选定的项目' : '审查选定的项目（待实现）',
           RepositoryCommitFileContextAction.reviewSelectedItem,
           invoke,
+          enabled: file.isPathValidUtf8,
         ),
         const MenuItemButton(onPressed: null, child: Text('重置到提交…（待实现）')),
         const Divider(height: 1),

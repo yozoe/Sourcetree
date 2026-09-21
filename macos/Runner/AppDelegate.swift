@@ -774,6 +774,10 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// 中文：Flutter 是否允许移动当前可见的工作区文件选择。
   private(set) var canMoveSelectedFromMenu = false
 
+  /// Whether Flutter can open the built-in review for the visible selection.
+  /// 中文：Flutter 是否允许为当前可见选择打开内置审查。
+  private(set) var canReviewSelectedFromMenu = false
+
   /// Flutter's last validated Stage Selected availability for this Engine.
   /// 中文：此 Engine 最近一次由 Flutter 校验的“添加到索引”可用状态。
   private(set) var canStageSelectedFromMenu = false
@@ -1062,6 +1066,8 @@ final class WorkspaceFlutterWindowController: NSWindowController,
           arguments?["canCopySelected"] as? Bool ?? false
         canMoveSelectedFromMenu =
           arguments?["canMoveSelected"] as? Bool ?? false
+        canReviewSelectedFromMenu =
+          arguments?["canReviewSelected"] as? Bool ?? false
         canStageSelectedFromMenu =
           arguments?["canStageSelected"] as? Bool ?? false
         canUnstageSelectedFromMenu =
@@ -1596,6 +1602,16 @@ final class WindowCoordinator {
       return false
     }
     return !targets.existingRegularFileURLs().isEmpty
+  }
+
+  /// Whether the key workspace can open the Flutter-owned read-only review.
+  /// 中文：当前前台工作区是否可打开由 Flutter 持有的只读审查。
+  var canReviewSelectedFromMenu: Bool {
+    gitDesktopCanPerformSelectedChangeMenuAction(
+      hasKeyWorkspace: currentWorkspaceController != nil,
+      hasValidatedSelection:
+        currentWorkspaceController?.canReviewSelectedFromMenu == true
+    )
   }
 
   /// Whether the key workspace has a Flutter-validated unstaged selection.
@@ -2899,6 +2915,16 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     windowCoordinator.performWorkspaceAction("moveSelected")
   }
 
+  /// Opens the built-in read-only review for the key workspace selection.
+  /// 中文：为当前前台工作区选择打开内置只读审查。
+  @IBAction func reviewSelectedFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canReviewSelectedFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("reviewSelected")
+  }
+
   /// 中文：用系统默认应用打开当前工作区唯一选中的现存文件。
   /// English: Opens the single existing workspace selection in its default app.
   @IBAction func openSelectedFileFromMenu(_ sender: Any?) {
@@ -3208,6 +3234,9 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     }
     if menuItem.action == #selector(moveSelectedFromMenu(_:)) {
       return windowCoordinator.canMoveSelectedFromMenu
+    }
+    if menuItem.action == #selector(reviewSelectedFromMenu(_:)) {
+      return windowCoordinator.canReviewSelectedFromMenu
     }
     if menuItem.action == #selector(fetchRepositoryFromMenu(_:)) {
       return windowCoordinator.canFetchFromMenu
