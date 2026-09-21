@@ -605,6 +605,42 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Resetting files to HEAD');
   }
 
+  /// Restores one path from [objectId] into both the index and work tree.
+  ///
+  /// The referenced commit and path are passed as separate literal arguments;
+  /// callers must confirm the destructive overwrite and revalidate their
+  /// historical selection before invoking this method.
+  ///
+  /// 中文：将 [objectId] 提交中的单一路径同时恢复到索引和工作区。提交与路径
+  /// 作为独立的字面参数传递；调用方必须先确认覆盖影响，并重新验证历史选择。
+  Future<void> restorePathFromCommit(
+    GitRepository repository, {
+    required String objectId,
+    required GitPath path,
+  }) async {
+    final displayPath = _requireUtf8Path(path);
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          '--literal-pathspecs',
+          'restore',
+          '--source=$objectId',
+          '--staged',
+          '--worktree',
+          '--',
+          displayPath,
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Restoring file from commit');
+  }
+
   /// Stages one text hunk from a previously read working-tree diff.
   ///
   /// The original byte patch is applied directly to Git's index. Git rejects

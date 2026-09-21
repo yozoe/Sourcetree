@@ -2657,6 +2657,40 @@ void main() {
     expect((await reader.readStatus(repository)).entries, isNotEmpty);
   });
 
+  test('restores one historical path in index and work tree', () async {
+    await fixture.writeFile('README.md', '# Historical\n');
+    final historical = await fixture.commit('Historical version');
+    await fixture.writeFile('README.md', '# Current\n');
+    await fixture.commit('Current version');
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+    await fixture.writeFile('README.md', '# Staged\n');
+    await fixture.runGit(['add', '--', 'README.md']);
+    await fixture.writeFile('README.md', '# Unstaged\n');
+
+    await writer.restorePathFromCommit(
+      repository,
+      objectId: historical,
+      path: GitPath.fromString('README.md'),
+    );
+
+    expect(
+      await File(
+        '${fixture.workingDirectory.path}${Platform.pathSeparator}README.md',
+      ).readAsString(),
+      '# Historical\n',
+    );
+    expect(
+      (await fixture.runGit(['show', ':README.md'])).stdout.toString(),
+      '# Historical\n',
+    );
+    expect(
+      (await fixture.runGit(['rev-parse', 'HEAD'])).stdout.toString().trim(),
+      isNot(historical),
+    );
+  });
+
   test('reverts and cherry-picks selected commits', () async {
     await fixture.writeFile('README.md', '# Base\n');
     await fixture.commit('Base');

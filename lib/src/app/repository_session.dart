@@ -3773,6 +3773,140 @@ final class RepositorySessionController
     }
   }
 
+  /// Restores the currently selected historical path from its commit into the
+  /// index and work tree after revalidating the selection and Git operation
+  /// state.
+  ///
+  /// [objectId] and [path] are the values shown in the confirmation dialog.
+  /// The operation is rejected if either selection changes, the commit leaves
+  /// the loaded canonical history, the path is unsafe, or another repository
+  /// mutation starts before the write. Detached HEAD is allowed because this
+  /// operation never moves HEAD.
+  ///
+  /// 中文：重新验证选择与 Git 操作状态后，将当前历史提交中的路径恢复到索引和
+  /// 工作区。[objectId] 与 [path] 是确认框展示的值；若提交或路径选择已变化、
+  /// 提交不再属于已加载的规范历史、路径不安全，或写入前出现其他仓库操作，则
+  /// 拒绝执行。由于不会移动 HEAD，detached HEAD 仍可使用此功能。
+  Future<bool> resetSelectedCommitFileToCommit({
+    required String objectId,
+    required String path,
+  }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(
+        () => resetSelectedCommitFileToCommit(objectId: objectId, path: path),
+      );
+    }
+    final repository = state.repository;
+    final selected = state.selectedCommitFile;
+    final supportedKind = switch (selected?.file.kind) {
+      GitCommitChangeKind.added ||
+      GitCommitChangeKind.modified ||
+      GitCommitChangeKind.deleted => true,
+      _ => false,
+    };
+    if (repository == null ||
+        selected == null ||
+        state.phase != RepositorySessionPhase.ready ||
+        state.isWorkingTreeBusy ||
+        state.operationState != GitRepositoryOperationState.none ||
+        state.selectedCommitId != objectId ||
+        selected.objectId != objectId ||
+        selected.file.path.display != path ||
+        !selected.file.path.isValidUtf8 ||
+        !supportedKind ||
+        !state.historyCommits.any((commit) => commit.objectId == objectId)) {
+      return false;
+    }
+
+    final repositoryGeneration = _repositoryGeneration;
+    final selectedRefId = state.selectedRefId;
+    final selectedPath = selected.file.path;
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isWorkingTreeBusy: true,
+      clearMessage: true,
+    );
+    try {
+      final preflight = await Future.wait<Object>([
+        _reader.readStatus(repository),
+        _reader.readOperationState(repository),
+      ]);
+      final currentSelection = state.selectedCommitFile;
+      if (!ref.mounted ||
+          repositoryGeneration != _repositoryGeneration ||
+          state.repository?.id != repository.id ||
+          state.selectedCommitId != objectId ||
+          currentSelection?.objectId != objectId ||
+          currentSelection?.file.path != selectedPath ||
+          !state.historyCommits.any((commit) => commit.objectId == objectId) ||
+          preflight[1] != GitRepositoryOperationState.none) {
+        if (repositoryGeneration == _repositoryGeneration &&
+            state.repository?.id == repository.id) {
+          state = state.copyWith(
+            phase: RepositorySessionPhase.ready,
+            status: preflight[0] as GitStatusSnapshot,
+            operationState: preflight[1] as GitRepositoryOperationState,
+            isWorkingTreeBusy: false,
+          );
+        }
+        return false;
+      }
+
+      await _writer.restorePathFromCommit(
+        repository,
+        objectId: objectId,
+        path: selectedPath,
+      );
+      final refreshed = await _finishWorkingTreeMutation(
+        repository: repository,
+        repositoryGeneration: repositoryGeneration,
+        previousSelection: null,
+        previousRefId: selectedRefId,
+      );
+      if (!refreshed ||
+          state.selectedCommitId != objectId ||
+          state.selectedCommitFile?.file.path != selectedPath) {
+        return refreshed;
+      }
+      state = state.copyWith(selectedRefId: selectedRefId);
+      await selectCommit(objectId);
+      if (state.commitChanges.any((file) => file.path == selectedPath)) {
+        await selectCommitFileByPath(path);
+      }
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      if (repositoryGeneration == _repositoryGeneration &&
+          state.repository?.id == repository.id) {
+        GitStatusSnapshot? refreshedStatus;
+        GitRepositoryOperationState? refreshedOperationState;
+        try {
+          final refreshed = await Future.wait<Object>([
+            _reader.readStatus(repository),
+            _reader.readOperationState(repository),
+          ]);
+          refreshedStatus = refreshed[0] as GitStatusSnapshot;
+          refreshedOperationState = refreshed[1] as GitRepositoryOperationState;
+        } on Object {
+          // Preserve the original write error when the recovery read also
+          // fails. A later manual refresh remains available from error state.
+        }
+        if (repositoryGeneration != _repositoryGeneration ||
+            state.repository?.id != repository.id) {
+          return false;
+        }
+        state = state.copyWith(
+          phase: RepositorySessionPhase.error,
+          status: refreshedStatus,
+          operationState: refreshedOperationState,
+          isWorkingTreeBusy: false,
+          message: _friendlyError(error),
+          technicalDetails: _technicalDetails(error, stackTrace),
+        );
+      }
+      return false;
+    }
+  }
+
   /// Stages one selected working-tree text hunk and refreshes Git-backed state.
   ///
   /// 中文：暂存当前选中的一个未暂存文本区块并刷新 Git 状态。仅支持普通已跟踪

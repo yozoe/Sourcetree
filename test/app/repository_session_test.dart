@@ -1443,6 +1443,188 @@ void main() {
     expect(container.read(repositorySessionProvider).status!.isClean, isTrue);
   });
 
+  test(
+    'restores a selected historical file over staged and unstaged content',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('tracked.txt', 'historical\n');
+      final historical = await repository.commit('Historical version');
+      await repository.writeFile('tracked.txt', 'current\n');
+      final head = await repository.commit('Current version');
+      await repository.writeFile('tracked.txt', 'staged\n');
+      await repository.runGit(['add', '--', 'tracked.txt']);
+      await repository.writeFile('tracked.txt', 'unstaged\n');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      await controller.selectCommit(historical);
+
+      expect(
+        await controller.resetSelectedCommitFileToCommit(
+          objectId: historical,
+          path: 'tracked.txt',
+        ),
+        isTrue,
+      );
+      expect(
+        await File(
+          '${repository.workingDirectory.path}${Platform.pathSeparator}'
+          'tracked.txt',
+        ).readAsString(),
+        'historical\n',
+      );
+      expect(
+        (await repository.runGit(['show', ':tracked.txt'])).stdout.toString(),
+        'historical\n',
+      );
+      expect(
+        (await repository.runGit([
+          'rev-parse',
+          'HEAD',
+        ])).stdout.toString().trim(),
+        head,
+      );
+      final state = container.read(repositorySessionProvider);
+      expect(state.selectedCommitId, historical);
+      expect(state.selectedCommitFile?.file.path.display, 'tracked.txt');
+    },
+  );
+
+  test('restores a path from an added commit while HEAD is detached', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('added.txt', 'added version\n');
+    final added = await repository.commit('Add path');
+    await repository.writeFile('added.txt', 'later version\n');
+    final head = await repository.commit('Change path');
+    await repository.runGit(['switch', '--detach', head]);
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    await controller.selectCommit(added);
+
+    expect(
+      await controller.resetSelectedCommitFileToCommit(
+        objectId: added,
+        path: 'added.txt',
+      ),
+      isTrue,
+    );
+    expect(
+      await File(
+        '${repository.workingDirectory.path}${Platform.pathSeparator}added.txt',
+      ).readAsString(),
+      'added version\n',
+    );
+    expect(
+      (await repository.runGit(['rev-parse', 'HEAD'])).stdout.toString().trim(),
+      head,
+    );
+  });
+
+  test(
+    'restoring a path from its deleting commit removes the current path',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('removed.txt', 'old\n');
+      await repository.commit('Add path');
+      await File(
+        '${repository.workingDirectory.path}${Platform.pathSeparator}removed.txt',
+      ).delete();
+      final deleted = await repository.commit('Delete path');
+      await repository.writeFile('removed.txt', 'current\n');
+      await repository.commit('Restore path later');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      await controller.selectCommit(deleted);
+
+      expect(
+        await controller.resetSelectedCommitFileToCommit(
+          objectId: deleted,
+          path: 'removed.txt',
+        ),
+        isTrue,
+      );
+      expect(
+        await File(
+          '${repository.workingDirectory.path}${Platform.pathSeparator}removed.txt',
+        ).exists(),
+        isFalse,
+      );
+      final status = container.read(repositorySessionProvider).status!;
+      expect(status.entries.single.indexStatus, GitChangeType.deleted);
+    },
+  );
+
+  test('rejects a stale historical file confirmation', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('first.txt', 'first\n');
+    final first = await repository.commit('First');
+    await repository.writeFile('second.txt', 'second\n');
+    final second = await repository.commit('Second');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    await controller.selectCommit(first);
+    await controller.selectCommit(second);
+
+    expect(
+      await controller.resetSelectedCommitFileToCommit(
+        objectId: first,
+        path: 'first.txt',
+      ),
+      isFalse,
+    );
+    expect(container.read(repositorySessionProvider).status!.isClean, isTrue);
+  });
+
+  test('rejects historical file restore when a Git operation starts', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('conflict.txt', 'base\n');
+    await repository.commit('Base');
+    await repository.runGit(['switch', '-c', 'feature']);
+    await repository.writeFile('conflict.txt', 'feature\n');
+    await repository.commit('Feature');
+    await repository.runGit(['switch', 'main']);
+    await repository.writeFile('conflict.txt', 'main\n');
+    final mainCommit = await repository.commit('Main');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    await controller.selectCommit(mainCommit);
+
+    final merge = await repository.runGit([
+      'merge',
+      'feature',
+    ], throwOnError: false);
+    expect(merge.exitCode, isNot(0));
+    expect(
+      await controller.resetSelectedCommitFileToCommit(
+        objectId: mainCommit,
+        path: 'conflict.txt',
+      ),
+      isFalse,
+    );
+    final state = container.read(repositorySessionProvider);
+    expect(state.operationState, GitRepositoryOperationState.merge);
+    expect(state.status!.entries.single.isConflicted, isTrue);
+  });
+
   test('mixed-resets the current branch to a loaded commit', () async {
     final repository = await GitTestRepository.create();
     addTearDown(repository.dispose);

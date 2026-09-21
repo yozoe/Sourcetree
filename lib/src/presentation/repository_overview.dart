@@ -4025,6 +4025,7 @@ class _CommitChangesPane extends StatelessWidget {
                         files: files,
                         onSelected: onSelected,
                         onContextAction: onContextAction,
+                        canResetToCommit: !repository.blocksRepositoryMutations,
                       );
                       if (constraints.maxWidth < 530) {
                         return repository.selectedCommitFile == null
@@ -4069,11 +4070,13 @@ class _CommitFileList extends StatelessWidget {
     required this.files,
     required this.onSelected,
     required this.onContextAction,
+    required this.canResetToCommit,
   });
 
   final List<CommitFileViewData> files;
   final RepositoryCommitFileCallback? onSelected;
   final RepositoryCommitFileContextActionCallback? onContextAction;
+  final bool canResetToCommit;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -4093,6 +4096,7 @@ class _CommitFileList extends StatelessWidget {
         file: files[index],
         onTap: onSelected == null ? null : () => onSelected!(files[index]),
         onContextAction: onContextAction,
+        canResetToCommit: canResetToCommit,
       ),
     );
   }
@@ -4103,11 +4107,13 @@ class _CommitFileTile extends StatelessWidget {
     required this.file,
     required this.onTap,
     required this.onContextAction,
+    required this.canResetToCommit,
   });
 
   final CommitFileViewData file;
   final VoidCallback? onTap;
   final RepositoryCommitFileContextActionCallback? onContextAction;
+  final bool canResetToCommit;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -4121,6 +4127,14 @@ class _CommitFileTile extends StatelessWidget {
       if (file.additions case final int value) '+$value',
       if (file.deletions case final int value) '−$value',
     ].join(' ');
+    final supportsResetToCommit =
+        file.isPathValidUtf8 &&
+        switch (file.kind) {
+          RepositoryChangeKind.added ||
+          RepositoryChangeKind.modified ||
+          RepositoryChangeKind.deleted => true,
+          _ => false,
+        };
     void invoke(RepositoryCommitFileContextAction action) =>
         onContextAction?.call(file, action);
     return MenuAnchor(
@@ -4139,7 +4153,12 @@ class _CommitFileTile extends StatelessWidget {
           invoke,
           enabled: file.isPathValidUtf8,
         ),
-        const MenuItemButton(onPressed: null, child: Text('重置到提交…（待实现）')),
+        _commitFileContextMenuItem(
+          supportsResetToCommit ? '重置到提交…' : '重置到提交…（待实现）',
+          RepositoryCommitFileContextAction.resetToCommit,
+          invoke,
+          enabled: supportsResetToCommit && canResetToCommit,
+        ),
         const Divider(height: 1),
         _commitFileContextMenuItem(
           '打开当前版本（待实现）',

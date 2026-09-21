@@ -4810,7 +4810,7 @@ class _RepositoryWorkspaceScreenState
   /// layer.
   ///
   /// 中文：将历史提交文件右键菜单动作路由至应用层。查看修改日志和审查只读取
-  /// Git 历史与 Diff；其他待实现动作仍只显示无副作用提示。
+  /// Git 历史与 Diff；重置会先解释覆盖影响并由会话层重新验证选择。
   void _handleCommitFileContextAction(
     CommitFileViewData file,
     RepositoryCommitFileContextAction action,
@@ -4823,9 +4823,80 @@ class _RepositoryWorkspaceScreenState
       unawaited(_showCommitFileReview(file));
       return;
     }
+    if (action == RepositoryCommitFileContextAction.resetToCommit) {
+      unawaited(_resetSelectedCommitFileToCommit(file));
+      return;
+    }
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text('“${file.path}”的该菜单功能待实现。')));
+  }
+
+  /// Confirms restoring a historical file version into both the index and
+  /// work tree, then delegates stale-selection and Git-state validation to the
+  /// repository session.
+  ///
+  /// 中文：确认将历史文件版本同时恢复到索引与工作区，再由仓库会话复核过期
+  /// 选择和 Git 状态。该操作不移动 HEAD，但会永久覆盖该路径的本地内容。
+  Future<void> _resetSelectedCommitFileToCommit(CommitFileViewData file) async {
+    final session = ref.read(repositorySessionProvider);
+    final selected = session.selectedCommitFile;
+    if (selected == null ||
+        !file.isPathValidUtf8 ||
+        selected.file.path.display != file.path ||
+        selected.objectId != session.selectedCommitId ||
+        session.operationState != GitRepositoryOperationState.none ||
+        session.isWorkingTreeBusy) {
+      return;
+    }
+    final objectId = selected.objectId;
+    final abbreviatedObjectId = objectId.length <= 12
+        ? objectId
+        : objectId.substring(0, 12);
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('重置文件到提交'),
+        content: Text(
+          '将以下文件恢复为提交 $abbreviatedObjectId 中的版本：\n\n'
+          '${file.path}\n\n'
+          '该路径当前已暂存和未暂存的内容都会被覆盖；如果该提交中路径不存在，'
+          '当前路径会从索引和工作区移除。此操作不会移动 HEAD 或改写提交历史。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('重置文件'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+
+    final reset = await ref
+        .read(repositorySessionProvider.notifier)
+        .resetSelectedCommitFileToCommit(objectId: objectId, path: file.path);
+    if (!mounted) return;
+    if (reset) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text('已将“${file.path}”恢复到提交 $abbreviatedObjectId。')),
+      );
+      return;
+    }
+    if (ref.read(repositorySessionProvider).phase ==
+        RepositorySessionPhase.ready) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('提交、文件选择或仓库状态已变化，请刷新后重试。')));
+    }
   }
 
   /// Opens the built-in review for the latest valid native-menu selection.

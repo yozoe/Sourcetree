@@ -716,7 +716,7 @@ void main() {
       for (final label in <String>[
         '查看选中的修改日志…',
         '审查选定的项目',
-        '重置到提交…（待实现）',
+        '重置到提交…',
         '打开当前版本（待实现）',
         '打开已选定版本（待实现）',
         '在 Finder 中显示（待实现）',
@@ -737,6 +737,20 @@ void main() {
         selectedAction,
         RepositoryCommitFileContextAction.reviewSelectedItem,
       );
+
+      final resetGesture = await tester.startGesture(
+        tester.getCenter(find.text('main.dart')),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await resetGesture.up();
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('重置到提交…'));
+      await tester.pumpAndSettle();
+
+      expect(selectedFile, commitFile);
+      expect(selectedAction, RepositoryCommitFileContextAction.resetToCommit);
 
       final secondGesture = await tester.startGesture(
         tester.getCenter(find.text('main.dart')),
@@ -805,6 +819,10 @@ void main() {
     final pending = find.text('查看选中的修改日志…（待实现）');
     expect(pending, findsOneWidget);
     expect(find.text('审查选定的项目（待实现）'), findsOneWidget);
+    final reset = tester.widget<MenuItemButton>(
+      find.widgetWithText(MenuItemButton, '重置到提交…（待实现）'),
+    );
+    expect(reset.onPressed, isNull);
     await tester.tap(pending);
     await tester.pumpAndSettle();
     expect(selectedAction, isNull);
