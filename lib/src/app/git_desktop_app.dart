@@ -4847,10 +4847,7 @@ class _RepositoryWorkspaceScreenState
     if (!file.isPathValidUtf8 ||
         selected == null ||
         selected.objectId != session.selectedCommitId ||
-        selected.file.path.display != file.path ||
-        !session.historyCommits.any(
-          (commit) => commit.objectId == selected.objectId,
-        )) {
+        selected.file.path.display != file.path) {
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('提交或文件选择已变化，请重试。')));
