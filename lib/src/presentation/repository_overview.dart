@@ -75,6 +75,7 @@ final class RepositoryOverviewCallbacks {
     this.onChangeQuickLook,
     this.onChangeViewFileHistory,
     this.onChangeReview,
+    this.onChangeIgnore,
     this.onChangeRemove,
     this.onChangeStopTracking,
     this.onChangeReset,
@@ -104,6 +105,7 @@ final class RepositoryOverviewCallbacks {
   final RepositoryChangeFilesCallback? onChangeQuickLook;
   final RepositoryChangeFilesCallback? onChangeViewFileHistory;
   final RepositoryChangeFilesCallback? onChangeReview;
+  final RepositoryChangeFilesCallback? onChangeIgnore;
   final RepositoryChangeFilesCallback? onChangeRemove;
   final RepositoryChangeFilesCallback? onChangeStopTracking;
   final RepositoryChangeFilesCallback? onChangeReset;
@@ -261,6 +263,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         onQuickLook: widget.callbacks.onChangeQuickLook,
         onViewFileHistory: widget.callbacks.onChangeViewFileHistory,
         onReview: widget.callbacks.onChangeReview,
+        onIgnore: widget.callbacks.onChangeIgnore,
         onRemove: widget.callbacks.onChangeRemove,
         onStopTracking: widget.callbacks.onChangeStopTracking,
         onReset: widget.callbacks.onChangeReset,
@@ -443,6 +446,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                               onViewFileHistory:
                                   widget.callbacks.onChangeViewFileHistory,
                               onReview: widget.callbacks.onChangeReview,
+                              onIgnore: widget.callbacks.onChangeIgnore,
                               onRemove: widget.callbacks.onChangeRemove,
                               onStopTracking:
                                   widget.callbacks.onChangeStopTracking,
@@ -564,6 +568,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                         onViewFileHistory:
                             widget.callbacks.onChangeViewFileHistory,
                         onReview: widget.callbacks.onChangeReview,
+                        onIgnore: widget.callbacks.onChangeIgnore,
                         onRemove: widget.callbacks.onChangeRemove,
                         onStopTracking: widget.callbacks.onChangeStopTracking,
                         onReset: widget.callbacks.onChangeReset,
@@ -619,6 +624,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         onQuickLook: widget.callbacks.onChangeQuickLook,
         onViewFileHistory: widget.callbacks.onChangeViewFileHistory,
         onReview: widget.callbacks.onChangeReview,
+        onIgnore: widget.callbacks.onChangeIgnore,
         onRemove: widget.callbacks.onChangeRemove,
         onStopTracking: widget.callbacks.onChangeStopTracking,
         onReset: widget.callbacks.onChangeReset,
@@ -3935,6 +3941,7 @@ class _SelectedChangesPane extends StatelessWidget {
     required this.onQuickLook,
     required this.onViewFileHistory,
     required this.onReview,
+    required this.onIgnore,
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
@@ -3954,6 +3961,7 @@ class _SelectedChangesPane extends StatelessWidget {
   final RepositoryChangeFilesCallback? onQuickLook;
   final RepositoryChangeFilesCallback? onViewFileHistory;
   final RepositoryChangeFilesCallback? onReview;
+  final RepositoryChangeFilesCallback? onIgnore;
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
@@ -3985,6 +3993,7 @@ class _SelectedChangesPane extends StatelessWidget {
       onQuickLook: onQuickLook,
       onViewFileHistory: onViewFileHistory,
       onReview: onReview,
+      onIgnore: onIgnore,
       onRemove: onRemove,
       onStopTracking: onStopTracking,
       onReset: onReset,
@@ -4348,6 +4357,7 @@ class _ChangesPane extends StatefulWidget {
     required this.onQuickLook,
     required this.onViewFileHistory,
     required this.onReview,
+    required this.onIgnore,
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
@@ -4365,6 +4375,7 @@ class _ChangesPane extends StatefulWidget {
   final RepositoryChangeFilesCallback? onQuickLook;
   final RepositoryChangeFilesCallback? onViewFileHistory;
   final RepositoryChangeFilesCallback? onReview;
+  final RepositoryChangeFilesCallback? onIgnore;
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
@@ -4415,6 +4426,7 @@ class _ChangesPaneState extends State<_ChangesPane> {
                           onQuickLook: widget.onQuickLook,
                           onViewFileHistory: widget.onViewFileHistory,
                           onReview: widget.onReview,
+                          onIgnore: widget.onIgnore,
                           onRemove: widget.onRemove,
                           onStopTracking: widget.onStopTracking,
                           onReset: widget.onReset,
@@ -4461,6 +4473,7 @@ class _ChangesPaneState extends State<_ChangesPane> {
                         onQuickLook: widget.onQuickLook,
                         onViewFileHistory: widget.onViewFileHistory,
                         onReview: widget.onReview,
+                        onIgnore: widget.onIgnore,
                         onRemove: widget.onRemove,
                         onStopTracking: widget.onStopTracking,
                         onReset: widget.onReset,
@@ -4509,6 +4522,7 @@ class _WorkspaceChangesView extends StatelessWidget {
     required this.onQuickLook,
     required this.onViewFileHistory,
     required this.onReview,
+    required this.onIgnore,
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
@@ -4527,6 +4541,7 @@ class _WorkspaceChangesView extends StatelessWidget {
   final RepositoryChangeFilesCallback? onQuickLook;
   final RepositoryChangeFilesCallback? onViewFileHistory;
   final RepositoryChangeFilesCallback? onReview;
+  final RepositoryChangeFilesCallback? onIgnore;
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
@@ -4556,6 +4571,7 @@ class _WorkspaceChangesView extends StatelessWidget {
             onQuickLook: onQuickLook,
             onViewFileHistory: onViewFileHistory,
             onReview: onReview,
+            onIgnore: onIgnore,
             onRemove: onRemove,
             onStopTracking: onStopTracking,
             onReset: onReset,
@@ -4609,6 +4625,7 @@ class _ChangeList extends StatefulWidget {
     required this.onQuickLook,
     required this.onViewFileHistory,
     required this.onReview,
+    required this.onIgnore,
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
@@ -4628,6 +4645,7 @@ class _ChangeList extends StatefulWidget {
   final RepositoryChangeFilesCallback? onQuickLook;
   final RepositoryChangeFilesCallback? onViewFileHistory;
   final RepositoryChangeFilesCallback? onReview;
+  final RepositoryChangeFilesCallback? onIgnore;
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
@@ -4767,6 +4785,7 @@ class _ChangeListState extends State<_ChangeList> {
       onQuickLook: widget.onQuickLook,
       onViewFileHistory: widget.onViewFileHistory,
       onReview: widget.onReview,
+      onIgnore: widget.onIgnore,
       onRemove: widget.onRemove,
       onStopTracking: widget.onStopTracking,
       onReset: widget.onReset,
@@ -4864,6 +4883,7 @@ class _ChangeGroup extends StatelessWidget {
     required this.onQuickLook,
     required this.onViewFileHistory,
     required this.onReview,
+    required this.onIgnore,
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
@@ -4888,6 +4908,7 @@ class _ChangeGroup extends StatelessWidget {
   final RepositoryChangeFilesCallback? onQuickLook;
   final RepositoryChangeFilesCallback? onViewFileHistory;
   final RepositoryChangeFilesCallback? onReview;
+  final RepositoryChangeFilesCallback? onIgnore;
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
@@ -4982,6 +5003,7 @@ class _ChangeGroup extends StatelessWidget {
               onQuickLook: onQuickLook,
               onViewFileHistory: onViewFileHistory,
               onReview: onReview,
+              onIgnore: onIgnore,
               onRemove: onRemove,
               onStopTracking: onStopTracking,
               onReset: onReset,
@@ -5013,6 +5035,7 @@ class _ChangeTile extends StatelessWidget {
     required this.onQuickLook,
     required this.onViewFileHistory,
     required this.onReview,
+    required this.onIgnore,
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
@@ -5033,6 +5056,7 @@ class _ChangeTile extends StatelessWidget {
   final RepositoryChangeFilesCallback? onQuickLook;
   final RepositoryChangeFilesCallback? onViewFileHistory;
   final RepositoryChangeFilesCallback? onReview;
+  final RepositoryChangeFilesCallback? onIgnore;
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
@@ -5300,7 +5324,25 @@ class _ChangeTile extends StatelessWidget {
               : null,
           child: const Text('重置…'),
         ),
-        const MenuItemButton(onPressed: null, child: Text('忽略…（待实现）')),
+        MenuItemButton(
+          onPressed:
+              ordinaryMutationsEnabled &&
+                  onIgnore != null &&
+                  canUseReadOnlyFileActions() &&
+                  selectedChanges().every(
+                    (item) =>
+                        item.kind != RepositoryChangeKind.conflicted &&
+                        !item.path.contains('\n') &&
+                        !item.path.contains('\r'),
+                  )
+              ? () => invokeFileAction(onIgnore!)
+              : null,
+          child: Text(
+            selectedChanges().every((item) => item.isPathValidUtf8)
+                ? '忽略…'
+                : '忽略…（待实现）',
+          ),
+        ),
         const Divider(height: 1),
         if (change.kind == RepositoryChangeKind.conflicted &&
             conflictActionsEnabled &&
@@ -5948,6 +5990,7 @@ class _TabbedInspector extends StatelessWidget {
     required this.onQuickLook,
     required this.onViewFileHistory,
     required this.onReview,
+    required this.onIgnore,
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
@@ -5969,6 +6012,7 @@ class _TabbedInspector extends StatelessWidget {
   final RepositoryChangeFilesCallback? onQuickLook;
   final RepositoryChangeFilesCallback? onViewFileHistory;
   final RepositoryChangeFilesCallback? onReview;
+  final RepositoryChangeFilesCallback? onIgnore;
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
@@ -6004,6 +6048,7 @@ class _TabbedInspector extends StatelessWidget {
               onQuickLook: onQuickLook,
               onViewFileHistory: onViewFileHistory,
               onReview: onReview,
+              onIgnore: onIgnore,
               onRemove: onRemove,
               onStopTracking: onStopTracking,
               onReset: onReset,

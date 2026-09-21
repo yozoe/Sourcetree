@@ -4157,10 +4157,14 @@ class _RepositoryWorkspaceScreenState
   /// Tracked paths remain in the index and are called out before confirmation.
   ///
   /// 中文：预览并为当前有效选择追加忽略规则；已跟踪路径仍保留在索引中，确认前会明确提示。
-  Future<void> _showIgnoreSelectedDialog() async {
+  Future<void> _showIgnoreSelectedDialog([
+    List<RepositoryChangeViewData>? requested,
+  ]) async {
     final session = ref.read(repositorySessionProvider);
     final overview = mapRepositoryOverview(session);
-    final selected = _nativeSelectedChanges(overview);
+    final selected = requested == null
+        ? _nativeSelectedChanges(overview)
+        : _resolveWorkingTreeMenuSelection(requested) ?? const [];
     final availability = nativeWorkspaceMenuAvailability(
       session,
       overview,
@@ -5349,6 +5353,8 @@ class _RepositoryWorkspaceScreenState
                   unawaited(_showWorkingTreeFileHistory(changes)),
               onChangeReview: (changes) =>
                   unawaited(_showWorkingTreeReview(changes)),
+              onChangeIgnore: (changes) =>
+                  unawaited(_showIgnoreSelectedDialog(changes)),
               onChangeRemove: (changes) => unawaited(_removeChanges(changes)),
               onChangeStopTracking: (changes) =>
                   unawaited(_stopTrackingChanges(changes)),

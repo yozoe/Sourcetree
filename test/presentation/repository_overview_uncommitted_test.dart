@@ -935,6 +935,8 @@ void main() {
             ],
             onChangeReview: (changes) =>
                 invoked['review'] = [for (final change in changes) change.path],
+            onChangeIgnore: (changes) =>
+                invoked['ignore'] = [for (final change in changes) change.path],
           ),
         ),
       ),
@@ -956,12 +958,14 @@ void main() {
     await invoke('快速查看');
     await invoke('查看选中的修改日志…');
     await invoke('审查选定的项目');
+    await invoke('忽略…');
 
     expect(invoked, <String, List<String>>{
       'terminal': ['lib/main.dart'],
       'quickLook': ['lib/main.dart'],
       'history': ['lib/main.dart'],
       'review': ['lib/main.dart'],
+      'ignore': ['lib/main.dart'],
     });
   });
 
@@ -994,6 +998,7 @@ void main() {
             onChangeQuickLook: (_) {},
             onChangeViewFileHistory: (_) {},
             onChangeReview: (_) {},
+            onChangeIgnore: (_) {},
           ),
         ),
       ),
@@ -1014,6 +1019,7 @@ void main() {
       '快速查看（待实现）',
       '查看选中的修改日志…（待实现）',
       '审查选定的项目（待实现）',
+      '忽略…（待实现）',
     ]) {
       final item = tester.widget<MenuItemButton>(
         find.widgetWithText(MenuItemButton, label),
