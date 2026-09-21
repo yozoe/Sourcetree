@@ -77,7 +77,8 @@ enum RepositoryCommitContextAction {
 /// Actions shown in the context menu of a historical commit file.
 ///
 /// 中文：历史提交文件右键菜单中展示的动作。已交付动作由应用层执行只读 Git
-/// 查询；尚未交付的动作必须在可见标签中直接标注“（待实现）”。
+/// 查询、受控写入或原生文件操作；尚未交付的动作必须在可见标签中直接标注
+/// “（待实现）”。
 enum RepositoryCommitFileContextAction {
   viewSelectedFileLog,
   reviewSelectedItem,

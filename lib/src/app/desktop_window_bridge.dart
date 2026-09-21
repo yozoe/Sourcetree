@@ -54,6 +54,25 @@ final class DesktopWindowBridge {
     );
   }
 
+  /// Performs one native read-only action for an explicitly validated file.
+  ///
+  /// The macOS host independently verifies that [filePath] remains inside
+  /// [repositoryRootPath] and still exists before opening system UI.
+  ///
+  /// 中文：对明确校验的文件执行原生只读操作。macOS 宿主会再次确认 [filePath]
+  /// 仍位于 [repositoryRootPath] 内且存在，然后才打开系统界面。
+  static Future<void> performFileAction({
+    required String action,
+    required String repositoryRootPath,
+    required String filePath,
+  }) {
+    return _channel.invokeMethod<void>('performFileAction', <String, Object>{
+      'action': action,
+      'repositoryRootPath': repositoryRootPath,
+      'filePath': filePath,
+    });
+  }
+
   /// Confirms that the home Engine can receive deferred repository
   /// registrations from active workspace windows.
   ///

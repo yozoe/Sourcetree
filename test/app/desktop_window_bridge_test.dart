@@ -124,4 +124,26 @@ void main() {
       'repositoryPath': '/tmp/example-repository',
     });
   });
+
+  test('requests a native read-only action for one explicit file', () async {
+    MethodCall? receivedCall;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          receivedCall = call;
+          return null;
+        });
+
+    await DesktopWindowBridge.performFileAction(
+      action: 'quickLook',
+      repositoryRootPath: '/tmp/example-repository',
+      filePath: '/tmp/example-repository/lib/example.dart',
+    );
+
+    expect(receivedCall?.method, 'performFileAction');
+    expect(receivedCall?.arguments, <String, Object>{
+      'action': 'quickLook',
+      'repositoryRootPath': '/tmp/example-repository',
+      'filePath': '/tmp/example-repository/lib/example.dart',
+    });
+  });
 }

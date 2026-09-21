@@ -641,6 +641,7 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   private let engine: FlutterEngine
   private let flutterViewController: FlutterViewController
   private let windowChannel: FlutterMethodChannel
+  private let quickLookDataSource = GitDesktopQuickLookDataSource()
   private var didShutDownEngine = false
   private var isPreparingForShutdown = false
   private var isPreparedForShutdown = false
@@ -1034,10 +1035,88 @@ final class WorkspaceFlutterWindowController: NSWindowController,
       case "setWorkspaceMenuState":
         applyWorkspaceMenuState(arguments)
         result(nil)
+      case "performFileAction":
+        performFileAction(arguments, result: result)
       default:
         result(FlutterMethodNotImplemented)
       }
     }
+  }
+
+  /// Performs a Flutter-requested read-only file action after independently
+  /// validating workspace ownership, repository containment, and existence.
+  /// 中文：Flutter 请求只读文件动作时，再次验证工作区归属、仓库边界和文件存在性。
+  private func performFileAction(
+    _ arguments: [String: Any]?,
+    result: @escaping FlutterResult
+  ) {
+    let requestedRoot = gitDesktopCanonicalRepositoryPath(
+      arguments?["repositoryRootPath"] as? String
+    )
+    let ownedRoot = gitDesktopCanonicalRepositoryPath(repositoryPath)
+    guard requestedRoot != nil,
+          requestedRoot == ownedRoot,
+          let filePath = arguments?["filePath"] as? String,
+          let action = arguments?["action"] as? String else {
+      result(
+        FlutterError(
+          code: "invalid_file_action",
+          message: "The requested file action is not owned by this workspace.",
+          details: nil
+        )
+      )
+      return
+    }
+    let targets = GitDesktopWorkspaceFileMenuTargets(
+      repositoryRootPath: requestedRoot,
+      selectedFilePaths: [filePath],
+      hasFileSelection: true
+    )
+    guard let url = targets.existingSelectedURLs().first else {
+      result(
+        FlutterError(
+          code: "file_unavailable",
+          message: "The selected work-tree path no longer exists.",
+          details: nil
+        )
+      )
+      return
+    }
+
+    switch action {
+    case "open":
+      guard NSWorkspace.shared.open(url) else {
+        result(
+          FlutterError(
+            code: "file_open_failed",
+            message: "The selected file could not be opened.",
+            details: nil
+          )
+        )
+        return
+      }
+    case "reveal":
+      NSWorkspace.shared.activateFileViewerSelecting([url])
+    case "quickLook":
+      guard let panel = QLPreviewPanel.shared() else {
+        result(
+          FlutterError(
+            code: "quick_look_unavailable",
+            message: "Quick Look is unavailable.",
+            details: nil
+          )
+        )
+        return
+      }
+      quickLookDataSource.urls = [url]
+      panel.dataSource = quickLookDataSource
+      panel.reloadData()
+      panel.makeKeyAndOrderFront(nil)
+    default:
+      result(FlutterMethodNotImplemented)
+      return
+    }
+    result(nil)
   }
 
   /// Replaces this Engine's complete native-menu snapshot atomically. Calls

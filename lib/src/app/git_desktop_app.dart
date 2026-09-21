@@ -4831,6 +4831,12 @@ class _RepositoryWorkspaceScreenState
       unawaited(_copySelectedCommitFilePath(file));
       return;
     }
+    if (action == RepositoryCommitFileContextAction.openCurrentVersion ||
+        action == RepositoryCommitFileContextAction.revealInFinder ||
+        action == RepositoryCommitFileContextAction.quickLook) {
+      unawaited(_performCurrentCommitFileAction(file, action));
+      return;
+    }
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(SnackBar(content: Text('“${file.path}”的该菜单功能待实现。')));
@@ -4864,6 +4870,52 @@ class _RepositoryWorkspaceScreenState
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('无法复制路径到剪贴板。')));
+    }
+  }
+
+  /// Opens, reveals, or previews the current work-tree counterpart of a
+  /// historical file after validating that the same selection is still live.
+  ///
+  /// 中文：复核历史提交与路径选择仍有效后，打开、定位或快速查看该路径当前的
+  /// 工作区版本。原生层会再次检查仓库边界及文件存在性。
+  Future<void> _performCurrentCommitFileAction(
+    CommitFileViewData file,
+    RepositoryCommitFileContextAction action,
+  ) async {
+    final session = ref.read(repositorySessionProvider);
+    final selected = session.selectedCommitFile;
+    final root = session.repository?.workTreeRoot;
+    final absolutePath = root == null
+        ? null
+        : _workspaceChangePath(root, file.path);
+    if (!file.isPathValidUtf8 ||
+        selected == null ||
+        selected.objectId != session.selectedCommitId ||
+        selected.file.path.display != file.path ||
+        absolutePath == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('提交或文件选择已变化，请重试。')));
+      return;
+    }
+    final nativeAction = switch (action) {
+      RepositoryCommitFileContextAction.openCurrentVersion => 'open',
+      RepositoryCommitFileContextAction.revealInFinder => 'reveal',
+      RepositoryCommitFileContextAction.quickLook => 'quickLook',
+      _ => null,
+    };
+    if (nativeAction == null) return;
+    try {
+      await DesktopWindowBridge.performFileAction(
+        action: nativeAction,
+        repositoryRootPath: root!,
+        filePath: absolutePath,
+      );
+    } on Object {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前工作区中没有可用于此操作的文件版本。')));
     }
   }
 

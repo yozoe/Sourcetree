@@ -4161,9 +4161,10 @@ class _CommitFileTile extends StatelessWidget {
         ),
         const Divider(height: 1),
         _commitFileContextMenuItem(
-          '打开当前版本（待实现）',
+          file.isPathValidUtf8 ? '打开当前版本' : '打开当前版本（待实现）',
           RepositoryCommitFileContextAction.openCurrentVersion,
           invoke,
+          enabled: file.isPathValidUtf8,
         ),
         _commitFileContextMenuItem(
           '打开已选定版本（待实现）',
@@ -4171,9 +4172,10 @@ class _CommitFileTile extends StatelessWidget {
           invoke,
         ),
         _commitFileContextMenuItem(
-          '在 Finder 中显示（待实现）',
+          file.isPathValidUtf8 ? '在 Finder 中显示' : '在 Finder 中显示（待实现）',
           RepositoryCommitFileContextAction.revealInFinder,
           invoke,
+          enabled: file.isPathValidUtf8,
         ),
         _commitFileContextMenuItem(
           file.isPathValidUtf8 ? '复制路径到剪贴板' : '复制路径到剪贴板（待实现）',
@@ -4182,9 +4184,10 @@ class _CommitFileTile extends StatelessWidget {
           enabled: file.isPathValidUtf8,
         ),
         _commitFileContextMenuItem(
-          '快速查看（待实现）',
+          file.isPathValidUtf8 ? '快速查看' : '快速查看（待实现）',
           RepositoryCommitFileContextAction.quickLook,
           invoke,
+          enabled: file.isPathValidUtf8,
         ),
         const Divider(height: 1),
         _commitFileContextMenuItem(

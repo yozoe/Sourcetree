@@ -717,11 +717,11 @@ void main() {
         '查看选中的修改日志…',
         '审查选定的项目',
         '重置到提交…',
-        '打开当前版本（待实现）',
+        '打开当前版本',
         '打开已选定版本（待实现）',
-        '在 Finder 中显示（待实现）',
+        '在 Finder 中显示',
         '复制路径到剪贴板',
-        '快速查看（待实现）',
+        '快速查看',
         '外部差异比对（待实现）',
         '自定义操作（待实现）',
       ]) {
@@ -774,7 +774,7 @@ void main() {
       await secondGesture.up();
       await tester.pumpAndSettle();
 
-      await tester.tap(find.text('打开当前版本（待实现）'));
+      await tester.tap(find.text('打开当前版本'));
       await tester.pumpAndSettle();
 
       expect(selectedFile, commitFile);
@@ -833,7 +833,10 @@ void main() {
     final pending = find.text('查看选中的修改日志…（待实现）');
     expect(pending, findsOneWidget);
     expect(find.text('审查选定的项目（待实现）'), findsOneWidget);
+    expect(find.text('打开当前版本（待实现）'), findsOneWidget);
+    expect(find.text('在 Finder 中显示（待实现）'), findsOneWidget);
     expect(find.text('复制路径到剪贴板（待实现）'), findsOneWidget);
+    expect(find.text('快速查看（待实现）'), findsOneWidget);
     final reset = tester.widget<MenuItemButton>(
       find.widgetWithText(MenuItemButton, '重置到提交…（待实现）'),
     );
