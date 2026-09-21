@@ -4192,6 +4192,16 @@ class _CommitFileTile extends StatelessWidget {
           RepositoryChangeKind.deleted => true,
           _ => false,
         };
+    final supportsExternalDiff =
+        file.isPathValidUtf8 &&
+        switch (file.kind) {
+          RepositoryChangeKind.added ||
+          RepositoryChangeKind.modified ||
+          RepositoryChangeKind.deleted ||
+          RepositoryChangeKind.renamed ||
+          RepositoryChangeKind.copied => true,
+          _ => false,
+        };
     void invoke(RepositoryCommitFileContextAction action) =>
         onContextAction?.call(file, action);
     return MenuAnchor(
@@ -4252,9 +4262,10 @@ class _CommitFileTile extends StatelessWidget {
         ),
         const Divider(height: 1),
         _commitFileContextMenuItem(
-          '外部差异比对（待实现）',
+          supportsExternalDiff ? '外部差异比对' : '外部差异比对（待实现）',
           RepositoryCommitFileContextAction.externalDiff,
           invoke,
+          enabled: supportsExternalDiff,
         ),
         SubmenuButton(
           menuChildren: const [

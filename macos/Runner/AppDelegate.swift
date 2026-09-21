@@ -1104,6 +1104,8 @@ final class WorkspaceFlutterWindowController: NSWindowController,
         performFileAction(arguments, result: result)
       case "openHistoricalFile":
         openHistoricalFile(arguments, result: result)
+      case "openHistoricalDiff":
+        openHistoricalDiff(arguments, result: result)
       default:
         result(FlutterMethodNotImplemented)
       }
@@ -1283,6 +1285,95 @@ final class WorkspaceFlutterWindowController: NSWindowController,
       result(
         FlutterError(
           code: "historical_file_write_failed",
+          message: error.localizedDescription,
+          details: nil
+        )
+      )
+    }
+  }
+
+  /// Opens first-parent before/after snapshots in Apple FileMerge. This fixed
+  /// system integration never executes repository-configured diff commands.
+  /// 中文：在 Apple FileMerge 中打开第一父提交的前后快照；固定系统集成不会
+  /// 执行仓库配置的外部 Diff 命令。
+  private func openHistoricalDiff(
+    _ arguments: [String: Any]?,
+    result: @escaping FlutterResult
+  ) {
+    let requestedRoot = gitDesktopCanonicalRepositoryPath(
+      arguments?["repositoryRootPath"] as? String
+    )
+    let ownedRoot = gitDesktopCanonicalRepositoryPath(repositoryPath)
+    guard requestedRoot != nil,
+          requestedRoot == ownedRoot,
+          let beforeData = arguments?["beforeBytes"] as? FlutterStandardTypedData,
+          let afterData = arguments?["afterBytes"] as? FlutterStandardTypedData,
+          beforeData.data.count <= 16 * 1024 * 1024,
+          afterData.data.count <= 16 * 1024 * 1024,
+          let requestedName = arguments?["suggestedFileName"] as? String else {
+      result(
+        FlutterError(
+          code: "invalid_historical_diff",
+          message: "The historical diff request is invalid.",
+          details: nil
+        )
+      )
+      return
+    }
+    guard let applicationURL = NSWorkspace.shared.urlForApplication(
+      withBundleIdentifier: "com.apple.FileMerge"
+    ) else {
+      result(
+        FlutterError(
+          code: "historical_diff_tool_unavailable",
+          message: "Apple FileMerge is not installed.",
+          details: nil
+        )
+      )
+      return
+    }
+    do {
+      let beforeFile = try historicalFileStore.createFile(
+        suggestedName: "before-\(requestedName)",
+        data: beforeData.data
+      )
+      let afterFile: URL
+      do {
+        afterFile = try historicalFileStore.createFile(
+          suggestedName: "after-\(requestedName)",
+          data: afterData.data
+        )
+      } catch {
+        historicalFileStore.removeFile(beforeFile)
+        throw error
+      }
+      let configuration = NSWorkspace.OpenConfiguration()
+      configuration.activates = true
+      NSWorkspace.shared.open(
+        [beforeFile, afterFile],
+        withApplicationAt: applicationURL,
+        configuration: configuration
+      ) { [weak self] _, error in
+        DispatchQueue.main.async {
+          if let error {
+            self?.historicalFileStore.removeFile(beforeFile)
+            self?.historicalFileStore.removeFile(afterFile)
+            result(
+              FlutterError(
+                code: "historical_diff_open_failed",
+                message: error.localizedDescription,
+                details: nil
+              )
+            )
+          } else {
+            result(nil)
+          }
+        }
+      }
+    } catch {
+      result(
+        FlutterError(
+          code: "historical_diff_write_failed",
           message: error.localizedDescription,
           details: nil
         )

@@ -174,4 +174,28 @@ void main() {
       'bytes': Uint8List.fromList([0, 255, 10]),
     });
   });
+
+  test('sends historical comparison bytes to its owning workspace', () async {
+    MethodCall? receivedCall;
+    TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
+        .setMockMethodCallHandler(channel, (call) async {
+          receivedCall = call;
+          return null;
+        });
+
+    await DesktopWindowBridge.openHistoricalDiff(
+      repositoryRootPath: '/tmp/example-repository',
+      suggestedFileName: 'snapshot.bin',
+      beforeBytes: Uint8List.fromList([0, 1]),
+      afterBytes: Uint8List.fromList([0, 2]),
+    );
+
+    expect(receivedCall?.method, 'openHistoricalDiff');
+    expect(receivedCall?.arguments, <String, Object>{
+      'repositoryRootPath': '/tmp/example-repository',
+      'suggestedFileName': 'snapshot.bin',
+      'beforeBytes': Uint8List.fromList([0, 1]),
+      'afterBytes': Uint8List.fromList([0, 2]),
+    });
+  });
 }

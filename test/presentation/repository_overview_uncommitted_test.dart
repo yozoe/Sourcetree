@@ -722,7 +722,7 @@ void main() {
         '在 Finder 中显示',
         '复制路径到剪贴板',
         '快速查看',
-        '外部差异比对（待实现）',
+        '外部差异比对',
         '自定义操作（待实现）',
       ]) {
         expect(find.text(label), findsOneWidget);
@@ -798,6 +798,19 @@ void main() {
         selectedAction,
         RepositoryCommitFileContextAction.openSelectedVersion,
       );
+
+      final externalDiffGesture = await tester.startGesture(
+        tester.getCenter(find.text('main.dart')),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await externalDiffGesture.up();
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('外部差异比对'));
+      await tester.pumpAndSettle();
+
+      expect(selectedAction, RepositoryCommitFileContextAction.externalDiff);
     },
   );
 

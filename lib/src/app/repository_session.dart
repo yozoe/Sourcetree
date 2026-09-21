@@ -216,6 +216,18 @@ final class SelectedCommitFile {
       file.path.display == change.path && objectId.isNotEmpty;
 }
 
+/// Immutable before/after bytes for an external historical-file comparison.
+/// 中文：用于历史文件外部差异比对的不可变前后版本字节。
+final class HistoricalFileComparison {
+  const HistoricalFileComparison({
+    required this.beforeBytes,
+    required this.afterBytes,
+  });
+
+  final Uint8List beforeBytes;
+  final Uint8List afterBytes;
+}
+
 /// 中文：从提交改动中返回第一个路径可安全显示的文件。
 /// 非 UTF-8 路径会保留在 Git 数据模型中，但不能安全传入文本 Diff。
 ///
@@ -2693,6 +2705,83 @@ final class RepositorySessionController
       throw StateError('提交或文件选择已变化，无法打开历史版本。');
     }
     return bytes;
+  }
+
+  /// Reads the first-parent before/after blobs for the selected historical
+  /// file, using empty content for the absent side of an add or delete.
+  ///
+  /// 中文：读取当前历史文件相对第一父提交的前后 blob；新增或删除缺失的一侧
+  /// 使用空内容，并在读取完成后复核仓库、提交和文件选择。
+  Future<HistoricalFileComparison> readSelectedCommitFileComparison({
+    int maxBytesPerSide = 16 * 1024 * 1024,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackRequiredGitTask(
+        () => readSelectedCommitFileComparison(
+          maxBytesPerSide: maxBytesPerSide,
+          cancellationToken: cancellationToken,
+        ),
+      );
+    }
+    final repository = state.repository;
+    final selected = state.selectedCommitFile;
+    final supported =
+        selected != null &&
+        switch (selected.file.kind) {
+          GitCommitChangeKind.added ||
+          GitCommitChangeKind.modified ||
+          GitCommitChangeKind.deleted ||
+          GitCommitChangeKind.renamed ||
+          GitCommitChangeKind.copied => true,
+          _ => false,
+        };
+    if (repository == null ||
+        state.phase != RepositorySessionPhase.ready ||
+        selected == null ||
+        !selected.file.path.isValidUtf8 ||
+        !(selected.file.previousPath?.isValidUtf8 ?? true) ||
+        !supported) {
+      throw StateError('当前没有可进行外部差异比对的历史文件。');
+    }
+    final repositoryGeneration = _repositoryGeneration;
+    final parentObjectId = _parentObjectId(selected.objectId);
+    final beforePath = selected.file.previousPath ?? selected.file.path;
+    final beforeBytes =
+        selected.file.kind == GitCommitChangeKind.added ||
+            parentObjectId == null
+        ? Uint8List(0)
+        : await _reader.readFileAtCommit(
+            repository,
+            objectId: parentObjectId,
+            path: beforePath.display,
+            maxBytes: maxBytesPerSide,
+            cancellationToken: cancellationToken,
+          );
+    final afterBytes = selected.file.kind == GitCommitChangeKind.deleted
+        ? Uint8List(0)
+        : await _reader.readFileAtCommit(
+            repository,
+            objectId: selected.objectId,
+            path: selected.file.path.display,
+            maxBytes: maxBytesPerSide,
+            cancellationToken: cancellationToken,
+          );
+    if (cancellationToken?.isCancelled ?? false) {
+      throw const GitCancelledException();
+    }
+    final current = state.selectedCommitFile;
+    if (!ref.mounted ||
+        repositoryGeneration != _repositoryGeneration ||
+        state.repository?.id != repository.id ||
+        current?.objectId != selected.objectId ||
+        current?.file.path != selected.file.path) {
+      throw StateError('提交或文件选择已变化，无法进行外部差异比对。');
+    }
+    return HistoricalFileComparison(
+      beforeBytes: beforeBytes,
+      afterBytes: afterBytes,
+    );
   }
 
   /// Reads a focused, read-only history for a selected historical file.

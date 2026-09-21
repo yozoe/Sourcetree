@@ -91,6 +91,23 @@ final class DesktopWindowBridge {
     });
   }
 
+  /// Opens two immutable historical snapshots in Apple FileMerge.
+  ///
+  /// 中文：将两个不可变历史快照交给 Apple FileMerge 进行外部差异比对。
+  static Future<void> openHistoricalDiff({
+    required String repositoryRootPath,
+    required String suggestedFileName,
+    required Uint8List beforeBytes,
+    required Uint8List afterBytes,
+  }) {
+    return _channel.invokeMethod<void>('openHistoricalDiff', <String, Object>{
+      'repositoryRootPath': repositoryRootPath,
+      'suggestedFileName': suggestedFileName,
+      'beforeBytes': beforeBytes,
+      'afterBytes': afterBytes,
+    });
+  }
+
   /// Confirms that the home Engine can receive deferred repository
   /// registrations from active workspace windows.
   ///

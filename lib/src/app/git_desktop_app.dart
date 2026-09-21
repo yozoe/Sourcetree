@@ -4951,6 +4951,10 @@ class _RepositoryWorkspaceScreenState
       unawaited(_openSelectedCommitFileVersion(file));
       return;
     }
+    if (action == RepositoryCommitFileContextAction.externalDiff) {
+      unawaited(_openSelectedCommitFileExternalDiff(file));
+      return;
+    }
     if (action == RepositoryCommitFileContextAction.openCurrentVersion ||
         action == RepositoryCommitFileContextAction.revealInFinder ||
         action == RepositoryCommitFileContextAction.quickLook) {
@@ -5035,6 +5039,46 @@ class _RepositoryWorkspaceScreenState
       ScaffoldMessenger.of(
         context,
       ).showSnackBar(const SnackBar(content: Text('无法打开所选历史版本；文件可能过大或选择已变化。')));
+    }
+  }
+
+  /// Opens the selected commit file and its first-parent version in Apple
+  /// FileMerge without invoking repository-configured diff commands.
+  ///
+  /// 中文：在 Apple FileMerge 中打开所选提交文件及其第一父提交版本；不会执行
+  /// 仓库配置的外部 Diff 命令。
+  Future<void> _openSelectedCommitFileExternalDiff(
+    CommitFileViewData file,
+  ) async {
+    final session = ref.read(repositorySessionProvider);
+    final selected = session.selectedCommitFile;
+    final root = session.repository?.workTreeRoot;
+    if (root == null ||
+        selected == null ||
+        !file.isPathValidUtf8 ||
+        selected.objectId != session.selectedCommitId ||
+        selected.file.path.display != file.path) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前没有可进行外部差异比对的历史文件。')));
+      return;
+    }
+    try {
+      final comparison = await ref
+          .read(repositorySessionProvider.notifier)
+          .readSelectedCommitFileComparison();
+      if (!mounted) return;
+      await DesktopWindowBridge.openHistoricalDiff(
+        repositoryRootPath: root,
+        suggestedFileName: path_utils.basename(file.path),
+        beforeBytes: comparison.beforeBytes,
+        afterBytes: comparison.afterBytes,
+      );
+    } on Object {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('无法启动外部差异比对；请确认已安装 Apple FileMerge。')),
+      );
     }
   }
 

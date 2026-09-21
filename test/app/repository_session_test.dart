@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
@@ -470,8 +471,11 @@ void main() {
       await controller.selectCommit(commit);
 
       final bytes = await controller.readSelectedCommitFileBytes();
+      final comparison = await controller.readSelectedCommitFileComparison();
 
       expect(bytes, binary);
+      expect(comparison.beforeBytes, isEmpty);
+      expect(comparison.afterBytes, binary);
       final selected = container.read(repositorySessionProvider);
       expect(selected.selectedCommitId, commit);
       expect(
@@ -500,6 +504,9 @@ void main() {
       controller.readSelectedCommitFileBytes(),
       throwsA(isA<StateError>()),
     );
+    final comparison = await controller.readSelectedCommitFileComparison();
+    expect(comparison.beforeBytes, utf8.encode('before\n'));
+    expect(comparison.afterBytes, isEmpty);
   });
 
   test(
