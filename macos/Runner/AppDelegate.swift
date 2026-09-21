@@ -634,11 +634,21 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// Flutter 仍会重新读取仓库 capability，避免使用过期快照执行写操作。
   private(set) var canApplyPatchFromMenu = false
 
+  /// Flutter's last validated Checkout availability for this Engine.
+  /// 中文：此 Engine 最近一次由 Flutter 校验的“检出”可用状态；实际分支或提交切换
+  /// 仍由 Flutter 显示影响说明并交给 Git 判断工作区改动是否可安全保留。
+  private(set) var canCheckoutFromMenu = false
+
   /// Flutter's last validated Fetch availability for this Engine.
   ///
   /// 中文：此 Engine 最近一次由 Flutter 校验的“抓取”可用状态；实际执行仍由
   /// Flutter 在显示对话框前重读当前会话能力。
   private(set) var canFetchFromMenu = false
+
+  /// Flutter's last validated Interactive Rebase availability for this Engine.
+  /// 中文：此 Engine 最近一次由 Flutter 校验的“交互式变基”可用状态；实际执行前
+  /// Flutter 会重新解析当前提交，并由 Git 再次验证历史与工作区状态。
+  private(set) var canInteractiveRebaseFromMenu = false
 
   /// Flutter's last validated Merge availability for this Engine.
   /// 中文：此 Engine 最近一次由 Flutter 校验的“合并”可用状态；执行时仍由
@@ -929,8 +939,11 @@ final class WorkspaceFlutterWindowController: NSWindowController,
       case "setWorkspaceMenuState":
         canStopTrackingFromMenu = arguments?["canStopTracking"] as? Bool ?? false
         canApplyPatchFromMenu = arguments?["canApplyPatch"] as? Bool ?? false
+        canCheckoutFromMenu = arguments?["canCheckout"] as? Bool ?? false
         canCommitFromMenu = arguments?["canCommit"] as? Bool ?? false
         canFetchFromMenu = arguments?["canFetch"] as? Bool ?? false
+        canInteractiveRebaseFromMenu =
+          arguments?["canInteractiveRebase"] as? Bool ?? false
         canMergeFromMenu = arguments?["canMerge"] as? Bool ?? false
         canPullFromMenu = arguments?["canPull"] as? Bool ?? false
         canPushFromMenu = arguments?["canPush"] as? Bool ?? false
@@ -1305,10 +1318,22 @@ final class WindowCoordinator {
     )
   }
 
+  /// Whether the key workspace currently offers a safe checkout target.
+  /// 中文：当前前台工作区是否至少有一个可选择的安全检出目标。
+  var canCheckoutFromMenu: Bool {
+    currentWorkspaceController?.canCheckoutFromMenu == true
+  }
+
   /// Whether the key workspace currently permits opening the Fetch workflow.
   /// 中文：当前前台工作区是否已由 Flutter 校验为允许打开抓取工作流。
   var canFetchFromMenu: Bool {
     currentWorkspaceController?.canFetchFromMenu == true
+  }
+
+  /// Whether the key workspace permits interactive rebase from its selection.
+  /// 中文：当前前台工作区是否允许以当前选中提交作为交互式变基基点。
+  var canInteractiveRebaseFromMenu: Bool {
+    currentWorkspaceController?.canInteractiveRebaseFromMenu == true
   }
 
   /// Whether the key workspace currently permits opening the Merge workflow.
@@ -2455,6 +2480,17 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     windowCoordinator.performWorkspaceAction("commit")
   }
 
+  /// 中文：在当前 key workspace 打开已有 Git 能力支持的检出目标选择面板。
+  /// English: Opens the checkout target picker in the key workspace, backed
+  /// by the existing Git application-layer operations.
+  @IBAction func checkoutRepositoryFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canCheckoutFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("checkout")
+  }
+
   /// 中文：在当前 key workspace 打开已有的本地分支合并流程。
   /// English: Opens the existing local-branch merge workflow in the key
   /// workspace.
@@ -2464,6 +2500,17 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
       return
     }
     windowCoordinator.performWorkspaceAction("merge")
+  }
+
+  /// 中文：在当前 key workspace 以当前选中提交打开既有交互式变基流程。
+  /// English: Opens the existing interactive-rebase workflow for the selected
+  /// commit in the key workspace.
+  @IBAction func interactiveRebaseRepositoryFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canInteractiveRebaseFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("interactiveRebase")
   }
 
   /// 中文：在当前 key workspace 打开已有的标签管理流程。
@@ -2790,6 +2837,12 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     }
     if menuItem.action == #selector(commitRepositoryFromMenu(_:)) {
       return windowCoordinator.canCommitFromMenu
+    }
+    if menuItem.action == #selector(checkoutRepositoryFromMenu(_:)) {
+      return windowCoordinator.canCheckoutFromMenu
+    }
+    if menuItem.action == #selector(interactiveRebaseRepositoryFromMenu(_:)) {
+      return windowCoordinator.canInteractiveRebaseFromMenu
     }
     if menuItem.action == #selector(mergeRepositoryFromMenu(_:)) {
       return windowCoordinator.canMergeFromMenu

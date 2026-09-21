@@ -8,8 +8,39 @@ void main() {
   test(
     'native mutation menus follow running and paused repository boundaries',
     () {
-      const session = RepositorySessionState(
+      final signature = GitSignature(
+        name: 'Author',
+        email: 'author@example.com',
+        when: DateTime.utc(2026),
+      );
+      final session = RepositorySessionState(
         phase: RepositorySessionPhase.ready,
+        commits: [
+          GitCommit(
+            objectId: 'head123',
+            parentIds: const ['base123'],
+            author: signature,
+            committer: signature,
+            subject: 'HEAD',
+            body: '',
+          ),
+          GitCommit(
+            objectId: 'base123',
+            parentIds: const [],
+            author: signature,
+            committer: signature,
+            subject: 'Base',
+            body: '',
+          ),
+          GitCommit(
+            objectId: 'side123',
+            parentIds: const [],
+            author: signature,
+            committer: signature,
+            subject: 'Side branch',
+            body: '',
+          ),
+        ],
       );
       const available = RepositoryOverviewViewData.ready(
         RepositoryViewData(
@@ -57,10 +88,137 @@ void main() {
           ),
         ),
       );
+      const rebaseSelection = RepositoryOverviewViewData.ready(
+        RepositoryViewData(
+          name: 'example',
+          path: '/tmp/example',
+          currentBranch: 'main',
+          headOid: 'head123',
+          commits: [
+            CommitViewData(
+              oid: 'base123',
+              shortOid: 'base123',
+              subject: 'Base',
+              author: 'Author',
+              relativeDate: 'now',
+            ),
+          ],
+          selectedCommit: CommitDetailsViewData(
+            oid: 'base123',
+            subject: 'Base',
+            author: 'Author',
+            authoredAt: 'now',
+          ),
+        ),
+      );
+      const sideBranchRebaseSelection = RepositoryOverviewViewData.ready(
+        RepositoryViewData(
+          name: 'example',
+          path: '/tmp/example',
+          currentBranch: 'main',
+          headOid: 'head123',
+          commits: [
+            CommitViewData(
+              oid: 'side123',
+              shortOid: 'side123',
+              subject: 'Side branch',
+              author: 'Author',
+              relativeDate: 'now',
+            ),
+          ],
+          selectedCommit: CommitDetailsViewData(
+            oid: 'side123',
+            subject: 'Side branch',
+            author: 'Author',
+            authoredAt: 'now',
+          ),
+        ),
+      );
+      const localCheckoutTarget = RepositoryOverviewViewData.ready(
+        RepositoryViewData(
+          name: 'example',
+          path: '/tmp/example',
+          currentBranch: 'main',
+          refs: [
+            RepositoryRefViewData(
+              id: 'refs/heads/main',
+              label: 'main',
+              kind: RepositoryRefKind.localBranch,
+              isCurrent: true,
+            ),
+            RepositoryRefViewData(
+              id: 'refs/heads/feature',
+              label: 'feature',
+              kind: RepositoryRefKind.localBranch,
+            ),
+          ],
+        ),
+      );
+      const dirtyRemoteOnlyCheckoutTarget = RepositoryOverviewViewData.ready(
+        RepositoryViewData(
+          name: 'example',
+          path: '/tmp/example',
+          currentBranch: 'main',
+          isWorkingTreeClean: false,
+          refs: [
+            RepositoryRefViewData(
+              id: 'refs/remotes/origin/feature',
+              label: 'origin/feature',
+              kind: RepositoryRefKind.remoteBranch,
+            ),
+          ],
+        ),
+      );
+      const conflictingRemoteOnlyCheckoutTarget =
+          RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              refs: [
+                RepositoryRefViewData(
+                  id: 'refs/heads/feature',
+                  label: 'feature',
+                  kind: RepositoryRefKind.localBranch,
+                  isCurrent: true,
+                ),
+                RepositoryRefViewData(
+                  id: 'refs/remotes/origin/feature',
+                  label: 'origin/feature',
+                  kind: RepositoryRefKind.remoteBranch,
+                ),
+              ],
+            ),
+          );
 
       expect(
         nativeWorkspaceMenuAvailability(session, available).canApplyPatch,
         isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(session, available).canCheckout,
+        isFalse,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          localCheckoutTarget,
+        ).canCheckout,
+        isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          dirtyRemoteOnlyCheckoutTarget,
+        ).canCheckout,
+        isFalse,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          conflictingRemoteOnlyCheckoutTarget,
+        ).canCheckout,
+        isFalse,
       );
       expect(
         nativeWorkspaceMenuAvailability(session, available).canFetch,
@@ -70,6 +228,102 @@ void main() {
         nativeWorkspaceMenuAvailability(session, available).canMerge,
         isTrue,
       );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          available,
+        ).canInteractiveRebase,
+        isFalse,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          rebaseSelection,
+        ).canInteractiveRebase,
+        isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          sideBranchRebaseSelection,
+        ).canInteractiveRebase,
+        isFalse,
+      );
+      for (final blockedRepository in [
+        const RepositoryViewData(
+          name: 'example',
+          path: '/tmp/example',
+          currentBranch: 'main',
+          headOid: 'head123',
+          isWorkingTreeClean: false,
+          commits: [
+            CommitViewData(
+              oid: 'base123',
+              shortOid: 'base123',
+              subject: 'Base',
+              author: 'Author',
+              relativeDate: 'now',
+            ),
+          ],
+          selectedCommit: CommitDetailsViewData(
+            oid: 'base123',
+            subject: 'Base',
+            author: 'Author',
+            authoredAt: 'now',
+          ),
+        ),
+        const RepositoryViewData(
+          name: 'example',
+          path: '/tmp/example',
+          currentBranch: 'HEAD',
+          headOid: 'head123',
+          isDetachedHead: true,
+          commits: [
+            CommitViewData(
+              oid: 'base123',
+              shortOid: 'base123',
+              subject: 'Base',
+              author: 'Author',
+              relativeDate: 'now',
+            ),
+          ],
+          selectedCommit: CommitDetailsViewData(
+            oid: 'base123',
+            subject: 'Base',
+            author: 'Author',
+            authoredAt: 'now',
+          ),
+        ),
+        const RepositoryViewData(
+          name: 'example',
+          path: '/tmp/example',
+          currentBranch: 'main',
+          headOid: 'head123',
+          commits: [
+            CommitViewData(
+              oid: 'head123',
+              shortOid: 'head123',
+              subject: 'HEAD',
+              author: 'Author',
+              relativeDate: 'now',
+            ),
+          ],
+          selectedCommit: CommitDetailsViewData(
+            oid: 'head123',
+            subject: 'HEAD',
+            author: 'Author',
+            authoredAt: 'now',
+          ),
+        ),
+      ]) {
+        expect(
+          nativeWorkspaceMenuAvailability(
+            session,
+            RepositoryOverviewViewData.ready(blockedRepository),
+          ).canInteractiveRebase,
+          isFalse,
+        );
+      }
       expect(
         nativeWorkspaceMenuAvailability(session, available).canCommit,
         isTrue,
@@ -193,9 +447,11 @@ void main() {
       );
       expect(nativeWorkspaceMenuAvailability(session, paused), (
         canApplyPatch: false,
+        canCheckout: false,
         canCommit: false,
         canCreateBranch: false,
         canFetch: false,
+        canInteractiveRebase: false,
         canMerge: false,
         canPull: false,
         canPush: false,

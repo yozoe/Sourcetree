@@ -26,6 +26,33 @@ import 'theme_preferences.dart';
 String _nativeChangeSelectionKey(RepositoryChangeViewData change) =>
     '${change.isStaged ? 'staged' : 'unstaged'}\u0000${change.path}';
 
+/// Returns whether [candidateId] is an ancestor of [headId] within the latest
+/// loaded Git history snapshot.
+///
+/// 中文：判断 [candidateId] 是否为 [headId] 在最新已加载 Git 历史快照中的祖先；
+/// 缺失链路按不可安全确认处理，避免从原生菜单意外变基到侧分支。
+bool _isLoadedAncestorOfHead({
+  required String candidateId,
+  required String headId,
+  required Iterable<GitCommit> commits,
+}) {
+  if (candidateId == headId) return false;
+  final commitsById = {for (final commit in commits) commit.objectId: commit};
+  final pending = <String>[headId];
+  final visited = <String>{};
+  while (pending.isNotEmpty) {
+    final currentId = pending.removeLast();
+    if (!visited.add(currentId)) continue;
+    final current = commitsById[currentId];
+    if (current == null) return false;
+    for (final parentId in current.parentIds) {
+      if (parentId == candidateId) return true;
+      pending.add(parentId);
+    }
+  }
+  return false;
+}
+
 /// Returns operation-aware names for Git index stages two and three.
 ///
 /// 中文：返回与当前 Git 操作匹配的索引第二、第三阶段版本名称，避免在变基、
@@ -51,9 +78,11 @@ String _nativeChangeSelectionKey(RepositoryChangeViewData change) =>
 /// 后台任务或暂停中的 Git 操作都会关闭相关入口。
 ({
   bool canApplyPatch,
+  bool canCheckout,
   bool canCreateBranch,
   bool canCommit,
   bool canFetch,
+  bool canInteractiveRebase,
   bool canMerge,
   bool canPull,
   bool canPush,
@@ -81,13 +110,55 @@ nativeWorkspaceMenuAvailability(
   final menuSelection = repository?.selectedCommit == null
       ? selectedChanges ?? [?selectedChange]
       : const <RepositoryChangeViewData>[];
+  final localBranchNames = {
+    for (final reference in repository?.refs ?? const <RepositoryRefViewData>[])
+      if (reference.kind == RepositoryRefKind.localBranch) reference.label,
+  };
+  final hasCheckoutTarget =
+      repository != null &&
+      (repository.refs.any(
+            (reference) =>
+                reference.kind == RepositoryRefKind.localBranch &&
+                !reference.isCurrent,
+          ) ||
+          (repository.isWorkingTreeClean &&
+              repository.refs.any((reference) {
+                if (reference.kind != RepositoryRefKind.remoteBranch ||
+                    reference.isSymbolicRemote) {
+                  return false;
+                }
+                final separator = reference.label.indexOf('/');
+                return separator > 0 &&
+                    !localBranchNames.contains(
+                      reference.label.substring(separator + 1),
+                    );
+              })) ||
+          repository.commits.any((commit) => commit.oid != repository.headOid));
   return (
     canApplyPatch: canApplyPatch,
+    canCheckout: canApplyPatch && hasCheckoutTarget,
     canFetch:
         session.phase == RepositorySessionPhase.ready &&
         repository != null &&
         !repository.blocksRepositoryMutations &&
         !repository.disabledActions.contains(RepositoryAction.fetch),
+    canInteractiveRebase:
+        session.phase == RepositorySessionPhase.ready &&
+        repository != null &&
+        !repository.blocksRepositoryMutations &&
+        repository.isWorkingTreeClean &&
+        !repository.isDetachedHead &&
+        repository.headOid != null &&
+        repository.selectedCommit != null &&
+        repository.selectedCommit!.oid != repository.headOid &&
+        repository.commits.any(
+          (commit) => commit.oid == repository.selectedCommit!.oid,
+        ) &&
+        _isLoadedAncestorOfHead(
+          candidateId: repository.selectedCommit!.oid,
+          headId: repository.headOid!,
+          commits: session.commits,
+        ),
     canMerge:
         session.phase == RepositorySessionPhase.ready &&
         repository != null &&
@@ -513,6 +584,18 @@ RepositoryAction? _repositoryActionFromName(String? name) => switch (name) {
 
 enum _RebasePromptAction { continueRebase, abort, cancel }
 
+enum _RepositoryCheckoutTargetKind { localBranch, remoteBranch, commit }
+
+typedef _RepositoryCheckoutTarget = ({
+  String id,
+  _RepositoryCheckoutTargetKind kind,
+  String value,
+  String title,
+  String subtitle,
+  bool isEnabled,
+  CommitViewData? commit,
+});
+
 class RepositoryWorkspaceScreen extends ConsumerStatefulWidget {
   const RepositoryWorkspaceScreen({
     super.key,
@@ -548,8 +631,10 @@ class _RepositoryWorkspaceScreenState
   bool _hasHandledInitialAction = false;
   bool? _lastNativeStopTrackingAvailability;
   bool? _lastNativeApplyPatchAvailability;
+  bool? _lastNativeCheckoutAvailability;
   bool? _lastNativeCommitAvailability;
   bool? _lastNativeFetchAvailability;
+  bool? _lastNativeInteractiveRebaseAvailability;
   bool? _lastNativeMergeAvailability;
   bool? _lastNativePullAvailability;
   bool? _lastNativePushAvailability;
@@ -631,6 +716,8 @@ class _RepositoryWorkspaceScreenState
             false) {
           _showCommitDialog();
         }
+      case 'checkout':
+        await _showCheckoutDialog();
       case 'merge':
         final overview = mapRepositoryOverview(
           ref.read(repositorySessionProvider),
@@ -641,6 +728,23 @@ class _RepositoryWorkspaceScreenState
             false) {
           await _showMergeBranchDialog();
         }
+      case 'interactiveRebase':
+        final session = ref.read(repositorySessionProvider);
+        final overview = mapRepositoryOverview(session);
+        final availability = nativeWorkspaceMenuAvailability(
+          session,
+          overview,
+          selectedChanges: _nativeSelectedChanges(overview),
+        );
+        final selectedCommit = _selectedCommitForNativeAction(overview);
+        if (availability.canInteractiveRebase && selectedCommit != null) {
+          await _showInteractiveRebaseDialog(selectedCommit);
+          return;
+        }
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('请选择当前分支 HEAD 之前的提交，并确保工作区干净。')),
+        );
       case 'tag':
         final session = ref.read(repositorySessionProvider);
         final overview = mapRepositoryOverview(session);
@@ -789,8 +893,10 @@ class _RepositoryWorkspaceScreenState
       selectedChanges: _nativeSelectedChanges(overview),
     );
     final canApplyPatch = availability.canApplyPatch;
+    final canCheckout = availability.canCheckout;
     final canCommit = availability.canCommit;
     final canFetch = availability.canFetch;
+    final canInteractiveRebase = availability.canInteractiveRebase;
     final canMerge = availability.canMerge;
     final canPull = availability.canPull;
     final canPush = availability.canPush;
@@ -813,8 +919,10 @@ class _RepositoryWorkspaceScreenState
     ].join('\u0000');
     if (_lastNativeStopTrackingAvailability == canStopTracking &&
         _lastNativeApplyPatchAvailability == canApplyPatch &&
+        _lastNativeCheckoutAvailability == canCheckout &&
         _lastNativeCommitAvailability == canCommit &&
         _lastNativeFetchAvailability == canFetch &&
+        _lastNativeInteractiveRebaseAvailability == canInteractiveRebase &&
         _lastNativeMergeAvailability == canMerge &&
         _lastNativePullAvailability == canPull &&
         _lastNativePushAvailability == canPush &&
@@ -829,8 +937,10 @@ class _RepositoryWorkspaceScreenState
     }
     _lastNativeStopTrackingAvailability = canStopTracking;
     _lastNativeApplyPatchAvailability = canApplyPatch;
+    _lastNativeCheckoutAvailability = canCheckout;
     _lastNativeCommitAvailability = canCommit;
     _lastNativeFetchAvailability = canFetch;
+    _lastNativeInteractiveRebaseAvailability = canInteractiveRebase;
     _lastNativeMergeAvailability = canMerge;
     _lastNativePullAvailability = canPull;
     _lastNativePushAvailability = canPush;
@@ -845,8 +955,10 @@ class _RepositoryWorkspaceScreenState
       await DesktopWindowBridge.setWorkspaceMenuState(
         canStopTracking: canStopTracking,
         canApplyPatch: canApplyPatch,
+        canCheckout: canCheckout,
         canCommit: canCommit,
         canFetch: canFetch,
+        canInteractiveRebase: canInteractiveRebase,
         canMerge: canMerge,
         canPull: canPull,
         canPush: canPush,
@@ -883,6 +995,21 @@ class _RepositoryWorkspaceScreenState
     return repository.changes
         .where((change) => keys.contains(_nativeChangeSelectionKey(change)))
         .toList(growable: false);
+  }
+
+  /// Resolves the selected commit details to the current visible history row.
+  ///
+  /// 中文：将当前提交详情重新解析为可见历史行，避免原生菜单使用刷新前的提交对象。
+  CommitViewData? _selectedCommitForNativeAction(
+    RepositoryOverviewViewData overview,
+  ) {
+    final repository = overview.repository;
+    final selectedCommitId = repository?.selectedCommit?.oid;
+    if (repository == null || selectedCommitId == null) return null;
+    for (final commit in repository.commits) {
+      if (commit.oid == selectedCommitId) return commit;
+    }
+    return null;
   }
 
   /// Updates this Engine's visible file selection for native menu actions.
@@ -3050,6 +3177,102 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
+  /// Shows a compact picker for local branches, fetched remote branches, and
+  /// loaded commits, then delegates the selected target to existing flows.
+  ///
+  /// 中文：以紧凑选择器展示本地分支、已获取远端分支和已加载提交，再将目标交给
+  /// 既有确认与 Git 应用层流程处理。
+  Future<void> _showCheckoutDialog() async {
+    final session = ref.read(repositorySessionProvider);
+    final overview = mapRepositoryOverview(session);
+    final repository = overview.repository;
+    final availability = nativeWorkspaceMenuAvailability(
+      session,
+      overview,
+      selectedChanges: _nativeSelectedChanges(overview),
+    );
+    if (!availability.canCheckout || repository == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前没有可安全检出的目标。')));
+      return;
+    }
+
+    final currentBranch = session.status?.branch.head;
+    final localBranchNames = {
+      for (final branch in session.localBranches) branch.name,
+    };
+    final targets = <_RepositoryCheckoutTarget>[
+      for (final branch in session.localBranches)
+        if (branch.name != currentBranch)
+          (
+            id: 'local:${branch.name}',
+            kind: _RepositoryCheckoutTargetKind.localBranch,
+            value: branch.name,
+            title: branch.name,
+            subtitle: '本地分支',
+            isEnabled: true,
+            commit: null,
+          ),
+      for (final branch in session.remoteBranches)
+        if (!branch.isSymbolic && branch.name.contains('/'))
+          (
+            id: 'remote:${branch.name}',
+            kind: _RepositoryCheckoutTargetKind.remoteBranch,
+            value: branch.name,
+            title: branch.name,
+            subtitle: !repository.isWorkingTreeClean
+                ? '远端分支 · 需要干净工作区'
+                : localBranchNames.contains(
+                    branch.name.substring(branch.name.indexOf('/') + 1),
+                  )
+                ? '远端分支 · 已存在同名本地分支'
+                : '远端分支 · 将创建本地跟踪分支',
+            isEnabled:
+                repository.isWorkingTreeClean &&
+                !localBranchNames.contains(
+                  branch.name.substring(branch.name.indexOf('/') + 1),
+                ),
+            commit: null,
+          ),
+      for (final commit in repository.commits)
+        if (commit.oid != repository.headOid)
+          (
+            id: 'commit:${commit.oid}',
+            kind: _RepositoryCheckoutTargetKind.commit,
+            value: commit.oid,
+            title: commit.subject.isEmpty ? '（无提交标题）' : commit.subject,
+            subtitle:
+                '${commit.shortOid} · ${commit.author} · ${commit.relativeDate}',
+            isEnabled: true,
+            commit: commit,
+          ),
+    ];
+    final selectedCommitId = repository.selectedCommit?.oid;
+    final initialTargetId = selectedCommitId == null
+        ? null
+        : 'commit:$selectedCommitId';
+    final target = await showDialog<_RepositoryCheckoutTarget>(
+      context: context,
+      builder: (BuildContext context) => _RepositoryCheckoutDialog(
+        currentBranch: currentBranch,
+        targets: targets,
+        initialTargetId: initialTargetId,
+      ),
+    );
+    if (target == null || !mounted) return;
+
+    switch (target.kind) {
+      case _RepositoryCheckoutTargetKind.localBranch:
+        await _confirmSwitchBranch(target.value);
+      case _RepositoryCheckoutTargetKind.remoteBranch:
+        await _confirmSwitchRemoteBranch(target.value);
+      case _RepositoryCheckoutTargetKind.commit:
+        final commit = target.commit;
+        if (commit != null) await _confirmCheckoutCommit(commit);
+    }
+  }
+
   /// 中文：将冲突菜单操作分流到内部 Diff 或直接的 Git 解决命令。
   ///
   /// English: Routes a conflict-menu action to the internal Diff or a direct
@@ -3606,6 +3829,197 @@ class _RepositoryWorkspaceScreenState
             ),
         ],
       ),
+    );
+  }
+}
+
+/// Dense checkout target picker matching the repository menu's desktop flow.
+///
+/// 中文：与仓库菜单配套的紧凑检出目标选择器，按本地分支、远端分支和提交分组。
+final class _RepositoryCheckoutDialog extends StatefulWidget {
+  const _RepositoryCheckoutDialog({
+    required this.currentBranch,
+    required this.targets,
+    required this.initialTargetId,
+  });
+
+  final String? currentBranch;
+  final List<_RepositoryCheckoutTarget> targets;
+  final String? initialTargetId;
+
+  @override
+  State<_RepositoryCheckoutDialog> createState() =>
+      _RepositoryCheckoutDialogState();
+}
+
+final class _RepositoryCheckoutDialogState
+    extends State<_RepositoryCheckoutDialog> {
+  final TextEditingController _searchController = TextEditingController();
+  String _query = '';
+  String? _selectedTargetId;
+
+  @override
+  void initState() {
+    super.initState();
+    final requested = widget.initialTargetId;
+    _selectedTargetId =
+        widget.targets.any(
+          (target) => target.id == requested && target.isEnabled,
+        )
+        ? requested
+        : widget.targets.where((target) => target.isEnabled).firstOrNull?.id;
+  }
+
+  @override
+  void dispose() {
+    _searchController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final query = _query.trim().toLowerCase();
+    final visibleTargets = query.isEmpty
+        ? widget.targets
+        : widget.targets
+              .where(
+                (target) =>
+                    target.title.toLowerCase().contains(query) ||
+                    target.subtitle.toLowerCase().contains(query),
+              )
+              .toList(growable: false);
+    final selectedTarget = widget.targets
+        .where((target) => target.id == _selectedTargetId)
+        .firstOrNull;
+    final rows = <Widget>[];
+    for (final kind in _RepositoryCheckoutTargetKind.values) {
+      final group = visibleTargets
+          .where((target) => target.kind == kind)
+          .toList(growable: false);
+      if (group.isEmpty) continue;
+      final heading = switch (kind) {
+        _RepositoryCheckoutTargetKind.localBranch => '本地分支',
+        _RepositoryCheckoutTargetKind.remoteBranch => '远端分支',
+        _RepositoryCheckoutTargetKind.commit => '已加载提交',
+      };
+      rows.add(
+        Padding(
+          padding: const EdgeInsets.fromLTRB(12, 12, 12, 4),
+          child: Text(
+            heading,
+            style: theme.textTheme.labelMedium?.copyWith(
+              color: theme.colorScheme.onSurfaceVariant,
+              fontWeight: FontWeight.w600,
+            ),
+          ),
+        ),
+      );
+      for (final target in group) {
+        final selected = target.id == _selectedTargetId;
+        final icon = switch (target.kind) {
+          _RepositoryCheckoutTargetKind.localBranch => Icons.call_split,
+          _RepositoryCheckoutTargetKind.remoteBranch =>
+            Icons.cloud_download_outlined,
+          _RepositoryCheckoutTargetKind.commit => Icons.commit,
+        };
+        rows.add(
+          ListTile(
+            dense: true,
+            enabled: target.isEnabled,
+            selected: selected,
+            selectedTileColor: theme.colorScheme.primaryContainer.withValues(
+              alpha: .55,
+            ),
+            leading: Icon(icon, size: 18),
+            title: Text(
+              target.title,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            subtitle: Text(
+              target.subtitle,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+            ),
+            trailing: selected ? const Icon(Icons.check, size: 18) : null,
+            onTap: target.isEnabled
+                ? () => setState(() => _selectedTargetId = target.id)
+                : null,
+          ),
+        );
+      }
+    }
+
+    final impact = switch (selectedTarget?.kind) {
+      _RepositoryCheckoutTargetKind.localBranch => '未提交改动仅在 Git 判断可安全携带时保留。',
+      _RepositoryCheckoutTargetKind.remoteBranch => '将创建同名本地跟踪分支；要求工作区干净。',
+      _RepositoryCheckoutTargetKind.commit => '将进入分离 HEAD；若要保留后续提交，请及时创建分支。',
+      null => '选择一个可用目标以继续。',
+    };
+
+    return AlertDialog(
+      title: const Text('检出'),
+      content: SizedBox(
+        width: 560,
+        height: 500,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Text(
+              widget.currentBranch == null
+                  ? '选择分支或提交'
+                  : '当前分支：${widget.currentBranch}',
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+            const SizedBox(height: 10),
+            TextField(
+              controller: _searchController,
+              autofocus: true,
+              decoration: const InputDecoration(
+                isDense: true,
+                prefixIcon: Icon(Icons.search, size: 18),
+                labelText: '搜索分支或提交',
+              ),
+              onChanged: (value) => setState(() => _query = value),
+            ),
+            const SizedBox(height: 8),
+            Expanded(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  border: Border.all(color: theme.colorScheme.outlineVariant),
+                  borderRadius: BorderRadius.circular(6),
+                ),
+                child: rows.isEmpty
+                    ? const Center(child: Text('没有匹配的检出目标。'))
+                    : ListView(children: rows),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              impact,
+              style: theme.textTheme.bodySmall?.copyWith(
+                color: theme.colorScheme.onSurfaceVariant,
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton.icon(
+          onPressed: selectedTarget?.isEnabled == true
+              ? () => Navigator.of(context).pop(selectedTarget)
+              : null,
+          icon: const Icon(Icons.swap_horiz),
+          label: const Text('继续'),
+        ),
+      ],
     );
   }
 }

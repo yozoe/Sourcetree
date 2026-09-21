@@ -449,8 +449,9 @@ CRLF、长路径、大小写、symlink、可执行位、窗口和系统菜单差
   `repositoryFeaturePending` 的依赖；标题不作为协议字段。
 - [~] 建立按 Engine/窗口隔离的 `WorkspaceMenuState` 快照，并让 AppKit 菜单校验随 key window、
   选择、upstream、冲突和运行中任务动态更新；应用层执行前继续二次校验真实 Git 状态。
-- [~] “仓库”菜单已复用现有刷新、Commit、Fetch、Pull、Push、Branch、Merge、Tag 和 Stash 工作流，
-  不复制 Git 命令或对话框状态；Rebase 菜单入口仍待接入。
+- [x] “仓库”菜单已复用现有刷新、Commit、Fetch、Pull、Push、Checkout、Branch、Merge、Tag、Stash
+  和交互式 Rebase 工作流，不复制 Git 命令或对话框状态；交互式变基只以当前可见选中提交为基点，
+  并在工作区干净、HEAD 未游离、无其他写任务时启用。
 - [x] “动作”菜单的“添加到索引”和“从索引中取消暂存”使用独立 action ID，按当前 key
   workspace 的单选或多选文件集合动态启用，复用现有批量 stage/unstage 用例并在 Flutter 执行
   入口依据最新仓库视图二次校验。
@@ -467,7 +468,7 @@ CRLF、长路径、大小写、symlink、可执行位、窗口和系统菜单差
 
 #### M2：选择相关工作流与恢复路径
 
-- [ ] 实现提交所有、提交选中项、检出和添加远端，明确选中范围、目标引用和部分成功反馈。
+- [~] 已实现“检出…”的本地分支、已获取远端分支和已加载提交选择；提交所有、提交选中项和添加远端仍待实现，需明确选中范围、目标引用和部分成功反馈。
 - [ ] 实现文件历史、内置审查、ignore、复制与移动；所有路径变化先预览，默认不覆盖。
 - [ ] 接入 merge/rebase/cherry-pick/revert 的 Continue/Abort 动态菜单，以及冲突选边和标记解决；
   文案必须解释 rebase 等场景下 ours/theirs 的真实含义。

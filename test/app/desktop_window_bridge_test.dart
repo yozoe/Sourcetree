@@ -25,8 +25,10 @@ void main() {
       await DesktopWindowBridge.setWorkspaceMenuState(
         canStopTracking: false,
         canApplyPatch: true,
+        canCheckout: true,
         canCommit: true,
         canFetch: true,
+        canInteractiveRebase: true,
         canMerge: true,
         canPull: true,
         canPush: true,
@@ -45,8 +47,10 @@ void main() {
       expect(receivedCall?.arguments, <String, Object?>{
         'canStopTracking': false,
         'canApplyPatch': true,
+        'canCheckout': true,
         'canCommit': true,
         'canFetch': true,
+        'canInteractiveRebase': true,
         'canMerge': true,
         'canPull': true,
         'canPush': true,

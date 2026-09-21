@@ -69,8 +69,10 @@ final class DesktopWindowBridge {
   static Future<void> setWorkspaceMenuState({
     required bool canStopTracking,
     required bool canApplyPatch,
+    required bool canCheckout,
     required bool canCommit,
     required bool canFetch,
+    required bool canInteractiveRebase,
     required bool canMerge,
     required bool canPull,
     required bool canPush,
@@ -88,8 +90,10 @@ final class DesktopWindowBridge {
         .invokeMethod<void>('setWorkspaceMenuState', <String, Object?>{
           'canStopTracking': canStopTracking,
           'canApplyPatch': canApplyPatch,
+          'canCheckout': canCheckout,
           'canCommit': canCommit,
           'canFetch': canFetch,
+          'canInteractiveRebase': canInteractiveRebase,
           'canMerge': canMerge,
           'canPull': canPull,
           'canPush': canPush,
