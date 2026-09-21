@@ -77,6 +77,7 @@ bool _isLoadedAncestorOfHead({
 /// 中文：根据当前仓库 capability 快照返回原生写操作菜单可用性；没有仓库、
 /// 后台任务或暂停中的 Git 操作都会关闭相关入口。
 ({
+  bool canAddRemote,
   bool canApplyPatch,
   bool canCheckout,
   bool canCreateBranch,
@@ -135,6 +136,7 @@ nativeWorkspaceMenuAvailability(
               })) ||
           repository.commits.any((commit) => commit.oid != repository.headOid));
   return (
+    canAddRemote: canApplyPatch,
     canApplyPatch: canApplyPatch,
     canCheckout: canApplyPatch && hasCheckoutTarget,
     canFetch:
@@ -629,6 +631,7 @@ class _RepositoryWorkspaceScreenState
   bool _isRebasePromptVisible = false;
   bool _isSequencerPromptVisible = false;
   bool _hasHandledInitialAction = false;
+  bool? _lastNativeAddRemoteAvailability;
   bool? _lastNativeStopTrackingAvailability;
   bool? _lastNativeApplyPatchAvailability;
   bool? _lastNativeCheckoutAvailability;
@@ -745,6 +748,8 @@ class _RepositoryWorkspaceScreenState
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('请选择当前分支 HEAD 之前的提交，并确保工作区干净。')),
         );
+      case 'addRemote':
+        await _showAddRemoteDialog();
       case 'tag':
         final session = ref.read(repositorySessionProvider);
         final overview = mapRepositoryOverview(session);
@@ -892,6 +897,7 @@ class _RepositoryWorkspaceScreenState
       overview,
       selectedChanges: _nativeSelectedChanges(overview),
     );
+    final canAddRemote = availability.canAddRemote;
     final canApplyPatch = availability.canApplyPatch;
     final canCheckout = availability.canCheckout;
     final canCommit = availability.canCommit;
@@ -917,7 +923,8 @@ class _RepositoryWorkspaceScreenState
       fileTargets.hasFileSelection.toString(),
       ...fileTargets.selectedFilePaths,
     ].join('\u0000');
-    if (_lastNativeStopTrackingAvailability == canStopTracking &&
+    if (_lastNativeAddRemoteAvailability == canAddRemote &&
+        _lastNativeStopTrackingAvailability == canStopTracking &&
         _lastNativeApplyPatchAvailability == canApplyPatch &&
         _lastNativeCheckoutAvailability == canCheckout &&
         _lastNativeCommitAvailability == canCommit &&
@@ -935,6 +942,7 @@ class _RepositoryWorkspaceScreenState
         _lastNativeFileTargetSignature == fileTargetSignature) {
       return;
     }
+    _lastNativeAddRemoteAvailability = canAddRemote;
     _lastNativeStopTrackingAvailability = canStopTracking;
     _lastNativeApplyPatchAvailability = canApplyPatch;
     _lastNativeCheckoutAvailability = canCheckout;
@@ -953,6 +961,7 @@ class _RepositoryWorkspaceScreenState
     _lastNativeFileTargetSignature = fileTargetSignature;
     try {
       await DesktopWindowBridge.setWorkspaceMenuState(
+        canAddRemote: canAddRemote,
         canStopTracking: canStopTracking,
         canApplyPatch: canApplyPatch,
         canCheckout: canCheckout,
@@ -3271,6 +3280,46 @@ class _RepositoryWorkspaceScreenState
         final commit = target.commit;
         if (commit != null) await _confirmCheckoutCommit(commit);
     }
+  }
+
+  /// Opens the local remote-configuration form and delegates the confirmed
+  /// name and credential-free URL to the repository application layer.
+  ///
+  /// 中文：打开本地远端配置表单，并将确认后的名称和无内嵌凭据地址交给仓库应用层。
+  Future<void> _showAddRemoteDialog() async {
+    final session = ref.read(repositorySessionProvider);
+    final overview = mapRepositoryOverview(session);
+    final availability = nativeWorkspaceMenuAvailability(
+      session,
+      overview,
+      selectedChanges: _nativeSelectedChanges(overview),
+    );
+    if (!availability.canAddRemote) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前仓库暂时不能添加远端。')));
+      return;
+    }
+    final result = await showDialog<_AddRemoteDialogResult>(
+      context: context,
+      builder: (context) =>
+          _AddRemoteDialog(existingRemoteNames: session.remoteNames.toSet()),
+    );
+    if (result == null || !mounted) return;
+    final added = await ref
+        .read(repositorySessionProvider.notifier)
+        .addRemote(result.name, result.url);
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          added
+              ? '已添加远端 ${result.name}；尚未连接或抓取。'
+              : '未添加远端 ${result.name}，请查看仓库错误信息。',
+        ),
+        duration: const Duration(seconds: 3),
+      ),
+    );
   }
 
   /// 中文：将冲突菜单操作分流到内部 Diff 或直接的 Git 解决命令。
@@ -6006,6 +6055,151 @@ class _CreateStashDialogState extends State<_CreateStashDialog> {
           ),
         ),
       ),
+    );
+  }
+}
+
+final class _AddRemoteDialogResult {
+  const _AddRemoteDialogResult({required this.name, required this.url});
+
+  final String name;
+  final String url;
+}
+
+/// Compact form for adding one local Git remote without contacting it.
+///
+/// 中文：用于添加一个本地 Git 远端的紧凑表单；提交表单不会连接远端。
+final class _AddRemoteDialog extends StatefulWidget {
+  const _AddRemoteDialog({required this.existingRemoteNames});
+
+  final Set<String> existingRemoteNames;
+
+  @override
+  State<_AddRemoteDialog> createState() => _AddRemoteDialogState();
+}
+
+final class _AddRemoteDialogState extends State<_AddRemoteDialog> {
+  final _formKey = GlobalKey<FormState>();
+  final _nameController = TextEditingController(text: 'origin');
+  final _urlController = TextEditingController();
+
+  /// Chooses the conventional remote name when available, with a useful
+  /// fallback for repositories that already have an origin.
+  /// 中文：优先使用惯用远端名称；仓库已有 origin 时提供可用的备用名称。
+  @override
+  void initState() {
+    super.initState();
+    if (widget.existingRemoteNames.contains('origin')) {
+      _nameController.text = widget.existingRemoteNames.contains('upstream')
+          ? ''
+          : 'upstream';
+    }
+  }
+
+  /// Releases both form controllers owned by this dialog.
+  /// 中文：释放此对话框持有的两个表单控制器。
+  @override
+  void dispose() {
+    _nameController.dispose();
+    _urlController.dispose();
+    super.dispose();
+  }
+
+  /// Validates and returns the explicit local remote configuration.
+  /// 中文：校验并返回用户明确填写的本地远端配置。
+  void _submit() {
+    if (!(_formKey.currentState?.validate() ?? false)) return;
+    Navigator.of(context).pop(
+      _AddRemoteDialogResult(
+        name: _nameController.text.trim(),
+        url: _urlController.text.trim(),
+      ),
+    );
+  }
+
+  /// Builds the compact name-and-URL form with its non-network impact notice.
+  /// 中文：构建名称与地址表单，并明确说明该操作不会连接网络。
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return AlertDialog(
+      title: const Text('添加远程仓库'),
+      content: SizedBox(
+        width: 520,
+        child: Form(
+          key: _formKey,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              TextFormField(
+                controller: _nameController,
+                autofocus: true,
+                decoration: const InputDecoration(
+                  labelText: '远端名称',
+                  hintText: '例如 origin',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) {
+                  final name = value?.trim() ?? '';
+                  if (name.isEmpty) return '请输入远端名称。';
+                  if (name.startsWith('-') || name.contains(RegExp(r'\s'))) {
+                    return '远端名称不能以“-”开头或包含空白字符。';
+                  }
+                  if (widget.existingRemoteNames.contains(name)) {
+                    return '远端 $name 已存在。';
+                  }
+                  return null;
+                },
+              ),
+              const SizedBox(height: 14),
+              TextFormField(
+                controller: _urlController,
+                decoration: const InputDecoration(
+                  labelText: '远端 URL',
+                  hintText: 'git@example.com:owner/repository.git',
+                  border: OutlineInputBorder(),
+                ),
+                validator: (value) =>
+                    value == null || value.trim().isEmpty ? '请输入远端 URL。' : null,
+                onFieldSubmitted: (_) => _submit(),
+              ),
+              const SizedBox(height: 12),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    Icons.info_outline,
+                    size: 17,
+                    color: colors.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 7),
+                  Expanded(
+                    child: Text(
+                      '只会修改当前仓库的本地 Git 配置，不会立即连接、抓取或推送。'
+                      '请勿在 URL 中填写密码、令牌或签名查询参数。',
+                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton.icon(
+          onPressed: _submit,
+          icon: const Icon(Icons.add_link),
+          label: const Text('添加'),
+        ),
+      ],
     );
   }
 }

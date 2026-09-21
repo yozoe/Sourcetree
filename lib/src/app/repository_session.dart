@@ -490,7 +490,7 @@ final class RepositorySessionController
   var _fetchPreflightInProgress = false;
   var _pushPreflightInProgress = false;
   var _pullPreflightInProgress = false;
-  var _removeRemotePreflightInProgress = false;
+  var _remoteConfigurationPreflightInProgress = false;
   var _automaticRefreshEnabled = false;
   var _automaticRefreshInProgress = false;
   var _automaticRefreshPending = false;
@@ -1399,6 +1399,63 @@ final class RepositorySessionController
     return _reader.readRemoteNames(repository);
   }
 
+  /// Adds a new remote after re-reading configured names, then refreshes all
+  /// Git-backed repository state. The operation only changes local config.
+  ///
+  /// 中文：重新读取远端名称并确认无重名后添加远端，再刷新全部 Git 仓库状态；
+  /// 此操作只修改本地配置，不连接远端或抓取引用。
+  Future<bool> addRemote(String remoteName, String remoteUrl) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackBooleanGitTask(() => addRemote(remoteName, remoteUrl));
+    }
+    final repository = state.repository;
+    final repositoryGeneration = _repositoryGeneration;
+    final normalizedName = remoteName.trim();
+    final normalizedUrl = remoteUrl.trim();
+    if (repository == null ||
+        normalizedName.isEmpty ||
+        normalizedUrl.isEmpty ||
+        state.operationState != GitRepositoryOperationState.none ||
+        state.phase == RepositorySessionPhase.loading ||
+        _isShuttingDown ||
+        _remoteConfigurationPreflightInProgress) {
+      return false;
+    }
+    _remoteConfigurationPreflightInProgress = true;
+    try {
+      final remoteNames = await _reader.readRemoteNames(repository);
+      if (_isShuttingDown ||
+          !identical(state.repository, repository) ||
+          state.phase == RepositorySessionPhase.loading ||
+          remoteNames.contains(normalizedName)) {
+        return false;
+      }
+      state = state.copyWith(
+        phase: RepositorySessionPhase.loading,
+        clearMessage: true,
+      );
+      await _writer.addRemote(
+        repository,
+        remoteName: normalizedName,
+        remoteUrl: normalizedUrl,
+      );
+      await refresh();
+      return state.phase == RepositorySessionPhase.ready;
+    } on Object catch (error, stackTrace) {
+      if (_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
+        state = state.copyWith(
+          phase: RepositorySessionPhase.error,
+          isDiffLoading: false,
+          message: _friendlyError(error),
+          technicalDetails: _technicalDetails(error, stackTrace),
+        );
+      }
+      return false;
+    } finally {
+      _remoteConfigurationPreflightInProgress = false;
+    }
+  }
+
   /// Removes one configured remote after verifying it still exists, then
   /// reloads all repository state from Git.
   ///
@@ -1415,10 +1472,10 @@ final class RepositorySessionController
         state.operationState != GitRepositoryOperationState.none ||
         state.phase == RepositorySessionPhase.loading ||
         _isShuttingDown ||
-        _removeRemotePreflightInProgress) {
+        _remoteConfigurationPreflightInProgress) {
       return false;
     }
-    _removeRemotePreflightInProgress = true;
+    _remoteConfigurationPreflightInProgress = true;
     try {
       final remoteNames = await _reader.readRemoteNames(repository);
       if (_isShuttingDown ||
@@ -1441,7 +1498,7 @@ final class RepositorySessionController
       }
       return false;
     } finally {
-      _removeRemotePreflightInProgress = false;
+      _remoteConfigurationPreflightInProgress = false;
     }
   }
 

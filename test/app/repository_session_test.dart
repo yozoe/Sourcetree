@@ -2779,6 +2779,35 @@ while true; do sleep 1; done
     },
   );
 
+  test('adds a remote and refreshes the navigation state', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', '# Git Desktop\n');
+    await repository.commit('Initial commit');
+    final remoteDirectory = await Directory.systemTemp.createTemp(
+      'git-desktop-add-remote-target-',
+    );
+    addTearDown(() => remoteDirectory.delete(recursive: true));
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(
+      await controller.addRemote('upstream', remoteDirectory.path),
+      isTrue,
+    );
+
+    final state = container.read(repositorySessionProvider);
+    expect(state.phase, RepositorySessionPhase.ready);
+    expect(state.remoteNames, contains('upstream'));
+    expect(await controller.readRemoteUrl('upstream'), remoteDirectory.path);
+    expect(
+      await controller.addRemote('upstream', remoteDirectory.path),
+      isFalse,
+    );
+  });
+
   test(
     'checks out an existing remote-tracking branch into a local branch',
     () async {

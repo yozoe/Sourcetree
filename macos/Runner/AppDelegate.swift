@@ -634,6 +634,11 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// Flutter 仍会重新读取仓库 capability，避免使用过期快照执行写操作。
   private(set) var canApplyPatchFromMenu = false
 
+  /// Flutter's last validated Add Remote availability for this Engine.
+  /// 中文：此 Engine 最近一次由 Flutter 校验的“添加远端”可用状态；实际写入前
+  /// Flutter 会重新读取本地远端配置并拒绝重名。
+  private(set) var canAddRemoteFromMenu = false
+
   /// Flutter's last validated Checkout availability for this Engine.
   /// 中文：此 Engine 最近一次由 Flutter 校验的“检出”可用状态；实际分支或提交切换
   /// 仍由 Flutter 显示影响说明并交给 Git 判断工作区改动是否可安全保留。
@@ -937,6 +942,7 @@ final class WorkspaceFlutterWindowController: NSWindowController,
         )
         result(nil)
       case "setWorkspaceMenuState":
+        canAddRemoteFromMenu = arguments?["canAddRemote"] as? Bool ?? false
         canStopTrackingFromMenu = arguments?["canStopTracking"] as? Bool ?? false
         canApplyPatchFromMenu = arguments?["canApplyPatch"] as? Bool ?? false
         canCheckoutFromMenu = arguments?["canCheckout"] as? Bool ?? false
@@ -1316,6 +1322,12 @@ final class WindowCoordinator {
       hasRepositoryMutationCapability:
         currentWorkspaceController?.canApplyPatchFromMenu == true
     )
+  }
+
+  /// Whether the key workspace currently permits adding a local Git remote.
+  /// 中文：当前前台工作区是否允许添加一个本地 Git 远端配置。
+  var canAddRemoteFromMenu: Bool {
+    currentWorkspaceController?.canAddRemoteFromMenu == true
   }
 
   /// Whether the key workspace currently offers a safe checkout target.
@@ -2513,6 +2525,16 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     windowCoordinator.performWorkspaceAction("interactiveRebase")
   }
 
+  /// Opens the add-remote form in the current key workspace.
+  /// 中文：在当前 key workspace 打开添加远端表单。
+  @IBAction func addRemoteRepositoryFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canAddRemoteFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("addRemote")
+  }
+
   /// 中文：在当前 key workspace 打开已有的标签管理流程。
   /// English: Opens the existing tag-management workflow in the key workspace.
   @IBAction func tagRepositoryFromMenu(_ sender: Any?) {
@@ -2843,6 +2865,9 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     }
     if menuItem.action == #selector(interactiveRebaseRepositoryFromMenu(_:)) {
       return windowCoordinator.canInteractiveRebaseFromMenu
+    }
+    if menuItem.action == #selector(addRemoteRepositoryFromMenu(_:)) {
+      return windowCoordinator.canAddRemoteFromMenu
     }
     if menuItem.action == #selector(mergeRepositoryFromMenu(_:)) {
       return windowCoordinator.canMergeFromMenu

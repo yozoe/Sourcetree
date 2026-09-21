@@ -196,6 +196,10 @@ void main() {
         isTrue,
       );
       expect(
+        nativeWorkspaceMenuAvailability(session, available).canAddRemote,
+        isTrue,
+      );
+      expect(
         nativeWorkspaceMenuAvailability(session, available).canCheckout,
         isFalse,
       );
@@ -446,6 +450,7 @@ void main() {
         isFalse,
       );
       expect(nativeWorkspaceMenuAvailability(session, paused), (
+        canAddRemote: false,
         canApplyPatch: false,
         canCheckout: false,
         canCommit: false,

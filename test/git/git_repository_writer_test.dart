@@ -1067,6 +1067,53 @@ void main() {
     expect(await Directory(origin.path).exists(), isTrue);
   });
 
+  test('adds a credential-free remote without contacting it', () async {
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+    const remoteUrl = 'https://example.test/owner/repository.git';
+
+    await writer.addRemote(
+      repository,
+      remoteName: 'upstream',
+      remoteUrl: remoteUrl,
+    );
+
+    expect(
+      (await fixture.runGit([
+        'remote',
+        'get-url',
+        'upstream',
+      ])).stdout.toString().trim(),
+      remoteUrl,
+    );
+  });
+
+  test('rejects credentials before adding a remote', () async {
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await expectLater(
+      writer.addRemote(
+        repository,
+        remoteName: 'upstream',
+        remoteUrl: 'https://user:top-secret@example.test/repository.git',
+      ),
+      throwsA(
+        isA<GitException>().having(
+          (error) => error.toString(),
+          'message',
+          isNot(contains('top-secret')),
+        ),
+      ),
+    );
+    expect(
+      (await fixture.runGit(['remote'])).stdout.toString().trim(),
+      isEmpty,
+    );
+  });
+
   test('rejects an option-shaped remote name before invoking Git', () async {
     final repository = (await inspector.inspect(
       fixture.workingDirectory.path,

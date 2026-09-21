@@ -1068,6 +1068,44 @@ final class GitRepositoryWriter {
     result.throwIfFailed(operation: 'Removing remote');
   }
 
+  /// Adds one credential-free remote URL to the local repository config.
+  ///
+  /// 中文：向本地仓库配置添加一个不含内嵌凭据的远端地址；不会连接、抓取或修改工作区。
+  Future<void> addRemote(
+    GitRepository repository, {
+    required String remoteName,
+    required String remoteUrl,
+  }) async {
+    final normalizedName = remoteName.trim();
+    if (!_isSafeRemoteName(normalizedName) ||
+        normalizedName.contains(RegExp(r'[\x00\s]'))) {
+      throw ArgumentError.value(
+        remoteName,
+        'remoteName',
+        'A valid remote name is required.',
+      );
+    }
+    final normalizedUrl = _requireCredentialFreeRemoteUrl(remoteUrl);
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          'remote',
+          'add',
+          '--',
+          normalizedName,
+          normalizedUrl,
+        ],
+        workingDirectory: repository.commandDirectory,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Adding remote');
+  }
+
   /// 中文：以 Git 的安全删除模式删除已合并的本地分支，绝不强制删除未合并提交。
   ///
   /// English: Deletes a merged local branch with Git's safe deletion mode and
@@ -1190,7 +1228,7 @@ final class GitRepositoryWriter {
     GitCancellationToken? cancellationToken,
     Map<String, String> environment = const {},
   }) async {
-    final normalizedUrl = _requireCredentialFreeCloneUrl(remoteUrl);
+    final normalizedUrl = _requireCredentialFreeRemoteUrl(remoteUrl);
     final directory = Directory(directoryPath.trim());
     final targetType = await FileSystemEntity.type(
       directory.path,
@@ -1954,24 +1992,22 @@ final class GitRepositoryWriter {
     }
   }
 
-  /// 中文：拒绝会把 HTTP(S) 凭据或签名查询串暴露到 Git 参数与远端配置的克隆地址。
+  /// 中文：拒绝会把 HTTP(S) 凭据或签名查询串暴露到 Git 参数与远端配置的地址。
   ///
-  /// English: Rejects clone URLs that would expose HTTP(S) credentials or
-  /// signed query data through Git arguments and persisted remote config.
-  String _requireCredentialFreeCloneUrl(String value) {
+  /// English: Rejects remote URLs that would expose HTTP(S) credentials or
+  /// signed query data through Git arguments and persisted repository config.
+  String _requireCredentialFreeRemoteUrl(String value) {
     final normalized = value.trim();
     if (normalized.isEmpty) {
-      throw const GitException('A clone URL is required.');
+      throw const GitException('A remote URL is required.');
     }
     if (RegExp(r'^[A-Za-z][A-Za-z0-9+.-]*::').hasMatch(normalized)) {
-      throw const GitException(
-        'Git remote-helper clone URLs are not supported.',
-      );
+      throw const GitException('Git remote-helper URLs are not supported.');
     }
     final uri = Uri.tryParse(normalized);
     if (uri == null &&
         RegExp(r'^[A-Za-z][A-Za-z0-9+.-]*:').hasMatch(normalized)) {
-      throw const GitException('The clone URL is invalid.');
+      throw const GitException('The remote URL is invalid.');
     }
     if (uri != null && uri.hasScheme) {
       final scheme = uri.scheme.toLowerCase();
@@ -1988,7 +2024,7 @@ final class GitRepositoryWriter {
             'https',
             'ssh',
           }.contains(scheme)) {
-        throw const GitException('The clone URL scheme is not supported.');
+        throw const GitException('The remote URL scheme is not supported.');
       }
       final String decodedUserInfo;
       try {
@@ -2005,7 +2041,7 @@ final class GitRepositoryWriter {
           uri.hasQuery ||
           uri.hasFragment) {
         throw const GitException(
-          'Clone URLs must not contain embedded credentials or query data. '
+          'Remote URLs must not contain embedded credentials or query data. '
           'Enter credentials through the protected prompt instead.',
         );
       }
@@ -2015,7 +2051,7 @@ final class GitRepositoryWriter {
     ).hasMatch(normalized);
     if (scpCredential) {
       throw const GitException(
-        'Clone URLs must not contain embedded credentials. '
+        'Remote URLs must not contain embedded credentials. '
         'Enter credentials through the protected prompt instead.',
       );
     }
