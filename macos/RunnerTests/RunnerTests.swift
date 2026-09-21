@@ -806,6 +806,7 @@ class RunnerTests: XCTestCase {
     first.applyWorkspaceMenuState([
       "canReviewSelected": true,
       "canPush": true,
+      "canCommitSelected": true,
       "canResetRepository": true,
       "canResetSelected": true,
       "canResetToSelectedCommit": true,
@@ -816,6 +817,7 @@ class RunnerTests: XCTestCase {
     second.applyWorkspaceMenuState([
       "canReviewSelected": false,
       "canPush": false,
+      "canCommitSelected": false,
       "canResetRepository": false,
       "canResetSelected": false,
       "canResetToSelectedCommit": false,
@@ -834,11 +836,13 @@ class RunnerTests: XCTestCase {
     )
     XCTAssertTrue(first.canReviewSelectedFromMenu)
     XCTAssertTrue(first.canPushFromMenu)
+    XCTAssertTrue(first.canCommitSelectedFromMenu)
     XCTAssertTrue(first.canResetRepositoryFromMenu)
     XCTAssertTrue(first.canResetSelectedFromMenu)
     XCTAssertTrue(first.canResetToSelectedCommitFromMenu)
     XCTAssertFalse(second.canReviewSelectedFromMenu)
     XCTAssertFalse(second.canPushFromMenu)
+    XCTAssertFalse(second.canCommitSelectedFromMenu)
     XCTAssertFalse(second.canResetRepositoryFromMenu)
     XCTAssertFalse(second.canResetSelectedFromMenu)
     XCTAssertFalse(second.canResetToSelectedCommitFromMenu)
@@ -857,6 +861,7 @@ class RunnerTests: XCTestCase {
     first.applyWorkspaceMenuState([
       "canReviewSelected": true,
       "canPush": true,
+      "canCommitSelected": true,
       "canResetRepository": true,
       "canResetSelected": true,
       "canResetToSelectedCommit": true,
@@ -865,6 +870,7 @@ class RunnerTests: XCTestCase {
     XCTAssertNil(coordinator.workspaceController(forKeyWindow: firstWindow))
     XCTAssertFalse(first.canReviewSelectedFromMenu)
     XCTAssertFalse(first.canPushFromMenu)
+    XCTAssertFalse(first.canCommitSelectedFromMenu)
     XCTAssertFalse(first.canResetRepositoryFromMenu)
     XCTAssertFalse(first.canResetSelectedFromMenu)
     XCTAssertFalse(first.canResetToSelectedCommitFromMenu)

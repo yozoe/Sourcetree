@@ -2968,6 +2968,16 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     windowCoordinator.performWorkspaceAction("commitSelected")
   }
 
+  /// Opens the same selected-path commit workflow from the Action menu.
+  /// 中文：从“动作”菜单打开同一套按所选路径提交的流程。
+  @IBAction func commitSelectedFromActionMenu(_ sender: Any?) {
+    guard windowCoordinator.canCommitSelectedFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("commitSelected")
+  }
+
   /// Opens the repository-level reset target and mode flow.
   /// 中文：打开仓库级重置的目标与模式选择流程。
   @IBAction func resetRepositoryFromMenu(_ sender: Any?) {
@@ -3522,6 +3532,9 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
       return windowCoordinator.canCommitAllFromMenu
     }
     if menuItem.action == #selector(commitSelectedRepositoryFromMenu(_:)) {
+      return windowCoordinator.canCommitSelectedFromMenu
+    }
+    if menuItem.action == #selector(commitSelectedFromActionMenu(_:)) {
       return windowCoordinator.canCommitSelectedFromMenu
     }
     if menuItem.action == #selector(checkoutRepositoryFromMenu(_:)) {
