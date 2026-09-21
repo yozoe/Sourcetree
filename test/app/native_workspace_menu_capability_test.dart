@@ -454,6 +454,13 @@ void main() {
       expect(
         nativeWorkspaceMenuAvailability(
           session,
+          untrackedSelection,
+        ).canMoveSelected,
+        isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
           nonUtf8TrackedSelection,
         ).canCommitAll,
         isTrue,
@@ -477,6 +484,13 @@ void main() {
           session,
           nonUtf8TrackedSelection,
         ).canCopySelected,
+        isFalse,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          nonUtf8TrackedSelection,
+        ).canMoveSelected,
         isFalse,
       );
       expect(
@@ -579,6 +593,7 @@ void main() {
         canCommit: false,
         canContinueOperation: false,
         canCopySelected: false,
+        canMoveSelected: false,
         canCreateBranch: false,
         canFetch: false,
         canInteractiveRebase: false,

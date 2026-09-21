@@ -281,6 +281,71 @@ void main() {
     expect(await destination.list().isEmpty, isTrue);
   });
 
+  test('moves selected files and refreshes the repository session', () async {
+    if (!Platform.isMacOS) return;
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'tracked\n');
+    await repository.commit('Initial commit');
+    final source = await repository.writeFile('moving.log', 'generated\n');
+    final destination = await Directory.systemTemp.createTemp(
+      'git-desktop-session-move-',
+    );
+    addTearDown(() => destination.delete(recursive: true));
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    controller.selectUncommittedChanges();
+    final moving = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.changes.singleWhere((change) => change.path == 'moving.log');
+
+    final result = await controller.moveChanges([
+      moving,
+    ], destinationDirectory: destination.path);
+
+    expect(result?.movedPaths, ['moving.log']);
+    expect(await source.exists(), isFalse);
+    expect(
+      await File('${destination.path}/moving.log').readAsString(),
+      'generated\n',
+    );
+    expect(
+      container.read(repositorySessionProvider).phase,
+      RepositorySessionPhase.ready,
+    );
+  });
+
+  test('refuses moving a selection that became deleted', () async {
+    if (!Platform.isMacOS) return;
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    final source = await repository.writeFile('stale.txt', 'tracked\n');
+    await repository.commit('Initial commit');
+    await source.writeAsString('changed\n');
+    final destination = await Directory.systemTemp.createTemp(
+      'git-desktop-session-move-stale-',
+    );
+    addTearDown(() => destination.delete(recursive: true));
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    controller.selectUncommittedChanges();
+    final stale = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.changes.singleWhere((change) => change.path == 'stale.txt');
+    await source.delete();
+
+    final result = await controller.moveChanges([
+      stale,
+    ], destinationDirectory: destination.path);
+
+    expect(result, isNull);
+    expect(await destination.list().isEmpty, isTrue);
+  });
+
   test(
     'automatically refreshes external work-tree changes without reloading history',
     () async {

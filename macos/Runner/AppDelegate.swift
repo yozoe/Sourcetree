@@ -770,6 +770,10 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// 中文：Flutter 是否允许复制当前可见的工作区文件选择。
   private(set) var canCopySelectedFromMenu = false
 
+  /// Whether Flutter can safely move the visible work-tree selection.
+  /// 中文：Flutter 是否允许移动当前可见的工作区文件选择。
+  private(set) var canMoveSelectedFromMenu = false
+
   /// Flutter's last validated Stage Selected availability for this Engine.
   /// 中文：此 Engine 最近一次由 Flutter 校验的“添加到索引”可用状态。
   private(set) var canStageSelectedFromMenu = false
@@ -1056,6 +1060,8 @@ final class WorkspaceFlutterWindowController: NSWindowController,
           arguments?["canIgnoreSelected"] as? Bool ?? false
         canCopySelectedFromMenu =
           arguments?["canCopySelected"] as? Bool ?? false
+        canMoveSelectedFromMenu =
+          arguments?["canMoveSelected"] as? Bool ?? false
         canStageSelectedFromMenu =
           arguments?["canStageSelected"] as? Bool ?? false
         canUnstageSelectedFromMenu =
@@ -1573,6 +1579,19 @@ final class WindowCoordinator {
       hasKeyWorkspace: currentWorkspaceController != nil,
       hasValidatedSelection:
         currentWorkspaceController?.canCopySelectedFromMenu == true
+    ), let targets = currentWorkspaceFileMenuTargets else {
+      return false
+    }
+    return !targets.existingRegularFileURLs().isEmpty
+  }
+
+  /// Whether the key workspace can move every currently selected local file.
+  /// 中文：当前前台工作区是否可移动全部当前选中的本地文件。
+  var canMoveSelectedFromMenu: Bool {
+    guard gitDesktopCanPerformSelectedChangeMenuAction(
+      hasKeyWorkspace: currentWorkspaceController != nil,
+      hasValidatedSelection:
+        currentWorkspaceController?.canMoveSelectedFromMenu == true
     ), let targets = currentWorkspaceFileMenuTargets else {
       return false
     }
@@ -2870,6 +2889,16 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     windowCoordinator.performWorkspaceAction("copySelected")
   }
 
+  /// Opens the move preview for the key workspace's selected local files.
+  /// 中文：为当前前台工作区选中的本地文件打开移动预览。
+  @IBAction func moveSelectedFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canMoveSelectedFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("moveSelected")
+  }
+
   /// 中文：用系统默认应用打开当前工作区唯一选中的现存文件。
   /// English: Opens the single existing workspace selection in its default app.
   @IBAction func openSelectedFileFromMenu(_ sender: Any?) {
@@ -3176,6 +3205,9 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     }
     if menuItem.action == #selector(copySelectedFromMenu(_:)) {
       return windowCoordinator.canCopySelectedFromMenu
+    }
+    if menuItem.action == #selector(moveSelectedFromMenu(_:)) {
+      return windowCoordinator.canMoveSelectedFromMenu
     }
     if menuItem.action == #selector(fetchRepositoryFromMenu(_:)) {
       return windowCoordinator.canFetchFromMenu

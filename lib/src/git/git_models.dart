@@ -208,6 +208,38 @@ final class GitWorkingTreeCopyResult {
   bool get hasFailures => conflictingPaths.isNotEmpty || failedPaths.isNotEmpty;
 }
 
+/// The per-path outcome of moving work-tree files without overwriting.
+/// 中文：以不覆盖方式移动工作区文件后的逐路径结果。
+final class GitWorkingTreeMoveResult {
+  GitWorkingTreeMoveResult({
+    required this.destinationDirectory,
+    required List<String> movedPaths,
+    required List<String> conflictingPaths,
+    required List<String> retainedSourcePaths,
+    required List<String> failedPaths,
+  }) : movedPaths = List.unmodifiable(movedPaths),
+       conflictingPaths = List.unmodifiable(conflictingPaths),
+       retainedSourcePaths = List.unmodifiable(retainedSourcePaths),
+       failedPaths = List.unmodifiable(failedPaths);
+
+  final String destinationDirectory;
+  final List<String> movedPaths;
+  final List<String> conflictingPaths;
+
+  /// Paths copied to the destination whose source could not be safely removed.
+  /// 中文：目标副本已创建、但源文件无法安全删除的路径。
+  final List<String> retainedSourcePaths;
+
+  final List<String> failedPaths;
+
+  /// Whether any selected path was not moved completely.
+  /// 中文：是否至少有一个所选路径未完整移动。
+  bool get hasFailures =>
+      conflictingPaths.isNotEmpty ||
+      retainedSourcePaths.isNotEmpty ||
+      failedPaths.isNotEmpty;
+}
+
 extension GitChangeTypeParsing on GitChangeType {
   /// 中文：将 porcelain 状态字符转换为对应的文件改动类型；未知字符保留为 `unknown`。
   ///

@@ -3194,6 +3194,118 @@ final class RepositorySessionController
     }
   }
 
+  /// Moves the selected working-tree files into [destinationDirectory]
+  /// without overwriting existing entries. Git status and the selected source
+  /// rows are revalidated before moving, then the workspace is refreshed.
+  ///
+  /// 中文：把所选工作区文件移动到 [destinationDirectory] 且不覆盖已有条目。
+  /// 移动前重新读取 Git 状态并复核选择来源，结束后刷新真实工作区状态。
+  Future<GitWorkingTreeMoveResult?> moveChanges(
+    List<RepositoryChangeViewData> changes, {
+    required String destinationDirectory,
+  }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackGitTask<GitWorkingTreeMoveResult?>(
+        () => moveChanges(changes, destinationDirectory: destinationDirectory),
+      );
+    }
+    if (changes.isEmpty ||
+        state.phase != RepositorySessionPhase.ready ||
+        state.isWorkingTreeBusy) {
+      return null;
+    }
+
+    final previousSelection = state.selectedChange;
+    final previousRefId = state.selectedRefId;
+    await refresh();
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        state.phase != RepositorySessionPhase.ready) {
+      return null;
+    }
+
+    final paths = <GitPath>[];
+    for (final change in changes) {
+      final entry = status.displayEntries
+          .where((candidate) => candidate.path.display == change.path)
+          .firstOrNull;
+      final currentType = change.isStaged
+          ? entry?.indexStatus
+          : entry?.workTreeStatus;
+      final stillInSelectedSource = change.isStaged
+          ? entry?.hasStagedChange == true
+          : entry?.hasWorkTreeChange == true;
+      if (entry == null ||
+          !entry.path.isValidUtf8 ||
+          entry.isConflicted ||
+          !stillInSelectedSource ||
+          currentType == GitChangeType.deleted ||
+          entry.path.display.contains('\n') ||
+          entry.path.display.contains('\r')) {
+        return null;
+      }
+      if (!paths.contains(entry.path)) paths.add(entry.path);
+    }
+    if (paths.isEmpty) return null;
+
+    final repositoryGeneration = _repositoryGeneration;
+    final cancellation = GitCancellationToken();
+    _moveCancellation?.cancel();
+    _moveCancellation = cancellation;
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isWorkingTreeBusy: true,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearMessage: true,
+    );
+    try {
+      final result = await _writer.moveWorkingTreeFiles(
+        repository,
+        paths,
+        destinationDirectory: destinationDirectory,
+        cancellationToken: cancellation,
+      );
+      if (cancellation.isCancelled ||
+          !_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
+        return null;
+      }
+      await _finishWorkingTreeMutation(
+        repository: repository,
+        repositoryGeneration: repositoryGeneration,
+        previousSelection: previousSelection,
+        previousRefId: previousRefId,
+      );
+      return result;
+    } on GitCancelledException {
+      if (_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
+        await _finishWorkingTreeMutation(
+          repository: repository,
+          repositoryGeneration: repositoryGeneration,
+          previousSelection: previousSelection,
+          previousRefId: previousRefId,
+        );
+      }
+      return null;
+    } on Object catch (error, stackTrace) {
+      if (_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
+        state = state.copyWith(
+          phase: RepositorySessionPhase.error,
+          isWorkingTreeBusy: false,
+          message: _friendlyError(error),
+          technicalDetails: _technicalDetails(error, stackTrace),
+        );
+      }
+      return null;
+    } finally {
+      if (identical(_moveCancellation, cancellation)) {
+        _moveCancellation = null;
+      }
+    }
+  }
+
   /// Deletes selected staged or unstaged paths from the working tree.
   ///
   /// The Git index and commit history are left unchanged. Status is re-read

@@ -59,6 +59,56 @@ void main() {
     expect(await destination.list().isEmpty, isTrue);
   });
 
+  test('shutdown cancels and joins an in-flight file move', () async {
+    if (!Platform.isMacOS) return;
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('base');
+    final source = await repository.writeFile('move.txt', 'move me\n');
+    final destination = await Directory.systemTemp.createTemp(
+      'git-desktop-move-shutdown-',
+    );
+    addTearDown(() => destination.delete(recursive: true));
+    final movePrepared = Completer<void>();
+    final releaseMove = Completer<void>();
+    final runner = GitRunner();
+    final container = ProviderContainer(
+      overrides: [
+        gitRunnerProvider.overrideWithValue(runner),
+        gitRepositoryWriterProvider.overrideWithValue(
+          GitRepositoryWriter(
+            runner,
+            beforeMovePublicationForTesting: () async {
+              movePrepared.complete();
+              await releaseMove.future;
+            },
+          ),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    controller.selectUncommittedChanges();
+    final selected = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.changes.singleWhere((change) => change.path == 'move.txt');
+
+    final move = controller.moveChanges([
+      selected,
+    ], destinationDirectory: destination.path);
+    await movePrepared.future;
+    final shutdown = controller.prepareForShutdown();
+    await Future<void>.delayed(Duration.zero);
+    releaseMove.complete();
+
+    await shutdown;
+    expect(await move, isNull);
+    expect(await source.readAsString(), 'move me\n');
+    expect(await destination.list().isEmpty, isTrue);
+  });
+
   test(
     'shutdown cancels and joins an in-flight checkout without a token',
     () async {

@@ -341,6 +341,207 @@ void main() {
     expect(await outsideFile.readAsString(), 'outside\n');
   });
 
+  test(
+    'moves a work-tree file atomically without changing its bytes',
+    () async {
+      if (!Platform.isMacOS) return;
+      final source = await fixture.writeFile('nested/move.txt', 'move me\n');
+      final chmod = await Process.run('/bin/chmod', ['0751', source.path]);
+      expect(chmod.exitCode, 0, reason: chmod.stderr.toString());
+      final destination = await Directory.systemTemp.createTemp(
+        'git-desktop-move-target-',
+      );
+      addTearDown(() => destination.delete(recursive: true));
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+
+      final result = await writer.moveWorkingTreeFiles(repository, [
+        GitPath.fromString('nested/move.txt'),
+      ], destinationDirectory: destination.path);
+
+      final target = File('${destination.path}/move.txt');
+      expect(result.movedPaths, ['nested/move.txt']);
+      expect(result.hasFailures, isFalse);
+      expect(await source.exists(), isFalse);
+      expect(await target.readAsString(), 'move me\n');
+      expect((await target.stat()).mode & 0x1ff, 0x1e9);
+    },
+  );
+
+  test('preflights move conflicts before changing any source', () async {
+    if (!Platform.isMacOS) return;
+    final first = await fixture.writeFile('first.txt', 'first\n');
+    final second = await fixture.writeFile('second.txt', 'second\n');
+    final destination = await Directory.systemTemp.createTemp(
+      'git-desktop-move-conflict-',
+    );
+    addTearDown(() => destination.delete(recursive: true));
+    await File('${destination.path}/second.txt').writeAsString('external\n');
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    final result = await writer.moveWorkingTreeFiles(repository, [
+      GitPath.fromString('first.txt'),
+      GitPath.fromString('second.txt'),
+    ], destinationDirectory: destination.path);
+
+    expect(result.movedPaths, isEmpty);
+    expect(result.conflictingPaths, ['second.txt']);
+    expect(await first.readAsString(), 'first\n');
+    expect(await second.readAsString(), 'second\n');
+    expect(await File('${destination.path}/first.txt').exists(), isFalse);
+    expect(
+      await File('${destination.path}/second.txt').readAsString(),
+      'external\n',
+    );
+  });
+
+  test('rejects colliding move names before changing any source', () async {
+    if (!Platform.isMacOS) return;
+    final first = await fixture.writeFile('one/report.txt', 'first\n');
+    final second = await fixture.writeFile('two/REPORT.txt', 'second\n');
+    final destination = await Directory.systemTemp.createTemp(
+      'git-desktop-move-duplicate-',
+    );
+    addTearDown(() => destination.delete(recursive: true));
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    final result = await writer.moveWorkingTreeFiles(repository, [
+      GitPath.fromString('one/report.txt'),
+      GitPath.fromString('two/REPORT.txt'),
+    ], destinationDirectory: destination.path);
+
+    expect(result.movedPaths, isEmpty);
+    expect(result.conflictingPaths, ['two/REPORT.txt']);
+    expect(await first.readAsString(), 'first\n');
+    expect(await second.readAsString(), 'second\n');
+    expect(await destination.list().isEmpty, isTrue);
+  });
+
+  test(
+    'moves across volumes by publishing before removing the source',
+    () async {
+      if (!Platform.isMacOS) return;
+      final source = await fixture.writeFile('cross.txt', 'cross volume\n');
+      final destination = await Directory.systemTemp.createTemp(
+        'git-desktop-move-cross-',
+      );
+      addTearDown(() => destination.delete(recursive: true));
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+      final crossVolumeWriter = GitRepositoryWriter(
+        GitRunner(),
+        forceCrossVolumeMoveForTesting: true,
+      );
+
+      final result = await crossVolumeWriter.moveWorkingTreeFiles(repository, [
+        GitPath.fromString('cross.txt'),
+      ], destinationDirectory: destination.path);
+
+      expect(result.movedPaths, ['cross.txt']);
+      expect(await source.exists(), isFalse);
+      expect(
+        await File('${destination.path}/cross.txt').readAsString(),
+        'cross volume\n',
+      );
+    },
+  );
+
+  test(
+    'retains a changed source after publishing a cross-volume copy',
+    () async {
+      if (!Platform.isMacOS) return;
+      final source = await fixture.writeFile('retained.txt', 'original\n');
+      final destination = await Directory.systemTemp.createTemp(
+        'git-desktop-move-retained-',
+      );
+      addTearDown(() => destination.delete(recursive: true));
+      final repository = (await inspector.inspect(
+        fixture.workingDirectory.path,
+      ))!;
+      final crossVolumeWriter = GitRepositoryWriter(
+        GitRunner(),
+        forceCrossVolumeMoveForTesting: true,
+        beforeMoveSourceRemovalForTesting: () async {
+          await source.delete();
+          await source.writeAsString('replacement\n');
+        },
+      );
+
+      final result = await crossVolumeWriter.moveWorkingTreeFiles(repository, [
+        GitPath.fromString('retained.txt'),
+      ], destinationDirectory: destination.path);
+
+      expect(result.movedPaths, isEmpty);
+      expect(result.retainedSourcePaths, ['retained.txt']);
+      expect(await source.readAsString(), 'replacement\n');
+      expect(
+        await File('${destination.path}/retained.txt').readAsString(),
+        'original\n',
+      );
+    },
+  );
+
+  test('does not overwrite a destination raced during a move', () async {
+    if (!Platform.isMacOS) return;
+    final source = await fixture.writeFile('move-race.txt', 'source\n');
+    final destination = await Directory.systemTemp.createTemp(
+      'git-desktop-move-race-',
+    );
+    addTearDown(() => destination.delete(recursive: true));
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+    final target = File('${destination.path}/move-race.txt');
+    final racingWriter = GitRepositoryWriter(
+      GitRunner(),
+      beforeMovePublicationForTesting: () => target.writeAsString('external\n'),
+    );
+
+    final result = await racingWriter.moveWorkingTreeFiles(repository, [
+      GitPath.fromString('move-race.txt'),
+    ], destinationDirectory: destination.path);
+
+    expect(result.movedPaths, isEmpty);
+    expect(result.conflictingPaths, ['move-race.txt']);
+    expect(await source.readAsString(), 'source\n');
+    expect(await target.readAsString(), 'external\n');
+  });
+
+  test('does not follow a symlink selected as a move source', () async {
+    if (!Platform.isMacOS) return;
+    final outside = await Directory.systemTemp.createTemp(
+      'git-desktop-move-outside-',
+    );
+    addTearDown(() => outside.delete(recursive: true));
+    final outsideFile = File('${outside.path}/secret.txt');
+    await outsideFile.writeAsString('outside\n');
+    final link = Link('${fixture.workingDirectory.path}/linked-move.txt');
+    await link.create(outsideFile.path);
+    final destination = await Directory.systemTemp.createTemp(
+      'git-desktop-move-link-target-',
+    );
+    addTearDown(() => destination.delete(recursive: true));
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    final result = await writer.moveWorkingTreeFiles(repository, [
+      GitPath.fromString('linked-move.txt'),
+    ], destinationDirectory: destination.path);
+
+    expect(result.movedPaths, isEmpty);
+    expect(result.failedPaths, ['linked-move.txt']);
+    expect(await link.exists(), isTrue);
+    expect(await outsideFile.readAsString(), 'outside\n');
+    expect(await destination.list().isEmpty, isTrue);
+  });
+
   test('refuses removal through a symlinked work-tree parent', () async {
     if (!Platform.isMacOS) return;
     final outside = await Directory.systemTemp.createTemp(

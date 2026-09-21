@@ -106,6 +106,7 @@ extension on RepositorySessionController {
     _pushVerificationCancellation?.cancel();
     _stashCancellation?.cancel();
     _copyCancellation?.cancel();
+    _moveCancellation?.cancel();
     _historyMutationCancellation?.cancel();
     _repositoryDetailsCancellation?.cancel();
   }
@@ -144,6 +145,10 @@ extension on RepositorySessionController {
   set _copyCancellation(GitCancellationToken? value) =>
       _taskTracker.copyCancellation = value;
 
+  GitCancellationToken? get _moveCancellation => _taskTracker.moveCancellation;
+  set _moveCancellation(GitCancellationToken? value) =>
+      _taskTracker.moveCancellation = value;
+
   GitCancellationToken? get _historyMutationCancellation =>
       _taskTracker.historyMutationCancellation;
   set _historyMutationCancellation(GitCancellationToken? value) =>
@@ -171,6 +176,7 @@ final class _RepositoryTaskTracker {
   GitCancellationToken? pushVerificationCancellation;
   GitCancellationToken? stashCancellation;
   GitCancellationToken? copyCancellation;
+  GitCancellationToken? moveCancellation;
   GitCancellationToken? historyMutationCancellation;
   GitCancellationToken? repositoryDetailsCancellation;
   final Set<Future<void>> activeGitTasks = <Future<void>>{};

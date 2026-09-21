@@ -78,6 +78,9 @@ final class GitRepositoryWriter {
     @visibleForTesting this.beforeConflictResultPublicationForTesting,
     @visibleForTesting this.beforeIgnoreRulesPublicationForTesting,
     @visibleForTesting this.beforeCopyPublicationForTesting,
+    @visibleForTesting this.beforeMovePublicationForTesting,
+    @visibleForTesting this.beforeMoveSourceRemovalForTesting,
+    @visibleForTesting this.forceCrossVolumeMoveForTesting = false,
   });
 
   final GitRunner runner;
@@ -93,6 +96,19 @@ final class GitRepositoryWriter {
   /// Test seam invoked after copied bytes are durable but before publication.
   /// 中文：复制内容已持久化、尚未发布时调用的测试钩子。
   final FutureOr<void> Function()? beforeCopyPublicationForTesting;
+
+  /// Test seam invoked immediately before a move destination is published.
+  /// 中文：移动目标即将发布前调用的测试钩子。
+  final FutureOr<void> Function()? beforeMovePublicationForTesting;
+
+  /// Test seam invoked after a cross-volume destination is published but
+  /// before the original source is removed.
+  /// 中文：跨卷目标发布后、删除原始源文件前调用的测试钩子。
+  final FutureOr<void> Function()? beforeMoveSourceRemovalForTesting;
+
+  /// Forces the copy-then-remove move path in tests.
+  /// 中文：仅在测试中强制使用先复制再删除的移动路径。
+  final bool forceCrossVolumeMoveForTesting;
 
   /// Appends generated rules to `.gitignore` or `.git/info/exclude` without
   /// replacing existing content. Existing identical rules are not duplicated.
@@ -304,6 +320,138 @@ final class GitRepositoryWriter {
         destinationDirectory: canonicalDestination,
         copiedPaths: copiedPaths,
         conflictingPaths: racedConflictingPaths,
+        failedPaths: failedPaths,
+      );
+    } finally {
+      destination.close();
+    }
+  }
+
+  /// Moves regular work-tree files into one existing directory without ever
+  /// replacing a destination. Same-volume moves are atomic and exclusive;
+  /// cross-volume moves publish a durable copy before removing the unchanged
+  /// source. A source that cannot be safely removed is retained and reported.
+  ///
+  /// 中文：把普通工作区文件移动到一个既有目录且绝不覆盖目标。同卷移动采用
+  /// 排他原子操作；跨卷先持久发布副本，再删除仍为原对象的源文件。无法安全删除
+  /// 的源文件会保留并单独报告。
+  Future<GitWorkingTreeMoveResult> moveWorkingTreeFiles(
+    GitRepository repository,
+    List<GitPath> paths, {
+    required String destinationDirectory,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final workTreeRoot = repository.workTreeRoot;
+    if (workTreeRoot == null) {
+      throw const GitException('A working tree is required.');
+    }
+    if (paths.isEmpty) {
+      throw const GitException('At least one path is required.');
+    }
+    if (!Platform.isMacOS) {
+      throw const GitException(
+        'Safe file moving is unavailable on this platform.',
+      );
+    }
+    final canonicalRoot = await Directory(workTreeRoot).resolveSymbolicLinks();
+    final canonicalDestination = await Directory(
+      destinationDirectory,
+    ).resolveSymbolicLinks();
+    final destinationType = await FileSystemEntity.type(
+      canonicalDestination,
+      followLinks: false,
+    );
+    if (destinationType != FileSystemEntityType.directory) {
+      throw const GitException('The move destination is not a directory.');
+    }
+
+    final relativePaths = <String>[];
+    final seenPaths = <String>{};
+    final destinationNames = <String>{};
+    final duplicateNames = <String>[];
+    for (final path in paths) {
+      final relativePath = _requireUtf8Path(path);
+      final components = path_utils
+          .split(path_utils.normalize(relativePath))
+          .where((component) => component != '.')
+          .toList(growable: false);
+      if (path_utils.isAbsolute(relativePath) ||
+          components.isEmpty ||
+          components.contains('..')) {
+        throw const GitException('A move source is outside the work tree.');
+      }
+      if (!seenPaths.add(relativePath)) continue;
+      final name = components.last;
+      if (!destinationNames.add(name.toLowerCase())) {
+        duplicateNames.add(relativePath);
+      }
+      relativePaths.add(relativePath);
+    }
+    if (duplicateNames.isNotEmpty) {
+      return GitWorkingTreeMoveResult(
+        destinationDirectory: canonicalDestination,
+        movedPaths: const [],
+        conflictingPaths: duplicateNames,
+        retainedSourcePaths: const [],
+        failedPaths: const [],
+      );
+    }
+
+    final destination = _MacOsPinnedDirectory.open(canonicalDestination);
+    try {
+      final conflictingPaths = <String>[];
+      for (final relativePath in relativePaths) {
+        if (destination.containsEntry(path_utils.basename(relativePath))) {
+          conflictingPaths.add(relativePath);
+        }
+      }
+      if (conflictingPaths.isNotEmpty) {
+        return GitWorkingTreeMoveResult(
+          destinationDirectory: canonicalDestination,
+          movedPaths: const [],
+          conflictingPaths: conflictingPaths,
+          retainedSourcePaths: const [],
+          failedPaths: const [],
+        );
+      }
+
+      final movedPaths = <String>[];
+      final racedConflictingPaths = <String>[];
+      final retainedSourcePaths = <String>[];
+      final failedPaths = <String>[];
+      for (final relativePath in relativePaths) {
+        if (cancellationToken?.isCancelled == true) {
+          throw const GitCancelledException();
+        }
+        try {
+          final outcome = await _MacOsSecureFileMove.move(
+            workTreeRoot: canonicalRoot,
+            relativePath: relativePath,
+            destination: destination,
+            cancellationToken: cancellationToken,
+            beforePublicationForTesting: beforeMovePublicationForTesting,
+            beforeSourceRemovalForTesting: beforeMoveSourceRemovalForTesting,
+            forceCrossVolumeForTesting: forceCrossVolumeMoveForTesting,
+          );
+          switch (outcome) {
+            case _SecureMoveOutcome.moved:
+              movedPaths.add(relativePath);
+            case _SecureMoveOutcome.sourceRetained:
+              retainedSourcePaths.add(relativePath);
+          }
+        } on GitCancelledException {
+          rethrow;
+        } on _CopyDestinationConflictException {
+          racedConflictingPaths.add(relativePath);
+        } on Object {
+          failedPaths.add(relativePath);
+        }
+      }
+      return GitWorkingTreeMoveResult(
+        destinationDirectory: canonicalDestination,
+        movedPaths: movedPaths,
+        conflictingPaths: racedConflictingPaths,
+        retainedSourcePaths: retainedSourcePaths,
         failedPaths: failedPaths,
       );
     } finally {
@@ -3056,6 +3204,23 @@ final class _MacOsAtomicFileWriter {
         ),
         int Function(int, ffi.Pointer<ffi.Uint8>, int, ffi.Pointer<ffi.Uint8>)
       >('renameat');
+  static final _renameAtExclusive = _libc
+      .lookupFunction<
+        ffi.Int32 Function(
+          ffi.Int32,
+          ffi.Pointer<ffi.Uint8>,
+          ffi.Int32,
+          ffi.Pointer<ffi.Uint8>,
+          ffi.Uint32,
+        ),
+        int Function(
+          int,
+          ffi.Pointer<ffi.Uint8>,
+          int,
+          ffi.Pointer<ffi.Uint8>,
+          int,
+        )
+      >('renameatx_np');
   static final _unlinkAt = _libc
       .lookupFunction<
         ffi.Int32 Function(ffi.Int32, ffi.Pointer<ffi.Uint8>, ffi.Int32),
@@ -3089,6 +3254,7 @@ final class _MacOsAtomicFileWriter {
   static const _oNoFollow = 0x00000100;
   static const _oDirectory = 0x00100000;
   static const _oCloseOnExec = 0x01000000;
+  static const _renameExclusive = 0x00000004;
 
   /// 中文：固定父目录，完整写入同目录临时文件，复核目标身份后原子发布。
   ///
@@ -3528,11 +3694,10 @@ final class _MacOsPinnedDirectory {
           'The copied file could not be published safely.',
         );
       }
-      if (_MacOsAtomicFileWriter._fsync(_fileDescriptor) != 0) {
-        throw const GitException(
-          'The copy destination directory could not be flushed.',
-        );
-      }
+      // The file contents are already durable and the entry is published.
+      // A directory fsync failure cannot be safely rolled back without risking
+      // removal of a replacement, so retain the visible successful result.
+      _MacOsAtomicFileWriter._fsync(_fileDescriptor);
     } finally {
       if (buffer != null) _MacOsAtomicFileWriter._free(buffer.cast());
       if (temporaryFd >= 0) _MacOsAtomicFileWriter._close(temporaryFd);
@@ -3719,6 +3884,197 @@ final class _MacOsSecureFileCopy {
       if (sourceFd >= 0) _MacOsAtomicFileWriter._close(sourceFd);
       if (currentFd >= 0) _MacOsAtomicFileWriter._close(currentFd);
       _MacOsAtomicFileWriter._free(rootPointer.cast());
+    }
+  }
+}
+
+enum _SecureMoveOutcome { moved, sourceRetained }
+
+/// Moves one secured regular file with exclusive same-volume rename or a
+/// durable cross-volume copy followed by identity-checked source removal.
+/// 中文：通过同卷排他重命名，或跨卷持久复制后校验身份再删除源文件，安全移动
+/// 单个普通文件。
+final class _MacOsSecureFileMove {
+  /// Moves [relativePath] below [workTreeRoot] into [destination].
+  /// 中文：把 [workTreeRoot] 下的 [relativePath] 移动到 [destination]。
+  static Future<_SecureMoveOutcome> move({
+    required String workTreeRoot,
+    required String relativePath,
+    required _MacOsPinnedDirectory destination,
+    GitCancellationToken? cancellationToken,
+    FutureOr<void> Function()? beforePublicationForTesting,
+    FutureOr<void> Function()? beforeSourceRemovalForTesting,
+    bool forceCrossVolumeForTesting = false,
+  }) async {
+    final components = path_utils
+        .split(path_utils.normalize(relativePath))
+        .where((component) => component != '.')
+        .toList(growable: false);
+    if (components.isEmpty || components.contains('..')) {
+      throw const GitException('The move source is invalid.');
+    }
+    final rootPointer = _MacOsAtomicFileWriter._nativeString(workTreeRoot);
+    final leafPointer = _MacOsAtomicFileWriter._nativeString(components.last);
+    final targetPointer = _MacOsAtomicFileWriter._nativeString(components.last);
+    var parentFd = -1;
+    var sourceFd = -1;
+    try {
+      parentFd = _MacOsAtomicFileWriter._open(
+        rootPointer,
+        _MacOsAtomicFileWriter._oReadOnly |
+            _MacOsAtomicFileWriter._oDirectory |
+            _MacOsAtomicFileWriter._oNoFollow |
+            _MacOsAtomicFileWriter._oCloseOnExec,
+      );
+      if (parentFd < 0) {
+        throw const GitException('The work tree could not be secured.');
+      }
+      for (final component in components.take(components.length - 1)) {
+        final pointer = _MacOsAtomicFileWriter._nativeString(component);
+        try {
+          final nextFd = _MacOsAtomicFileWriter._openAtExisting(
+            parentFd,
+            pointer,
+            _MacOsAtomicFileWriter._oReadOnly |
+                _MacOsAtomicFileWriter._oDirectory |
+                _MacOsAtomicFileWriter._oNoFollow |
+                _MacOsAtomicFileWriter._oCloseOnExec,
+          );
+          if (nextFd < 0) {
+            throw const GitException(
+              'A move-source parent changed or is not a safe directory.',
+            );
+          }
+          _MacOsAtomicFileWriter._close(parentFd);
+          parentFd = nextFd;
+        } finally {
+          _MacOsAtomicFileWriter._free(pointer.cast());
+        }
+      }
+      sourceFd = _MacOsAtomicFileWriter._openAtExisting(
+        parentFd,
+        leafPointer,
+        _MacOsAtomicFileWriter._oReadOnly |
+            _MacOsAtomicFileWriter._oNonBlock |
+            _MacOsAtomicFileWriter._oNoFollow |
+            _MacOsAtomicFileWriter._oCloseOnExec,
+      );
+      if (sourceFd < 0) {
+        throw const GitException('The move source is unavailable or unsafe.');
+      }
+      final sourceStatus = _MacOsAtomicFileWriter._malloc(256);
+      final destinationStatus = _MacOsAtomicFileWriter._malloc(256);
+      if (sourceStatus.address == 0 || destinationStatus.address == 0) {
+        if (sourceStatus.address != 0) {
+          _MacOsAtomicFileWriter._free(sourceStatus);
+        }
+        if (destinationStatus.address != 0) {
+          _MacOsAtomicFileWriter._free(destinationStatus);
+        }
+        throw const GitException('Memory for move metadata is unavailable.');
+      }
+      int sourceMode;
+      bool sameVolume;
+      try {
+        if (_MacOsAtomicFileWriter._fstat(sourceFd, sourceStatus) != 0 ||
+            _MacOsAtomicFileWriter._fstat(
+                  destination._fileDescriptor,
+                  destinationStatus,
+                ) !=
+                0) {
+          throw const GitException('Move metadata could not be read.');
+        }
+        final sourceBytes = sourceStatus.cast<ffi.Uint8>();
+        sourceMode = (sourceBytes + 4).cast<ffi.Uint16>().value;
+        sameVolume =
+            !forceCrossVolumeForTesting &&
+            sourceBytes.cast<ffi.Uint32>().value ==
+                destinationStatus.cast<ffi.Uint32>().value;
+      } finally {
+        _MacOsAtomicFileWriter._free(sourceStatus);
+        _MacOsAtomicFileWriter._free(destinationStatus);
+      }
+      if (sourceMode & 0xf000 != 0x8000) {
+        throw const GitException('The move source is not a regular file.');
+      }
+
+      if (sameVolume) {
+        await beforePublicationForTesting?.call();
+        if (cancellationToken?.isCancelled == true) {
+          throw const GitCancelledException();
+        }
+        if (!_pathStillNamesSource(parentFd, leafPointer, sourceFd)) {
+          throw const GitException(
+            'The move source changed before publication.',
+          );
+        }
+        if (_MacOsAtomicFileWriter._renameAtExclusive(
+              parentFd,
+              leafPointer,
+              destination._fileDescriptor,
+              targetPointer,
+              _MacOsAtomicFileWriter._renameExclusive,
+            ) !=
+            0) {
+          if (_MacOsAtomicFileWriter._errnoLocation().value == 17) {
+            throw const _CopyDestinationConflictException();
+          }
+          throw const GitException('The file could not be moved atomically.');
+        }
+        _MacOsAtomicFileWriter._fsync(parentFd);
+        _MacOsAtomicFileWriter._fsync(destination._fileDescriptor);
+        return _SecureMoveOutcome.moved;
+      }
+
+      await destination.copyRegularFileExclusive(
+        fileName: components.last,
+        sourceFileDescriptor: sourceFd,
+        sourceMode: sourceMode & 0x1ff,
+        cancellationToken: cancellationToken,
+        beforePublicationForTesting: beforePublicationForTesting,
+      );
+      try {
+        await beforeSourceRemovalForTesting?.call();
+        if (!_pathStillNamesSource(parentFd, leafPointer, sourceFd)) {
+          return _SecureMoveOutcome.sourceRetained;
+        }
+        if (_MacOsAtomicFileWriter._unlinkAt(parentFd, leafPointer, 0) != 0) {
+          return _SecureMoveOutcome.sourceRetained;
+        }
+      } on Object {
+        // Publication already succeeded. Never describe the destination as
+        // absent or retry deletion blindly when source cleanup is uncertain.
+        return _SecureMoveOutcome.sourceRetained;
+      }
+      _MacOsAtomicFileWriter._fsync(parentFd);
+      return _SecureMoveOutcome.moved;
+    } finally {
+      if (sourceFd >= 0) _MacOsAtomicFileWriter._close(sourceFd);
+      if (parentFd >= 0) _MacOsAtomicFileWriter._close(parentFd);
+      _MacOsAtomicFileWriter._free(rootPointer.cast());
+      _MacOsAtomicFileWriter._free(leafPointer.cast());
+      _MacOsAtomicFileWriter._free(targetPointer.cast());
+    }
+  }
+
+  static bool _pathStillNamesSource(
+    int parentFd,
+    ffi.Pointer<ffi.Uint8> leafPointer,
+    int sourceFd,
+  ) {
+    final currentFd = _MacOsAtomicFileWriter._openAtExisting(
+      parentFd,
+      leafPointer,
+      _MacOsAtomicFileWriter._oReadOnly |
+          _MacOsAtomicFileWriter._oNonBlock |
+          _MacOsAtomicFileWriter._oNoFollow |
+          _MacOsAtomicFileWriter._oCloseOnExec,
+    );
+    if (currentFd < 0) return false;
+    try {
+      return _MacOsAtomicFileWriter._sameFile(sourceFd, currentFd);
+    } finally {
+      _MacOsAtomicFileWriter._close(currentFd);
     }
   }
 }

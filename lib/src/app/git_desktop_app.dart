@@ -88,6 +88,7 @@ bool _isLoadedAncestorOfHead({
   bool canCommit,
   bool canContinueOperation,
   bool canCopySelected,
+  bool canMoveSelected,
   bool canUseConflictStage2,
   bool canUseConflictStage3,
   bool canFetch,
@@ -181,6 +182,18 @@ nativeWorkspaceMenuAvailability(
       session.phase != RepositorySessionPhase.loading &&
       !session.isWorkingTreeBusy &&
       selectedConflict != null;
+  final canTransferSelected =
+      canApplyPatch &&
+      menuSelection.isNotEmpty &&
+      menuSelection.every(
+        (change) =>
+            change.isActionEnabled &&
+            change.isPathValidUtf8 &&
+            change.kind != RepositoryChangeKind.conflicted &&
+            change.kind != RepositoryChangeKind.deleted &&
+            !change.path.contains('\n') &&
+            !change.path.contains('\r'),
+      );
   final selectedCommitFile = session.selectedCommitFile;
   final canViewSelectedFileHistory =
       session.phase == RepositorySessionPhase.ready &&
@@ -205,18 +218,8 @@ nativeWorkspaceMenuAvailability(
         hasRecoverableOperation &&
         session.status != null &&
         session.status!.conflictedEntries.isEmpty,
-    canCopySelected:
-        canApplyPatch &&
-        menuSelection.isNotEmpty &&
-        menuSelection.every(
-          (change) =>
-              change.isActionEnabled &&
-              change.isPathValidUtf8 &&
-              change.kind != RepositoryChangeKind.conflicted &&
-              change.kind != RepositoryChangeKind.deleted &&
-              !change.path.contains('\n') &&
-              !change.path.contains('\r'),
-        ),
+    canCopySelected: canTransferSelected,
+    canMoveSelected: canTransferSelected,
     canUseConflictStage2:
         canResolveSelectedConflict && selectedConflict.stage2ObjectId != null,
     canUseConflictStage3:
@@ -738,6 +741,7 @@ class _RepositoryWorkspaceScreenState
   bool? _lastNativeCommitAvailability;
   bool? _lastNativeContinueOperationAvailability;
   bool? _lastNativeCopySelectedAvailability;
+  bool? _lastNativeMoveSelectedAvailability;
   bool? _lastNativeUseConflictStage2Availability;
   bool? _lastNativeUseConflictStage3Availability;
   bool? _lastNativeFetchAvailability;
@@ -886,6 +890,8 @@ class _RepositoryWorkspaceScreenState
         await _showIgnoreSelectedDialog();
       case 'copySelected':
         await _showCopySelectedDialog();
+      case 'moveSelected':
+        await _showMoveSelectedDialog();
       case 'checkout':
         await _showCheckoutDialog();
       case 'merge':
@@ -1074,6 +1080,7 @@ class _RepositoryWorkspaceScreenState
     final canCommit = availability.canCommit;
     final canContinueOperation = availability.canContinueOperation;
     final canCopySelected = availability.canCopySelected;
+    final canMoveSelected = availability.canMoveSelected;
     final canUseConflictStage2 = availability.canUseConflictStage2;
     final canUseConflictStage3 = availability.canUseConflictStage3;
     final canFetch = availability.canFetch;
@@ -1120,6 +1127,7 @@ class _RepositoryWorkspaceScreenState
         _lastNativeCommitAvailability == canCommit &&
         _lastNativeContinueOperationAvailability == canContinueOperation &&
         _lastNativeCopySelectedAvailability == canCopySelected &&
+        _lastNativeMoveSelectedAvailability == canMoveSelected &&
         _lastNativeUseConflictStage2Availability == canUseConflictStage2 &&
         _lastNativeUseConflictStage3Availability == canUseConflictStage3 &&
         _lastNativeFetchAvailability == canFetch &&
@@ -1153,6 +1161,7 @@ class _RepositoryWorkspaceScreenState
     _lastNativeCommitAvailability = canCommit;
     _lastNativeContinueOperationAvailability = canContinueOperation;
     _lastNativeCopySelectedAvailability = canCopySelected;
+    _lastNativeMoveSelectedAvailability = canMoveSelected;
     _lastNativeUseConflictStage2Availability = canUseConflictStage2;
     _lastNativeUseConflictStage3Availability = canUseConflictStage3;
     _lastNativeFetchAvailability = canFetch;
@@ -1185,6 +1194,7 @@ class _RepositoryWorkspaceScreenState
         canCommit: canCommit,
         canContinueOperation: canContinueOperation,
         canCopySelected: canCopySelected,
+        canMoveSelected: canMoveSelected,
         canUseConflictStage2: canUseConflictStage2,
         canUseConflictStage3: canUseConflictStage3,
         canFetch: canFetch,
@@ -4119,7 +4129,11 @@ class _RepositoryWorkspaceScreenState
     if (result == null) {
       message = '未能复制所选文件；仓库状态可能已变化，请刷新后重试。';
     } else if (result.conflictingPaths.isNotEmpty) {
-      message = '目标在确认后出现同名文件，本次未复制任何内容。';
+      message = result.copiedPaths.isEmpty && result.failedPaths.isEmpty
+          ? '目标存在同名文件，本次未复制任何内容。'
+          : '已复制 ${result.copiedPaths.length} 个文件，另有 '
+                '${result.conflictingPaths.length} 个目标冲突、'
+                '${result.failedPaths.length} 个失败。';
     } else if (result.failedPaths.isNotEmpty) {
       message = result.copiedPaths.isEmpty
           ? '未能复制 ${result.failedPaths.length} 个文件；源文件可能已变化或不是普通文件。'
@@ -4127,6 +4141,151 @@ class _RepositoryWorkspaceScreenState
                 '${result.failedPaths.length} 个失败；请检查目标目录。';
     } else {
       message = '已复制 ${result.copiedPaths.length} 个文件。';
+    }
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  /// Chooses one destination directory, previews source-to-target mappings and
+  /// cross-volume behavior, then moves the revalidated selection without
+  /// replacing any existing entry.
+  ///
+  /// 中文：选择目标目录，预览全部源与目标及跨卷行为，再以不覆盖方式移动
+  /// 重新校验后的文件选择。
+  Future<void> _showMoveSelectedDialog() async {
+    final session = ref.read(repositorySessionProvider);
+    final overview = mapRepositoryOverview(session);
+    final selected = _nativeSelectedChanges(overview);
+    final availability = nativeWorkspaceMenuAvailability(
+      session,
+      overview,
+      selectedChanges: selected,
+    );
+    if (!availability.canMoveSelected || selected.isEmpty) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请选择可移动的现存工作区文件。')));
+      return;
+    }
+
+    final destination = await getDirectoryPath(confirmButtonText: '选择移动位置');
+    if (destination == null || !mounted) return;
+    final names = <String>{};
+    final selectedPaths = <String>{};
+    final duplicatePaths = <String>[];
+    final mappings = <({String source, String target})>[];
+    for (final change in selected) {
+      if (!selectedPaths.add(change.path)) continue;
+      final name = path_utils.basename(change.path);
+      if (!names.add(name.toLowerCase())) duplicatePaths.add(change.path);
+      mappings.add((
+        source: change.path,
+        target: path_utils.join(destination, name),
+      ));
+    }
+    if (duplicatePaths.isNotEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '多个所选文件具有相同名称，无法移动到同一目录：\n'
+            '${duplicatePaths.join('\n')}',
+          ),
+        ),
+      );
+      return;
+    }
+    final conflicts = <String>[];
+    for (final mapping in mappings) {
+      if (await FileSystemEntity.type(mapping.target, followLinks: false) !=
+          FileSystemEntityType.notFound) {
+        conflicts.add(mapping.target);
+      }
+    }
+    if (!mounted) return;
+    if (conflicts.isNotEmpty) {
+      await showDialog<void>(
+        context: context,
+        builder: (context) => AlertDialog(
+          title: const Text('目标文件已存在'),
+          content: SizedBox(
+            width: 520,
+            child: SingleChildScrollView(
+              child: SelectableText(
+                '为避免覆盖数据，本次不会移动任何文件。请选择其他目录，或先处理以下目标：\n\n'
+                '${conflicts.join('\n')}',
+              ),
+            ),
+          ),
+          actions: [
+            FilledButton(
+              onPressed: () => Navigator.of(context).pop(),
+              child: const Text('好'),
+            ),
+          ],
+        ),
+      );
+      return;
+    }
+
+    final approved = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('移动 ${mappings.length} 个文件'),
+        content: SizedBox(
+          width: 560,
+          child: SingleChildScrollView(
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text('目标目录：$destination'),
+                const SizedBox(height: 12),
+                const Text('将移动以下文件（不会覆盖已有目标）：'),
+                const SizedBox(height: 6),
+                SelectableText(
+                  mappings
+                      .map((mapping) => '${mapping.source} → ${mapping.target}')
+                      .join('\n'),
+                ),
+                const SizedBox(height: 12),
+                const Text(
+                  '同卷目标使用原子移动；跨卷目标会先完整写入副本，再删除仍未变化的源文件。'
+                  '若无法安全删除源文件，将保留源文件和目标副本并明确报告。',
+                ),
+              ],
+            ),
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop(true),
+            child: const Text('移动'),
+          ),
+        ],
+      ),
+    );
+    if (approved != true || !mounted) return;
+
+    final result = await ref
+        .read(repositorySessionProvider.notifier)
+        .moveChanges(selected, destinationDirectory: destination);
+    if (!mounted) return;
+    final String message;
+    if (result == null) {
+      message = '未能移动所选文件；仓库状态可能已变化，请刷新后重试。';
+    } else if (result.hasFailures) {
+      message =
+          '已移动 ${result.movedPaths.length} 个文件；另有 '
+          '${result.conflictingPaths.length} 个目标冲突、'
+          '${result.retainedSourcePaths.length} 个保留了源文件、'
+          '${result.failedPaths.length} 个失败。';
+    } else {
+      message = '已移动 ${result.movedPaths.length} 个文件。';
     }
     ScaffoldMessenger.of(
       context,
