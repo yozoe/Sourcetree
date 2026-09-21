@@ -71,6 +71,10 @@ final class RepositoryOverviewCallbacks {
     this.onChangeGroupStageToggled,
     this.onConflictAction,
     this.onChangeRevealInFinder,
+    this.onChangeOpenTerminal,
+    this.onChangeQuickLook,
+    this.onChangeViewFileHistory,
+    this.onChangeReview,
     this.onChangeRemove,
     this.onChangeStopTracking,
     this.onChangeReset,
@@ -96,6 +100,10 @@ final class RepositoryOverviewCallbacks {
   final RepositoryChangeGroupStageCallback? onChangeGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
   final RepositoryChangeFilesCallback? onChangeRevealInFinder;
+  final RepositoryChangeFilesCallback? onChangeOpenTerminal;
+  final RepositoryChangeFilesCallback? onChangeQuickLook;
+  final RepositoryChangeFilesCallback? onChangeViewFileHistory;
+  final RepositoryChangeFilesCallback? onChangeReview;
   final RepositoryChangeFilesCallback? onChangeRemove;
   final RepositoryChangeFilesCallback? onChangeStopTracking;
   final RepositoryChangeFilesCallback? onChangeReset;
@@ -249,6 +257,10 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         onGroupStageToggled: widget.callbacks.onChangeGroupStageToggled,
         onConflictAction: widget.callbacks.onConflictAction,
         onRevealInFinder: widget.callbacks.onChangeRevealInFinder,
+        onOpenTerminal: widget.callbacks.onChangeOpenTerminal,
+        onQuickLook: widget.callbacks.onChangeQuickLook,
+        onViewFileHistory: widget.callbacks.onChangeViewFileHistory,
+        onReview: widget.callbacks.onChangeReview,
         onRemove: widget.callbacks.onChangeRemove,
         onStopTracking: widget.callbacks.onChangeStopTracking,
         onReset: widget.callbacks.onChangeReset,
@@ -425,6 +437,12 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                                   widget.callbacks.onConflictAction,
                               onRevealInFinder:
                                   widget.callbacks.onChangeRevealInFinder,
+                              onOpenTerminal:
+                                  widget.callbacks.onChangeOpenTerminal,
+                              onQuickLook: widget.callbacks.onChangeQuickLook,
+                              onViewFileHistory:
+                                  widget.callbacks.onChangeViewFileHistory,
+                              onReview: widget.callbacks.onChangeReview,
                               onRemove: widget.callbacks.onChangeRemove,
                               onStopTracking:
                                   widget.callbacks.onChangeStopTracking,
@@ -541,6 +559,11 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                         onConflictAction: widget.callbacks.onConflictAction,
                         onRevealInFinder:
                             widget.callbacks.onChangeRevealInFinder,
+                        onOpenTerminal: widget.callbacks.onChangeOpenTerminal,
+                        onQuickLook: widget.callbacks.onChangeQuickLook,
+                        onViewFileHistory:
+                            widget.callbacks.onChangeViewFileHistory,
+                        onReview: widget.callbacks.onChangeReview,
                         onRemove: widget.callbacks.onChangeRemove,
                         onStopTracking: widget.callbacks.onChangeStopTracking,
                         onReset: widget.callbacks.onChangeReset,
@@ -592,6 +615,10 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         onGroupStageToggled: widget.callbacks.onChangeGroupStageToggled,
         onConflictAction: widget.callbacks.onConflictAction,
         onRevealInFinder: widget.callbacks.onChangeRevealInFinder,
+        onOpenTerminal: widget.callbacks.onChangeOpenTerminal,
+        onQuickLook: widget.callbacks.onChangeQuickLook,
+        onViewFileHistory: widget.callbacks.onChangeViewFileHistory,
+        onReview: widget.callbacks.onChangeReview,
         onRemove: widget.callbacks.onChangeRemove,
         onStopTracking: widget.callbacks.onChangeStopTracking,
         onReset: widget.callbacks.onChangeReset,
@@ -3904,6 +3931,10 @@ class _SelectedChangesPane extends StatelessWidget {
     required this.onGroupStageToggled,
     required this.onConflictAction,
     required this.onRevealInFinder,
+    required this.onOpenTerminal,
+    required this.onQuickLook,
+    required this.onViewFileHistory,
+    required this.onReview,
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
@@ -3919,6 +3950,10 @@ class _SelectedChangesPane extends StatelessWidget {
   final RepositoryChangeGroupStageCallback? onGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
   final RepositoryChangeFilesCallback? onRevealInFinder;
+  final RepositoryChangeFilesCallback? onOpenTerminal;
+  final RepositoryChangeFilesCallback? onQuickLook;
+  final RepositoryChangeFilesCallback? onViewFileHistory;
+  final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
@@ -3946,6 +3981,10 @@ class _SelectedChangesPane extends StatelessWidget {
       onGroupStageToggled: onGroupStageToggled,
       onConflictAction: onConflictAction,
       onRevealInFinder: onRevealInFinder,
+      onOpenTerminal: onOpenTerminal,
+      onQuickLook: onQuickLook,
+      onViewFileHistory: onViewFileHistory,
+      onReview: onReview,
       onRemove: onRemove,
       onStopTracking: onStopTracking,
       onReset: onReset,
@@ -4305,6 +4344,10 @@ class _ChangesPane extends StatefulWidget {
     required this.onGroupStageToggled,
     required this.onConflictAction,
     required this.onRevealInFinder,
+    required this.onOpenTerminal,
+    required this.onQuickLook,
+    required this.onViewFileHistory,
+    required this.onReview,
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
@@ -4318,6 +4361,10 @@ class _ChangesPane extends StatefulWidget {
   final RepositoryChangeGroupStageCallback? onGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
   final RepositoryChangeFilesCallback? onRevealInFinder;
+  final RepositoryChangeFilesCallback? onOpenTerminal;
+  final RepositoryChangeFilesCallback? onQuickLook;
+  final RepositoryChangeFilesCallback? onViewFileHistory;
+  final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
@@ -4364,6 +4411,10 @@ class _ChangesPaneState extends State<_ChangesPane> {
                           onGroupStageToggled: widget.onGroupStageToggled,
                           onConflictAction: widget.onConflictAction,
                           onRevealInFinder: widget.onRevealInFinder,
+                          onOpenTerminal: widget.onOpenTerminal,
+                          onQuickLook: widget.onQuickLook,
+                          onViewFileHistory: widget.onViewFileHistory,
+                          onReview: widget.onReview,
                           onRemove: widget.onRemove,
                           onStopTracking: widget.onStopTracking,
                           onReset: widget.onReset,
@@ -4406,6 +4457,10 @@ class _ChangesPaneState extends State<_ChangesPane> {
                         onGroupStageToggled: widget.onGroupStageToggled,
                         onConflictAction: widget.onConflictAction,
                         onRevealInFinder: widget.onRevealInFinder,
+                        onOpenTerminal: widget.onOpenTerminal,
+                        onQuickLook: widget.onQuickLook,
+                        onViewFileHistory: widget.onViewFileHistory,
+                        onReview: widget.onReview,
                         onRemove: widget.onRemove,
                         onStopTracking: widget.onStopTracking,
                         onReset: widget.onReset,
@@ -4450,6 +4505,10 @@ class _WorkspaceChangesView extends StatelessWidget {
     required this.onGroupStageToggled,
     required this.onConflictAction,
     required this.onRevealInFinder,
+    required this.onOpenTerminal,
+    required this.onQuickLook,
+    required this.onViewFileHistory,
+    required this.onReview,
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
@@ -4464,6 +4523,10 @@ class _WorkspaceChangesView extends StatelessWidget {
   final RepositoryChangeGroupStageCallback? onGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
   final RepositoryChangeFilesCallback? onRevealInFinder;
+  final RepositoryChangeFilesCallback? onOpenTerminal;
+  final RepositoryChangeFilesCallback? onQuickLook;
+  final RepositoryChangeFilesCallback? onViewFileHistory;
+  final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
@@ -4489,6 +4552,10 @@ class _WorkspaceChangesView extends StatelessWidget {
             onGroupStageToggled: onGroupStageToggled,
             onConflictAction: onConflictAction,
             onRevealInFinder: onRevealInFinder,
+            onOpenTerminal: onOpenTerminal,
+            onQuickLook: onQuickLook,
+            onViewFileHistory: onViewFileHistory,
+            onReview: onReview,
             onRemove: onRemove,
             onStopTracking: onStopTracking,
             onReset: onReset,
@@ -4538,6 +4605,10 @@ class _ChangeList extends StatefulWidget {
     required this.onGroupStageToggled,
     required this.onConflictAction,
     required this.onRevealInFinder,
+    required this.onOpenTerminal,
+    required this.onQuickLook,
+    required this.onViewFileHistory,
+    required this.onReview,
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
@@ -4553,6 +4624,10 @@ class _ChangeList extends StatefulWidget {
   final RepositoryChangeGroupStageCallback? onGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
   final RepositoryChangeFilesCallback? onRevealInFinder;
+  final RepositoryChangeFilesCallback? onOpenTerminal;
+  final RepositoryChangeFilesCallback? onQuickLook;
+  final RepositoryChangeFilesCallback? onViewFileHistory;
+  final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
@@ -4688,6 +4763,10 @@ class _ChangeListState extends State<_ChangeList> {
       onGroupStageToggled: widget.onGroupStageToggled,
       onConflictAction: widget.onConflictAction,
       onRevealInFinder: widget.onRevealInFinder,
+      onOpenTerminal: widget.onOpenTerminal,
+      onQuickLook: widget.onQuickLook,
+      onViewFileHistory: widget.onViewFileHistory,
+      onReview: widget.onReview,
       onRemove: widget.onRemove,
       onStopTracking: widget.onStopTracking,
       onReset: widget.onReset,
@@ -4781,6 +4860,10 @@ class _ChangeGroup extends StatelessWidget {
     required this.onContextMenuRequested,
     required this.onSelectedStageToggled,
     required this.onRevealInFinder,
+    required this.onOpenTerminal,
+    required this.onQuickLook,
+    required this.onViewFileHistory,
+    required this.onReview,
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
@@ -4801,6 +4884,10 @@ class _ChangeGroup extends StatelessWidget {
   final ValueChanged<RepositoryChangeViewData> onContextMenuRequested;
   final ValueChanged<bool> onSelectedStageToggled;
   final RepositoryChangeFilesCallback? onRevealInFinder;
+  final RepositoryChangeFilesCallback? onOpenTerminal;
+  final RepositoryChangeFilesCallback? onQuickLook;
+  final RepositoryChangeFilesCallback? onViewFileHistory;
+  final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
@@ -4891,6 +4978,10 @@ class _ChangeGroup extends StatelessWidget {
               ordinaryMutationsEnabled: ordinaryMutationsEnabled,
               conflictActionsEnabled: conflictActionsEnabled,
               onRevealInFinder: onRevealInFinder,
+              onOpenTerminal: onOpenTerminal,
+              onQuickLook: onQuickLook,
+              onViewFileHistory: onViewFileHistory,
+              onReview: onReview,
               onRemove: onRemove,
               onStopTracking: onStopTracking,
               onReset: onReset,
@@ -4918,6 +5009,10 @@ class _ChangeTile extends StatelessWidget {
     required this.ordinaryMutationsEnabled,
     required this.conflictActionsEnabled,
     required this.onRevealInFinder,
+    required this.onOpenTerminal,
+    required this.onQuickLook,
+    required this.onViewFileHistory,
+    required this.onReview,
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
@@ -4934,6 +5029,10 @@ class _ChangeTile extends StatelessWidget {
   final bool ordinaryMutationsEnabled;
   final bool conflictActionsEnabled;
   final RepositoryChangeFilesCallback? onRevealInFinder;
+  final RepositoryChangeFilesCallback? onOpenTerminal;
+  final RepositoryChangeFilesCallback? onQuickLook;
+  final RepositoryChangeFilesCallback? onViewFileHistory;
+  final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
@@ -4968,6 +5067,25 @@ class _ChangeTile extends StatelessWidget {
         );
     bool hasUnsupportedRemovePath() =>
         selectedChanges().any((item) => !item.isPathValidUtf8);
+    bool canUseReadOnlyFileActions() =>
+        selectedChanges().isNotEmpty &&
+        selectedChanges().every(
+          (item) => item.isActionEnabled && item.isPathValidUtf8,
+        );
+    bool canOpenTerminal() =>
+        onOpenTerminal != null &&
+        selectedChanges().length == 1 &&
+        canUseReadOnlyFileActions();
+    bool canViewFileHistory() =>
+        onViewFileHistory != null &&
+        selectedChanges().length == 1 &&
+        canUseReadOnlyFileActions() &&
+        selectedChanges().single.kind != RepositoryChangeKind.untracked;
+    void invokeFileAction(RepositoryChangeFilesCallback callback) {
+      final result = callback(selectedChanges());
+      if (result is Future<void>) unawaited(result);
+    }
+
     final String fileName = change.path.split('/').last;
     final int slash = change.path.lastIndexOf('/');
     final String parentPath = slash <= 0 ? '' : change.path.substring(0, slash);
@@ -5083,23 +5201,53 @@ class _ChangeTile extends StatelessWidget {
       menuChildren: [
         MenuItemButton(onPressed: onTap, child: const Text('在差异视图中选择')),
         MenuItemButton(
-          onPressed: onRevealInFinder == null
+          onPressed: onRevealInFinder == null || !canUseReadOnlyFileActions()
               ? null
               : () {
                   final result = onRevealInFinder!(selectedChanges());
                   if (result is Future<void>) unawaited(result);
                 },
-          child: const Text('在 Finder 中显示'),
+          child: Text(
+            selectedChanges().every((item) => item.isPathValidUtf8)
+                ? '在 Finder 中显示'
+                : '在 Finder 中显示（待实现）',
+          ),
         ),
         MenuItemButton(
-          onPressed: () {
-            final paths = selectedChanges().map((item) => item.path).join('\n');
-            unawaited(Clipboard.setData(ClipboardData(text: paths)));
-          },
-          child: const Text('复制路径到剪贴板'),
+          onPressed: canUseReadOnlyFileActions()
+              ? () {
+                  final paths = selectedChanges()
+                      .map((item) => item.path)
+                      .join('\n');
+                  unawaited(Clipboard.setData(ClipboardData(text: paths)));
+                }
+              : null,
+          child: Text(
+            selectedChanges().every((item) => item.isPathValidUtf8)
+                ? '复制路径到剪贴板'
+                : '复制路径到剪贴板（待实现）',
+          ),
         ),
-        const MenuItemButton(onPressed: null, child: Text('在终端中打开（待实现）')),
-        const MenuItemButton(onPressed: null, child: Text('快速查看（待实现）')),
+        MenuItemButton(
+          onPressed: canOpenTerminal()
+              ? () => invokeFileAction(onOpenTerminal!)
+              : null,
+          child: Text(
+            selectedChanges().every((item) => item.isPathValidUtf8)
+                ? '在终端中打开'
+                : '在终端中打开（待实现）',
+          ),
+        ),
+        MenuItemButton(
+          onPressed: onQuickLook != null && canUseReadOnlyFileActions()
+              ? () => invokeFileAction(onQuickLook!)
+              : null,
+          child: Text(
+            selectedChanges().every((item) => item.isPathValidUtf8)
+                ? '快速查看'
+                : '快速查看（待实现）',
+          ),
+        ),
         const Divider(height: 1),
         const MenuItemButton(onPressed: null, child: Text('外部差异比对（待实现）')),
         const MenuItemButton(onPressed: null, child: Text('创建补丁…（待实现）')),
@@ -5163,8 +5311,26 @@ class _ChangeTile extends StatelessWidget {
             menuChildren: _conflictMenuChildren(),
             child: const Text('解决冲突'),
           ),
-        const MenuItemButton(onPressed: null, child: Text('查看选中的修改日志…（待实现）')),
-        const MenuItemButton(onPressed: null, child: Text('审核选定的项目（待实现）')),
+        MenuItemButton(
+          onPressed: canViewFileHistory()
+              ? () => invokeFileAction(onViewFileHistory!)
+              : null,
+          child: Text(
+            selectedChanges().every((item) => item.isPathValidUtf8)
+                ? '查看选中的修改日志…'
+                : '查看选中的修改日志…（待实现）',
+          ),
+        ),
+        MenuItemButton(
+          onPressed: onReview != null && canUseReadOnlyFileActions()
+              ? () => invokeFileAction(onReview!)
+              : null,
+          child: Text(
+            selectedChanges().every((item) => item.isPathValidUtf8)
+                ? '审查选定的项目'
+                : '审查选定的项目（待实现）',
+          ),
+        ),
       ],
       builder: (context, controller, child) => CallbackShortcuts(
         bindings: <ShortcutActivator, VoidCallback>{
@@ -5778,6 +5944,10 @@ class _TabbedInspector extends StatelessWidget {
     required this.onChangeGroupStageToggled,
     required this.onConflictAction,
     required this.onRevealInFinder,
+    required this.onOpenTerminal,
+    required this.onQuickLook,
+    required this.onViewFileHistory,
+    required this.onReview,
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
@@ -5795,6 +5965,10 @@ class _TabbedInspector extends StatelessWidget {
   final RepositoryChangeGroupStageCallback? onChangeGroupStageToggled;
   final RepositoryConflictActionCallback? onConflictAction;
   final RepositoryChangeFilesCallback? onRevealInFinder;
+  final RepositoryChangeFilesCallback? onOpenTerminal;
+  final RepositoryChangeFilesCallback? onQuickLook;
+  final RepositoryChangeFilesCallback? onViewFileHistory;
+  final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
@@ -5826,6 +6000,10 @@ class _TabbedInspector extends StatelessWidget {
               onGroupStageToggled: onChangeGroupStageToggled,
               onConflictAction: onConflictAction,
               onRevealInFinder: onRevealInFinder,
+              onOpenTerminal: onOpenTerminal,
+              onQuickLook: onQuickLook,
+              onViewFileHistory: onViewFileHistory,
+              onReview: onReview,
               onRemove: onRemove,
               onStopTracking: onStopTracking,
               onReset: onReset,

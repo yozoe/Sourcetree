@@ -1056,7 +1056,8 @@ final class WorkspaceFlutterWindowController: NSWindowController,
     let ownedRoot = gitDesktopCanonicalRepositoryPath(repositoryPath)
     guard requestedRoot != nil,
           requestedRoot == ownedRoot,
-          let filePath = arguments?["filePath"] as? String,
+          let filePaths = arguments?["filePaths"] as? [String],
+          !filePaths.isEmpty,
           let action = arguments?["action"] as? String else {
       result(
         FlutterError(
@@ -1069,10 +1070,11 @@ final class WorkspaceFlutterWindowController: NSWindowController,
     }
     let targets = GitDesktopWorkspaceFileMenuTargets(
       repositoryRootPath: requestedRoot,
-      selectedFilePaths: [filePath],
+      selectedFilePaths: filePaths,
       hasFileSelection: true
     )
-    guard let url = targets.existingSelectedURLs().first else {
+    let urls = targets.existingSelectedURLs()
+    guard urls.count == filePaths.count else {
       result(
         FlutterError(
           code: "file_unavailable",
@@ -1085,6 +1087,17 @@ final class WorkspaceFlutterWindowController: NSWindowController,
 
     switch action {
     case "open":
+      guard urls.count == 1 else {
+        result(
+          FlutterError(
+            code: "invalid_file_action",
+            message: "Opening files requires exactly one selected path.",
+            details: nil
+          )
+        )
+        return
+      }
+      let url = urls[0]
       guard NSWorkspace.shared.open(url) else {
         result(
           FlutterError(
@@ -1096,7 +1109,43 @@ final class WorkspaceFlutterWindowController: NSWindowController,
         return
       }
     case "reveal":
-      NSWorkspace.shared.activateFileViewerSelecting([url])
+      NSWorkspace.shared.activateFileViewerSelecting(urls)
+    case "terminal":
+      guard let directory = targets.terminalDirectoryURL(),
+            let terminal = NSWorkspace.shared.urlForApplication(
+              withBundleIdentifier: "com.apple.Terminal"
+            ) else {
+        result(
+          FlutterError(
+            code: "terminal_unavailable",
+            message: "Terminal or the selected directory is unavailable.",
+            details: nil
+          )
+        )
+        return
+      }
+      let configuration = NSWorkspace.OpenConfiguration()
+      configuration.activates = true
+      NSWorkspace.shared.open(
+        [directory],
+        withApplicationAt: terminal,
+        configuration: configuration
+      ) { _, error in
+        DispatchQueue.main.async {
+          if let error {
+            result(
+              FlutterError(
+                code: "terminal_open_failed",
+                message: error.localizedDescription,
+                details: nil
+              )
+            )
+          } else {
+            result(nil)
+          }
+        }
+      }
+      return
     case "quickLook":
       guard let panel = QLPreviewPanel.shared() else {
         result(
@@ -1108,7 +1157,7 @@ final class WorkspaceFlutterWindowController: NSWindowController,
         )
         return
       }
-      quickLookDataSource.urls = [url]
+      quickLookDataSource.urls = urls
       panel.dataSource = quickLookDataSource
       panel.reloadData()
       panel.makeKeyAndOrderFront(nil)

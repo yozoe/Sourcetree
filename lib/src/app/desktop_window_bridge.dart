@@ -54,22 +54,24 @@ final class DesktopWindowBridge {
     );
   }
 
-  /// Performs one native read-only action for an explicitly validated file.
+  /// Performs one native read-only action for explicitly validated files.
   ///
-  /// The macOS host independently verifies that [filePath] remains inside
-  /// [repositoryRootPath] and still exists before opening system UI.
+  /// The macOS host independently verifies that every [filePaths] entry
+  /// remains inside [repositoryRootPath] and still exists before opening
+  /// system UI. Actions that require a single target are rejected natively.
   ///
-  /// 中文：对明确校验的文件执行原生只读操作。macOS 宿主会再次确认 [filePath]
-  /// 仍位于 [repositoryRootPath] 内且存在，然后才打开系统界面。
+  /// 中文：对明确校验的文件执行原生只读操作。macOS 宿主会再次确认 [filePaths]
+  /// 中每个路径仍位于 [repositoryRootPath] 内且存在，然后才打开系统界面；只支持
+  /// 单目标的动作会在原生层再次拒绝多选。
   static Future<void> performFileAction({
     required String action,
     required String repositoryRootPath,
-    required String filePath,
+    required List<String> filePaths,
   }) {
     return _channel.invokeMethod<void>('performFileAction', <String, Object>{
       'action': action,
       'repositoryRootPath': repositoryRootPath,
-      'filePath': filePath,
+      'filePaths': filePaths,
     });
   }
 

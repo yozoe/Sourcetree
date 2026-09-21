@@ -4016,29 +4016,141 @@ class _RepositoryWorkspaceScreenState
       );
   }
 
-  /// 中文：在 Finder 中定位选中的工作区文件。
-  /// English: Reveals selected working-tree files in Finder.
-  Future<void> _revealChangesInFinder(
-    List<RepositoryChangeViewData> changes,
-  ) async {
-    final root = ref.read(repositorySessionProvider).repository?.workTreeRoot;
-    if (root == null || changes.isEmpty) return;
-    final paths = <String>[];
-    for (final change in changes) {
-      final path = _workspaceChangePath(root, change.path);
-      if (path != null) paths.add(path);
+  /// Resolves an explicit working-tree menu selection against the latest
+  /// repository view before a read-only action is allowed to continue.
+  ///
+  /// 中文：只读文件动作执行前，将右键菜单交付的明确选择重新解析到最新仓库
+  /// 视图；路径、暂存来源或可操作状态已变化时拒绝使用过期对象。
+  List<RepositoryChangeViewData>? _resolveWorkingTreeMenuSelection(
+    List<RepositoryChangeViewData> requested,
+  ) {
+    final session = ref.read(repositorySessionProvider);
+    final repository = mapRepositoryOverview(session).repository;
+    if (session.phase != RepositorySessionPhase.ready ||
+        session.isWorkingTreeBusy ||
+        repository == null ||
+        repository.selectedCommit != null ||
+        requested.isEmpty) {
+      return null;
     }
-    if (paths.isEmpty) return;
+    final currentByKey = {
+      for (final change in repository.changes)
+        _nativeChangeSelectionKey(change): change,
+    };
+    final resolved = <RepositoryChangeViewData>[];
+    final seen = <String>{};
+    for (final change in requested) {
+      final key = _nativeChangeSelectionKey(change);
+      final current = currentByKey[key];
+      if (!seen.add(key) ||
+          current == null ||
+          !current.isActionEnabled ||
+          !current.isPathValidUtf8) {
+        return null;
+      }
+      resolved.add(current);
+    }
+    return resolved;
+  }
+
+  /// Performs a native read-only action for a current working-tree selection.
+  /// The host independently rechecks ownership, containment, and existence.
+  ///
+  /// 中文：对最新工作区选择执行原生只读文件动作；宿主层会再次校验窗口归属、
+  /// 仓库边界和执行时存在性，任一路径失效时不会部分执行。
+  Future<void> _performWorkingTreeFileAction(
+    String action,
+    List<RepositoryChangeViewData> requested,
+  ) async {
+    final changes = _resolveWorkingTreeMenuSelection(requested);
+    final root = ref.read(repositorySessionProvider).repository?.workTreeRoot;
+    if (changes == null || root == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('文件选择或仓库状态已变化，请重试。')));
+      return;
+    }
+    if (action == 'terminal' && changes.length != 1) return;
+    final paths = <String>[];
+    final seenPaths = <String>{};
+    for (final change in changes) {
+      final absolutePath = _workspaceChangePath(root, change.path);
+      if (absolutePath == null) return;
+      if (seenPaths.add(absolutePath)) paths.add(absolutePath);
+    }
     try {
-      final result = await Process.run('/usr/bin/open', ['-R', ...paths]);
-      if (!mounted || result.exitCode == 0) return;
+      await DesktopWindowBridge.performFileAction(
+        action: action,
+        repositoryRootPath: root,
+        filePaths: paths,
+      );
     } on Object {
       if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前工作区中没有可用于此操作的文件。')));
     }
-    if (!mounted) return;
-    ScaffoldMessenger.of(
-      context,
-    ).showSnackBar(const SnackBar(content: Text('无法在 Finder 中显示所选文件。')));
+  }
+
+  /// Opens Terminal at the containing directory of one current file.
+  /// 中文：在单个当前工作区文件所在目录打开系统 Terminal。
+  Future<void> _openChangeInTerminal(List<RepositoryChangeViewData> changes) =>
+      _performWorkingTreeFileAction('terminal', changes);
+
+  /// Previews the complete current file selection with macOS Quick Look.
+  /// 中文：使用 macOS Quick Look 预览完整的当前工作区文件选择。
+  Future<void> _quickLookChanges(List<RepositoryChangeViewData> changes) =>
+      _performWorkingTreeFileAction('quickLook', changes);
+
+  /// Reveals the complete current file selection in Finder.
+  /// 中文：在 Finder 中定位完整的当前工作区文件选择。
+  Future<void> _revealChangesInFinder(List<RepositoryChangeViewData> changes) =>
+      _performWorkingTreeFileAction('reveal', changes);
+
+  /// Opens file history for one latest, tracked working-tree selection.
+  /// 中文：为最新视图中单个已跟踪工作区文件打开只读修改日志。
+  Future<void> _showWorkingTreeFileHistory(
+    List<RepositoryChangeViewData> requested,
+  ) async {
+    final changes = _resolveWorkingTreeMenuSelection(requested);
+    if (changes?.length != 1 ||
+        changes!.single.kind == RepositoryChangeKind.untracked) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请选择一个可读取修改日志的已跟踪文件。')));
+      return;
+    }
+    await _showFileHistory(path: changes.single.path);
+  }
+
+  /// Opens the built-in read-only review for the latest explicit selection.
+  /// 中文：为最新视图中的明确工作区文件选择打开内置只读审查。
+  Future<void> _showWorkingTreeReview(
+    List<RepositoryChangeViewData> requested,
+  ) async {
+    final changes = _resolveWorkingTreeMenuSelection(requested);
+    if (changes == null) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请选择至少一个可审查的文件。')));
+      return;
+    }
+    final controller = ref.read(repositorySessionProvider.notifier);
+    await _showReviewDialog([
+      for (final change in changes)
+        _RepositoryReviewTarget(
+          id: '${change.isStaged ? 'staged' : 'working'}:${change.path}',
+          path: change.path,
+          sourceLabel: change.isStaged ? '已暂存' : '工作区',
+          loadDiff: (cancellationToken) => controller.readWorkingTreeReviewDiff(
+            change,
+            cancellationToken: cancellationToken,
+          ),
+        ),
+    ]);
   }
 
   /// Previews and appends ignore rules for the current validated selection.
@@ -4909,7 +5021,7 @@ class _RepositoryWorkspaceScreenState
       await DesktopWindowBridge.performFileAction(
         action: nativeAction,
         repositoryRootPath: root!,
-        filePath: absolutePath,
+        filePaths: [absolutePath],
       );
     } on Object {
       if (!mounted) return;
@@ -5229,6 +5341,14 @@ class _RepositoryWorkspaceScreenState
                   unawaited(_handleConflictAction(change, action)),
               onChangeRevealInFinder: (changes) =>
                   unawaited(_revealChangesInFinder(changes)),
+              onChangeOpenTerminal: (changes) =>
+                  unawaited(_openChangeInTerminal(changes)),
+              onChangeQuickLook: (changes) =>
+                  unawaited(_quickLookChanges(changes)),
+              onChangeViewFileHistory: (changes) =>
+                  unawaited(_showWorkingTreeFileHistory(changes)),
+              onChangeReview: (changes) =>
+                  unawaited(_showWorkingTreeReview(changes)),
               onChangeRemove: (changes) => unawaited(_removeChanges(changes)),
               onChangeStopTracking: (changes) =>
                   unawaited(_stopTrackingChanges(changes)),

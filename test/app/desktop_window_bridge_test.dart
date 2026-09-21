@@ -125,7 +125,7 @@ void main() {
     });
   });
 
-  test('requests a native read-only action for one explicit file', () async {
+  test('requests a native read-only action for explicit files', () async {
     MethodCall? receivedCall;
     TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger
         .setMockMethodCallHandler(channel, (call) async {
@@ -136,14 +136,20 @@ void main() {
     await DesktopWindowBridge.performFileAction(
       action: 'quickLook',
       repositoryRootPath: '/tmp/example-repository',
-      filePath: '/tmp/example-repository/lib/example.dart',
+      filePaths: const [
+        '/tmp/example-repository/lib/example.dart',
+        '/tmp/example-repository/README.md',
+      ],
     );
 
     expect(receivedCall?.method, 'performFileAction');
     expect(receivedCall?.arguments, <String, Object>{
       'action': 'quickLook',
       'repositoryRootPath': '/tmp/example-repository',
-      'filePath': '/tmp/example-repository/lib/example.dart',
+      'filePaths': <String>[
+        '/tmp/example-repository/lib/example.dart',
+        '/tmp/example-repository/README.md',
+      ],
     });
   });
 }

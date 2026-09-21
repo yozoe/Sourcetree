@@ -899,6 +899,211 @@ void main() {
     );
   });
 
+  testWidgets('working-tree context menu routes delivered read-only actions', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final invoked = <String, List<String>>{};
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: [
+                RepositoryChangeViewData(
+                  path: 'lib/main.dart',
+                  kind: RepositoryChangeKind.modified,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onChangeOpenTerminal: (changes) => invoked['terminal'] = [
+              for (final change in changes) change.path,
+            ],
+            onChangeQuickLook: (changes) => invoked['quickLook'] = [
+              for (final change in changes) change.path,
+            ],
+            onChangeViewFileHistory: (changes) => invoked['history'] = [
+              for (final change in changes) change.path,
+            ],
+            onChangeReview: (changes) =>
+                invoked['review'] = [for (final change in changes) change.path],
+          ),
+        ),
+      ),
+    );
+
+    Future<void> invoke(String label) async {
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.text('main.dart')),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await gesture.up();
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(label));
+      await tester.pumpAndSettle();
+    }
+
+    await invoke('在终端中打开');
+    await invoke('快速查看');
+    await invoke('查看选中的修改日志…');
+    await invoke('审查选定的项目');
+
+    expect(invoked, <String, List<String>>{
+      'terminal': ['lib/main.dart'],
+      'quickLook': ['lib/main.dart'],
+      'history': ['lib/main.dart'],
+      'review': ['lib/main.dart'],
+    });
+  });
+
+  testWidgets('working-tree read-only actions reject unsupported selections', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: [
+                RepositoryChangeViewData(
+                  path: 'invalid�.txt',
+                  kind: RepositoryChangeKind.modified,
+                  isPathValidUtf8: false,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onChangeOpenTerminal: (_) {},
+            onChangeQuickLook: (_) {},
+            onChangeViewFileHistory: (_) {},
+            onChangeReview: (_) {},
+          ),
+        ),
+      ),
+    );
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('invalid�.txt')),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    for (final label in <String>[
+      '在 Finder 中显示（待实现）',
+      '复制路径到剪贴板（待实现）',
+      '在终端中打开（待实现）',
+      '快速查看（待实现）',
+      '查看选中的修改日志…（待实现）',
+      '审查选定的项目（待实现）',
+    ]) {
+      final item = tester.widget<MenuItemButton>(
+        find.widgetWithText(MenuItemButton, label),
+      );
+      expect(item.onPressed, isNull);
+    }
+  });
+
+  testWidgets('working-tree multi-selection supports preview and review only', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    List<String>? previewed;
+    List<String>? reviewed;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: [
+                RepositoryChangeViewData(
+                  path: 'one.dart',
+                  kind: RepositoryChangeKind.modified,
+                ),
+                RepositoryChangeViewData(
+                  path: 'two.dart',
+                  kind: RepositoryChangeKind.modified,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onChangeOpenTerminal: (_) {},
+            onChangeQuickLook: (changes) =>
+                previewed = [for (final change in changes) change.path],
+            onChangeViewFileHistory: (_) {},
+            onChangeReview: (changes) =>
+                reviewed = [for (final change in changes) change.path],
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('one.dart'));
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
+    await tester.tap(find.text('two.dart'));
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
+
+    Future<void> openMenu() async {
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.text('two.dart')),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await gesture.up();
+      await tester.pumpAndSettle();
+    }
+
+    await openMenu();
+    expect(
+      tester
+          .widget<MenuItemButton>(find.widgetWithText(MenuItemButton, '在终端中打开'))
+          .onPressed,
+      isNull,
+    );
+    expect(
+      tester
+          .widget<MenuItemButton>(
+            find.widgetWithText(MenuItemButton, '查看选中的修改日志…'),
+          )
+          .onPressed,
+      isNull,
+    );
+    await tester.tap(find.text('快速查看'));
+    await tester.pumpAndSettle();
+
+    await openMenu();
+    await tester.tap(find.text('审查选定的项目'));
+    await tester.pumpAndSettle();
+
+    expect(previewed, ['one.dart', 'two.dart']);
+    expect(reviewed, ['one.dart', 'two.dart']);
+  });
+
   testWidgets('working-tree context menu stages all selected files', (
     tester,
   ) async {

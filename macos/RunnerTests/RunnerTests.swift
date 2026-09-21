@@ -163,6 +163,31 @@ class RunnerTests: XCTestCase {
     XCTAssertNil(targets.terminalDirectoryURL())
   }
 
+  func testWorkspaceFileMenuTargetsKeepCompleteMultiSelection() throws {
+    let root = FileManager.default.temporaryDirectory.appendingPathComponent(
+      "git-desktop-native-file-multi-\(UUID().uuidString)",
+      isDirectory: true
+    )
+    let first = root.appendingPathComponent("first.txt")
+    let second = root.appendingPathComponent("second.txt")
+    try FileManager.default.createDirectory(
+      at: root,
+      withIntermediateDirectories: true
+    )
+    try Data().write(to: first)
+    try Data().write(to: second)
+    defer { try? FileManager.default.removeItem(at: root) }
+
+    let targets = GitDesktopWorkspaceFileMenuTargets(
+      repositoryRootPath: root.path,
+      selectedFilePaths: [first.path, second.path],
+      hasFileSelection: true
+    )
+
+    XCTAssertEqual(targets.existingSelectedURLs(), [first, second])
+    XCTAssertNil(targets.terminalDirectoryURL())
+  }
+
   func testWorkspaceArgumentsIdentifyTheEngineAndInitialRepository() {
     XCTAssertEqual(
       gitDesktopWorkspaceArguments(
