@@ -4136,6 +4136,43 @@ class _RepositoryWorkspaceScreenState
   Future<void> _revealChangesInFinder(List<RepositoryChangeViewData> changes) =>
       _performWorkingTreeFileAction('reveal', changes);
 
+  /// Opens the exact Git layers represented by one working-tree row in Apple
+  /// FileMerge after the session refreshes and revalidates that row.
+  /// 中文：会话刷新并复核单个工作区行后，在 Apple FileMerge 中打开该行对应的
+  /// 精确 Git 前后层级。
+  Future<void> _openWorkingTreeExternalDiff(
+    List<RepositoryChangeViewData> requested,
+  ) async {
+    final changes = _resolveWorkingTreeMenuSelection(requested);
+    final root = ref.read(repositorySessionProvider).repository?.workTreeRoot;
+    if (changes?.length != 1 || root == null) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请选择一个可比较的已跟踪文件。')));
+      return;
+    }
+    final change = changes!.single;
+    try {
+      final comparison = await ref
+          .read(repositorySessionProvider.notifier)
+          .readWorkingTreeFileComparison(change);
+      if (!mounted) return;
+      await DesktopWindowBridge.openHistoricalDiff(
+        repositoryRootPath: root,
+        suggestedFileName: path_utils.basename(change.path),
+        beforeBytes: comparison.beforeBytes,
+        afterBytes: comparison.afterBytes,
+      );
+    } on Object {
+      if (!mounted) return;
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('无法启动外部差异比对；文件状态可能已变化或未安装 Apple FileMerge。'),
+        ),
+      );
+    }
+  }
+
   /// Opens file history for one latest, tracked working-tree selection.
   /// 中文：为最新视图中单个已跟踪工作区文件打开只读修改日志。
   Future<void> _showWorkingTreeFileHistory(
@@ -5476,6 +5513,8 @@ class _RepositoryWorkspaceScreenState
                   unawaited(_showWorkingTreeReview(changes)),
               onChangeIgnore: (changes) =>
                   unawaited(_showIgnoreSelectedDialog(changes)),
+              onChangeExternalDiff: (changes) =>
+                  unawaited(_openWorkingTreeExternalDiff(changes)),
               onCreatePatch: (changes) =>
                   unawaited(_createPatchForWorkingTreeChanges(changes)),
               onApplyPatch: () => unawaited(_showApplyPatchDialog()),

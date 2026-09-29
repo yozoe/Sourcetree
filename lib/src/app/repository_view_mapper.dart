@@ -787,6 +787,7 @@ RepositoryChangeViewData _changeData(
         entry.path.isValidUtf8,
     isPathValidUtf8: entry.path.isValidUtf8,
     isActionEnabled: !state.isWorkingTreeBusy,
+    canExternalDiff: entry.submodule?.isSubmodule != true,
     isSelected:
         selected?.entry.path == entry.path && selected?.source == source,
   );

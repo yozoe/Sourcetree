@@ -814,6 +814,44 @@ void main() {
     },
   );
 
+  testWidgets('resizes the historical commit file list', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              selectedCommit: CommitDetailsViewData(
+                oid: '0123456789abcdef',
+                subject: 'Resizable commit changes',
+                author: 'Test User',
+                authoredAt: '2026-08-25 12:00',
+              ),
+              commitChanges: [
+                CommitFileViewData(
+                  path: 'lib/main.dart',
+                  kind: RepositoryChangeKind.modified,
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+
+    final divider = find.bySemanticsLabel('调整提交文件列表宽度');
+    expect(divider, findsOneWidget);
+    final before = tester.getCenter(divider).dx;
+    await tester.drag(divider, const Offset(80, 0));
+    await tester.pump();
+    expect(tester.getCenter(divider).dx, greaterThan(before));
+  });
+
   testWidgets('marks file history pending for a non-UTF-8 Git path', (
     tester,
   ) async {
@@ -968,6 +1006,9 @@ void main() {
                 invoked['review'] = [for (final change in changes) change.path],
             onChangeIgnore: (changes) =>
                 invoked['ignore'] = [for (final change in changes) change.path],
+            onChangeExternalDiff: (changes) => invoked['externalDiff'] = [
+              for (final change in changes) change.path,
+            ],
             onCreatePatch: (changes) => invoked['createPatch'] = [
               for (final change in changes) change.path,
             ],
@@ -994,6 +1035,7 @@ void main() {
     await invoke('查看选中的修改日志…');
     await invoke('审查选定的项目');
     await invoke('忽略…');
+    await invoke('外部差异比对');
     await invoke('创建补丁…');
     await invoke('应用补丁…');
 
@@ -1003,6 +1045,7 @@ void main() {
       'history': ['lib/main.dart'],
       'review': ['lib/main.dart'],
       'ignore': ['lib/main.dart'],
+      'externalDiff': ['lib/main.dart'],
       'createPatch': ['lib/main.dart'],
     });
     expect(applyPatchInvocations, 1);

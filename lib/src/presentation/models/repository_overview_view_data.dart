@@ -742,6 +742,7 @@ final class RepositoryChangeViewData {
     this.canToggleStage = true,
     this.isPathValidUtf8 = true,
     this.isActionEnabled = true,
+    this.canExternalDiff = true,
     this.additions,
     this.deletions,
   });
@@ -755,6 +756,7 @@ final class RepositoryChangeViewData {
   final bool canToggleStage;
   final bool isPathValidUtf8;
   final bool isActionEnabled;
+  final bool canExternalDiff;
   final int? additions;
   final int? deletions;
 

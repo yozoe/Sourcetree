@@ -76,6 +76,7 @@ final class RepositoryOverviewCallbacks {
     this.onChangeViewFileHistory,
     this.onChangeReview,
     this.onChangeIgnore,
+    this.onChangeExternalDiff,
     this.onCreatePatch,
     this.onApplyPatch,
     this.onChangeRemove,
@@ -108,6 +109,7 @@ final class RepositoryOverviewCallbacks {
   final RepositoryChangeFilesCallback? onChangeViewFileHistory;
   final RepositoryChangeFilesCallback? onChangeReview;
   final RepositoryChangeFilesCallback? onChangeIgnore;
+  final RepositoryChangeFilesCallback? onChangeExternalDiff;
   final RepositoryChangeFilesCallback? onCreatePatch;
   final VoidCallback? onApplyPatch;
   final RepositoryChangeFilesCallback? onChangeRemove;
@@ -268,6 +270,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         onViewFileHistory: widget.callbacks.onChangeViewFileHistory,
         onReview: widget.callbacks.onChangeReview,
         onIgnore: widget.callbacks.onChangeIgnore,
+        onExternalDiff: widget.callbacks.onChangeExternalDiff,
         onCreatePatch: widget.callbacks.onCreatePatch,
         onApplyPatch: widget.callbacks.onApplyPatch,
         onRemove: widget.callbacks.onChangeRemove,
@@ -453,6 +456,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                                   widget.callbacks.onChangeViewFileHistory,
                               onReview: widget.callbacks.onChangeReview,
                               onIgnore: widget.callbacks.onChangeIgnore,
+                              onExternalDiff:
+                                  widget.callbacks.onChangeExternalDiff,
                               onCreatePatch: widget.callbacks.onCreatePatch,
                               onApplyPatch: widget.callbacks.onApplyPatch,
                               onRemove: widget.callbacks.onChangeRemove,
@@ -577,6 +582,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                             widget.callbacks.onChangeViewFileHistory,
                         onReview: widget.callbacks.onChangeReview,
                         onIgnore: widget.callbacks.onChangeIgnore,
+                        onExternalDiff: widget.callbacks.onChangeExternalDiff,
                         onCreatePatch: widget.callbacks.onCreatePatch,
                         onApplyPatch: widget.callbacks.onApplyPatch,
                         onRemove: widget.callbacks.onChangeRemove,
@@ -635,6 +641,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         onViewFileHistory: widget.callbacks.onChangeViewFileHistory,
         onReview: widget.callbacks.onChangeReview,
         onIgnore: widget.callbacks.onChangeIgnore,
+        onExternalDiff: widget.callbacks.onChangeExternalDiff,
         onCreatePatch: widget.callbacks.onCreatePatch,
         onApplyPatch: widget.callbacks.onApplyPatch,
         onRemove: widget.callbacks.onChangeRemove,
@@ -3954,6 +3961,7 @@ class _SelectedChangesPane extends StatelessWidget {
     required this.onViewFileHistory,
     required this.onReview,
     required this.onIgnore,
+    required this.onExternalDiff,
     required this.onCreatePatch,
     required this.onApplyPatch,
     required this.onRemove,
@@ -3976,6 +3984,7 @@ class _SelectedChangesPane extends StatelessWidget {
   final RepositoryChangeFilesCallback? onViewFileHistory;
   final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onIgnore;
+  final RepositoryChangeFilesCallback? onExternalDiff;
   final RepositoryChangeFilesCallback? onCreatePatch;
   final VoidCallback? onApplyPatch;
   final RepositoryChangeFilesCallback? onRemove;
@@ -4010,6 +4019,7 @@ class _SelectedChangesPane extends StatelessWidget {
       onViewFileHistory: onViewFileHistory,
       onReview: onReview,
       onIgnore: onIgnore,
+      onExternalDiff: onExternalDiff,
       onCreatePatch: onCreatePatch,
       onApplyPatch: onApplyPatch,
       onRemove: onRemove,
@@ -4051,7 +4061,7 @@ class RepositoryCommitChangesPane extends StatelessWidget {
   );
 }
 
-class _CommitChangesPane extends StatelessWidget {
+class _CommitChangesPane extends StatefulWidget {
   const _CommitChangesPane({
     required this.repository,
     required this.onSelected,
@@ -4066,17 +4076,25 @@ class _CommitChangesPane extends StatelessWidget {
   final RepositoryDiffHunkActionCallback? onHunkAction;
   final String title;
 
+  @override
+  State<_CommitChangesPane> createState() => _CommitChangesPaneState();
+}
+
+class _CommitChangesPaneState extends State<_CommitChangesPane> {
+  double? _fileListWidth;
+
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
+    final repository = widget.repository;
     final files = repository.commitChanges;
     return Material(
       color: Theme.of(context).colorScheme.surface,
       child: Column(
         children: [
           _PaneHeader(
-            title: title,
+            title: widget.title,
             icon: Icons.difference_outlined,
             trailing: repository.isCommitLoading
                 ? '正在读取…'
@@ -4089,8 +4107,8 @@ class _CommitChangesPane extends StatelessWidget {
                     builder: (context, constraints) {
                       final list = _CommitFileList(
                         files: files,
-                        onSelected: onSelected,
-                        onContextAction: onContextAction,
+                        onSelected: widget.onSelected,
+                        onContextAction: widget.onContextAction,
                         canResetToCommit: !repository.blocksRepositoryMutations,
                       );
                       if (constraints.maxWidth < 530) {
@@ -4098,26 +4116,37 @@ class _CommitChangesPane extends StatelessWidget {
                             ? list
                             : _DiffPreview(
                                 diff: repository.commitDiff,
-                                onHunkAction: onHunkAction,
-                                onBack: onSelected == null
+                                onHunkAction: widget.onHunkAction,
+                                onBack: widget.onSelected == null
                                     ? null
-                                    : () => onSelected!(null),
+                                    : () => widget.onSelected!(null),
                               );
                       }
+                      final defaultWidth = math.min(
+                        286.0,
+                        constraints.maxWidth * .38,
+                      );
+                      final maximumWidth = math.max(
+                        180.0,
+                        constraints.maxWidth - 300,
+                      );
+                      final fileListWidth = (_fileListWidth ?? defaultWidth)
+                          .clamp(180.0, maximumWidth)
+                          .toDouble();
                       return Row(
                         children: [
-                          SizedBox(
-                            width: math.min(286, constraints.maxWidth * .38),
-                            child: list,
-                          ),
-                          VerticalDivider(
-                            width: 1,
-                            color: Theme.of(context).colorScheme.outlineVariant,
+                          SizedBox(width: fileListWidth, child: list),
+                          _ResizeDivider(
+                            axis: Axis.vertical,
+                            semanticsLabel: '调整提交文件列表宽度',
+                            onDelta: (delta) => setState(() {
+                              _fileListWidth = fileListWidth + delta;
+                            }),
                           ),
                           Expanded(
                             child: _DiffPreview(
                               diff: repository.commitDiff,
-                              onHunkAction: onHunkAction,
+                              onHunkAction: widget.onHunkAction,
                             ),
                           ),
                         ],
@@ -4391,6 +4420,7 @@ class _ChangesPane extends StatefulWidget {
     required this.onViewFileHistory,
     required this.onReview,
     required this.onIgnore,
+    required this.onExternalDiff,
     required this.onCreatePatch,
     required this.onApplyPatch,
     required this.onRemove,
@@ -4411,6 +4441,7 @@ class _ChangesPane extends StatefulWidget {
   final RepositoryChangeFilesCallback? onViewFileHistory;
   final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onIgnore;
+  final RepositoryChangeFilesCallback? onExternalDiff;
   final RepositoryChangeFilesCallback? onCreatePatch;
   final VoidCallback? onApplyPatch;
   final RepositoryChangeFilesCallback? onRemove;
@@ -4464,6 +4495,7 @@ class _ChangesPaneState extends State<_ChangesPane> {
                           onViewFileHistory: widget.onViewFileHistory,
                           onReview: widget.onReview,
                           onIgnore: widget.onIgnore,
+                          onExternalDiff: widget.onExternalDiff,
                           onCreatePatch: widget.onCreatePatch,
                           onApplyPatch: widget.onApplyPatch,
                           onRemove: widget.onRemove,
@@ -4513,6 +4545,7 @@ class _ChangesPaneState extends State<_ChangesPane> {
                         onViewFileHistory: widget.onViewFileHistory,
                         onReview: widget.onReview,
                         onIgnore: widget.onIgnore,
+                        onExternalDiff: widget.onExternalDiff,
                         onCreatePatch: widget.onCreatePatch,
                         onApplyPatch: widget.onApplyPatch,
                         onRemove: widget.onRemove,
@@ -4564,6 +4597,7 @@ class _WorkspaceChangesView extends StatelessWidget {
     required this.onViewFileHistory,
     required this.onReview,
     required this.onIgnore,
+    required this.onExternalDiff,
     required this.onCreatePatch,
     required this.onApplyPatch,
     required this.onRemove,
@@ -4585,6 +4619,7 @@ class _WorkspaceChangesView extends StatelessWidget {
   final RepositoryChangeFilesCallback? onViewFileHistory;
   final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onIgnore;
+  final RepositoryChangeFilesCallback? onExternalDiff;
   final RepositoryChangeFilesCallback? onCreatePatch;
   final VoidCallback? onApplyPatch;
   final RepositoryChangeFilesCallback? onRemove;
@@ -4617,6 +4652,7 @@ class _WorkspaceChangesView extends StatelessWidget {
             onViewFileHistory: onViewFileHistory,
             onReview: onReview,
             onIgnore: onIgnore,
+            onExternalDiff: onExternalDiff,
             onCreatePatch: onCreatePatch,
             onApplyPatch: onApplyPatch,
             onRemove: onRemove,
@@ -4673,6 +4709,7 @@ class _ChangeList extends StatefulWidget {
     required this.onViewFileHistory,
     required this.onReview,
     required this.onIgnore,
+    required this.onExternalDiff,
     required this.onCreatePatch,
     required this.onApplyPatch,
     required this.onRemove,
@@ -4695,6 +4732,7 @@ class _ChangeList extends StatefulWidget {
   final RepositoryChangeFilesCallback? onViewFileHistory;
   final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onIgnore;
+  final RepositoryChangeFilesCallback? onExternalDiff;
   final RepositoryChangeFilesCallback? onCreatePatch;
   final VoidCallback? onApplyPatch;
   final RepositoryChangeFilesCallback? onRemove;
@@ -4837,6 +4875,7 @@ class _ChangeListState extends State<_ChangeList> {
       onViewFileHistory: widget.onViewFileHistory,
       onReview: widget.onReview,
       onIgnore: widget.onIgnore,
+      onExternalDiff: widget.onExternalDiff,
       onCreatePatch: widget.onCreatePatch,
       onApplyPatch: widget.onApplyPatch,
       onRemove: widget.onRemove,
@@ -4937,6 +4976,7 @@ class _ChangeGroup extends StatelessWidget {
     required this.onViewFileHistory,
     required this.onReview,
     required this.onIgnore,
+    required this.onExternalDiff,
     required this.onCreatePatch,
     required this.onApplyPatch,
     required this.onRemove,
@@ -4964,6 +5004,7 @@ class _ChangeGroup extends StatelessWidget {
   final RepositoryChangeFilesCallback? onViewFileHistory;
   final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onIgnore;
+  final RepositoryChangeFilesCallback? onExternalDiff;
   final RepositoryChangeFilesCallback? onCreatePatch;
   final VoidCallback? onApplyPatch;
   final RepositoryChangeFilesCallback? onRemove;
@@ -5061,6 +5102,7 @@ class _ChangeGroup extends StatelessWidget {
               onViewFileHistory: onViewFileHistory,
               onReview: onReview,
               onIgnore: onIgnore,
+              onExternalDiff: onExternalDiff,
               onCreatePatch: onCreatePatch,
               onApplyPatch: onApplyPatch,
               onRemove: onRemove,
@@ -5095,6 +5137,7 @@ class _ChangeTile extends StatelessWidget {
     required this.onViewFileHistory,
     required this.onReview,
     required this.onIgnore,
+    required this.onExternalDiff,
     required this.onCreatePatch,
     required this.onApplyPatch,
     required this.onRemove,
@@ -5118,6 +5161,7 @@ class _ChangeTile extends StatelessWidget {
   final RepositoryChangeFilesCallback? onViewFileHistory;
   final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onIgnore;
+  final RepositoryChangeFilesCallback? onExternalDiff;
   final RepositoryChangeFilesCallback? onCreatePatch;
   final VoidCallback? onApplyPatch;
   final RepositoryChangeFilesCallback? onRemove;
@@ -5336,7 +5380,32 @@ class _ChangeTile extends StatelessWidget {
           ),
         ),
         const Divider(height: 1),
-        const MenuItemButton(onPressed: null, child: Text('外部差异比对（待实现）')),
+        MenuItemButton(
+          onPressed:
+              conflictActionsEnabled &&
+                  onExternalDiff != null &&
+                  selectedChanges().length == 1 &&
+                  selectedChanges().single.isActionEnabled &&
+                  selectedChanges().single.isPathValidUtf8 &&
+                  selectedChanges().single.canExternalDiff &&
+                  selectedChanges().single.kind !=
+                      RepositoryChangeKind.untracked &&
+                  selectedChanges().single.kind !=
+                      RepositoryChangeKind.conflicted
+              ? () => invokeFileAction(onExternalDiff!)
+              : null,
+          child: Text(
+            selectedChanges().length == 1 &&
+                    selectedChanges().single.isPathValidUtf8 &&
+                    selectedChanges().single.canExternalDiff &&
+                    selectedChanges().single.kind !=
+                        RepositoryChangeKind.untracked &&
+                    selectedChanges().single.kind !=
+                        RepositoryChangeKind.conflicted
+                ? '外部差异比对'
+                : '外部差异比对（待实现）',
+          ),
+        ),
         MenuItemButton(
           onPressed:
               ordinaryMutationsEnabled &&
@@ -6081,6 +6150,7 @@ class _TabbedInspector extends StatelessWidget {
     required this.onViewFileHistory,
     required this.onReview,
     required this.onIgnore,
+    required this.onExternalDiff,
     required this.onCreatePatch,
     required this.onApplyPatch,
     required this.onRemove,
@@ -6105,6 +6175,7 @@ class _TabbedInspector extends StatelessWidget {
   final RepositoryChangeFilesCallback? onViewFileHistory;
   final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onIgnore;
+  final RepositoryChangeFilesCallback? onExternalDiff;
   final RepositoryChangeFilesCallback? onCreatePatch;
   final VoidCallback? onApplyPatch;
   final RepositoryChangeFilesCallback? onRemove;
@@ -6143,6 +6214,7 @@ class _TabbedInspector extends StatelessWidget {
               onViewFileHistory: onViewFileHistory,
               onReview: onReview,
               onIgnore: onIgnore,
+              onExternalDiff: onExternalDiff,
               onCreatePatch: onCreatePatch,
               onApplyPatch: onApplyPatch,
               onRemove: onRemove,

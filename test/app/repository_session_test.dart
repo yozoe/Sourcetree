@@ -547,6 +547,71 @@ void main() {
     },
   );
 
+  test('reads exact staged and unstaged layers for external diff', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('layered.txt', 'head\n');
+    await repository.commit('Base');
+    await repository.writeFile('layered.txt', 'index\n');
+    await repository.runGit(['add', '--', 'layered.txt']);
+    await repository.writeFile('layered.txt', 'worktree\n');
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final changes = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.changes.where((change) => change.path == 'layered.txt');
+
+    final stagedComparison = await controller.readWorkingTreeFileComparison(
+      changes.singleWhere((change) => change.isStaged),
+    );
+    expect(utf8.decode(stagedComparison.beforeBytes), 'head\n');
+    expect(utf8.decode(stagedComparison.afterBytes), 'index\n');
+
+    final unstagedComparison = await controller.readWorkingTreeFileComparison(
+      changes.singleWhere((change) => !change.isStaged),
+    );
+    expect(utf8.decode(unstagedComparison.beforeBytes), 'index\n');
+    expect(utf8.decode(unstagedComparison.afterBytes), 'worktree\n');
+  });
+
+  test('uses empty snapshots for added and deleted tracked files', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('removed.txt', 'to remove\n');
+    await repository.commit('Base');
+    await repository.runGit(['rm', '--', 'removed.txt']);
+    await repository.writeFile('added.txt', 'new file\n');
+    await repository.runGit(['add', '--', 'added.txt']);
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final changes = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.changes;
+
+    final removed = changes.singleWhere(
+      (change) => change.path == 'removed.txt' && change.isStaged,
+    );
+    final removedComparison = await controller.readWorkingTreeFileComparison(
+      removed,
+    );
+    expect(utf8.decode(removedComparison.beforeBytes), 'to remove\n');
+    expect(removedComparison.afterBytes, isEmpty);
+
+    final added = changes.singleWhere(
+      (change) => change.path == 'added.txt' && change.isStaged,
+    );
+    final addedComparison = await controller.readWorkingTreeFileComparison(
+      added,
+    );
+    expect(addedComparison.beforeBytes, isEmpty);
+    expect(utf8.decode(addedComparison.afterBytes), 'new file\n');
+  });
+
   test(
     'automatically refreshes external work-tree changes without reloading history',
     () async {
@@ -571,6 +636,8 @@ void main() {
       final original = container.read(repositorySessionProvider);
       final originalHistory = original.historyCommits;
       final originalCommitId = original.selectedCommitId;
+      final originalCommitChanges = original.commitChanges;
+      final originalCommitDiff = original.commitDiff;
       final phases = <RepositorySessionPhase>[];
       final subscription = container.listen<RepositorySessionState>(
         repositorySessionProvider,
@@ -604,6 +671,8 @@ void main() {
       );
       expect(identical(refreshed.historyCommits, originalHistory), isTrue);
       expect(refreshed.selectedCommitId, originalCommitId);
+      expect(identical(refreshed.commitChanges, originalCommitChanges), isTrue);
+      expect(identical(refreshed.commitDiff, originalCommitDiff), isTrue);
       expect(refreshed.status!.isClean, isFalse);
     },
   );

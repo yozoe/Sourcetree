@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
@@ -201,6 +202,7 @@ RepositoryChangeViewData? _changeAfterStageToggle(
     kind: kind,
     isStaged: isStaged,
     canToggleStage: entry.path.isValidUtf8,
+    canExternalDiff: entry.submodule?.isSubmodule != true,
   );
 }
 
@@ -220,6 +222,18 @@ final class SelectedCommitFile {
 /// 中文：用于历史文件外部差异比对的不可变前后版本字节。
 final class HistoricalFileComparison {
   const HistoricalFileComparison({
+    required this.beforeBytes,
+    required this.afterBytes,
+  });
+
+  final Uint8List beforeBytes;
+  final Uint8List afterBytes;
+}
+
+/// Two immutable snapshots for one selected working-tree diff.
+/// 中文：当前所选工作区差异的两个不可变快照。
+final class WorkingTreeFileComparison {
+  const WorkingTreeFileComparison({
     required this.beforeBytes,
     required this.afterBytes,
   });
@@ -718,17 +732,104 @@ final class RepositorySessionController
         }
         return;
       }
-      final refreshed = await _finishWorkingTreeMutation(
-        repository: repository,
-        repositoryGeneration: repositoryGeneration,
-        previousSelection: previousSelection,
-        previousRefId: previousRefId,
-        validatedStatus: refreshedStatus,
-      );
-      if (refreshed &&
-          _isCurrentRepositoryRequest(repository, repositoryGeneration)) {
-        state = state.copyWith(operationState: refreshedOperationState);
+
+      // Automatic refresh is intentionally silent.  The generic mutation
+      // finisher clears the current selection and Diff before reading them
+      // again, which makes the commit-change and Diff panes flash empty on
+      // every editor save.  Read the replacement Diff first and publish one
+      // atomic state update instead.
+      if (previousRefId != 'workspace' && previousRefId != 'uncommitted') {
+        state = state.copyWith(
+          phase: RepositorySessionPhase.ready,
+          status: refreshedStatus,
+          operationState: refreshedOperationState,
+        );
+        return;
       }
+
+      if (previousRefId == 'uncommitted' && refreshedStatus.isClean) {
+        final refreshed = await _finishWorkingTreeMutation(
+          repository: repository,
+          repositoryGeneration: repositoryGeneration,
+          previousSelection: previousSelection,
+          previousRefId: previousRefId,
+          validatedStatus: refreshedStatus,
+        );
+        if (refreshed &&
+            _isCurrentRepositoryRequest(repository, repositoryGeneration)) {
+          state = state.copyWith(operationState: refreshedOperationState);
+        }
+        return;
+      }
+
+      RepositoryChangeViewData? nextChange;
+      SelectedRepositoryChange? nextSelection;
+      GitUnifiedDiff? nextDiff;
+      if (previousSelection != null) {
+        final entry = refreshedStatus.entries
+            .where(
+              (candidate) =>
+                  candidate.path.display ==
+                  previousSelection.entry.path.display,
+            )
+            .firstOrNull;
+        if (entry != null && entry.path.isValidUtf8) {
+          nextChange = _changeAfterStageToggle(
+            entry,
+            isStaged: previousSelection.isStaged,
+          );
+          nextChange ??= _changeAfterStageToggle(
+            entry,
+            isStaged: !previousSelection.isStaged,
+          );
+          if (nextChange != null) {
+            nextSelection = SelectedRepositoryChange(
+              entry: entry,
+              source: nextChange.isStaged
+                  ? GitDiffSource.staged
+                  : GitDiffSource.workingTree,
+              kind: nextChange.kind,
+            );
+            nextDiff = nextChange.kind == RepositoryChangeKind.untracked
+                ? await _reader.readUntrackedFileDiff(
+                    repository,
+                    path: entry.path.display,
+                  )
+                : await _reader.readUnifiedDiff(
+                    repository,
+                    path: entry.path.display,
+                    source: nextSelection.source,
+                  );
+          }
+        }
+      }
+      if (!_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
+        return;
+      }
+      // A user may have changed the working-tree selection while the
+      // replacement Diff was being read. Do not let this older refresh win
+      // over the newer interaction.
+      if (state.selectedRefId != previousRefId ||
+          !identical(state.selectedChange, previousSelection)) {
+        state = state.copyWith(
+          phase: RepositorySessionPhase.ready,
+          status: refreshedStatus,
+          operationState: refreshedOperationState,
+        );
+        return;
+      }
+      state = state.copyWith(
+        phase: RepositorySessionPhase.ready,
+        status: refreshedStatus,
+        operationState: refreshedOperationState,
+        selectedRefId: previousRefId,
+        selectedChange: nextSelection,
+        diff: nextDiff,
+        isDiffLoading: false,
+        clearSelectedChange: nextSelection == null,
+        clearDiff: nextDiff == null,
+      );
+      return;
     } on Object catch (error, stackTrace) {
       if (!_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
         return;
@@ -5798,6 +5899,147 @@ final class RepositorySessionController
         _historyMutationCancellation = null;
       }
     }
+  }
+
+  /// Reads the exact two layers represented by one selected working-tree row:
+  /// HEAD/index for staged changes or index/worktree for unstaged changes.
+  /// 中文：读取一个工作区选择行所代表的两个精确层级：已暂存为 HEAD/index，
+  /// 未暂存为 index/worktree；读取前会刷新并复核 Git 状态。
+  Future<WorkingTreeFileComparison> readWorkingTreeFileComparison(
+    RepositoryChangeViewData change, {
+    int maxBytesPerSide = 16 * 1024 * 1024,
+  }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackRequiredGitTask(
+        () => readWorkingTreeFileComparison(
+          change,
+          maxBytesPerSide: maxBytesPerSide,
+        ),
+      );
+    }
+    if (maxBytesPerSide <= 0) {
+      throw RangeError.value(
+        maxBytesPerSide,
+        'maxBytesPerSide',
+        'Must be positive.',
+      );
+    }
+    if (state.phase != RepositorySessionPhase.ready ||
+        state.isWorkingTreeBusy ||
+        state.operationState != GitRepositoryOperationState.none ||
+        !change.isActionEnabled ||
+        !change.isPathValidUtf8 ||
+        !change.canExternalDiff ||
+        change.kind == RepositoryChangeKind.untracked ||
+        change.kind == RepositoryChangeKind.conflicted) {
+      throw StateError('当前文件不支持外部差异比对。');
+    }
+    await refresh();
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        state.phase != RepositorySessionPhase.ready ||
+        state.isWorkingTreeBusy ||
+        state.operationState != GitRepositoryOperationState.none) {
+      throw StateError('仓库状态不可用。');
+    }
+    final entry = status.displayEntries.where((candidate) {
+      if (candidate.path.display != change.path) return false;
+      return change.isStaged
+          ? candidate.hasStagedChange
+          : candidate.hasWorkTreeChange;
+    }).firstOrNull;
+    if (entry == null ||
+        entry.isConflicted ||
+        !entry.path.isValidUtf8 ||
+        entry.submodule?.isSubmodule == true) {
+      throw StateError('文件选择或 Git 状态已变化。');
+    }
+    final generation = _repositoryGeneration;
+    Future<Uint8List> blobOrEmpty(String? objectId) {
+      if (objectId == null || RegExp(r'^0+$').hasMatch(objectId)) {
+        return Future<Uint8List>.value(Uint8List(0));
+      }
+      return _reader.readBlob(
+        repository,
+        objectId: objectId,
+        maxBytes: maxBytesPerSide,
+      );
+    }
+
+    final Uint8List beforeBytes;
+    final Uint8List afterBytes;
+    if (change.isStaged) {
+      beforeBytes = await blobOrEmpty(entry.headObjectId);
+      afterBytes = await blobOrEmpty(entry.indexObjectId);
+    } else {
+      beforeBytes = await blobOrEmpty(entry.indexObjectId);
+      if (entry.workTreeStatus == GitChangeType.deleted) {
+        afterBytes = Uint8List(0);
+      } else {
+        final root = repository.workTreeRoot;
+        if (root == null) {
+          throw StateError('当前文件类型不支持外部差异比对。');
+        }
+        final localPath = path_utils.normalize(
+          path_utils.join(root, entry.path.display),
+        );
+        if (path_utils.isAbsolute(entry.path.display) ||
+            !path_utils.isWithin(root, localPath)) {
+          throw StateError('工作区文件已失效。');
+        }
+        final canonicalRoot = await Directory(root).resolveSymbolicLinks();
+        final canonicalParent = await Directory(
+          path_utils.dirname(localPath),
+        ).resolveSymbolicLinks();
+        if (canonicalParent != canonicalRoot &&
+            !path_utils.isWithin(canonicalRoot, canonicalParent)) {
+          throw StateError('工作区文件位于仓库之外。');
+        }
+        final type = await FileSystemEntity.type(localPath, followLinks: false);
+        if (type != FileSystemEntityType.file &&
+            type != FileSystemEntityType.link) {
+          throw StateError('工作区文件已失效。');
+        }
+        if (type == FileSystemEntityType.link) {
+          afterBytes = Uint8List.fromList(
+            utf8.encode(await Link(localPath).target()),
+          );
+          if (afterBytes.length > maxBytesPerSide) {
+            throw const GitException(
+              'The work-tree link exceeds the configured output limit.',
+            );
+          }
+        } else {
+          final file = await File(localPath).open();
+          try {
+            if (await file.length() > maxBytesPerSide) {
+              throw const GitException(
+                'The work-tree file exceeds the configured output limit.',
+              );
+            }
+            afterBytes = await file.read(maxBytesPerSide + 1);
+            if (afterBytes.length > maxBytesPerSide) {
+              throw const GitException(
+                'The work-tree file exceeds the configured output limit.',
+              );
+            }
+          } finally {
+            await file.close();
+          }
+        }
+      }
+    }
+    if (!ref.mounted ||
+        generation != _repositoryGeneration ||
+        state.repository?.id != repository.id) {
+      throw StateError('仓库已切换，无法进行外部差异比对。');
+    }
+    return WorkingTreeFileComparison(
+      beforeBytes: beforeBytes,
+      afterBytes: afterBytes,
+    );
   }
 
   /// Exports loaded commits as one patch or individual patch files.

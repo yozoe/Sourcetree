@@ -186,6 +186,38 @@ final class GitRepositoryReader {
     return result.stdoutBytes;
   }
 
+  /// Reads one blob by its validated object ID without filters or decoding.
+  /// 中文：通过已验证的对象 ID 读取原始 blob，不运行过滤器或文本解码。
+  Future<Uint8List> readBlob(
+    GitRepository repository, {
+    required String objectId,
+    int maxBytes = 16 * 1024 * 1024,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    _validateObjectId(objectId);
+    if (maxBytes <= 0) {
+      throw RangeError.value(maxBytes, 'maxBytes', 'Must be positive.');
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: ['--no-pager', 'cat-file', 'blob', objectId],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: GitOutputLimit(
+          stdoutBytes: maxBytes,
+          stderrBytes: 256 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Reading Git blob');
+    if (result.stdoutTruncated) {
+      throw const GitException(
+        'The Git blob exceeds the configured output limit.',
+      );
+    }
+    return result.stdoutBytes;
+  }
+
   /// 中文：读取仓库详情所需的真实 Git 统计和本地磁盘用量。
   ///
   /// English: Reads Git-backed repository statistics and local disk usage for
