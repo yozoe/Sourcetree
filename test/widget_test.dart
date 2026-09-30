@@ -747,6 +747,43 @@ void main() {
     );
   });
 
+  testWidgets('history search debounces rapid input', (tester) async {
+    final queries = <String>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              commits: [
+                CommitViewData(
+                  oid: '0123456789abcdef',
+                  shortOid: '01234567',
+                  subject: 'Initial commit',
+                  author: 'Test',
+                  relativeDate: '刚刚',
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(onSearchChanged: queries.add),
+        ),
+      ),
+    );
+
+    final field = find.byType(TextFormField);
+    await tester.enterText(field, 'i');
+    await tester.pump(const Duration(milliseconds: 80));
+    await tester.enterText(field, 'in');
+    await tester.pump(const Duration(milliseconds: 80));
+    await tester.enterText(field, 'initial');
+    expect(queries, isEmpty);
+    await tester.pump(const Duration(milliseconds: 220));
+    expect(queries, ['initial']);
+  });
+
   testWidgets('loads more history from the list footer', (tester) async {
     var loadMoreCalls = 0;
     await tester.pumpWidget(

@@ -3,7 +3,7 @@ import 'dart:io';
 
 import 'package:git_desktop/src/git/git.dart';
 
-/// Reads one local repository repeatedly and emits JSON timing samples.
+/// Reads one local repository repeatedly and emits JSON timing and RSS samples.
 ///
 /// This is a read-only developer benchmark: it never changes refs, index,
 /// work-tree files, remotes, configuration, or environment variables.
@@ -26,6 +26,7 @@ Future<void> main(List<String> arguments) async {
   }
 
   final samples = <Map<String, Object>>[];
+  final initialResidentSetBytes = ProcessInfo.currentRss;
   for (var index = 0; index < options.iterations; index += 1) {
     final statusWatch = Stopwatch()..start();
     final status = await reader.readStatus(repository);
@@ -47,6 +48,7 @@ Future<void> main(List<String> arguments) async {
       revisionSnapshot: snapshot,
     );
     historyWatch.stop();
+    final residentSetBytes = ProcessInfo.currentRss;
 
     samples.add({
       'iteration': index + 1,
@@ -58,6 +60,8 @@ Future<void> main(List<String> arguments) async {
       'remoteBranches': refs[1].length,
       'tags': refs[2].length,
       'historyCommits': history.length,
+      'residentSetBytes': residentSetBytes,
+      'residentSetDeltaBytes': residentSetBytes - initialResidentSetBytes,
     });
   }
 
@@ -70,6 +74,8 @@ Future<void> main(List<String> arguments) async {
         'statusMilliseconds',
         'refsMilliseconds',
         'historyMilliseconds',
+        'residentSetBytes',
+        'residentSetDeltaBytes',
       ])
         metric: _summary(samples.map((sample) => sample[metric]! as int)),
     },
@@ -143,6 +149,7 @@ Future<List<_P95Comparison>> _compareP95({
     'statusMilliseconds',
     'refsMilliseconds',
     'historyMilliseconds',
+    'residentSetBytes',
   ]) {
     final baselineMetric = baselineSummary[metric];
     final currentMetric = currentSummary[metric];
@@ -191,7 +198,8 @@ final class _BenchmarkOptions {
       [--baseline <json>] [--output <json>] [--max-regression-percent <number>]
 
 The repository is read only. A baseline comparison checks P95 status, refs,
-and history timings and exits non-zero above the default 15% regression.''';
+history timings, and process RSS metrics; it exits non-zero above the default
+15% regression.''';
 
   final String repositoryPath;
   final int iterations;

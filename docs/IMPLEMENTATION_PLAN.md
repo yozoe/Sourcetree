@@ -360,11 +360,14 @@ detached HEAD、SHA-1/SHA-256 等边界。
 - macOS 核心工作区 UI E2E：`integration_test` 在真实 Flutter desktop app 与本地 bare remote
   fixture 中覆盖打开工作区、暂存、提交、创建分支、推送、ahead/behind 与远端 ref 核验。
 - macOS AskPass UI E2E：正式 bundle 的 native helper、broker、session 和 Flutter 脱敏弹窗
-  完成一次取消链路验证；真实认证远端的恢复与结果核验仍待受控账户环境。
+  已完成一次取消链路验证；Release bundle 也已验证 helper/broker 与主应用保持 x86_64/arm64
+  双架构且不注入 `get-task-allow`；本项目当前不进行外部发布签名或 Gatekeeper 验证，真实认证
+  远端的恢复与结果核验仍待受控账户环境。
 - AskPass IPC 安全设计评估：保持无交互认证默认值，冻结操作级 helper、nonce、权限、串行多提示、取消和脱敏契约，并以 macOS helper/broker 实施。
 - AskPass 应用侧协议校验：拒绝非法 nonce、未知字段和超限 prompt，且协议对象不保存秘密。
-- AskPass macOS helper：固定路径的 socket 转发 helper 已编译并打包进 Debug app；正式 bundle
-  的用户主动远端操作通过操作级 broker/session 启用 `GIT_ASKPASS`。
+- AskPass macOS helper：固定路径的 socket 转发 helper 已编译并打包进 Debug/Release app；正式
+  bundle 的用户主动远端操作通过操作级 broker/session 启用 `GIT_ASKPASS`。Release 构建通过
+  `codesign --verify --deep --strict`；本项目当前只保留本机 ad-hoc 构建验证，不进行外部发布签名。
 - AskPass Flutter 操作级 socket session：随机 `0700` 临时目录中的 `0600` Unix socket、
   每次 256-bit nonce、串行用户名/密码请求、16 KiB 响应限制、取消/拒绝/超时清理均已由单元测试覆盖；
   会话环境只能从 `Platform.resolvedExecutable` 的固定 app bundle 路径推导 helper；
@@ -380,7 +383,7 @@ detached HEAD、SHA-1/SHA-256 等边界。
   顺序与 SSH Agent socket 环境契约测试已完成；真实私有远端、Release 签名和 Keychain/企业
   SSO 兼容性验证待完成。
 
-待完成：真实认证远端、Release 签名与凭据兼容性验证，以及 macOS 认证等待/取消/恢复 UI E2E。
+待完成：真实认证远端、Keychain/企业 SSO 兼容性验证，以及 macOS 认证等待/取消/恢复 UI E2E。
 
 退出条件：用户无需终端完成
 “克隆 → 修改 → 暂存 → 提交 → 创建分支 → 推送”；状态与 Git CLI 一致，
@@ -442,14 +445,14 @@ CRLF、长路径、大小写、symlink、可执行位、窗口和系统菜单差
 - [x] 其余菜单项明确显示“（待实现）”；仓库/动作项在前台工作区提示，窗口项在首页或工作区
   显示原生提示，不执行 Git、文件或窗口写操作。
 
-#### M1：路由、状态与低风险能力（收尾中）
+#### M1：路由、状态与低风险能力（已完成）
 
-- [~] 为每个从“待实现”转为正式能力的菜单项建立稳定 action ID，逐项移除对通用
-  `repositoryFeaturePending` 的依赖；标题不作为协议字段。剩余工作仅针对仍有通用 pending
-  路由的已交付入口，并为每项补齐独立路由和失效快照测试。
-- [~] 建立按 Engine/窗口隔离的 `WorkspaceMenuState` 快照，并让 AppKit 菜单校验随 key window、
-  选择、upstream、冲突和运行中任务动态更新；当前快照已覆盖主要工作流，剩余工作是补齐关闭窗口、
-  Engine 销毁和 key window 切换后的所有已交付 action 验收。
+- [x] 为每个已交付菜单项建立稳定、独立的语义 action ID；标题不作为协议字段。真正未交付的
+  入口继续使用统一 pending 路由，并在标签中显示“（待实现）”，点击只显示提示。
+- [x] 建立按 Engine/窗口隔离的 `WorkspaceMenuState` 快照，并让 AppKit 菜单校验只读取当前
+  key workspace 的选择、upstream、冲突和运行中任务。Flutter 快照带有按 Engine 单调递增的
+  generation，原生层拒绝迟到旧快照；key window 切换、选择或能力变化、后台任务、窗口关闭和
+  Engine 销毁均会失效旧状态，旧 workspace 回调不会重新启用菜单。
 - [x] “仓库”菜单已复用现有刷新、Commit、Fetch、Pull、Push、Checkout、Branch、Merge、Tag、Stash
   和交互式 Rebase 工作流，不复制 Git 命令或对话框状态；交互式变基只以当前可见选中提交为基点，
   并在工作区干净、HEAD 未游离、无其他写任务时启用。
@@ -494,6 +497,18 @@ CRLF、长路径、大小写、symlink、可执行位、窗口和系统菜单差
 
 #### M3：高风险 Git 与文件操作
 
+当前验收矩阵（操作日志结果是会话状态的一部分）：
+
+| 操作范围 | 失败/取消 | 冲突或部分成功 | 写入后刷新失败 | 当前证据 |
+| --- | --- | --- | --- | --- |
+| Clone | 已覆盖启动前与运行中取消 | 运行中取消保留部分 Git 数据 | 打开仓库失败保留错误状态 | 真实 Git 会话测试 |
+| Fetch / Pull / Push | 失败、取消与 Push 远端核验已有路径 | Fetch 多远端、Push 远端核验已有“不确定”语义 | 已统一为“不确定” | 真实 Git Fetch/Pull/Push 测试；writer 层运行中取消注入已覆盖 |
+| Commit / Merge / Rebase / Stash | 失败与冲突恢复已有路径 | 冲突保留 Git 恢复状态 | 已统一为“不确定” | 真实 Git 会话测试；Merge/Rebase/Stash 刷新失败注入已覆盖 |
+| Reset / 文件 / Diff 区块 | 失败与过期选择已有路径 | 文件写入按独立操作记录 | 已统一为“不确定” | 真实 Git 会话测试；文件 Reset、整文件暂存和删除刷新失败边界已接入统一记录 |
+| Branch / Tag / Remote | Git 失败已有路径 | Tag、批量引用删除支持部分成功 | 已统一为“不确定” | 真实 Git 会话测试 |
+
+矩阵中的刷新失败和恢复边界已逐项取得直接证据，本条清单已完成。
+
 - [x] 仓库级 Reset 可从已加载历史选择目标，历史选择可直接“重置到提交”；提交级重置默认 mixed，
   可选 soft/hard，hard 模式列出会丢弃的已跟踪路径并要求二次确认。工作区选择级 Reset 仅在全部
   目标均为可恢复的已跟踪修改或删除时启用，复用既有状态复核并经确认恢复 index/worktree 到 HEAD。
@@ -503,9 +518,12 @@ CRLF、长路径、大小写、symlink、可执行位、窗口和系统菜单差
   tracked/untracked，精确列出作用路径、部分成功结果并提供安全默认。
 - [ ] 冻结“隐藏变更…”“刷新远程仓库状态”“更新”的产品语义后再实现；在此之前不得映射为
   Stash、Fetch 或 Pull。
-- [ ] 为所有高风险写操作建立失败、取消、冲突、部分成功、结果不确定和刷新失败的统一验收矩阵，
-  确认不会自动 clean、force push、删除未合并分支或覆盖未知 `index.lock`；已覆盖的场景应逐项移入
-  已完成清单，避免把目标矩阵误写成当前覆盖。
+- [x] 为所有高风险写操作建立失败、取消、冲突、部分成功、结果不确定和刷新失败的统一验收矩阵，
+  确认不会自动 clean、force push、删除未合并分支或覆盖未知 `index.lock`。当前已将批量引用删除的
+  部分成功、Fetch 多远端失败、Push 远端核验失败、Pull/Push/Reset/Stash/补丁/提交刷新失败的
+  结果不确定状态写入操作日志，并覆盖对应真实 Git 测试；Reset、停止追踪等文件写操作也已
+  记录独立的文件操作结果，Diff 区块写入也已纳入该分类；远端配置和本地分支创建也已分别记录为远端配置/引用操作。
+  标签创建/删除的本地与远端部分成功、分支创建/切换/检出/重命名和仓库初始化也已记录为引用操作结果。Merge/Rebase/Cherry-pick/Revert/Stash 的刷新失败已由可重复注入测试覆盖，文件 Reset、整文件暂存、忽略、复制、移动、删除、停止追踪、历史文件恢复和工作区/历史 Diff 区块操作已接入统一文件操作结果；冲突恢复（含内部合并结果与 ours/theirs 侧选择）也已覆盖刷新失败证据，合并 Continue/Abort、变基 Continue/Abort、遴选 Continue/Abort 及回滚 Continue/Abort 已补充写入成功但刷新失败的直接测试。Clone 在 Git 启动前取消、运行中取消和部分 Git 数据保留已有真实测试，Fetch/Pull/Push/Stash 的运行中取消已由真实 Git runner 注入测试覆盖；完整 Flutter 套件 452 项通过，并完成安全不变量审计：不会自动 clean、force push、删除未合并分支或覆盖未知 `index.lock`。
 
 #### M4：平台与外部集成
 
@@ -567,9 +585,7 @@ CRLF、长路径、大小写、symlink、可执行位、窗口和系统菜单差
 - 首份 Small 参考机采样结果和更新规则见 [PERFORMANCE_BASELINE.md](PERFORMANCE_BASELINE.md)；
   它不代表 Medium/Stress 或 UI 性能预算已完成。
 - 已完成一轮低风险 UI 卡顿优化：历史 Graph 后备拓扑按提交页身份缓存，引用导航的平面分区
-  按需构建，提交历史引用标签使用一次索引，提交面板仅监听提交所需字段，查询未变化时跳过重复状态发布，避免普通布局重建重复 O(n) 计算；推送配置读取远端
-  地址失败时会清理 loading 状态并允许重新选择远端。下一项性能任务是引用导航的全量 Widget
-  懒构建和搜索输入防抖，必须配套 Small/Medium 基准和回归测试后才能标记完成。
+  按需构建，本地分支顶层行和折叠远端子项不提前创建，提交历史搜索输入按 220ms 防抖合并，提交历史引用标签使用一次索引，提交面板仅监听提交所需字段，查询未变化时跳过重复状态发布，避免普通布局重建重复 O(n) 计算；推送配置读取远端地址失败时会清理 loading 状态并允许重新选择远端。Git 读取基准已补齐 Small/Medium 的延迟和 benchmark 进程 RSS P95；性能任务仍需补齐 Flutter UI 首帧/滚动 P95 与应用内存快照，完成后再标记为已完成。
 
 ### 仓库信任边界
 
@@ -625,16 +641,11 @@ CRLF、长路径、大小写、symlink、可执行位、窗口和系统菜单差
 
 按当前实现状态，下一阶段按以下顺序推进：
 
-1. 完成 M1 菜单收尾：为仍使用通用 pending 路由的已交付入口建立独立 action ID，并补齐
-   key window 切换、选择变化、窗口关闭和 Engine 销毁后的失效快照测试。
-2. 完成 M3 高风险操作验收矩阵，覆盖失败、取消、冲突、部分成功、结果不确定和刷新失败，
-   明确每个场景的写后刷新、恢复和禁止危险副作用行为。
-3. 完成性能任务：引用导航懒构建、历史搜索防抖，并在 Small/Medium fixture 上记录可比较的
-   P95 和内存结果。
-4. 完成 AskPass 发布与兼容性验证：Release/Developer ID 签名、Gatekeeper、真实认证远端、
-   Keychain、SSH Agent、企业 SSO，以及认证等待/取消/恢复 UI E2E。
-5. 冻结“隐藏变更…”“刷新远程仓库状态”“更新”的产品语义，再决定是否进入实现；在语义冻结前
+1. [x] 完成性能任务：引用导航懒构建、历史搜索防抖，并在 Small/Medium fixture 上记录可比较的
+   P95 和 benchmark 进程 RSS 结果；Flutter profile 首帧/滚动和应用内存快照仍属于后续专项测量。
+2. 继续完成 AskPass 兼容性验证：真实认证远端、Keychain、SSH Agent、企业 SSO，以及认证等待/取消/恢复 UI E2E。
+3. 冻结“隐藏变更…”“刷新远程仓库状态”“更新”的产品语义，再决定是否进入实现；在语义冻结前
    不得将它们映射为 Stash、Fetch 或 Pull。
-6. 实现多个并存窗口组和系统全屏平铺，并补充显示器热插拔、布局迁移和恢复测试。
-7. 在上述基础稳定后，再评估 Submodule、Subtree、LFS、Git-flow、可配置外部 Diff/Merge、
+4. 实现多个并存窗口组和系统全屏平铺，并补充显示器热插拔、布局迁移和恢复测试。
+5. 在上述基础稳定后，再评估 Submodule、Subtree、LFS、Git-flow、可配置外部 Diff/Merge、
    托管平台和自定义操作。

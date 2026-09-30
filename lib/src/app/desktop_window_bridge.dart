@@ -120,7 +120,9 @@ final class DesktopWindowBridge {
   ///
   /// 中文：将 Flutter 已校验的工作区菜单可用状态同步给当前 macOS 窗口；原生
   /// 菜单只使用该快照控制可点击性，实际执行前仍由应用层重新校验 Git 状态。
+  /// [generation] 按 Engine 单调递增，原生层会拒绝迟到的旧快照。
   static Future<void> setWorkspaceMenuState({
+    required int generation,
     required bool canAddRemote,
     required bool canStopTracking,
     required bool canApplyPatch,
@@ -161,6 +163,7 @@ final class DesktopWindowBridge {
   }) {
     return _channel
         .invokeMethod<void>('setWorkspaceMenuState', <String, Object?>{
+          'generation': generation,
           'canAddRemote': canAddRemote,
           'canStopTracking': canStopTracking,
           'canApplyPatch': canApplyPatch,

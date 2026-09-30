@@ -880,7 +880,14 @@ final class RepositoryFooterViewData {
   final String? gitVersion;
 }
 
-enum RepositoryOperationState { running, succeeded, cancelled, failed }
+enum RepositoryOperationState {
+  running,
+  succeeded,
+  cancelled,
+  failed,
+  partiallySucceeded,
+  uncertain,
+}
 
 /// A redacted, user-facing record of a repository operation.
 ///

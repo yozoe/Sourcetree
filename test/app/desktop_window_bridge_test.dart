@@ -23,6 +23,7 @@ void main() {
           });
 
       await DesktopWindowBridge.setWorkspaceMenuState(
+        generation: 42,
         canAddRemote: true,
         canStopTracking: false,
         canApplyPatch: true,
@@ -64,6 +65,7 @@ void main() {
 
       expect(receivedCall?.method, 'setWorkspaceMenuState');
       expect(receivedCall?.arguments, <String, Object?>{
+        'generation': 42,
         'canAddRemote': true,
         'canStopTracking': false,
         'canApplyPatch': true,

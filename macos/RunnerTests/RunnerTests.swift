@@ -939,6 +939,31 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testWorkspaceMenuSnapshotsRejectOlderGenerations() throws {
+    let coordinator = WindowCoordinator()
+    let workspace = try WorkspaceFlutterWindowController(
+      repositoryPath: nil,
+      initialAction: nil,
+      coordinator: coordinator
+    )
+    defer { workspace.close() }
+
+    workspace.applyWorkspaceMenuState([
+      "generation": 2,
+      "canPush": true,
+      "repositoryRootPath": "/tmp/newer",
+    ])
+    workspace.applyWorkspaceMenuState([
+      "generation": 1,
+      "canPush": false,
+      "repositoryRootPath": "/tmp/older",
+    ])
+
+    XCTAssertEqual(workspace.workspaceMenuGeneration, 2)
+    XCTAssertTrue(workspace.canPushFromMenu)
+    XCTAssertEqual(workspace.fileMenuTargets.repositoryRootPath, "/tmp/newer")
+  }
+
   func testWorkspaceHistoryReturnsThePreviouslyFocusedRemainingWindow() {
     let history = GitDesktopWorkspaceHistory<TestWorkspace>()
     let first = TestWorkspace()

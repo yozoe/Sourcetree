@@ -840,6 +840,11 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// 中文：当前单个可见文件选择是否可读取修改日志。
   private(set) var canViewSelectedFileHistoryFromMenu = false
 
+  /// The newest Flutter menu snapshot accepted by this Engine.
+  ///
+  /// 中文：此 Engine 已接受的最新 Flutter 菜单快照序号；更旧的迟到快照会被拒绝。
+  private(set) var workspaceMenuGeneration: Int64 = 0
+
   /// Whether Flutter can safely add ignore rules for the visible selection.
   /// 中文：Flutter 是否可为当前可见选择安全添加忽略规则。
   private(set) var canIgnoreSelectedFromMenu = false
@@ -1389,6 +1394,10 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// 过期消息会被忽略，不会重新启用已关闭工作区的操作。
   func applyWorkspaceMenuState(_ arguments: [String: Any]?) {
     guard !didShutDownEngine else { return }
+    if let generation = (arguments?["generation"] as? NSNumber)?.int64Value {
+      guard generation >= workspaceMenuGeneration else { return }
+      workspaceMenuGeneration = generation
+    }
     canAddRemoteFromMenu = arguments?["canAddRemote"] as? Bool ?? false
     canStopTrackingFromMenu = arguments?["canStopTracking"] as? Bool ?? false
     canApplyPatchFromMenu = arguments?["canApplyPatch"] as? Bool ?? false

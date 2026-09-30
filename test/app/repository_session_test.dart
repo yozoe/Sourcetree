@@ -1300,6 +1300,45 @@ void main() {
     ).repository!;
     expect(finalOverview.changes, hasLength(1));
     expect(finalOverview.changes.single.isStaged, isFalse);
+    expect(
+      container.read(repositorySessionProvider).operations.first.outcome,
+      RepositoryOperationOutcome.succeeded,
+    );
+  });
+
+  test('marks a completed stage uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('stage-me.txt', 'stage me\n');
+    var failNextRefresh = true;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected stage refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final change = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.changes.single;
+
+    await controller.toggleStage(change);
+    final state = container.read(repositorySessionProvider);
+    expect(
+      state.operations.first.outcome,
+      RepositoryOperationOutcome.uncertain,
+    );
+    expect(state.message, contains('写入已完成'));
+    expect(
+      (await repository.runGit(['diff', '--cached', '--name-only'])).stdout,
+      contains('stage-me.txt'),
+    );
   });
 
   test('returns to ready after a successful staging retry', () async {
@@ -1402,6 +1441,11 @@ void main() {
       '{"version": 2}\n',
     );
     final state = container.read(repositorySessionProvider);
+    expect(state.operations.first.kind, RepositoryOperationKind.file);
+    expect(
+      state.operations.first.outcome,
+      RepositoryOperationOutcome.succeeded,
+    );
     expect(
       state.status!.entries.any(
         (entry) =>
@@ -1473,6 +1517,81 @@ void main() {
       ),
       isTrue,
     );
+  });
+
+  test('marks stop tracking uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('local.txt', 'base\n');
+    await repository.commit('Add local file');
+    await repository.writeFile('local.txt', 'changed\n');
+
+    var armed = false;
+    var armedRefreshCount = 0;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (armed) {
+            armedRefreshCount += 1;
+          }
+          if (armedRefreshCount == 2) {
+            throw StateError('injected stop tracking refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final change = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.changes.single;
+    armed = true;
+    expect(await controller.stopTrackingChanges([change]), isFalse);
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.file,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
+    expect(
+      await File('${repository.workingDirectory.path}/local.txt').exists(),
+      isTrue,
+    );
+  });
+
+  test('marks historical stop tracking uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('local.txt', 'base\n');
+    final commit = await repository.commit('Add local file');
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          final staged = await repository.runGit([
+            'diff',
+            '--cached',
+            '--quiet',
+          ], throwOnError: false);
+          if (staged.exitCode != 0) {
+            throw StateError(
+              'injected historical stop tracking refresh failure',
+            );
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    await controller.selectCommit(commit);
+    expect(await controller.stopTrackingSelectedCommitFile(), isFalse);
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.file,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
   });
 
   test(
@@ -1562,6 +1681,11 @@ void main() {
     );
     expect(container.read(repositorySessionProvider).status!.isClean, isTrue);
     final state = container.read(repositorySessionProvider);
+    expect(state.operations.first.kind, RepositoryOperationKind.file);
+    expect(
+      state.operations.first.outcome,
+      RepositoryOperationOutcome.succeeded,
+    );
     expect(state.selectedRefId, 'history');
     expect(state.selectedCommitId, isNotNull);
     expect(state.selectedChange, isNull);
@@ -1690,6 +1814,51 @@ void main() {
     expect(
       (await repository.runGit(['rev-parse', 'HEAD'])).stdout.toString().trim(),
       head,
+    );
+  });
+
+  test('marks historical file restore uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('tracked.txt', 'historical\n');
+    final historical = await repository.commit('Historical version');
+    await repository.writeFile('tracked.txt', 'current\n');
+    await repository.commit('Current version');
+
+    var failNextRefresh = false;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected historical restore refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    await controller.selectCommit(historical);
+    failNextRefresh = true;
+
+    expect(
+      await controller.resetSelectedCommitFileToCommit(
+        objectId: historical,
+        path: 'tracked.txt',
+      ),
+      isFalse,
+    );
+    final operation = container
+        .read(repositorySessionProvider)
+        .operations
+        .firstWhere((entry) => entry.kind == RepositoryOperationKind.file);
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(
+      await File(
+        '${repository.workingDirectory.path}${Platform.pathSeparator}tracked.txt',
+      ).readAsString(),
+      'historical\n',
     );
   });
 
@@ -1972,6 +2141,52 @@ void main() {
     );
   });
 
+  test('marks staged diff hunk uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile(
+      'README.md',
+      '${List<String>.generate(16, (index) => 'line ${index + 1}').join('\n')}\n',
+    );
+    await repository.commit('Base');
+    await repository.writeFile(
+      'README.md',
+      '${List<String>.generate(16, (index) => switch (index + 1) {
+        2 => 'changed 2',
+        14 => 'changed 14',
+        _ => 'line ${index + 1}',
+      }).join('\n')}\n',
+    );
+    var failNextRefresh = false;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected stage hunk refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    controller.selectUncommittedChanges();
+    final change = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.changes.single;
+    await controller.selectChange(change);
+    failNextRefresh = true;
+
+    expect(await controller.stageSelectedDiffHunk(0), isFalse);
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.file,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
+  });
+
   test(
     'hides and rejects working-tree hunk actions when file mode changes',
     () async {
@@ -2056,6 +2271,52 @@ void main() {
     expect(refreshed.selectedCommitId, isNull);
     expect(refreshed.selectedChange?.entry.path.display, 'README.md');
     expect(refreshed.diff?.text, contains('changed 14'));
+  });
+
+  test('marks discarded diff hunk uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile(
+      'README.md',
+      '${List<String>.generate(16, (index) => 'line ${index + 1}').join('\n')}\n',
+    );
+    await repository.commit('Base');
+    await repository.writeFile(
+      'README.md',
+      '${List<String>.generate(16, (index) => switch (index + 1) {
+        2 => 'changed 2',
+        14 => 'changed 14',
+        _ => 'line ${index + 1}',
+      }).join('\n')}\n',
+    );
+    var failNextRefresh = false;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected discard hunk refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    controller.selectUncommittedChanges();
+    final change = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.changes.single;
+    await controller.selectChange(change);
+    failNextRefresh = true;
+
+    expect(await controller.revertSelectedDiffHunk(0), isFalse);
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.file,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
   });
 
   test(
@@ -2148,6 +2409,49 @@ void main() {
       );
     },
   );
+
+  test('marks committed diff hunk revert uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile(
+      'README.md',
+      '${List<String>.generate(16, (index) => 'line ${index + 1}').join('\n')}\n',
+    );
+    await repository.commit('Base');
+    await repository.writeFile(
+      'README.md',
+      '${List<String>.generate(16, (index) => switch (index + 1) {
+        2 => 'changed 2',
+        14 => 'changed 14',
+        _ => 'line ${index + 1}',
+      }).join('\n')}\n',
+    );
+    final changed = await repository.commit('Change two hunks');
+    var failNextRefresh = false;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected committed hunk refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    failNextRefresh = true;
+
+    expect(await controller.revertSelectedCommitDiffHunk(0), isFalse);
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.file,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
+    expect(state.selectedCommitId, changed);
+  });
 
   test(
     'hides and rejects committed-hunk revert when file mode changes',
@@ -2934,6 +3238,11 @@ void main() {
       expect(state.phase, RepositorySessionPhase.ready);
       expect(state.status!.entries, isEmpty);
       expect(state.commits.single.subject, 'Create README');
+      expect(state.operations.single.kind, RepositoryOperationKind.commit);
+      expect(
+        state.operations.single.outcome,
+        RepositoryOperationOutcome.succeeded,
+      );
     },
   );
 
@@ -3264,6 +3573,11 @@ void main() {
       state.localBranches.map((branch) => branch.name),
       contains('feature/unmerged'),
     );
+    expect(state.operations, hasLength(1));
+    expect(
+      state.operations.single.outcome,
+      RepositoryOperationOutcome.partiallySucceeded,
+    );
   });
 
   test(
@@ -3394,6 +3708,11 @@ void main() {
     expect(state.phase, RepositorySessionPhase.ready);
     expect(state.repository!.workTreeRoot, isNotNull);
     expect(state.status!.branch.isUnborn, isTrue);
+    expect(state.operations.first.kind, RepositoryOperationKind.ref);
+    expect(
+      state.operations.first.outcome,
+      RepositoryOperationOutcome.succeeded,
+    );
   });
 
   test('clones and opens a local bare remote', () async {
@@ -3695,6 +4014,10 @@ while true; do sleep 1; done
       expect(state.phase, RepositorySessionPhase.ready);
       expect(state.remoteNames, isNot(contains('origin')));
       expect(state.remoteBranches, isEmpty);
+      final remoteOperation = state.operations.firstWhere(
+        (operation) => operation.kind == RepositoryOperationKind.remote,
+      );
+      expect(remoteOperation.outcome, RepositoryOperationOutcome.succeeded);
     },
   );
 
@@ -3720,11 +4043,634 @@ while true; do sleep 1; done
     final state = container.read(repositorySessionProvider);
     expect(state.phase, RepositorySessionPhase.ready);
     expect(state.remoteNames, contains('upstream'));
+    final remoteOperation = state.operations.firstWhere(
+      (operation) => operation.kind == RepositoryOperationKind.remote,
+    );
+    expect(remoteOperation.outcome, RepositoryOperationOutcome.succeeded);
     expect(await controller.readRemoteUrl('upstream'), remoteDirectory.path);
     expect(
       await controller.addRemote('upstream', remoteDirectory.path),
       isFalse,
     );
+  });
+
+  test('marks a completed ref write uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', '# Git Desktop\n');
+    await repository.commit('Initial commit');
+
+    var failNextRefresh = true;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(
+      await controller.createLocalBranch('after-refresh-failure'),
+      isFalse,
+    );
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.ref,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
+    final branches = await repository.runGit(['branch', '--list']);
+    expect(branches.stdout.toString(), contains('after-refresh-failure'));
+  });
+
+  test('marks a completed merge uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.runGit(['branch', 'feature/refresh-failure']);
+    await repository.runGit(['switch', 'feature/refresh-failure']);
+    await repository.writeFile('feature.txt', 'feature\n');
+    await repository.commit('Feature commit');
+    await repository.runGit(['switch', 'main']);
+
+    var failNextRefresh = true;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected merge refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(
+      await controller.mergeLocalBranch('feature/refresh-failure'),
+      isFalse,
+    );
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.history,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
+    expect(
+      await File('${repository.workingDirectory.path}/feature.txt').exists(),
+      isTrue,
+    );
+  });
+
+  test('marks a completed stash uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.writeFile('README.md', 'changed\n');
+
+    var failNextRefresh = true;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected stash refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(await controller.createStash('refresh failure'), isFalse);
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.stash,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
+    expect(
+      (await repository.runGit(['stash', 'list'])).stdout,
+      contains('refresh failure'),
+    );
+  });
+
+  test('marks a completed revert uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.writeFile('README.md', 'changed\n');
+    final changedCommit = await repository.commit('Change');
+
+    var failNextRefresh = true;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected revert refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(await controller.revertCommit(changedCommit), isFalse);
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.history,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
+    expect(
+      (await repository.runGit(['log', '--format=%s', '-2'])).stdout,
+      contains('Revert "Change"'),
+    );
+  });
+
+  test('marks continued revert uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.writeFile('README.md', 'feature\n');
+    final targetCommit = await repository.commit('Feature change');
+    await repository.writeFile('README.md', 'main\n');
+    await repository.commit('Main change');
+
+    var failNextRefresh = false;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected continue revert refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    expect(await controller.revertCommit(targetCommit), isFalse);
+    await repository.writeFile('README.md', 'resolved revert\n');
+    await repository.runGit(['add', '--', 'README.md']);
+    await controller.refresh();
+    failNextRefresh = true;
+
+    expect(await controller.continueRevert(), isFalse);
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.history,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
+  });
+
+  test('marks aborted revert uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.writeFile('README.md', 'feature\n');
+    final targetCommit = await repository.commit('Feature change');
+    await repository.writeFile('README.md', 'main\n');
+    await repository.commit('Main change');
+
+    var failNextRefresh = false;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected abort revert refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    expect(await controller.revertCommit(targetCommit), isFalse);
+    failNextRefresh = true;
+
+    expect(await controller.abortRevert(), isFalse);
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.history,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
+  });
+
+  test('marks a completed cherry-pick uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.runGit(['switch', '-c', 'feature/cherry-refresh']);
+    await repository.writeFile('cherry.txt', 'cherry\n');
+    final sourceCommit = await repository.commit('Cherry source');
+    await repository.runGit(['switch', 'main']);
+
+    var failNextRefresh = true;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected cherry-pick refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(await controller.cherryPickCommit(sourceCommit), isFalse);
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.history,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
+    expect(
+      await File('${repository.workingDirectory.path}/cherry.txt').exists(),
+      isTrue,
+    );
+  });
+
+  test('marks continued cherry-pick uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.runGit(['switch', '-c', 'feature/cherry-conflict']);
+    await repository.writeFile('README.md', 'feature\n');
+    final sourceCommit = await repository.commit('Feature change');
+    await repository.runGit(['switch', 'main']);
+    await repository.writeFile('README.md', 'main\n');
+    await repository.commit('Main change');
+
+    var failNextRefresh = false;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected continue cherry-pick refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    expect(await controller.cherryPickCommit(sourceCommit), isFalse);
+    await repository.writeFile('README.md', 'resolved cherry\n');
+    await repository.runGit(['add', '--', 'README.md']);
+    await controller.refresh();
+    failNextRefresh = true;
+
+    expect(await controller.continueCherryPick(), isFalse);
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.history,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
+  });
+
+  test('marks aborted cherry-pick uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.runGit(['switch', '-c', 'feature/cherry-abort']);
+    await repository.writeFile('README.md', 'feature\n');
+    final sourceCommit = await repository.commit('Feature change');
+    await repository.runGit(['switch', 'main']);
+    await repository.writeFile('README.md', 'main\n');
+    await repository.commit('Main change');
+
+    var failNextRefresh = false;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected abort cherry-pick refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    expect(await controller.cherryPickCommit(sourceCommit), isFalse);
+    failNextRefresh = true;
+
+    expect(await controller.abortCherryPick(), isFalse);
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.history,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
+  });
+
+  test('marks a completed file reset uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.writeFile('README.md', 'changed\n');
+
+    var failNextRefresh = true;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected file reset refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final change = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.changes.single;
+
+    expect(await controller.resetChangesToHead([change]), isFalse);
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.file,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
+    expect(
+      await File(
+        '${repository.workingDirectory.path}/README.md',
+      ).readAsString(),
+      'base\n',
+    );
+  });
+
+  test(
+    'marks a completed conflict resolution uncertain when refresh fails',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      await repository.commit('Initial commit');
+      await repository.runGit(['branch', 'feature/conflict-refresh']);
+      await repository.runGit(['switch', 'feature/conflict-refresh']);
+      await repository.writeFile('README.md', 'feature\n');
+      await repository.commit('Feature change');
+      await repository.runGit(['switch', 'main']);
+      await repository.writeFile('README.md', 'main\n');
+      await repository.commit('Main change');
+
+      var failNextRefresh = false;
+      final container = ProviderContainer(
+        overrides: [
+          repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+            if (failNextRefresh) {
+              failNextRefresh = false;
+              throw StateError('injected conflict refresh failure');
+            }
+          }),
+        ],
+      );
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      expect(
+        await controller.mergeLocalBranch('feature/conflict-refresh'),
+        isFalse,
+      );
+      final conflict =
+          mapRepositoryOverview(
+            container.read(repositorySessionProvider),
+          ).repository!.changes.singleWhere(
+            (change) => change.kind == RepositoryChangeKind.conflicted,
+          );
+
+      failNextRefresh = true;
+
+      expect(
+        await controller.resolveConflictWithContent(conflict, 'resolved\n'),
+        isFalse,
+      );
+      final state = container.read(repositorySessionProvider);
+      final operation = state.operations.firstWhere(
+        (entry) => entry.kind == RepositoryOperationKind.file,
+      );
+      expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+      expect(state.message, contains('写入已完成'));
+      expect(
+        await File(
+          '${repository.workingDirectory.path}/README.md',
+        ).readAsString(),
+        'resolved\n',
+      );
+    },
+  );
+
+  test('marks conflict side selection uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.runGit(['branch', 'feature/side-refresh']);
+    await repository.runGit(['switch', 'feature/side-refresh']);
+    await repository.writeFile('README.md', 'feature\n');
+    await repository.commit('Feature change');
+    await repository.runGit(['switch', 'main']);
+    await repository.writeFile('README.md', 'main\n');
+    await repository.commit('Main change');
+
+    var failNextRefresh = false;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected conflict side refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    expect(await controller.mergeLocalBranch('feature/side-refresh'), isFalse);
+    final conflict =
+        mapRepositoryOverview(
+          container.read(repositorySessionProvider),
+        ).repository!.changes.singleWhere(
+          (change) => change.kind == RepositoryChangeKind.conflicted,
+        );
+    failNextRefresh = true;
+
+    expect(
+      await controller.resolveConflict(
+        conflict,
+        RepositoryConflictAction.useOurs,
+      ),
+      isFalse,
+    );
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.file,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
+    expect(
+      await File(
+        '${repository.workingDirectory.path}/README.md',
+      ).readAsString(),
+      'main\n',
+    );
+  });
+
+  test('marks a completed rebase uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.runGit(['switch', '-c', 'onto']);
+    await repository.writeFile('onto.txt', 'onto\n');
+    final ontoCommit = await repository.commit('Onto commit');
+    await repository.runGit(['switch', 'main']);
+    await repository.writeFile('main.txt', 'main\n');
+    await repository.commit('Main commit');
+
+    var failNextRefresh = true;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected rebase refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(await controller.rebaseOntoCommit(ontoCommit), isFalse);
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.history,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
+    expect(
+      await File('${repository.workingDirectory.path}/onto.txt').exists(),
+      isTrue,
+    );
+  });
+
+  test('marks aborted rebase uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.runGit(['switch', '-c', 'feature/rebase-abort']);
+    await repository.writeFile('README.md', 'feature\n');
+    await repository.commit('Feature change');
+    await repository.runGit(['switch', 'main']);
+    await repository.writeFile('README.md', 'main\n');
+    final mainCommit = await repository.commit('Main change');
+    await repository.runGit(['switch', 'feature/rebase-abort']);
+
+    var failNextRefresh = false;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected abort rebase refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    expect(await controller.rebaseOntoCommit(mainCommit), isFalse);
+    failNextRefresh = true;
+
+    expect(await controller.abortRebase(), isFalse);
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.pull,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
+  });
+
+  test('marks continued rebase uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.runGit(['switch', '-c', 'feature/rebase-continue']);
+    await repository.writeFile('README.md', 'feature\n');
+    await repository.commit('Feature change');
+    await repository.runGit(['switch', 'main']);
+    await repository.writeFile('README.md', 'main\n');
+    final mainCommit = await repository.commit('Main change');
+    await repository.runGit(['switch', 'feature/rebase-continue']);
+
+    var failNextRefresh = false;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected continue rebase refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    expect(await controller.rebaseOntoCommit(mainCommit), isFalse);
+    await repository.writeFile('README.md', 'resolved rebase\n');
+    await repository.runGit(['add', '--', 'README.md']);
+    await controller.refresh();
+    failNextRefresh = true;
+
+    expect(await controller.continueRebase(), isFalse);
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.pull,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
   });
 
   test(
@@ -3878,6 +4824,11 @@ while true; do sleep 1; done
 
     final state = container.read(repositorySessionProvider);
     expect(state.phase, RepositorySessionPhase.ready);
+    expect(state.operations.single.kind, RepositoryOperationKind.ref);
+    expect(
+      state.operations.single.outcome,
+      RepositoryOperationOutcome.succeeded,
+    );
     expect(state.tags.map((tag) => tag.name), contains('origin/v1.0.0'));
     expect(
       mapRepositoryOverview(state).repository!.commits
@@ -3922,6 +4873,35 @@ while true; do sleep 1; done
       expect(state.tags, isEmpty);
     },
   );
+
+  test('does not mark tag creation failure as partial push success', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    final commit = await repository.commit('Initial commit');
+    await repository.createBareOrigin();
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    await repository.runGit(['tag', 'raced-tag', commit]);
+
+    expect(
+      await controller.createTag(
+        GitCreateTagOptions(
+          name: 'raced-tag',
+          objectId: commit,
+          pushRemoteName: 'origin',
+        ),
+      ),
+      isFalse,
+    );
+    final operation = container
+        .read(repositorySessionProvider)
+        .operations
+        .firstWhere((entry) => entry.kind == RepositoryOperationKind.ref);
+    expect(operation.outcome, RepositoryOperationOutcome.failed);
+  });
 
   test(
     'allows merging a local branch with unrelated uncommitted changes',
@@ -3983,6 +4963,14 @@ while true; do sleep 1; done
     expect(state.phase, RepositorySessionPhase.error);
     expect(state.status!.conflictedEntries, isNotEmpty);
     expect(state.message, contains('合并遇到冲突'));
+    expect(
+      state.operations
+          .firstWhere(
+            (operation) => operation.kind == RepositoryOperationKind.history,
+          )
+          .outcome,
+      RepositoryOperationOutcome.failed,
+    );
     final overview = mapRepositoryOverview(state).repository!;
     expect(overview.disabledActions, contains(RepositoryAction.mergeBranch));
     expect(await controller.mergeLocalBranch('feature/conflict'), isFalse);
@@ -4009,6 +4997,13 @@ while true; do sleep 1; done
       container.read(repositorySessionProvider).status!.conflictedEntries,
       isEmpty,
     );
+    final resolutionOperation = container
+        .read(repositorySessionProvider)
+        .operations
+        .firstWhere(
+          (operation) => operation.kind == RepositoryOperationKind.file,
+        );
+    expect(resolutionOperation.outcome, RepositoryOperationOutcome.succeeded);
     expect(
       await File(
         '${repository.workingDirectory.path}${Platform.pathSeparator}README.md',
@@ -4026,6 +5021,14 @@ while true; do sleep 1; done
     expect(completed.phase, RepositorySessionPhase.ready);
     expect(completed.operationState, GitRepositoryOperationState.none);
     expect(completed.commits.first.parentIds, hasLength(2));
+    expect(
+      completed.operations
+          .firstWhere(
+            (operation) => operation.kind == RepositoryOperationKind.history,
+          )
+          .outcome,
+      RepositoryOperationOutcome.succeeded,
+    );
   });
 
   test(
@@ -4056,6 +5059,14 @@ while true; do sleep 1; done
       expect(state.status!.isClean, isTrue);
       expect(state.status!.branch.objectId, mainHead);
       expect(
+        state.operations
+            .firstWhere(
+              (operation) => operation.kind == RepositoryOperationKind.history,
+            )
+            .outcome,
+        RepositoryOperationOutcome.succeeded,
+      );
+      expect(
         await File(
           '${repository.workingDirectory.path}${Platform.pathSeparator}README.md',
         ).readAsString(),
@@ -4063,6 +5074,90 @@ while true; do sleep 1; done
       );
     },
   );
+
+  test('marks continued merge uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.runGit(['branch', 'feature/continue-refresh']);
+    await repository.runGit(['switch', 'feature/continue-refresh']);
+    await repository.writeFile('README.md', 'feature\n');
+    await repository.commit('Feature change');
+    await repository.runGit(['switch', 'main']);
+    await repository.writeFile('README.md', 'main\n');
+    await repository.commit('Main change');
+
+    var failNextRefresh = false;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected continue merge refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    expect(
+      await controller.mergeLocalBranch('feature/continue-refresh'),
+      isFalse,
+    );
+    await repository.writeFile('README.md', 'resolved\n');
+    await repository.runGit(['add', '--', 'README.md']);
+    await controller.refresh();
+    failNextRefresh = true;
+
+    expect(await controller.continueMerge(), isFalse);
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.history,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
+  });
+
+  test('marks aborted merge uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.runGit(['branch', 'feature/abort-refresh']);
+    await repository.runGit(['switch', 'feature/abort-refresh']);
+    await repository.writeFile('README.md', 'feature\n');
+    await repository.commit('Feature change');
+    await repository.runGit(['switch', 'main']);
+    await repository.writeFile('README.md', 'main\n');
+    await repository.commit('Main change');
+
+    var failNextRefresh = false;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected abort merge refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    expect(await controller.mergeLocalBranch('feature/abort-refresh'), isFalse);
+    failNextRefresh = true;
+
+    expect(await controller.abortMerge(), isFalse);
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.history,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
+  });
 
   test(
     'fetches all configured remotes and refreshes ahead-behind state',
@@ -4138,6 +5233,10 @@ while true; do sleep 1; done
       final state = container.read(repositorySessionProvider);
       expect(state.phase, RepositorySessionPhase.error);
       expect(state.status!.branch.behind, 1);
+      final operation = state.operations.firstWhere(
+        (operation) => operation.kind == RepositoryOperationKind.fetch,
+      );
+      expect(operation.outcome, RepositoryOperationOutcome.uncertain);
     },
   );
 

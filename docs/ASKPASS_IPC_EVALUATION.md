@@ -99,7 +99,9 @@ helper 路径、不设置 `GIT_ASKPASS`，仍可使用既有 credential helper �
 ## 实施前验证清单
 
 - [x] macOS helper 的 Debug bundle 路径、C 编译和签名完整性验证。
-- [ ] Release/Developer ID 签名与 Gatekeeper 行为验证。
+- [x] Release bundle 构建验证：AskPass helper/broker 与主应用保持 x86_64/arm64 双架构，Release
+  不注入 `get-task-allow`，并通过 `codesign --verify --deep --strict`；当前仅为本机 ad-hoc
+  签名；本项目当前不进行外部发布签名或 Gatekeeper 验证。
 - [x] session 关闭后重放、并发请求串行化、畸形 UTF-8 与错误 nonce helper 的负向测试。
 - [ ] 错误 UID 与签名 helper 欺骗测试（peer UID 已验证；仍需要发布签名环境）。
 - [x] 非秘密 IPC 请求的未知字段、非法 nonce 与超长 prompt 校验。

@@ -575,6 +575,10 @@ String _operationLabel(RepositoryOperationKind kind) => switch (kind) {
   RepositoryOperationKind.fetch => '获取远端更新',
   RepositoryOperationKind.pull => '拉取更新',
   RepositoryOperationKind.push => '推送当前分支',
+  RepositoryOperationKind.commit => '提交改动',
+  RepositoryOperationKind.file => '文件操作',
+  RepositoryOperationKind.remote => '远端配置',
+  RepositoryOperationKind.ref => '引用操作',
   RepositoryOperationKind.stash => '管理贮藏',
   RepositoryOperationKind.history => '历史提交操作',
 };
@@ -590,6 +594,9 @@ RepositoryOperationState _operationState(
   RepositoryOperationOutcome.succeeded => RepositoryOperationState.succeeded,
   RepositoryOperationOutcome.cancelled => RepositoryOperationState.cancelled,
   RepositoryOperationOutcome.failed => RepositoryOperationState.failed,
+  RepositoryOperationOutcome.partiallySucceeded =>
+    RepositoryOperationState.partiallySucceeded,
+  RepositoryOperationOutcome.uncertain => RepositoryOperationState.uncertain,
 };
 
 /// 中文：将数据映射为目标表示。

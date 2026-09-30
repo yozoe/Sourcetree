@@ -45,6 +45,76 @@ void main() {
     );
   });
 
+  test('cancels running fetch, pull, push, and stash processes', () async {
+    if (Platform.isWindows) return;
+
+    final helper = File(
+      '${fixture.rootDirectory.path}${Platform.pathSeparator}blocking-git',
+    );
+    await helper.writeAsString('''#!/bin/sh
+while true; do sleep 1; done
+''');
+    final chmod = await Process.run('chmod', ['+x', helper.path]);
+    expect(chmod.exitCode, 0);
+
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+    final cancellationWriter = GitRepositoryWriter(
+      GitRunner(executable: helper.path),
+    );
+
+    Future<void> expectCancelled(
+      Future<void> Function(GitCancellationToken) run,
+    ) async {
+      final cancellation = GitCancellationToken();
+      final operation = run(cancellation);
+      await Future<void>.delayed(const Duration(milliseconds: 250));
+      cancellation.cancel();
+      await expectLater(
+        operation,
+        throwsA(
+          isA<GitCommandException>().having(
+            (error) => error.kind,
+            'kind',
+            GitErrorKind.cancelled,
+          ),
+        ),
+      );
+    }
+
+    await expectCancelled(
+      (token) => cancellationWriter.fetch(
+        repository,
+        options: const GitFetchOptions(
+          fetchAllRemotes: false,
+          remoteName: 'origin',
+        ),
+        cancellationToken: token,
+      ),
+    );
+    await expectCancelled(
+      (token) => cancellationWriter.pullFastForward(
+        repository,
+        cancellationToken: token,
+      ),
+    );
+    await expectCancelled(
+      (token) => cancellationWriter.pushBranches(
+        repository,
+        options: const GitPushOptions(
+          remoteName: 'origin',
+          branches: [GitPushBranch(localBranch: 'main', remoteBranch: 'main')],
+        ),
+        cancellationToken: token,
+      ),
+    );
+    await expectCancelled(
+      (token) =>
+          cancellationWriter.createStash(repository, cancellationToken: token),
+    );
+  });
+
   test(
     'appends repository ignore rules without replacing or duplicating',
     () async {

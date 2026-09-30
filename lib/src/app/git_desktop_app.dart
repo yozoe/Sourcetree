@@ -799,6 +799,7 @@ class _RepositoryWorkspaceScreenState
   String? _lastNativeConflictStage2Label;
   String? _lastNativeConflictStage3Label;
   String? _lastNativeFileTargetSignature;
+  int _nativeWorkspaceMenuGeneration = 0;
   Set<String>? _nativeSelectedChangeKeys;
   String? _nativeSelectionRepositoryId;
   String? _lastReportedRepositoryId;
@@ -1271,7 +1272,9 @@ class _RepositoryWorkspaceScreenState
     _lastNativeConflictStage3Label = conflictLabels.$2;
     _lastNativeFileTargetSignature = fileTargetSignature;
     try {
+      final generation = ++_nativeWorkspaceMenuGeneration;
       await DesktopWindowBridge.setWorkspaceMenuState(
+        generation: generation,
         canAddRemote: canAddRemote,
         canStopTracking: canStopTracking,
         canApplyPatch: canApplyPatch,
@@ -1806,6 +1809,10 @@ class _RepositoryWorkspaceScreenState
     RepositoryOperationKind.fetch => '获取远端更新',
     RepositoryOperationKind.pull => '拉取更新',
     RepositoryOperationKind.push => '推送当前分支',
+    RepositoryOperationKind.commit => '提交改动',
+    RepositoryOperationKind.file => '文件操作',
+    RepositoryOperationKind.remote => '远端配置',
+    RepositoryOperationKind.ref => '引用操作',
     RepositoryOperationKind.stash => '管理贮藏',
     RepositoryOperationKind.history => '历史提交操作',
   };
@@ -1820,6 +1827,8 @@ class _RepositoryWorkspaceScreenState
         RepositoryOperationOutcome.succeeded => '已完成',
         RepositoryOperationOutcome.cancelled => '已取消；请检查仓库状态。',
         RepositoryOperationOutcome.failed => '未完成',
+        RepositoryOperationOutcome.partiallySucceeded => '部分完成；请检查仓库状态。',
+        RepositoryOperationOutcome.uncertain => '结果不确定；请刷新确认。',
       };
 
   /// 中文：为操作结果选择日志列表中使用的状态图标。
@@ -1831,6 +1840,9 @@ class _RepositoryWorkspaceScreenState
         RepositoryOperationOutcome.succeeded => Icons.check_circle_outline,
         RepositoryOperationOutcome.cancelled => Icons.cancel_outlined,
         RepositoryOperationOutcome.failed => Icons.error_outline,
+        RepositoryOperationOutcome.partiallySucceeded =>
+          Icons.warning_amber_outlined,
+        RepositoryOperationOutcome.uncertain => Icons.help_outline,
       };
 
   /// 中文：将操作开始时间与已用时格式化为日志副标题；未完成的操作显示进行中。

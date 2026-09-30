@@ -1053,11 +1053,56 @@ class _ToolbarAction extends StatelessWidget {
   }
 }
 
-class _HistorySearchField extends StatelessWidget {
+class _HistorySearchField extends StatefulWidget {
   const _HistorySearchField({required this.query, required this.onChanged});
 
   final String query;
   final ValueChanged<String>? onChanged;
+
+  @override
+  State<_HistorySearchField> createState() => _HistorySearchFieldState();
+}
+
+class _HistorySearchFieldState extends State<_HistorySearchField> {
+  static const _debounceDuration = Duration(milliseconds: 220);
+  late final TextEditingController _controller;
+  Timer? _debounce;
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(text: widget.query);
+  }
+
+  @override
+  void didUpdateWidget(_HistorySearchField oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.query != _controller.text && !(_debounce?.isActive ?? false)) {
+      _controller.value = TextEditingValue(
+        text: widget.query,
+        selection: TextSelection.collapsed(offset: widget.query.length),
+      );
+    }
+  }
+
+  /// 中文：防抖提交历史搜索，避免每次按键都触发提交列表映射。
+  /// English: Debounces commit-history search updates so each keystroke does
+  /// not trigger a full commit-list mapping.
+  void _scheduleSearch(String value) {
+    _debounce?.cancel();
+    final callback = widget.onChanged;
+    if (callback == null) return;
+    _debounce = Timer(_debounceDuration, () {
+      if (mounted) widget.onChanged?.call(value);
+    });
+  }
+
+  @override
+  void dispose() {
+    _debounce?.cancel();
+    _controller.dispose();
+    super.dispose();
+  }
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -1068,9 +1113,9 @@ class _HistorySearchField extends StatelessWidget {
       label: '搜索提交历史',
       child: TextFormField(
         key: const ValueKey<String>('history-search-field'),
-        initialValue: query,
-        onChanged: onChanged,
-        enabled: onChanged != null,
+        controller: _controller,
+        onChanged: _scheduleSearch,
+        enabled: widget.onChanged != null,
         style: Theme.of(context).textTheme.bodySmall,
         decoration: const InputDecoration(
           hintText: '搜索提交',
@@ -1139,8 +1184,7 @@ class _RefsNavigation extends StatelessWidget {
     // Keep only tree-shaped sections eager (local branches and remotes need
     // their directory rows). Flat sections are built by the sliver lazily so
     // large tag/stash lists do not allocate every row during one build.
-    final localBranchTiles = _buildSectionTiles(
-      RepositoryRefKind.localBranch,
+    final localBranchNodes = _buildLocalBranchTree(
       sections[RepositoryRefKind.localBranch]!,
     );
     final remoteTiles = _buildRemoteTiles(
@@ -1157,7 +1201,7 @@ class _RefsNavigation extends StatelessWidget {
           ),
           for (final RepositoryRefKind kind in RepositoryRefKind.values)
             if ((kind == RepositoryRefKind.localBranch
-                    ? localBranchTiles.isNotEmpty
+                    ? localBranchNodes.isNotEmpty
                     : kind == RepositoryRefKind.remote
                     ? remoteTiles.isNotEmpty
                     : sections[kind]!.isNotEmpty) &&
@@ -1171,13 +1215,13 @@ class _RefsNavigation extends StatelessWidget {
               ),
               SliverList.builder(
                 itemCount: kind == RepositoryRefKind.localBranch
-                    ? localBranchTiles.length
+                    ? localBranchNodes.length
                     : kind == RepositoryRefKind.remote
                     ? remoteTiles.length
                     : sections[kind]!.length,
                 itemBuilder: (BuildContext context, int index) =>
                     kind == RepositoryRefKind.localBranch
-                    ? localBranchTiles[index]
+                    ? _buildLocalBranchTile(localBranchNodes[index])
                     : kind == RepositoryRefKind.remote
                     ? remoteTiles[index]
                     : _buildRefTile(sections[kind]![index]),
@@ -1209,47 +1253,25 @@ class _RefsNavigation extends StatelessWidget {
     );
   }
 
-  /// 中文：构建一个引用分区的行；本地分支按斜杠分段显示为可折叠目录。
-  ///
-  /// English: Builds rows for one reference section, displaying slash-delimited
-  /// local branches as collapsible directories.
-  List<Widget> _buildSectionTiles(
-    RepositoryRefKind kind,
-    List<RepositoryRefViewData> references,
-  ) {
-    if (kind != RepositoryRefKind.localBranch) {
-      if (kind == RepositoryRefKind.stash) {
-        return [
-          for (final ref in references)
-            _buildRefTile(ref, indent: ref.stashReference == null ? 0 : 1),
-        ];
-      }
-      return [for (final ref in references) _buildRefTile(ref)];
+  /// 中文：按需构建本地分支分区的顶层行；滚动到该行时才创建 Widget。
+  /// English: Builds a top-level local-branch row on demand when sliver
+  /// layout requests it.
+  Widget _buildLocalBranchTile(_RefNavigationTreeNode node) {
+    if (node.children.isEmpty) {
+      return _buildRefTile(node.reference!, label: node.label, showIcon: false);
     }
-    return [
-      for (final node in _buildLocalBranchTree(references))
-        if (node.children.isEmpty)
-          _buildRefTile(
-            node.reference!,
-            label: node.label,
-            // Local branch rows use the graph color only in history labels;
-            // keep the navigation text-first like Sourcetree.
-            showIcon: false,
-          )
-        else
-          _RefDirectoryTile(
-            key: ValueKey<String>('ref-directory:${node.path}'),
-            node: node,
-            depth: 0,
-            colorFor: (ref) => _refGraphColor(repository, ref),
-            isSelected: _isReferenceSelected,
-            onSelected: onSelected,
-            onActivated: onActivated,
-            activationEnabled: !repository.blocksRepositoryMutations,
-            contextItemsFor: _contextItemsFor,
-            onContextAction: onContextAction,
-          ),
-    ];
+    return _RefDirectoryTile(
+      key: ValueKey<String>('ref-directory:${node.path}'),
+      node: node,
+      depth: 0,
+      colorFor: (ref) => _refGraphColor(repository, ref),
+      isSelected: _isReferenceSelected,
+      onSelected: onSelected,
+      onActivated: onActivated,
+      activationEnabled: !repository.blocksRepositoryMutations,
+      contextItemsFor: _contextItemsFor,
+      onContextAction: onContextAction,
+    );
   }
 
   /// 中文：按远端名称归组远端跟踪引用，并显示可展开的远端父节点。
@@ -1276,21 +1298,19 @@ class _RefsNavigation extends StatelessWidget {
               : (RepositoryRefContextAction action) =>
                     onContextAction!(remote, action),
           onSelected: onSelected == null ? null : () => onSelected!(remote),
-          children: [
-            for (final branch
-                in remoteBranches
-                    .where(
-                      (branch) => branch.label.startsWith('${remote.label}/'),
-                    )
-                    .toList(growable: false)
-                  ..sort((a, b) => a.label.compareTo(b.label)))
-              _buildRefTile(
-                branch,
-                label: branch.label.substring(remote.label.length + 1),
-                indent: 1,
-                showIcon: false,
-              ),
-          ],
+          children:
+              remoteBranches
+                  .where(
+                    (branch) => branch.label.startsWith('${remote.label}/'),
+                  )
+                  .toList(growable: false)
+                ..sort((a, b) => a.label.compareTo(b.label)),
+          childBuilder: (branch) => _buildRefTile(
+            branch,
+            label: branch.label.substring(remote.label.length + 1),
+            indent: 1,
+            showIcon: false,
+          ),
         ),
     ];
   }
@@ -1770,6 +1790,7 @@ final class _RemoteDirectoryTile extends StatefulWidget {
     super.key,
     required this.remote,
     required this.children,
+    required this.childBuilder,
     required this.isSelected,
     required this.contextItems,
     required this.onContextAction,
@@ -1777,7 +1798,8 @@ final class _RemoteDirectoryTile extends StatefulWidget {
   });
 
   final RepositoryRefViewData remote;
-  final List<Widget> children;
+  final List<RepositoryRefViewData> children;
+  final Widget Function(RepositoryRefViewData ref) childBuilder;
   final bool isSelected;
   final List<_RefContextMenuItem> contextItems;
   final ValueChanged<RepositoryRefContextAction>? onContextAction;
@@ -1886,7 +1908,8 @@ class _RemoteDirectoryTileState extends State<_RemoteDirectoryTile> {
             ),
           ),
         ),
-        if (_isExpanded) ...widget.children,
+        if (_isExpanded)
+          for (final child in widget.children) widget.childBuilder(child),
       ],
     );
   }

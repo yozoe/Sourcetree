@@ -42,11 +42,34 @@ final repositorySessionProvider =
       RepositorySessionController.new,
     );
 
+/// Optional test-only hook that can make the next explicit refresh fail.
+/// 中文：仅供测试覆盖“写入成功但刷新失败”边界的可选钩子。
+final repositoryRefreshHookForTestingProvider =
+    Provider<Future<void> Function()?>((Ref ref) => null);
+
 enum RepositorySessionPhase { empty, loading, ready, error }
 
-enum RepositoryOperationKind { clone, fetch, pull, push, stash, history }
+enum RepositoryOperationKind {
+  clone,
+  fetch,
+  pull,
+  push,
+  commit,
+  file,
+  remote,
+  ref,
+  stash,
+  history,
+}
 
-enum RepositoryOperationOutcome { running, succeeded, cancelled, failed }
+enum RepositoryOperationOutcome {
+  running,
+  succeeded,
+  cancelled,
+  failed,
+  partiallySucceeded,
+  uncertain,
+}
 
 /// Returns the directory name Git would conventionally use for [remoteUrl].
 ///
@@ -507,6 +530,7 @@ final class RepositorySessionController
   late GitRepositoryReader _reader;
   late GitRepositoryWriter _writer;
   late RepositoryChangeMonitor _changeMonitor;
+  Future<void> Function()? _refreshHookForTesting;
   int _repositoryGeneration = 0;
   int _historyGeneration = 0;
   int _diffGeneration = 0;
@@ -534,6 +558,7 @@ final class RepositorySessionController
     _reader = ref.watch(gitRepositoryReaderProvider);
     _writer = ref.watch(gitRepositoryWriterProvider);
     _changeMonitor = ref.watch(repositoryChangeMonitorProvider);
+    _refreshHookForTesting = ref.watch(repositoryRefreshHookForTestingProvider);
     ref.onDispose(() {
       _cancelActiveGitOperations();
       unawaited(_changeMonitor.stop());
@@ -1221,16 +1246,30 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.ref);
     try {
       await _writer.initializeRepository(normalizedPath);
       await openRepository(normalizedPath);
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已初始化仓库。' : '仓库可能已初始化，但打开后刷新失败；请刷新确认状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
       );
       return false;
     }
@@ -1454,8 +1493,8 @@ final class RepositorySessionController
         operation,
         outcome: succeeded
             ? RepositoryOperationOutcome.succeeded
-            : RepositoryOperationOutcome.failed,
-        message: succeeded ? '已更新远端引用。' : state.message,
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已更新远端引用。' : '远端获取可能已部分完成，但本地刷新失败；请再次刷新确认。',
       );
       return succeeded;
     } on Object catch (error, stackTrace) {
@@ -1472,8 +1511,18 @@ final class RepositorySessionController
       );
       _completeOperation(
         operation,
-        outcome: _operationOutcomeForError(error),
-        message: message,
+        outcome:
+            options.fetchAllRemotes &&
+                _operationOutcomeForError(error) !=
+                    RepositoryOperationOutcome.cancelled
+            ? RepositoryOperationOutcome.uncertain
+            : _operationOutcomeForError(error),
+        message:
+            options.fetchAllRemotes &&
+                _operationOutcomeForError(error) !=
+                    RepositoryOperationOutcome.cancelled
+            ? '获取全部远端未能完整确认；请刷新确认各远端引用状态。'
+            : message,
       );
       return false;
     } finally {
@@ -1536,6 +1585,7 @@ final class RepositorySessionController
       return false;
     }
     _remoteConfigurationPreflightInProgress = true;
+    RepositoryOperationRecord? operation;
     try {
       final remoteNames = await _reader.readRemoteNames(repository);
       if (_isShuttingDown ||
@@ -1548,13 +1598,24 @@ final class RepositorySessionController
         phase: RepositorySessionPhase.loading,
         clearMessage: true,
       );
+      operation = _startOperation(RepositoryOperationKind.remote);
       await _writer.addRemote(
         repository,
         remoteName: normalizedName,
         remoteUrl: normalizedUrl,
       );
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded
+            ? '已添加远端 $normalizedName。'
+            : '远端可能已添加，但本地刷新失败；请刷新确认配置。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
       if (_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
         state = state.copyWith(
@@ -1562,6 +1623,13 @@ final class RepositorySessionController
           isDiffLoading: false,
           message: _friendlyError(error),
           technicalDetails: _technicalDetails(error, stackTrace),
+        );
+      }
+      if (operation != null) {
+        _completeOperation(
+          operation,
+          outcome: _operationOutcomeForError(error),
+          message: _friendlyError(error),
         );
       }
       return false;
@@ -1590,6 +1658,7 @@ final class RepositorySessionController
       return false;
     }
     _remoteConfigurationPreflightInProgress = true;
+    RepositoryOperationRecord? operation;
     try {
       final remoteNames = await _reader.readRemoteNames(repository);
       if (_isShuttingDown ||
@@ -1598,9 +1667,20 @@ final class RepositorySessionController
           !remoteNames.contains(normalizedName)) {
         return false;
       }
+      operation = _startOperation(RepositoryOperationKind.remote);
       await _writer.removeRemote(repository, normalizedName);
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded
+            ? '已移除远端 $normalizedName。'
+            : '远端可能已移除，但本地刷新失败；请刷新确认配置。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
       if (_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
         state = state.copyWith(
@@ -1608,6 +1688,13 @@ final class RepositorySessionController
           isDiffLoading: false,
           message: _friendlyError(error),
           technicalDetails: _technicalDetails(error, stackTrace),
+        );
+      }
+      if (operation != null) {
+        _completeOperation(
+          operation,
+          outcome: _operationOutcomeForError(error),
+          message: _friendlyError(error),
         );
       }
       return false;
@@ -1661,8 +1748,8 @@ final class RepositorySessionController
         operation,
         outcome: succeeded
             ? RepositoryOperationOutcome.succeeded
-            : RepositoryOperationOutcome.failed,
-        message: succeeded ? '已快速前进拉取。' : state.message,
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已快速前进拉取。' : '拉取可能已完成，但本地刷新失败；请刷新确认当前分支状态。',
       );
       return succeeded;
     } on Object catch (error, stackTrace) {
@@ -1758,8 +1845,8 @@ final class RepositorySessionController
         operation,
         outcome: succeeded
             ? RepositoryOperationOutcome.succeeded
-            : RepositoryOperationOutcome.failed,
-        message: succeeded ? '已拉取更新。' : state.message,
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已拉取更新。' : '拉取可能已完成，但本地刷新失败；请刷新确认当前分支状态。',
       );
       return succeeded;
     } on Object catch (error, stackTrace) {
@@ -1858,8 +1945,10 @@ final class RepositorySessionController
         operation,
         outcome: succeeded
             ? RepositoryOperationOutcome.succeeded
-            : RepositoryOperationOutcome.failed,
-        message: succeeded ? (abort ? '已中止变基。' : '已继续变基。') : state.message,
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded
+            ? (abort ? '已中止变基。' : '已继续变基。')
+            : '变基恢复可能已完成，但本地刷新失败；请刷新确认当前操作状态。',
       );
       return succeeded;
     } on Object catch (error, stackTrace) {
@@ -1973,8 +2062,8 @@ final class RepositorySessionController
         operation,
         outcome: succeeded
             ? RepositoryOperationOutcome.succeeded
-            : RepositoryOperationOutcome.failed,
-        message: succeeded ? successMessage : state.message,
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? successMessage : '操作可能已完成，但本地刷新失败；请刷新确认当前仓库状态。',
       );
       return succeeded;
     } on Object catch (error, stackTrace) {
@@ -2063,8 +2152,8 @@ final class RepositorySessionController
         operation,
         outcome: succeeded
             ? RepositoryOperationOutcome.succeeded
-            : RepositoryOperationOutcome.failed,
-        message: succeeded ? '已推送当前分支。' : state.message,
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已推送当前分支。' : '推送可能已完成，但本地刷新失败；请 Fetch 刷新确认。',
       );
       return succeeded;
     } on Object catch (error, stackTrace) {
@@ -2076,6 +2165,9 @@ final class RepositorySessionController
         localBranchName: detachedPushBranch?.name,
       );
       await refresh();
+      final wasCancelled =
+          _operationOutcomeForError(error) ==
+          RepositoryOperationOutcome.cancelled;
       final message = remoteContainsHead
           ? '推送进程未正常完成，但远端已包含目标分支提交。请 Fetch 刷新 ahead/behind。'
           : _friendlyError(error);
@@ -2090,7 +2182,9 @@ final class RepositorySessionController
         operation,
         outcome: remoteContainsHead
             ? RepositoryOperationOutcome.succeeded
-            : _operationOutcomeForError(error),
+            : wasCancelled
+            ? RepositoryOperationOutcome.cancelled
+            : RepositoryOperationOutcome.uncertain,
         message: message,
       );
       return false;
@@ -2178,8 +2272,8 @@ final class RepositorySessionController
         operation,
         outcome: succeeded
             ? RepositoryOperationOutcome.succeeded
-            : RepositoryOperationOutcome.failed,
-        message: succeeded ? '已推送所选引用。' : state.message,
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已推送所选引用。' : '所选引用可能已推送，但本地刷新失败；请 Fetch 刷新确认。',
       );
       return succeeded;
     } on Object catch (error, stackTrace) {
@@ -2280,9 +2374,30 @@ final class RepositorySessionController
   /// publishing the default history commit first.
   Future<void> refresh() async {
     if (_isShuttingDown || state.isWorkingTreeBusy) return;
+    if (!await _runRefreshHookForTesting()) return;
     final path = state.requestedPath ?? state.repository?.commandDirectory;
     if (path != null) {
       await openRepository(path, preserveWorkingTreeSurface: true);
+    }
+  }
+
+  /// Runs the optional refresh-failure seam and publishes its safe error state.
+  /// 中文：运行可选的刷新失败测试钩子，并发布安全的刷新错误状态。
+  Future<bool> _runRefreshHookForTesting() async {
+    final refreshHook = _refreshHookForTesting;
+    if (refreshHook == null) return true;
+    try {
+      await refreshHook();
+      return true;
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isWorkingTreeBusy: false,
+        isDiffLoading: false,
+        message: '写入已完成，但刷新仓库状态失败；请手动刷新确认。',
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      return false;
     }
   }
 
@@ -3138,8 +3253,22 @@ final class RepositorySessionController
     String? preferredPath,
     bool? preferredStaged,
   }) async {
-    final refreshedStatus =
-        validatedStatus ?? await _reader.readStatus(repository);
+    if (validatedStatus == null && !await _runRefreshHookForTesting()) {
+      return false;
+    }
+    final GitStatusSnapshot refreshedStatus;
+    try {
+      refreshedStatus = validatedStatus ?? await _reader.readStatus(repository);
+    } on Object catch (error, stackTrace) {
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isWorkingTreeBusy: false,
+        isDiffLoading: false,
+        message: '写入已完成，但刷新仓库状态失败；请手动刷新确认。',
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      return false;
+    }
     if (!ref.mounted ||
         repositoryGeneration != _repositoryGeneration ||
         state.repository?.id != repository.id) {
@@ -3238,6 +3367,7 @@ final class RepositorySessionController
       isWorkingTreeBusy: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.file);
     try {
       if (change.isStaged) {
         await _writer.unstagePath(
@@ -3248,13 +3378,22 @@ final class RepositorySessionController
       } else {
         await _writer.stagePath(repository, entry.path);
       }
-      await _finishWorkingTreeMutation(
+      final succeeded = await _finishWorkingTreeMutation(
         repository: repository,
         repositoryGeneration: repositoryGeneration,
         previousSelection: previousSelection,
         previousRefId: previousRefId,
         preferredPath: change.path,
         preferredStaged: !change.isStaged,
+      );
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded
+            ? (change.isStaged ? '已取消暂存所选文件。' : '已暂存所选文件。')
+            : '暂存状态可能已改变，但本地刷新失败；请刷新确认文件状态。',
       );
     } on Object catch (error, stackTrace) {
       if (repositoryGeneration == _repositoryGeneration &&
@@ -3266,6 +3405,11 @@ final class RepositorySessionController
           technicalDetails: _technicalDetails(error, stackTrace),
         );
       }
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
+      );
     }
   }
 
@@ -3316,6 +3460,7 @@ final class RepositorySessionController
       isWorkingTreeBusy: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.file);
     try {
       final paths = [for (final entry in entries) entry.path];
       if (stage) {
@@ -3327,11 +3472,20 @@ final class RepositorySessionController
           isUnbornBranch: status.branch.isUnborn,
         );
       }
-      await _finishWorkingTreeMutation(
+      final succeeded = await _finishWorkingTreeMutation(
         repository: repository,
         repositoryGeneration: repositoryGeneration,
         previousSelection: previousSelection,
         previousRefId: previousRefId,
+      );
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded
+            ? (stage ? '已暂存所选文件。' : '已取消暂存所选文件。')
+            : '批量暂存状态可能已改变，但本地刷新失败；请刷新确认文件状态。',
       );
     } on Object catch (error, stackTrace) {
       if (repositoryGeneration == _repositoryGeneration &&
@@ -3343,6 +3497,11 @@ final class RepositorySessionController
           technicalDetails: _technicalDetails(error, stackTrace),
         );
       }
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
+      );
     }
   }
 
@@ -3411,6 +3570,7 @@ final class RepositorySessionController
       clearDiff: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.file);
     try {
       final result = await _writer.addIgnoreRules(
         repository,
@@ -3418,11 +3578,18 @@ final class RepositorySessionController
         patternKind: patternKind,
         destination: destination,
       );
-      await _finishWorkingTreeMutation(
+      final refreshed = await _finishWorkingTreeMutation(
         repository: repository,
         repositoryGeneration: repositoryGeneration,
         previousSelection: previousSelection,
         previousRefId: previousRefId,
+      );
+      _completeOperation(
+        operation,
+        outcome: refreshed
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: refreshed ? '已更新忽略规则。' : '忽略规则可能已写入，但刷新失败；请刷新确认。',
       );
       return result;
     } on Object catch (error, stackTrace) {
@@ -3435,6 +3602,11 @@ final class RepositorySessionController
           technicalDetails: _technicalDetails(error, stackTrace),
         );
       }
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
+      );
       return null;
     }
   }
@@ -3502,6 +3674,7 @@ final class RepositorySessionController
       clearDiff: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.file);
     try {
       final result = await _writer.copyWorkingTreeFiles(
         repository,
@@ -3511,13 +3684,31 @@ final class RepositorySessionController
       );
       if (cancellation.isCancelled ||
           !_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
+        _completeOperation(
+          operation,
+          outcome: RepositoryOperationOutcome.cancelled,
+          message: '复制已取消。',
+        );
         return null;
       }
-      await _finishWorkingTreeMutation(
+      final refreshed = await _finishWorkingTreeMutation(
         repository: repository,
         repositoryGeneration: repositoryGeneration,
         previousSelection: previousSelection,
         previousRefId: previousRefId,
+      );
+      _completeOperation(
+        operation,
+        outcome: !refreshed
+            ? RepositoryOperationOutcome.uncertain
+            : result.hasFailures
+            ? RepositoryOperationOutcome.partiallySucceeded
+            : RepositoryOperationOutcome.succeeded,
+        message: !refreshed
+            ? '复制可能已完成，但刷新失败；请刷新确认文件状态。'
+            : result.hasFailures
+            ? '复制部分完成，请检查冲突和失败路径。'
+            : '已复制所选文件。',
       );
       return result;
     } on GitCancelledException {
@@ -3529,6 +3720,11 @@ final class RepositorySessionController
           previousRefId: previousRefId,
         );
       }
+      _completeOperation(
+        operation,
+        outcome: RepositoryOperationOutcome.cancelled,
+        message: '复制已取消。',
+      );
       return null;
     } on Object catch (error, stackTrace) {
       if (_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
@@ -3539,6 +3735,11 @@ final class RepositorySessionController
           technicalDetails: _technicalDetails(error, stackTrace),
         );
       }
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
+      );
       return null;
     } finally {
       if (identical(_copyCancellation, cancellation)) {
@@ -3614,6 +3815,7 @@ final class RepositorySessionController
       clearDiff: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.file);
     try {
       final result = await _writer.moveWorkingTreeFiles(
         repository,
@@ -3623,13 +3825,31 @@ final class RepositorySessionController
       );
       if (cancellation.isCancelled ||
           !_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
+        _completeOperation(
+          operation,
+          outcome: RepositoryOperationOutcome.cancelled,
+          message: '移动已取消。',
+        );
         return null;
       }
-      await _finishWorkingTreeMutation(
+      final refreshed = await _finishWorkingTreeMutation(
         repository: repository,
         repositoryGeneration: repositoryGeneration,
         previousSelection: previousSelection,
         previousRefId: previousRefId,
+      );
+      _completeOperation(
+        operation,
+        outcome: !refreshed
+            ? RepositoryOperationOutcome.uncertain
+            : result.hasFailures
+            ? RepositoryOperationOutcome.partiallySucceeded
+            : RepositoryOperationOutcome.succeeded,
+        message: !refreshed
+            ? '移动可能已完成，但刷新失败；请刷新确认文件状态。'
+            : result.hasFailures
+            ? '移动部分完成，请检查保留源文件和失败路径。'
+            : '已移动所选文件。',
       );
       return result;
     } on GitCancelledException {
@@ -3641,6 +3861,11 @@ final class RepositorySessionController
           previousRefId: previousRefId,
         );
       }
+      _completeOperation(
+        operation,
+        outcome: RepositoryOperationOutcome.cancelled,
+        message: '移动已取消。',
+      );
       return null;
     } on Object catch (error, stackTrace) {
       if (_isCurrentRepositoryRequest(repository, repositoryGeneration)) {
@@ -3651,6 +3876,11 @@ final class RepositorySessionController
           technicalDetails: _technicalDetails(error, stackTrace),
         );
       }
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
+      );
       return null;
     } finally {
       if (identical(_moveCancellation, cancellation)) {
@@ -3733,6 +3963,7 @@ final class RepositorySessionController
       clearDiff: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.file);
     final removedPaths = <String>[];
     final missingPaths = <String>[];
     final failedPaths = <String>[];
@@ -3756,6 +3987,24 @@ final class RepositorySessionController
     await _restoreWorkingTreeSurfaceIfAvailable(
       previousSelection: previousSelection,
       previousRefId: previousRefId,
+    );
+    final refreshFailed = state.phase != RepositorySessionPhase.ready;
+    _completeOperation(
+      operation,
+      outcome: refreshFailed
+          ? RepositoryOperationOutcome.uncertain
+          : failedPaths.isNotEmpty && removedPaths.isNotEmpty
+          ? RepositoryOperationOutcome.partiallySucceeded
+          : failedPaths.isNotEmpty
+          ? RepositoryOperationOutcome.failed
+          : RepositoryOperationOutcome.succeeded,
+      message: refreshFailed
+          ? '文件删除可能已完成，但刷新失败；请刷新确认文件状态。'
+          : failedPaths.isNotEmpty && removedPaths.isNotEmpty
+          ? '文件删除部分完成，请检查失败路径。'
+          : failedPaths.isNotEmpty
+          ? '文件删除失败，请检查文件状态。'
+          : '已删除所选工作区文件。',
     );
     return RepositoryChangeRemovalResult(
       removedPaths: removedPaths,
@@ -3820,15 +4069,30 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.file);
     try {
       await _writer.stopTrackingPaths(repository, paths);
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已停止追踪所选文件。' : '停止追踪可能已完成，但本地刷新失败；请刷新确认文件状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
+      await refresh();
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
       );
       return false;
     }
@@ -3892,15 +4156,30 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.file);
     try {
       await _writer.stopTrackingPaths(repository, [path]);
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已停止追踪所选历史文件。' : '停止追踪可能已完成，但本地刷新失败；请刷新确认文件状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
+      await refresh();
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
       );
       return false;
     }
@@ -3948,6 +4227,7 @@ final class RepositorySessionController
       return false;
     }
 
+    RepositoryOperationRecord? operation;
     try {
       final status = await _reader.readStatus(repository);
       if (!ref.mounted ||
@@ -3991,13 +4271,22 @@ final class RepositorySessionController
       }
       if (paths.isEmpty) return await rejectStaleSelection(status);
 
+      operation = _startOperation(RepositoryOperationKind.file);
       await _writer.resetPathsToHead(repository, paths);
-      return await _finishWorkingTreeMutation(
+      final succeeded = await _finishWorkingTreeMutation(
         repository: repository,
         repositoryGeneration: repositoryGeneration,
         previousSelection: previousSelection,
         previousRefId: previousRefId,
       );
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已将所选文件重置到 HEAD。' : '重置可能已完成，但本地刷新失败；请刷新确认文件状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
       if (repositoryGeneration == _repositoryGeneration &&
           state.repository?.id == repository.id) {
@@ -4006,6 +4295,13 @@ final class RepositorySessionController
           isWorkingTreeBusy: false,
           message: _friendlyError(error),
           technicalDetails: _technicalDetails(error, stackTrace),
+        );
+      }
+      if (operation != null) {
+        _completeOperation(
+          operation,
+          outcome: _operationOutcomeForError(error),
+          message: _friendlyError(error),
         );
       }
       return false;
@@ -4060,6 +4356,7 @@ final class RepositorySessionController
     final repositoryGeneration = _repositoryGeneration;
     final selectedRefId = state.selectedRefId;
     final selectedPath = selected.file.path;
+    RepositoryOperationRecord? operation;
     state = state.copyWith(
       phase: RepositorySessionPhase.loading,
       isWorkingTreeBusy: true,
@@ -4091,6 +4388,7 @@ final class RepositorySessionController
         return false;
       }
 
+      operation = _startOperation(RepositoryOperationKind.file);
       await _writer.restorePathFromCommit(
         repository,
         objectId: objectId,
@@ -4105,6 +4403,11 @@ final class RepositorySessionController
       if (!refreshed ||
           state.selectedCommitId != objectId ||
           state.selectedCommitFile?.file.path != selectedPath) {
+        _completeOperation(
+          operation,
+          outcome: RepositoryOperationOutcome.uncertain,
+          message: '历史文件恢复可能已完成，但本地刷新失败；请刷新确认文件状态。',
+        );
         return refreshed;
       }
       state = state.copyWith(selectedRefId: selectedRefId);
@@ -4112,7 +4415,15 @@ final class RepositorySessionController
       if (state.commitChanges.any((file) => file.path == selectedPath)) {
         await selectCommitFileByPath(path);
       }
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已恢复历史文件。' : '历史文件恢复可能已完成，但本地刷新失败；请刷新确认文件状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
       if (repositoryGeneration == _repositoryGeneration &&
           state.repository?.id == repository.id) {
@@ -4140,6 +4451,13 @@ final class RepositorySessionController
           isWorkingTreeBusy: false,
           message: _friendlyError(error),
           technicalDetails: _technicalDetails(error, stackTrace),
+        );
+      }
+      if (operation != null) {
+        _completeOperation(
+          operation,
+          outcome: _operationOutcomeForError(error),
+          message: _friendlyError(error),
         );
       }
       return false;
@@ -4182,6 +4500,7 @@ final class RepositorySessionController
       isDiffLoading: false,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.file);
     try {
       await _writer.stageDiffHunk(repository, diff: diff, hunkIndex: hunkIndex);
       await refresh();
@@ -4189,13 +4508,27 @@ final class RepositorySessionController
         previousSelection: selected,
         previousRefId: selectedRefId,
       );
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已暂存选中的 Diff 区块。' : '区块可能已暂存，但本地刷新失败；请刷新确认文件状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
+      await refresh();
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
       );
       return false;
     }
@@ -4237,6 +4570,7 @@ final class RepositorySessionController
       isDiffLoading: false,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.file);
     try {
       await _writer.revertDiffHunk(
         repository,
@@ -4248,13 +4582,27 @@ final class RepositorySessionController
         previousSelection: selected,
         previousRefId: selectedRefId,
       );
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已处理选中的 Diff 区块。' : '区块可能已处理，但本地刷新失败；请刷新确认文件状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
+      await refresh();
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
       );
       return false;
     }
@@ -4309,6 +4657,7 @@ final class RepositorySessionController
       phase: RepositorySessionPhase.loading,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.file);
     try {
       await _writer.revertDiffHunk(
         repository,
@@ -4316,7 +4665,14 @@ final class RepositorySessionController
         hunkIndex: hunkIndex,
       );
       await refresh();
-      if (state.phase != RepositorySessionPhase.ready) return false;
+      if (state.phase != RepositorySessionPhase.ready) {
+        _completeOperation(
+          operation,
+          outcome: RepositoryOperationOutcome.uncertain,
+          message: '区块可能已回滚，但本地刷新失败；请刷新确认文件状态。',
+        );
+        return false;
+      }
       state = state.copyWith(selectedRefId: selectedRefId);
       await selectCommit(selectedCommitId);
       if (state.commitChanges.any(
@@ -4324,13 +4680,26 @@ final class RepositorySessionController
       )) {
         await selectCommitFileByPath(selectedPath);
       }
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已回滚选中的提交区块。' : '区块可能已回滚，但本地刷新失败；请刷新确认文件状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isCommitDiffLoading: false,
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
       );
       return false;
     }
@@ -4449,6 +4818,7 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.file);
     try {
       switch (action) {
         case RepositoryConflictAction.launchInternalDiffTool:
@@ -4473,13 +4843,27 @@ final class RepositorySessionController
           await _writer.markConflictUnresolved(repository, entry.path);
       }
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已处理冲突文件。' : '冲突处理可能已完成，但本地刷新失败；请刷新确认冲突状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
+      await refresh();
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
       );
       return false;
     }
@@ -4563,16 +4947,31 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.file);
     try {
       await _writer.resolveConflictWithContent(repository, entry.path, content);
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已保存冲突合并结果。' : '合并结果可能已保存，但本地刷新失败；请刷新确认冲突状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
+      await refresh();
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
       );
       return false;
     }
@@ -4635,10 +5034,19 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.commit);
     try {
       await _writer.createCommitFromAllTracked(repository, message: message);
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已提交全部已跟踪改动。' : '提交可能已完成，但本地刷新失败；请刷新确认提交状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
       await refresh();
       state = state.copyWith(
@@ -4646,6 +5054,11 @@ final class RepositorySessionController
         isDiffLoading: false,
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
       );
       return false;
     }
@@ -4725,6 +5138,7 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.commit);
     try {
       await _writer.createCommitFromPaths(
         repository,
@@ -4733,7 +5147,15 @@ final class RepositorySessionController
         untrackedPaths: untrackedPaths,
       );
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已提交选中的改动。' : '提交可能已完成，但本地刷新失败；请刷新确认提交状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
       await refresh();
       state = state.copyWith(
@@ -4741,6 +5163,11 @@ final class RepositorySessionController
         isDiffLoading: false,
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
       );
       return false;
     }
@@ -4771,16 +5198,33 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.commit);
     try {
       await _writer.createCommit(repository, message: message, amend: amend);
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded
+            ? (amend ? '已修改当前提交。' : '已创建提交。')
+            : '提交可能已完成，但本地刷新失败；请刷新确认提交状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
+      await refresh();
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
       );
       return false;
     }
@@ -4977,8 +5421,10 @@ final class RepositorySessionController
         operation,
         outcome: succeeded
             ? RepositoryOperationOutcome.succeeded
-            : RepositoryOperationOutcome.failed,
-        message: succeeded ? successMessage : state.message,
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded
+            ? successMessage
+            : '贮藏操作可能已完成，但本地刷新失败；请刷新确认贮藏和工作区状态。',
       );
       return succeeded;
     } on Object catch (error, stackTrace) {
@@ -5044,16 +5490,31 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.ref);
     try {
       await _writer.createLocalBranch(repository, name: name);
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已创建本地分支 $name。' : '分支可能已创建，但本地刷新失败；请刷新确认引用状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
+      await refresh();
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
       );
       return false;
     }
@@ -5089,6 +5550,7 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.ref);
     try {
       await _writer.createLocalBranchFromCommit(
         repository,
@@ -5096,13 +5558,27 @@ final class RepositorySessionController
         objectId: objectId,
       );
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已从提交创建本地分支 $name。' : '分支可能已创建，但本地刷新失败；请刷新确认引用状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
+      await refresh();
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
       );
       return false;
     }
@@ -5140,6 +5616,8 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.ref);
+    var localTagCreated = false;
     try {
       await _writer.createTag(
         repository,
@@ -5148,6 +5626,7 @@ final class RepositorySessionController
         annotation: options.annotation,
         annotated: options.isAnnotated,
       );
+      localTagCreated = true;
       if (pushRemote != null) {
         await _writer.pushTag(
           repository,
@@ -5156,7 +5635,15 @@ final class RepositorySessionController
         );
       }
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已创建标签 $name。' : '标签可能已创建，但本地刷新失败；请刷新确认引用状态。',
+      );
+      return succeeded;
     } on ArgumentError catch (error, stackTrace) {
       // The tag dialog accepts free text, while Git ref names have stricter
       // syntax. Do not present this local validation failure as a repository
@@ -5172,6 +5659,11 @@ final class RepositorySessionController
             '且不能以 -、/ 开头，也不能以 /、. 结尾。',
         technicalDetails: _technicalDetails(error, stackTrace),
       );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: state.message,
+      );
       return false;
     } on Object catch (error, stackTrace) {
       // A tag can be created locally even if its subsequent remote push fails.
@@ -5182,6 +5674,13 @@ final class RepositorySessionController
         isDiffLoading: false,
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: localTagCreated && pushRemote != null
+            ? RepositoryOperationOutcome.partiallySucceeded
+            : _operationOutcomeForError(error),
+        message: state.message,
       );
       return false;
     }
@@ -5215,6 +5714,7 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.ref);
     var remoteDeleted = false;
     try {
       if (remote != null) {
@@ -5227,7 +5727,15 @@ final class RepositorySessionController
       }
       await _writer.deleteTag(repository, name: name);
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已删除标签 $name。' : '标签可能已删除，但本地刷新失败；请刷新确认引用状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
       await refresh();
       state = state.copyWith(
@@ -5237,6 +5745,13 @@ final class RepositorySessionController
             ? '远端 $remote 的标签 $name 已删除，但本地标签仍保留：${_friendlyError(error)}'
             : _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: remoteDeleted
+            ? RepositoryOperationOutcome.partiallySucceeded
+            : _operationOutcomeForError(error),
+        message: state.message,
       );
       return false;
     }
@@ -5275,6 +5790,7 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.ref);
     try {
       await _writer.createLocalBranchFromLocalBranch(
         repository,
@@ -5282,13 +5798,29 @@ final class RepositorySessionController
         sourceName: sourceName,
       );
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded
+            ? '已从 $sourceName 创建本地分支 $name。'
+            : '分支可能已创建，但本地刷新失败；请刷新确认引用状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
+      await refresh();
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
       );
       return false;
     }
@@ -5326,16 +5858,31 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.ref);
     try {
       await _writer.switchToLocalBranch(repository, name: name);
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已切换到分支 $name。' : '分支可能已切换，但本地刷新失败；请刷新确认引用状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
+      await refresh();
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
       );
       return false;
     }
@@ -5366,16 +5913,31 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.ref);
     try {
       await _writer.checkoutCommit(repository, objectId: normalizedId);
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已检出提交。' : '检出可能已完成，但本地刷新失败；请刷新确认 HEAD 状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
+      await refresh();
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
       );
       return false;
     }
@@ -5410,16 +5972,33 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.ref);
     try {
       await _writer.switchToRemoteBranch(repository, remoteName: remoteName);
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded
+            ? '已切换到远端分支 $remoteName。'
+            : '远端分支可能已切换，但本地刷新失败；请刷新确认引用状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
+      await refresh();
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
       );
       return false;
     }
@@ -5453,6 +6032,7 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.ref);
     try {
       await _writer.renameLocalBranch(
         repository,
@@ -5460,13 +6040,29 @@ final class RepositorySessionController
         newName: newName,
       );
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded
+            ? '已将分支 $oldName 重命名为 $newName。'
+            : '分支可能已重命名，但本地刷新失败；请刷新确认引用状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
+      await refresh();
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
         isDiffLoading: false,
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: _friendlyError(error),
       );
       return false;
     }
@@ -5521,6 +6117,7 @@ final class RepositorySessionController
       return false;
     }
 
+    final operation = _startOperation(RepositoryOperationKind.history);
     state = state.copyWith(
       phase: RepositorySessionPhase.loading,
       isDiffLoading: false,
@@ -5528,6 +6125,8 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
+    var completedCount = 0;
+    final requestedCount = localNames.length + remoteNames.length;
     try {
       for (final name in localNames) {
         await _writer.deleteLocalBranch(
@@ -5535,12 +6134,28 @@ final class RepositorySessionController
           name: name,
           force: forceLocal,
         );
+        completedCount++;
       }
       for (final name in remoteNames) {
         await _writer.deleteRemoteBranch(repository, remoteName: name);
+        completedCount++;
       }
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : completedCount > 0
+            ? RepositoryOperationOutcome.uncertain
+            : RepositoryOperationOutcome.failed,
+        message: succeeded
+            ? '已删除 $requestedCount 个引用。'
+            : completedCount > 0
+            ? '已完成引用删除，但刷新失败；请刷新确认实际状态。'
+            : state.message,
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
       // Earlier selected branches may already have been deleted before a later
       // local or remote deletion fails. Refresh so the UI never keeps stale
@@ -5551,6 +6166,15 @@ final class RepositorySessionController
         isDiffLoading: false,
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: completedCount > 0
+            ? RepositoryOperationOutcome.partiallySucceeded
+            : _operationOutcomeForError(error),
+        message: completedCount > 0
+            ? '已完成 $completedCount/$requestedCount 个删除操作；其余操作失败，请检查仓库状态。'
+            : _friendlyError(error),
       );
       return false;
     }
@@ -5589,10 +6213,21 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.history);
     try {
       await _writer.mergeLocalBranch(repository, sourceName: sourceName);
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded
+            ? '已合并分支 $sourceName。'
+            : '合并可能已完成，但本地刷新失败；请刷新确认合并状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
       // A failed merge can leave conflict entries and MERGE_HEAD behind. Read
       // them before showing the error so the user sees the actual recovery
@@ -5610,6 +6245,11 @@ final class RepositorySessionController
         isDiffLoading: false,
         message: message,
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: message,
       );
       return false;
     }
@@ -5643,10 +6283,19 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
+    final operation = _startOperation(RepositoryOperationKind.history);
     try {
       await _writer.mergeCommit(repository, objectId: normalizedObjectId);
       await refresh();
-      return state.phase == RepositorySessionPhase.ready;
+      final succeeded = state.phase == RepositorySessionPhase.ready;
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? '已合并选中的提交。' : '合并可能已完成，但本地刷新失败；请刷新确认合并状态。',
+      );
+      return succeeded;
     } on Object catch (error, stackTrace) {
       await refresh();
       final hasConflicts = state.status?.conflictedEntries.isNotEmpty ?? false;
@@ -5661,6 +6310,11 @@ final class RepositorySessionController
         isDiffLoading: false,
         message: message,
         technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: _operationOutcomeForError(error),
+        message: message,
       );
       return false;
     }
@@ -6158,8 +6812,10 @@ final class RepositorySessionController
         operation,
         outcome: succeeded
             ? RepositoryOperationOutcome.succeeded
-            : RepositoryOperationOutcome.failed,
-        message: succeeded ? (checkOnly ? '补丁检查通过。' : '已应用补丁。') : state.message,
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded
+            ? (checkOnly ? '补丁检查通过。' : '已应用补丁。')
+            : '补丁可能已应用，但本地刷新失败；请刷新确认工作区状态。',
       );
       return succeeded;
     } on Object catch (error, stackTrace) {
@@ -6223,8 +6879,8 @@ final class RepositorySessionController
         operation,
         outcome: succeeded
             ? RepositoryOperationOutcome.succeeded
-            : RepositoryOperationOutcome.failed,
-        message: succeeded ? successMessage : state.message,
+            : RepositoryOperationOutcome.uncertain,
+        message: succeeded ? successMessage : '操作可能已完成，但本地刷新失败；请刷新确认当前仓库状态。',
       );
       return succeeded;
     } on Object catch (error, stackTrace) {
