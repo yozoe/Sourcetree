@@ -3,9 +3,6 @@
 > macOS window model: describes window, Flutter Engine, and resource lifecycle boundaries.
 > 本文描述窗口、Flutter Engine 与资源生命周期边界。
 
-> macOS window model: describes window, Flutter Engine, and resource lifecycle boundaries.
-> 本文描述窗口、Flutter Engine 与资源生命周期边界。
-
 日期：2026-08-22
 
 状态：已实现

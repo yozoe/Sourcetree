@@ -30,7 +30,8 @@ Git 工作流、安全边界和测试基础已经较完整。检查结果如下�
 - 检查开始前工作区干净，`main` 与 `origin/main` 同步；这不是当前工作区状态声明。
 - 已具备临时真实 Git 仓库测试、取消机制、敏感信息脱敏和多窗口生命周期测试。
 - 已定义启动、历史、状态刷新、帧时间、内存和 CPU 性能预算，但尚未形成持续执行的基准体系。
-- 尚未发现仓库内的持续集成工作流。
+- 当时尚未发现仓库内的持续集成工作流；当前已提供 `.github/workflows/quality.yml`，其职责和
+  合并保护要求以 README 与实施规划中的现状说明为准。
 
 当前主要风险不是基础质量失控，而是功能持续增长后产生的结构复杂度、开发回归不可见和大仓库
 性能缺少持续测量。
@@ -65,11 +66,11 @@ Git 工作流、安全边界和测试基础已经较完整。检查结果如下�
 
 | 文件 | 当前规模约值 | 主要职责 |
 | --- | ---: | --- |
-| `lib/src/app/git_desktop_app.dart` | 7656 行 | 应用入口、工作区协调、菜单动作和大量对话框 |
-| `lib/src/presentation/repository_overview.dart` | 6968 行 | 引用、历史、Graph、Changes、Diff、详情和状态页 |
-| `lib/src/app/repository_session.dart` | 4841 行 | 仓库状态、选择、远端、文件、冲突、分支、标签和贮藏操作 |
-| `lib/src/git/git_repository_writer.dart` | 3145 行 | Git 写操作、补丁、路径校验和安全文件处理 |
-| `macos/Runner/AppDelegate.swift` | 1879 行 | 应用生命周期、窗口协调、菜单和原生桥接 |
+| `lib/src/app/git_desktop_app.dart` | 10836 行 | 应用入口、工作区协调、菜单动作和大量对话框 |
+| `lib/src/presentation/repository_overview.dart` | 7486 行 | 引用、历史、Graph、Changes、Diff、详情和状态页 |
+| `lib/src/app/repository_session.dart` | 6352 行 | 仓库状态、选择、远端、文件、冲突、分支、标签和贮藏操作 |
+| `lib/src/git/git_repository_writer.dart` | 4410 行 | Git 写操作、补丁、路径校验和安全文件处理 |
+| `macos/Runner/AppDelegate.swift` | 3959 行 | 应用生命周期、窗口协调、菜单和原生桥接 |
 
 大型文件本身并不必然造成缺陷，但当前职责数量已经使局部改动需要理解过多无关状态，尤其容易
 影响异步 generation、取消、窗口关闭和写后刷新边界。
@@ -252,16 +253,15 @@ Medium/Stress、启动、UI 帧时间、内存或 CPU 预算的完成声明。
 
 ### 8.1 建议顺序
 
-1. 原生菜单复用现有 Refresh、Commit、Fetch、Pull、Push、Branch、Tag 和 Stash。
-2. 接入 Finder 定位、复制路径、Quick Look 和打开文件。
-3. 接入添加到索引、取消暂存和已有的停止追踪流程。
-4. 完善多个 workspace 快速切换后的菜单状态同步和过期快照失效。
-5. 再考虑 ignore、复制、移动、内置审查和文件历史。
+1. 完成已交付入口的稳定 action ID、菜单状态快照和失效选择验收。
+2. 完成剩余文件动作边界：非 UTF-8、冲突、未跟踪和多选失效时保持明确禁用。
+3. 补齐高风险操作的失败、取消、冲突和部分成功测试。
+4. 再考虑全屏平铺、多个窗口组和更多待实现入口。
 
 Submodule、Subtree、LFS、Git-flow、外部 Diff、自定义操作和托管平台 API 应继续后置，因为它们
 会扩大可执行代码、认证、兼容性和远端状态边界。
 
-当前已接入 Refresh、Fetch、Pull、Push、Commit、Branch 与 Stash：均使用稳定 action ID，只路由到
+当前已接入 Refresh、Fetch、Pull、Push、Commit、Branch 与 Stash：主要入口使用稳定 action ID，只路由到
 当前 key workspace；这些动作的 AppKit 启用状态来自该 Engine 的 Flutter capability 快照，Flutter
 在打开现有对话框前再次校验。
 
@@ -302,13 +302,12 @@ Git hooks、filters、credential helper、`core.sshCommand`、external diff 和 
 
 ## 10. 推荐实施节奏
 
-### 迭代 A：工程基线
+### 迭代 A：工程基线（基础已完成）
 
-- 引入 PR、主分支和定时 CI。
-- 固化临时 Git 仓库、目录监听和多窗口生命周期的可重复验证。
-- 记录当前测试时长、慢测试排行和已知测试限制。
+- 已引入 PR、主分支和定时 CI，具体工作流见 `.github/workflows/quality.yml`。
+- 临时 Git 仓库、目录监听和多窗口生命周期已有可重复验证；仍需持续记录测试时长、慢测试排行和已知限制。
 
-### 迭代 B：质量门禁
+### 迭代 B：质量门禁（进行中）
 
 - 建立测试分层、失败产物和脱敏规则。
 - 为 Git parser、写操作、关闭屏障和菜单路由设置重点覆盖要求。
@@ -320,11 +319,11 @@ Git hooks、filters、credential helper、`core.sshCommand`、external diff 和 
 - 再拆分对话框、Repository Overview 子区域和 Git writer。
 - 每个拆分提交均运行静态分析、相关测试和完整 Flutter 测试。
 
-### 迭代 D：性能与菜单完成度
+### 迭代 D：性能与菜单完成度（下一阶段）
 
 - 建立 Small/Medium/Stress fixture 和性能采集。
 - 根据数据优化真实热点。
-- 接通原生菜单 M1 中低风险且已有应用层能力的动作。
+- 完成原生菜单 M1 的 action ID、状态快照和失效选择收尾。
 
 ## 11. 风险控制
 
@@ -341,7 +340,7 @@ Git hooks、filters、credential helper、`core.sshCommand`、external diff 和 
 
 本轮优化可在满足以下条件后视为完成：
 
-- PR 合并受格式、静态分析和测试门禁保护。
+- PR 已受格式、静态分析和测试门禁保护；分支保护是否启用仍属于托管平台状态。
 - 核心大型模块完成至少第一阶段行为中性拆分，且没有新增循环依赖。
 - 性能预算存在可重复执行的 fixture、采集方式和基线结果。
 - 高频原生菜单动作复用现有应用层能力，不再重复实现 Git 规则。
