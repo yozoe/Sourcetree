@@ -304,7 +304,7 @@ Gatekeeper 或修改任何 macOS 安全设置。
 
 ## 首发目标
 
-托管平台首期范围仅为 GitHub.com（含 GitHub.com 私有仓库）；GitHub Enterprise、企业域名和企业 SSO 不在产品范围内。当前 GitHub.com 仓库浏览与“创建拉取请求…”仍保持“待实现”。实现前置契约已完成本地校验：只接受无凭据的 GitHub.com HTTPS/SSH remote，并要求 Pull Request 草稿显式指定 head、base、标题和正文；此阶段不联网、不读取凭据、不自动 Push。
+托管平台首期范围仅为 GitHub.com（含 GitHub.com 私有仓库）；GitHub Enterprise、企业域名和企业 SSO 不在产品范围内。当前 GitHub.com 仓库浏览与“创建拉取请求…”仍保持“待实现”。后续 PR 入口采用浏览器交接：只接受无凭据的 GitHub.com HTTPS/SSH remote，在用户明确选择 head、base、标题和正文且确认 head 已推送后打开 GitHub.com PR 页面；应用不接入 OAuth、不调用 GitHub API、不保存 GitHub API 令牌，也不自动 Push。
 
 - macOS 优先，Apple Silicon 为第一验证平台。
 - 使用系统或用户指定的 Git CLI，Git 仓库是唯一事实来源。

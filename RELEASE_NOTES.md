@@ -5,8 +5,7 @@
 ## Unreleased
 
 - 范围边界已明确：托管平台首期仅支持 GitHub.com（含 GitHub.com 私有仓库）；GitHub Enterprise、企业域名和企业 SSO 不在产品范围内，相关入口继续标记为“（待实现）”。
-- GitHub.com 集成首阶段新增本地安全契约测试：只接受无凭据的 GitHub.com HTTPS/SSH remote，拒绝企业/自定义域名、API 地址、查询串和片段；Pull Request 草稿必须显式校验仓库、head、base、标题和正文，不会联网、读取凭据或自动 Push。
-- GitHub.com 认证边界新增 macOS Keychain 专用存储：令牌只经独立 MethodChannel 读写/删除，固定为受保护 generic-password 项；当前不自动启动 OAuth，也不从 Git credential helper、SSH Agent 或 AskPass 推断令牌。
+- GitHub.com PR 方案已调整为浏览器交接：只接受无凭据的 GitHub.com HTTPS/SSH remote，用户明确选择 head、base、标题和正文并确认 head 已推送后，应用打开 GitHub.com PR 页面；不接入 OAuth、不调用 GitHub API、不保存 GitHub API 令牌，也不自动 Push。
 
 - 仓库详情的 LFS 摘要现在在检测到 `filter=lfs` 时同时检查本机 `git-lfs` 是否可用，并在工具可用时显示 `git lfs ls-files` 返回的只读跟踪文件数量；只读显示“已配置 LFS”“已配置 LFS（指针文件 N 个）”或“已配置 LFS（工具不可用）”，不会触发下载、迁移、清理或其他写操作。
 - M4 低风险评估开始交付 submodule 只读状态：工作区改动行会显示 Git porcelain v2 返回的提交、已跟踪和未跟踪状态；不会递归更新子模块，也不会为子模块提供外部 Diff 或写操作入口。
@@ -80,7 +79,7 @@
 - 外部 Diff 配置新增 Engine 级状态 controller：配置写入保持顺序，失败可见且不会启用未保存配置，窗口关闭前会等待已排队写入完成；原生“动作 → 外部差异比对”现已接入同一安全流程。
 - 新增 M4 外部集成语义冻结文档，明确 Submodule/LFS 当前只读边界、Git-flow Start/单目标 Finish 的本地边界，以及托管平台和 Pull Request 在授权与失败恢复语义确定前继续保持待实现。
 - Git-flow v1 Start 与单目标 Finish 已接入原生菜单：两者要求清洁工作区、附着 HEAD 且没有其他 Git 操作；Start 显式选择本地起点并 dry-run 预览后创建并检出 feature/release/hotfix 分支，Finish 显式选择本地目标并以 `merge --no-edit --no-ff` 合并当前 Git-flow 分支。Finish 冲突保留 Continue/Abort 恢复入口，取消或窗口关闭会终止 Git 进程，不自动推送、删除来源或修改 upstream；批量 Finish、版本发布和其他托管能力仍保持“（待实现）”。
-- M4 托管平台 / Pull Request 评估已冻结进入条件：平台认证必须独立于 Git credential helper、SSH agent 和 AskPass，创建 PR 不会隐式 Push 或修改 upstream；在具体平台、令牌存储、最小权限和取消/结果不确定语义完成受控验收前，托管仓库浏览和“创建拉取请求…”继续保持“（待实现）”。
+- M4 GitHub.com Pull Request 评估已冻结进入条件：创建 PR 不会隐式 Push 或修改 upstream，应用只打开用户确认的 GitHub.com 页面；在 URL 构造、分支选择和浏览器交接失败恢复完成前，托管仓库浏览和“创建拉取请求…”继续保持“（待实现）”。
 
 - 修复工作区引用导航的“文件状态/历史”切换边界：选择“文件状态”会可靠打开完整工作区文件面板，
   并在紧凑布局同步切换面板；核心 macOS UI E2E 现已覆盖选择文件状态、

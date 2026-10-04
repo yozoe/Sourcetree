@@ -563,8 +563,8 @@ CRLF、长路径、大小写、symlink、可执行位、窗口和系统菜单差
   也不启用相关入口。
 - [ ] 明确 GitHub.com 的托管平台与认证边界后，实现远端仓库浏览和创建拉取请求；GitHub Enterprise 不在范围内。
 - [x] 完成 GitHub.com 第一阶段的本地安全契约：只接受无凭据的 GitHub.com HTTPS/SSH remote，拒绝企业/自定义域名、API 地址、查询串和片段；Pull Request 草稿必须显式提供并校验仓库、head、base、标题和正文，不触发网络、凭据读取或 Push。
-- [x] 完成固定 `https://api.github.com` 的只读请求层：支持仓库详情和显式分页的分支读取，令牌只由调用方显式提供并注入内存请求；覆盖取消、超时、HTTP/JSON 错误、响应大小上限和令牌脱敏。当前尚未接入 UI、OAuth/Keychain 存储或任何写 API。
-- [x] 完成 macOS GitHub.com 令牌存储边界：Dart 仅通过专用 MethodChannel 请求读写/删除，原生层使用固定 Keychain generic-password 项并拒绝空白或控制字符；当前不自动启动 OAuth、不从 Git 认证链推断令牌，窗口关闭和 Engine 销毁可调用传输关闭接口。
+- [x] 明确 GitHub.com PR 不接入 OAuth、GitHub API 或 GitHub API 令牌；PR 采用浏览器交接，应用只构造并打开用户确认的 GitHub.com PR 页面，GitHub.com 负责登录、权限和提交。
+- [ ] 清理未接入产品路径的 GitHub API/Keychain 原型代码，并实现浏览器交接的 URL 构造、校验、打开失败恢复和相关测试。
 - [ ] 为自定义操作建立默认关闭的信任模型、结构化 argv、环境白名单和可见执行范围。
 - [ ] 完成固定 macOS/参考 Sourcetree 版本下的菜单层级、快捷键、键盘、VoiceOver、深浅主题与
   多显示器人工验收，记录因安全或平台限制保留的差异。
@@ -602,8 +602,8 @@ Apple FileMerge 是默认的内置外部 Diff 适配；仓库详情已提供应�
    已实现并由真实临时仓库覆盖成功、冲突、取消和来源分支保留。Finish 仍不批量处理、不推送、
    不删除来源或修改 upstream；版本发布和其他自动化继续待实现。
 5. 托管平台/Pull Request：语义冻结已完成，首期仅考虑 GitHub.com，明确不得从 Git remote 或 credential helper 猜测平台身份，
-   不自动 Push/改 upstream，API 取消与结果不确定路径已定义；仍需先声明 OAuth/Keychain 边界、令牌存储和最小 API 权限，
-   再设计远端浏览和 PR 创建。GitHub Enterprise、企业域名和企业 SSO 不在范围内。
+   不自动 Push/改 upstream；PR 使用用户明确确认的 GitHub.com 浏览器页面，不接入 OAuth、GitHub API 或 API 令牌。
+   仍需实现 URL 构造、校验、打开失败恢复和浏览器交接入口。GitHub Enterprise、企业域名和企业 SSO 不在范围内。
 
 ## 10. 测试与验收
 

@@ -11,7 +11,7 @@
 | Submodule | 读取 Git porcelain v2 的提交、索引和工作树状态，在文件行显示只读摘要 | 不递归更新、不提交嵌套仓库、不执行子模块外部 Diff | 只读摘要已交付，写操作不提供入口 |
 | Git LFS | 读取 `.gitattributes` 的 `filter=lfs`、本机工具可用性和只读指针文件数量 | 不下载、上传、迁移、清理或改变 LFS 配置 | 管理入口保持“（待实现）” |
 | Git-flow | v1 Start 支持 feature/release/hotfix 的本地创建并检出；单目标 Finish 支持显式选择本地目标并执行一次 `merge --no-edit --no-ff` | Start 只创建并检出；Finish 只检出目标并合并当前 Git-flow 分支；两者都不推送、不删除、不修改 upstream | “Git Flow…”仅在 Flutter capability 通过时可用；批量 Finish、版本发布和自动清理仍待实现 |
-| 托管平台 / Pull Request | 首期只考虑 GitHub.com；不猜测远端项目或目标分支 | 不调用平台 API，不保存令牌，不创建 PR | 入口保持“（待实现）” |
+| 托管平台 / Pull Request | 首期只考虑 GitHub.com；用户明确选择远端和分支后，通过浏览器交接 PR 页面 | 不调用平台 API，不保存令牌，不自动 Push；应用只打开用户确认的 GitHub.com URL | 入口保持“（待实现）” |
 
 ## Git-flow v1 语义冻结与已交付边界
 
@@ -57,22 +57,21 @@ Git-flow v1 只覆盖本地分支编排，不把普通 Git 分支操作伪装成
 
 1. 首个实现版本只支持 GitHub.com；GitHub Enterprise Cloud、GitHub Enterprise Server、企业域名和
    自定义 API 地址不进入支持矩阵。通用 Git remote 只能继续用于 Fetch/Pull/Push，不能自动变成 PR 目标。
-2. 平台认证必须独立于 Git credential helper、SSH agent 和 AskPass；令牌只能由平台专用安全存储
-   管理，日志和错误不得包含令牌、授权码或完整 API 地址。没有受控 Keychain/OAuth/SSO 契约时，
-   不弹出登录窗口，也不把 Git 认证成功显示为平台登录成功。
-3. 创建 PR 前必须由用户明确选择平台项目、head 分支、base 分支、标题和正文；head 必须已经
-   推送到用户明确选择的远端，应用不得为了创建 PR 自动 Push、改 upstream、创建分支或修改保护规则。
-4. API 请求必须支持取消、超时和窗口关闭；提交已被平台接受但响应丢失时显示“结果不确定”，只允许
-   用户刷新或打开平台链接核对，不自动重试或创建第二个 PR。读取项目/分支失败不得降级为猜测。
-5. 在上述平台、权限、令牌生命周期和失败恢复验收完成前，“创建拉取请求…”继续保留“（待实现）”，
-   远端托管仓库浏览也不新增菜单入口。
+2. 不接入 OAuth、GitHub API、平台令牌或平台 Keychain 存储；Git credential helper、SSH agent 和 AskPass
+   只服务于 Git 操作，不表示 GitHub.com 网页已登录。
+3. 创建 PR 前必须由用户明确选择 GitHub.com 仓库、head 分支、base 分支、标题和正文；head 必须已经
+   推送到用户明确选择的远端，应用不得为了打开 PR 自动 Push、改 upstream、创建分支或修改保护规则。
+4. 应用只构造并打开用户确认的 GitHub.com PR 页面 URL；浏览器中的登录、权限、提交和错误由 GitHub.com
+   负责。URL 打开失败时显示可恢复错误，不重试、不猜测仓库或目标分支。
+5. 在浏览器交接入口、URL 校验和失败恢复完成前，“创建拉取请求…”继续保留“（待实现）”，远端托管仓库
+   浏览也不新增菜单入口。
 
 ## 后续能力的进入条件
 
 - Git-flow：v1 分支前缀、版本号输入、upstream/远端不变、冲突恢复、删除保护、取消和
   dry-run 展示已冻结；单项 Start 与单目标 Finish 已交付。批量 Finish、自动删除、推送和版本
   发布仍需独立语义与验证，未交付入口继续保留“（待实现）”。
-- 托管平台：仅在 GitHub.com 范围内确定 OAuth/Keychain 方式、令牌最小权限、远端项目发现、目标
-  分支选择和网络取消语义；GitHub Enterprise 不在范围内。在决定前不得调用 API 或显示“创建 PR”可用状态。
+- 托管平台：仅在 GitHub.com 范围内确定安全 remote 解析、用户明确的远端/分支选择、PR 页面 URL 构造和
+  浏览器交接失败语义；不接入 OAuth、GitHub API 或 GitHub API 令牌。GitHub Enterprise 不在范围内。
 - LFS 写操作：先冻结磁盘占用、网络、并发、取消、部分成功和对象清理语义；当前只读摘要不得
   被解释为下载或上传能力。
