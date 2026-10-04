@@ -4,6 +4,7 @@ import 'package:flutter/widgets.dart';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 
 import 'src/app/desktop_window_bridge.dart';
+import 'src/app/external_tool_configuration_store.dart';
 import 'src/app/git_desktop_app.dart';
 import 'src/app/repository_library_controller.dart';
 import 'src/app/repository_session.dart';
@@ -45,6 +46,7 @@ Future<void> _runGitDesktop({
       ),
     ],
   );
+  await container.read(externalToolConfigurationProvider.notifier).load();
   Future<void>? shutdownFuture;
   DesktopWindowBridge.setPrepareToCloseHandler(
     () => shutdownFuture ??= _prepareEngineToClose(container),
@@ -88,6 +90,9 @@ Future<void> _prepareEngineToClose(ProviderContainer container) async {
         container.read(repositoryLibraryProvider.notifier).prepareForShutdown(),
         container
             .read(gitDesktopThemePreferencesProvider.notifier)
+            .prepareForShutdown(),
+        container
+            .read(externalToolConfigurationProvider.notifier)
             .prepareForShutdown(),
       ]);
     } on Object catch (error, stackTrace) {

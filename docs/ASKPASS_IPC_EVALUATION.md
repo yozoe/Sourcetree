@@ -75,8 +75,8 @@ helper 路径、不设置 `GIT_ASKPASS`，仍可使用既有 credential helper �
    拒绝未知字段、并发提示和超限数据。
 4. helper 只允许位于应用已签名 bundle 内的固定绝对路径；不接受仓库配置或用户输入
    指定的 AskPass 可执行文件。
-5. GitInvocation 继续强制 `GIT_TERMINAL_PROMPT=0`；只在用户显式发起的远端写/读
-   操作中设置 `GIT_ASKPASS`，后台刷新永不设置。
+5. GitRunner/GitInvocation 始终强制 `GIT_TERMINAL_PROMPT=0`，调用方传入的单次环境也不能重新
+   开启终端等待；只在用户显式发起的远端写/读操作中设置 `GIT_ASKPASS`，后台刷新永不设置。
 6. 密码、Token、私钥口令、完整认证 URL、IPC payload 不进入 `GitResult`、操作日志、
    崩溃报告或 `technicalDetails`。UI 输入框禁用自动填充、复制和调试输出。
 7. 取消、Git 退出、窗口关闭、helper 断开、当前提示阶段连续 60 秒空闲都必须关闭 socket、终止 helper，
@@ -111,12 +111,21 @@ helper 路径、不设置 `GIT_ASKPASS`，仍可使用既有 credential helper �
 - [x] 源码、日志入口、异常和操作面板的秘密泄漏扫描；URL userinfo、常见认证 Header 和
   query 秘密键由脱敏单元测试覆盖。
 - [x] Git credential helper 调用顺序与 SSH Agent socket 环境继承的契约测试。
-- [ ] 真实 macOS Keychain、SSH Agent、企业 SSO 与受认证远端的兼容性测试。
+- [x] GitHub 私有远端的 SSH Agent 与 HTTPS/macOS Keychain 兼容性测试。
+- [ ] 企业 SSO 与受认证远端的端到端兼容性测试。
 - [x] macOS 核心工作区 UI E2E：真实 Flutter desktop app 配合本地 bare remote fixture，覆盖
   打开工作区、暂存、提交、创建分支、推送及远端 ref 核验。
 - [x] macOS bundle AskPass UI E2E：native helper、broker、session 与 Flutter 脱敏认证弹窗
   的完整取消链路，不显示原始 URL 或 userinfo。
-- [ ] macOS UI E2E：认证等待、取消、恢复和远端结果核验。
+- [x] 本地受认证 HTTP Git fixture：实际运行 `git ls-remote`，覆盖 401 challenge、native
+  helper/broker、用户名/密码串行提示、取消后的清理、再次操作恢复和 ref 读取；fixture 不连接
+  外部网络，也不替代真实账户验收。
+- [x] 受控真实远端验证入口：`test/git/git_remote_auth_compatibility_test.dart` 默认跳过；显式
+  设置远端 URL 和期望 ref 后沿用 Git credential helper、macOS Keychain 或 `SSH_AUTH_SOCK`，
+  先拒绝带 userinfo、query、fragment 或 SCP 密码形态的地址，再只断言 `ls-remote` 成功与 ref，
+  不输出 URL、stderr 或凭据。
+- [x] macOS UI E2E：本地受认证 HTTP fixture 已覆盖认证等待、取消、恢复和最终 ref 结果核验；
+  GitHub 私有远端的真实账户结果已在受控环境执行上一项验证入口；企业 SSO 仍需单独验收。
 
 ## 当前边界
 
@@ -130,5 +139,5 @@ prompt、完整 URL 或用户名；密码和私钥口令字段关闭自动填充
 取消返回 `null`。
 
 当前自动化覆盖验证 GitRunner 继续使用配置的 credential helper，并保留 `SSH_AUTH_SOCK`；
-macOS Keychain 通过 credential helper 协议复用这一执行路径，但尚未以真实钥匙串和企业
-SSO 账号做端到端验证。应用不会读取、导入或持久化这些系统凭据。
+GitHub 私有远端已分别通过真实 SSH Agent 与 macOS Keychain credential helper 做端到端验证，
+企业 SSO 账号仍未做端到端验证。应用不会读取、导入或持久化这些系统凭据。

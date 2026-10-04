@@ -675,9 +675,12 @@ void main() {
         canCommitSelected: false,
         canCommit: false,
         canContinueOperation: false,
+        canExternalDiffSelected: false,
+        canSkipOperation: false,
         canCopySelected: false,
         canMoveSelected: false,
         canCreateBranch: false,
+        canStartGitFlow: false,
         canFetch: false,
         canInteractiveRebase: false,
         canIgnoreSelected: false,
@@ -736,6 +739,7 @@ void main() {
     final available = nativeWorkspaceMenuAvailability(session, overview);
 
     expect(available.canContinueOperation, isTrue);
+    expect(available.canSkipOperation, isTrue);
     expect(available.canAbortOperation, isTrue);
     final conflicted = nativeWorkspaceMenuAvailability(
       session.copyWith(
@@ -754,12 +758,14 @@ void main() {
       overview,
     );
     expect(conflicted.canContinueOperation, isFalse);
+    expect(conflicted.canSkipOperation, isTrue);
     expect(conflicted.canAbortOperation, isTrue);
     final loading = nativeWorkspaceMenuAvailability(
       session.copyWith(phase: RepositorySessionPhase.loading),
       overview,
     );
     expect(loading.canContinueOperation, isFalse);
+    expect(loading.canSkipOperation, isFalse);
     expect(loading.canAbortOperation, isFalse);
   });
 
@@ -876,8 +882,24 @@ void main() {
       nativeWorkspaceMenuAvailability(
         session,
         overview,
+        selectedChanges: const [tracked],
+      ).canExternalDiffSelected,
+      isTrue,
+    );
+    expect(
+      nativeWorkspaceMenuAvailability(
+        session,
+        overview,
         selectedChanges: const [tracked, untracked],
       ).canViewSelectedFileHistory,
+      isFalse,
+    );
+    expect(
+      nativeWorkspaceMenuAvailability(
+        session,
+        overview,
+        selectedChanges: const [untracked],
+      ).canExternalDiffSelected,
       isFalse,
     );
     expect(
@@ -992,6 +1014,13 @@ void main() {
         session,
         overview,
       ).canViewSelectedFileHistory,
+      isTrue,
+    );
+    expect(
+      nativeWorkspaceMenuAvailability(
+        session,
+        overview,
+      ).canExternalDiffSelected,
       isTrue,
     );
     expect(

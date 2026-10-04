@@ -6,6 +6,44 @@ import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path_utils;
 
 const double _repositoryLibraryIconSize = 36;
+const String _ungroupedWorkspaceValue = '__ungrouped__';
+
+/// Shows a compact validated name prompt for a user workspace group.
+/// 中文：显示并校验首页工作区分组名称输入框；取消或空名称返回 null。
+Future<String?> _showWorkspaceGroupNameDialog(
+  BuildContext context, {
+  required String title,
+  String initialValue = '',
+}) async {
+  final controller = TextEditingController(text: initialValue);
+  final value = await showDialog<String>(
+    context: context,
+    builder: (dialogContext) => AlertDialog(
+      title: Text(title),
+      content: TextField(
+        controller: controller,
+        autofocus: true,
+        maxLength: 80,
+        decoration: const InputDecoration(labelText: '分组名称'),
+        onSubmitted: (value) => Navigator.of(dialogContext).pop(value.trim()),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(dialogContext).pop(),
+          child: const Text('取消'),
+        ),
+        FilledButton(
+          onPressed: () =>
+              Navigator.of(dialogContext).pop(controller.text.trim()),
+          child: const Text('保存'),
+        ),
+      ],
+    ),
+  );
+  controller.dispose();
+  final normalized = value?.trim();
+  return normalized == null || normalized.isEmpty ? null : normalized;
+}
 
 /// 中文：按显示尺寸和屏幕像素密度计算仓库图标的最大解码边长。
 /// English: Returns the bounded decode dimension for a repository icon.
@@ -29,6 +67,8 @@ final class RepositoryLibraryItem {
     this.isDetached = false,
     this.isUnborn = false,
     this.hasStatus = false,
+    this.isFavorite = false,
+    this.workspaceGroup,
   });
 
   /// Absolute path used to re-open this repository.
@@ -52,12 +92,21 @@ final class RepositoryLibraryItem {
   /// Whether the branch and change summary was successfully read from Git.
   final bool hasStatus;
 
+  /// Whether the user marked this repository as a favorite.
+  /// 中文：首页用户是否将此仓库标记为收藏。
+  final bool isFavorite;
+
+  /// User-created home-window group containing this repository, if any.
+  /// 中文：该仓库所属的首页用户分组；为空表示未分组。
+  final String? workspaceGroup;
+
   /// 中文：返回仓库根目录中约定的自定义图标路径。
   /// English: Returns the conventional custom icon path at the repository root.
   String get iconPath => path_utils.join(path, 'icon.png');
 }
 
-/// A searchable, directory-grouped overview of locally known repositories.
+/// A searchable overview of locally known repositories with user groups and a
+/// directory-based fallback for ungrouped entries.
 ///
 /// It intentionally deals only with already-known repository paths. Opening,
 /// cloning and initialization remain application-layer actions supplied by the
@@ -72,6 +121,13 @@ class RepositoryLibraryPage extends StatefulWidget {
     this.onCloneRepository,
     this.onInitializeRepository,
     this.onRepositoriesReordered,
+    this.onFavoriteToggled,
+    this.workspaceGroups = const [],
+    this.repositoryGroups = const {},
+    this.onWorkspaceGroupCreated,
+    this.onWorkspaceGroupRenamed,
+    this.onWorkspaceGroupDeleted,
+    this.onRepositoryGroupChanged,
     this.isDirectoryDropActive = false,
     this.trailing,
   });
@@ -83,6 +139,13 @@ class RepositoryLibraryPage extends StatefulWidget {
   final VoidCallback? onCloneRepository;
   final VoidCallback? onInitializeRepository;
   final ValueChanged<List<String>>? onRepositoriesReordered;
+  final ValueChanged<String>? onFavoriteToggled;
+  final List<String> workspaceGroups;
+  final Map<String, String> repositoryGroups;
+  final ValueChanged<String>? onWorkspaceGroupCreated;
+  final void Function(String oldName, String newName)? onWorkspaceGroupRenamed;
+  final ValueChanged<String>? onWorkspaceGroupDeleted;
+  final void Function(String path, String? group)? onRepositoryGroupChanged;
   final bool isDirectoryDropActive;
   final Widget? trailing;
 
@@ -101,6 +164,47 @@ class _RepositoryLibraryPageState extends State<RepositoryLibraryPage> {
     setState(() => _query = query);
   }
 
+  /// Opens the create-group prompt and reports a validated name to the host.
+  /// 中文：打开创建工作区分组对话框，并把非空名称交给应用层持久化。
+  Future<void> _createWorkspaceGroup() async {
+    final name = await _showWorkspaceGroupNameDialog(context, title: '新建工作区分组');
+    if (name != null) widget.onWorkspaceGroupCreated?.call(name);
+  }
+
+  /// Opens a rename prompt for one existing workspace group.
+  /// 中文：打开已有工作区分组的重命名对话框。
+  Future<void> _renameWorkspaceGroup(String currentName) async {
+    final name = await _showWorkspaceGroupNameDialog(
+      context,
+      title: '重命名工作区分组',
+      initialValue: currentName,
+    );
+    if (name != null) widget.onWorkspaceGroupRenamed?.call(currentName, name);
+  }
+
+  /// Confirms group removal while keeping its repositories in the library.
+  /// 中文：确认删除分组；仓库不会删除，只会回到未分组状态。
+  Future<void> _deleteWorkspaceGroup(String name) async {
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('删除工作区分组？'),
+        content: Text('“$name”中的仓库会保留在首页，但回到未分组状态。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('删除分组'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed == true) widget.onWorkspaceGroupDeleted?.call(name);
+  }
+
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
   @override
@@ -111,6 +215,8 @@ class _RepositoryLibraryPageState extends State<RepositoryLibraryPage> {
         _filteredRepositories(widget.repositories, _query);
     final Map<String, List<RepositoryLibraryItem>> groups = _groupRepositories(
       visibleRepositories,
+      widget.workspaceGroups,
+      widget.repositoryGroups,
     );
 
     return Stack(
@@ -197,6 +303,14 @@ class _RepositoryLibraryPageState extends State<RepositoryLibraryPage> {
                           icon: const Icon(Icons.create_new_folder_outlined),
                         ),
                       ),
+                      if (widget.onWorkspaceGroupCreated != null)
+                        Tooltip(
+                          message: '新建工作区分组',
+                          child: IconButton(
+                            onPressed: _createWorkspaceGroup,
+                            icon: const Icon(Icons.create_new_folder_outlined),
+                          ),
+                        ),
                       if (widget.trailing != null) ...[
                         const SizedBox(width: 4),
                         widget.trailing!,
@@ -205,7 +319,10 @@ class _RepositoryLibraryPageState extends State<RepositoryLibraryPage> {
                   ),
                 ),
                 Expanded(
-                  child: visibleRepositories.isEmpty
+                  child:
+                      visibleRepositories.isEmpty &&
+                          (_query.trim().isNotEmpty ||
+                              widget.workspaceGroups.isEmpty)
                       ? _RepositoryLibraryEmptyState(
                           hasQuery: _query.trim().isNotEmpty,
                           onOpenRepository: widget.onOpenRepository,
@@ -221,6 +338,13 @@ class _RepositoryLibraryPageState extends State<RepositoryLibraryPage> {
                               widget.onRepositoriesReordered != null,
                           onRepositoriesReordered:
                               widget.onRepositoriesReordered,
+                          onFavoriteToggled: widget.onFavoriteToggled,
+                          workspaceGroups: widget.workspaceGroups,
+                          currentGroups: widget.repositoryGroups,
+                          onRepositoryGroupChanged:
+                              widget.onRepositoryGroupChanged,
+                          onWorkspaceGroupRenamed: _renameWorkspaceGroup,
+                          onWorkspaceGroupDeleted: _deleteWorkspaceGroup,
                         ),
                 ),
               ],
@@ -241,6 +365,12 @@ class _RepositoryLibraryList extends StatelessWidget {
     required this.onRepositorySelected,
     required this.reorderEnabled,
     this.onRepositoriesReordered,
+    this.onFavoriteToggled,
+    required this.workspaceGroups,
+    required this.currentGroups,
+    this.onRepositoryGroupChanged,
+    this.onWorkspaceGroupRenamed,
+    this.onWorkspaceGroupDeleted,
   });
 
   final Map<String, List<RepositoryLibraryItem>> groups;
@@ -248,11 +378,17 @@ class _RepositoryLibraryList extends StatelessWidget {
   final Future<void> Function(String path) onRepositorySelected;
   final bool reorderEnabled;
   final ValueChanged<List<String>>? onRepositoriesReordered;
+  final ValueChanged<String>? onFavoriteToggled;
+  final List<String> workspaceGroups;
+  final Map<String, String> currentGroups;
+  final void Function(String path, String? group)? onRepositoryGroupChanged;
+  final Future<void> Function(String group)? onWorkspaceGroupRenamed;
+  final ValueChanged<String>? onWorkspaceGroupDeleted;
 
-  /// 中文：构建可按目录分组且可在组内拖动排序的仓库列表。
+  /// 中文：构建用户命名分组及未分组目录分组，并支持组内拖动排序。
   ///
-  /// English: Builds the directory-grouped repository list with optional
-  /// within-group drag reordering.
+  /// English: Builds user-grouped and fallback directory-grouped repositories
+  /// with optional within-group drag reordering.
   @override
   Widget build(BuildContext context) {
     return ListView(
@@ -263,11 +399,20 @@ class _RepositoryLibraryList extends StatelessWidget {
           _RepositoryLibraryGroupHeader(
             title: _repositoryGroupLabel(group.key, groups.keys),
             count: group.value.length,
+            userGroup: _userGroupName(group.key),
+            onRename: onWorkspaceGroupRenamed,
+            onDelete: onWorkspaceGroupDeleted,
           ),
           _RepositoryLibraryGroup(
             repositories: group.value,
             activePath: activePath,
             onRepositorySelected: onRepositorySelected,
+            onFavoriteToggled: onFavoriteToggled,
+            workspaceGroups: workspaceGroups,
+            currentGroups: currentGroups,
+            onRepositoryGroupChanged: onRepositoryGroupChanged,
+            onWorkspaceGroupRenamed: onWorkspaceGroupRenamed,
+            onWorkspaceGroupDeleted: onWorkspaceGroupDeleted,
             reorderEnabled: reorderEnabled,
             onReordered: (reorderedGroup) {
               final paths = <String>[];
@@ -295,6 +440,12 @@ class _RepositoryLibraryGroup extends StatelessWidget {
     required this.onRepositorySelected,
     required this.reorderEnabled,
     required this.onReordered,
+    this.onFavoriteToggled,
+    required this.workspaceGroups,
+    required this.currentGroups,
+    this.onRepositoryGroupChanged,
+    this.onWorkspaceGroupRenamed,
+    this.onWorkspaceGroupDeleted,
   });
 
   final List<RepositoryLibraryItem> repositories;
@@ -302,11 +453,17 @@ class _RepositoryLibraryGroup extends StatelessWidget {
   final Future<void> Function(String path) onRepositorySelected;
   final bool reorderEnabled;
   final ValueChanged<List<RepositoryLibraryItem>> onReordered;
+  final ValueChanged<String>? onFavoriteToggled;
+  final List<String> workspaceGroups;
+  final Map<String, String> currentGroups;
+  final void Function(String path, String? group)? onRepositoryGroupChanged;
+  final Future<void> Function(String group)? onWorkspaceGroupRenamed;
+  final ValueChanged<String>? onWorkspaceGroupDeleted;
 
-  /// 中文：构建单个目录组，并只允许在组内调整仓库顺序。
+  /// 中文：构建单个首页分组，并只允许在组内调整仓库顺序。
   ///
-  /// English: Builds one directory group and limits dragging to its repository
-  /// entries so directory grouping remains stable.
+  /// English: Builds one library group and limits dragging to its repository
+  /// entries so group membership remains stable.
   @override
   Widget build(BuildContext context) {
     if (!reorderEnabled) {
@@ -317,6 +474,10 @@ class _RepositoryLibraryGroup extends StatelessWidget {
               repository: repository,
               selected: repository.path == activePath,
               onPressed: () => onRepositorySelected(repository.path),
+              onFavoriteToggled: onFavoriteToggled,
+              workspaceGroups: workspaceGroups,
+              currentGroup: currentGroups[repository.path],
+              onRepositoryGroupChanged: onRepositoryGroupChanged,
             ),
         ],
       );
@@ -341,6 +502,10 @@ class _RepositoryLibraryGroup extends StatelessWidget {
           repository: repository,
           selected: repository.path == activePath,
           onPressed: () => onRepositorySelected(repository.path),
+          onFavoriteToggled: onFavoriteToggled,
+          workspaceGroups: workspaceGroups,
+          currentGroup: currentGroups[repository.path],
+          onRepositoryGroupChanged: onRepositoryGroupChanged,
           dragHandle: ReorderableDragStartListener(
             index: index,
             child: const Tooltip(
@@ -375,15 +540,26 @@ List<RepositoryLibraryItem> _filteredRepositories(
       .toList(growable: false);
 }
 
-/// Groups repositories by their complete normalized parent directory.
+/// Groups repositories by user assignment, then by complete normalized parent
+/// directory for entries without a user assignment.
 ///
 /// 中文：以规范化的完整父目录分组，避免同名目录被合并。
 Map<String, List<RepositoryLibraryItem>> _groupRepositories(
   List<RepositoryLibraryItem> repositories,
+  List<String> workspaceGroups,
+  Map<String, String> repositoryGroups,
 ) {
   final Map<String, List<RepositoryLibraryItem>> groups =
       <String, List<RepositoryLibraryItem>>{};
+  for (final group in workspaceGroups) {
+    groups['@workspace:$group'] = <RepositoryLibraryItem>[];
+  }
   for (final RepositoryLibraryItem repository in repositories) {
+    final assignedGroup = repositoryGroups[repository.path];
+    if (assignedGroup != null && workspaceGroups.contains(assignedGroup)) {
+      groups['@workspace:$assignedGroup']!.add(repository);
+      continue;
+    }
     final String parentPath = path_utils.dirname(repository.path);
     final String groupLabel = path_utils.normalize(parentPath);
     groups
@@ -398,6 +574,8 @@ Map<String, List<RepositoryLibraryItem>> _groupRepositories(
 ///
 /// 中文：返回紧凑的仓库分组标题；父目录同名时显示完整路径消歧。
 String _repositoryGroupLabel(String parentPath, Iterable<String> allPaths) {
+  final userGroup = _userGroupName(parentPath);
+  if (userGroup != null) return userGroup;
   final basename = path_utils.basename(parentPath);
   final concise = basename.isEmpty ? parentPath : basename;
   final collisions = allPaths.where(
@@ -406,14 +584,23 @@ String _repositoryGroupLabel(String parentPath, Iterable<String> allPaths) {
   return collisions.length > 1 ? parentPath : concise;
 }
 
+String? _userGroupName(String key) =>
+    key.startsWith('@workspace:') ? key.substring('@workspace:'.length) : null;
+
 class _RepositoryLibraryGroupHeader extends StatelessWidget {
   const _RepositoryLibraryGroupHeader({
     required this.title,
     required this.count,
+    this.userGroup,
+    this.onRename,
+    this.onDelete,
   });
 
   final String title;
   final int count;
+  final String? userGroup;
+  final Future<void> Function(String group)? onRename;
+  final ValueChanged<String>? onDelete;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -433,6 +620,21 @@ class _RepositoryLibraryGroupHeader extends StatelessWidget {
               fontWeight: FontWeight.w700,
             ),
           ),
+          if (userGroup != null && (onRename != null || onDelete != null))
+            PopupMenuButton<String>(
+              tooltip: '分组操作',
+              onSelected: (value) {
+                if (value == 'rename') {
+                  onRename?.call(userGroup!);
+                } else if (value == 'delete') {
+                  onDelete?.call(userGroup!);
+                }
+              },
+              itemBuilder: (context) => const [
+                PopupMenuItem(value: 'rename', child: Text('重命名分组')),
+                PopupMenuItem(value: 'delete', child: Text('删除分组')),
+              ],
+            ),
           const SizedBox(width: 7),
           Text(
             '$count',
@@ -453,12 +655,20 @@ class _RepositoryLibraryTile extends StatefulWidget {
     required this.selected,
     required this.onPressed,
     this.dragHandle,
+    this.onFavoriteToggled,
+    this.workspaceGroups = const [],
+    this.currentGroup,
+    this.onRepositoryGroupChanged,
   });
 
   final RepositoryLibraryItem repository;
   final bool selected;
   final VoidCallback onPressed;
   final Widget? dragHandle;
+  final ValueChanged<String>? onFavoriteToggled;
+  final List<String> workspaceGroups;
+  final String? currentGroup;
+  final void Function(String path, String? group)? onRepositoryGroupChanged;
 
   /// 中文：创建负责管理仓库条目键盘焦点的状态对象。
   /// English: Creates the state that owns keyboard focus for this repository.
@@ -602,6 +812,59 @@ class _RepositoryLibraryTileState extends State<_RepositoryLibraryTile> {
                               fontWeight: FontWeight.w700,
                             ),
                           ),
+                        ),
+                      ],
+                      if (widget.onFavoriteToggled != null) ...[
+                        const SizedBox(width: 2),
+                        Tooltip(
+                          message: widget.repository.isFavorite
+                              ? '取消收藏'
+                              : '收藏仓库',
+                          child: IconButton(
+                            key: ValueKey<String>(
+                              'repository-library-favorite:${widget.repository.path}',
+                            ),
+                            visualDensity: VisualDensity.compact,
+                            onPressed: () => widget.onFavoriteToggled!(
+                              widget.repository.path,
+                            ),
+                            icon: Icon(
+                              widget.repository.isFavorite
+                                  ? Icons.star
+                                  : Icons.star_border,
+                            ),
+                          ),
+                        ),
+                      ],
+                      if (widget.onRepositoryGroupChanged != null) ...[
+                        const SizedBox(width: 2),
+                        PopupMenuButton<String>(
+                          key: ValueKey<String>(
+                            'repository-library-group:${widget.repository.path}',
+                          ),
+                          tooltip: '设置工作区分组',
+                          icon: Icon(
+                            widget.currentGroup == null
+                                ? Icons.folder_outlined
+                                : Icons.folder_special,
+                          ),
+                          onSelected: (value) {
+                            widget.onRepositoryGroupChanged!(
+                              widget.repository.path,
+                              value == _ungroupedWorkspaceValue ? null : value,
+                            );
+                          },
+                          itemBuilder: (context) => [
+                            const PopupMenuItem<String>(
+                              value: _ungroupedWorkspaceValue,
+                              child: Text('未分组'),
+                            ),
+                            for (final group in widget.workspaceGroups)
+                              PopupMenuItem<String>(
+                                value: group,
+                                child: Text(group),
+                              ),
+                          ],
                         ),
                       ],
                       ...(widget.dragHandle == null

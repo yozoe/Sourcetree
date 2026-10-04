@@ -715,6 +715,7 @@ void main() {
 
       for (final label in <String>[
         '查看选中的修改日志…',
+        'Blame',
         '审查选定的项目',
         '重置到提交…',
         '打开当前版本',
@@ -728,6 +729,27 @@ void main() {
         expect(find.text(label), findsOneWidget);
       }
       expect(selectedFile, commitFile);
+
+      final blameGesture = await tester.startGesture(
+        tester.getCenter(find.text('main.dart')),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await blameGesture.up();
+      await tester.pumpAndSettle();
+
+      await tester.tap(find.text('Blame'));
+      await tester.pumpAndSettle();
+      expect(selectedFile, commitFile);
+      expect(selectedAction, RepositoryCommitFileContextAction.blame);
+
+      final reviewGesture = await tester.startGesture(
+        tester.getCenter(find.text('main.dart')),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await reviewGesture.up();
+      await tester.pumpAndSettle();
 
       await tester.tap(find.text('审查选定的项目'));
       await tester.pumpAndSettle();
@@ -905,6 +927,7 @@ void main() {
     expect(find.text('在 Finder 中显示（待实现）'), findsOneWidget);
     expect(find.text('复制路径到剪贴板（待实现）'), findsOneWidget);
     expect(find.text('快速查看（待实现）'), findsOneWidget);
+    expect(find.text('Blame（待实现）'), findsOneWidget);
     final reset = tester.widget<MenuItemButton>(
       find.widgetWithText(MenuItemButton, '重置到提交…（待实现）'),
     );
@@ -912,6 +935,54 @@ void main() {
     await tester.tap(pending);
     await tester.pumpAndSettle();
     expect(selectedAction, isNull);
+  });
+
+  testWidgets('working-tree context menu opens Blame for one tracked file', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    List<RepositoryChangeViewData>? blamed;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: [
+                RepositoryChangeViewData(
+                  path: 'lib/main.dart',
+                  kind: RepositoryChangeKind.modified,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onChangeBlame: (changes) => blamed = changes,
+          ),
+        ),
+      ),
+    );
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('main.dart')),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    final blame = tester.widget<MenuItemButton>(
+      find.widgetWithText(MenuItemButton, 'Blame'),
+    );
+    expect(blame.onPressed, isNotNull);
+    await tester.tap(find.text('Blame'));
+    await tester.pumpAndSettle();
+    expect(blamed?.map((change) => change.path), ['lib/main.dart']);
   });
 
   testWidgets('command-click keeps multiple working-tree files selected', (
@@ -1079,6 +1150,7 @@ void main() {
             onChangeOpenTerminal: (_) {},
             onChangeQuickLook: (_) {},
             onChangeViewFileHistory: (_) {},
+            onChangeBlame: (_) {},
             onChangeReview: (_) {},
             onChangeIgnore: (_) {},
           ),
@@ -1101,6 +1173,7 @@ void main() {
       '快速查看（待实现）',
       '查看选中的修改日志…（待实现）',
       '审查选定的项目（待实现）',
+      'Blame（待实现）',
       '忽略…（待实现）',
     ]) {
       final item = tester.widget<MenuItemButton>(

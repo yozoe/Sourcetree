@@ -32,6 +32,19 @@ func gitDesktopCanPerformSelectedChangeMenuAction(
   hasKeyWorkspace && hasValidatedSelection
 }
 
+/// Returns whether the native Skip command may target the key workspace.
+/// 中文：判断原生“跳过当前提交”是否可以安全作用于当前前台工作区。
+func gitDesktopCanPerformSkipOperationMenuAction(
+  hasKeyWorkspace: Bool,
+  operation: GitDesktopRepositoryOperation?,
+  hasValidatedSkipCapability: Bool
+) -> Bool {
+  hasKeyWorkspace &&
+    operation != nil &&
+    operation != .merge &&
+    hasValidatedSkipCapability
+}
+
 /// A recoverable Git operation reported by one Flutter workspace Engine.
 /// 中文：由单个 Flutter 工作区 Engine 上报、可继续或中止的 Git 操作。
 enum GitDesktopRepositoryOperation: String {
@@ -344,10 +357,18 @@ final class GitDesktopWindowFocusHistory<Host: AnyObject> {
 /// Captures the restorable repository workspaces and merged-strip state.
 struct GitDesktopWorkspaceRestoreSnapshot {
   let paths: [String]
-  let mergedWorkspacePaths: [String]
+  /// All persisted merged workspace groups, in tab order.
+  /// 中文：按标签顺序保存的全部合并工作区组。
+  let mergedWorkspaceGroups: [[String]]
+
+  /// Legacy-compatible view of the first merged group.
+  /// 中文：兼容旧调用方的第一个合并组视图。
+  var mergedWorkspacePaths: [String] {
+    mergedWorkspaceGroups.first ?? []
+  }
 
   var restoresMergedWorkspaces: Bool {
-    mergedWorkspacePaths.count > 1
+    mergedWorkspaceGroups.contains { $0.count > 1 }
   }
 }
 
@@ -355,10 +376,29 @@ struct GitDesktopWorkspaceRestorationCompletion: Equatable {
   let resolvedPaths: [String]
   /// Paths that did not answer before the bounded wait; their windows remain open.
   let timedOutPathsToKeepOpen: [String]
-  let mergedPathsToRestore: [String]
+  let mergedGroupsToRestore: [[String]]
+
+  init(
+    resolvedPaths: [String],
+    timedOutPathsToKeepOpen: [String],
+    mergedPathsToRestore: [String] = [],
+    mergedGroupsToRestore: [[String]]? = nil
+  ) {
+    self.resolvedPaths = resolvedPaths
+    self.timedOutPathsToKeepOpen = timedOutPathsToKeepOpen
+    self.mergedGroupsToRestore = mergedGroupsToRestore ?? (
+      mergedPathsToRestore.count > 1 ? [mergedPathsToRestore] : []
+    )
+  }
+
+  /// Legacy-compatible view of the first group.
+  /// 中文：兼容旧测试与迁移代码的第一个合并组视图。
+  var mergedPathsToRestore: [String] {
+    mergedGroupsToRestore.first ?? []
+  }
 
   var shouldMerge: Bool {
-    mergedPathsToRestore.count > 1
+    !mergedGroupsToRestore.isEmpty
   }
 }
 
@@ -376,7 +416,7 @@ final class GitDesktopWorkspaceRestorationGate {
   private var orderedPaths: [String] = []
   private var pendingPaths: Set<String> = []
   private var resolvedPaths: Set<String> = []
-  private var mergedPaths: Set<String> = []
+  private var mergedGroups: [[String]] = []
 
   var isWaiting: Bool {
     !pendingPaths.isEmpty
@@ -389,14 +429,19 @@ final class GitDesktopWorkspaceRestorationGate {
   func begin(
     paths: [String],
     shouldMerge: Bool = false,
-    mergedPaths: [String]? = nil
+    mergedPaths: [String]? = nil,
+    mergedGroups: [[String]]? = nil
   ) {
     var seen: Set<String> = []
     orderedPaths = paths.filter { seen.insert($0).inserted }
     pendingPaths = Set(orderedPaths)
     resolvedPaths.removeAll()
-    let requestedMergedPaths = mergedPaths ?? (shouldMerge ? orderedPaths : [])
-    self.mergedPaths = Set(requestedMergedPaths).intersection(pendingPaths)
+    let requestedGroups = mergedGroups ?? [
+      mergedPaths ?? (shouldMerge ? orderedPaths : [])
+    ]
+    self.mergedGroups = requestedGroups.map { group in
+      group.filter { pendingPaths.contains($0) }
+    }.filter { $0.count > 1 }
   }
 
   /// 中文：记录一个恢复路径已完成，并在最后一个路径完成时返回合并决策。
@@ -429,14 +474,14 @@ final class GitDesktopWorkspaceRestorationGate {
     let completion = GitDesktopWorkspaceRestorationCompletion(
       resolvedPaths: orderedPaths.filter { resolvedPaths.contains($0) },
       timedOutPathsToKeepOpen: orderedPaths.filter { pendingPaths.contains($0) },
-      mergedPathsToRestore: orderedPaths.filter {
-        resolvedPaths.contains($0) && mergedPaths.contains($0)
-      }
+      mergedGroupsToRestore: mergedGroups.map { group in
+        orderedPaths.filter { group.contains($0) && resolvedPaths.contains($0) }
+      }.filter { $0.count > 1 }
     )
     orderedPaths.removeAll()
     pendingPaths.removeAll()
     resolvedPaths.removeAll()
-    mergedPaths.removeAll()
+    mergedGroups.removeAll()
     return completion
   }
 }
@@ -452,6 +497,8 @@ final class GitDesktopWorkspaceRestoreStore {
   private static let mergedWorkspacesKey = "gitDesktopRestoresMergedWorkspaces"
   private static let mergedWorkspacePathsKey =
     "gitDesktopMergedWorkspacePaths"
+  private static let mergedWorkspaceGroupsKey =
+    "gitDesktopMergedWorkspaceGroups"
 
   private let defaults: UserDefaults
 
@@ -464,23 +511,26 @@ final class GitDesktopWorkspaceRestoreStore {
     else {
       return GitDesktopWorkspaceRestoreSnapshot(
         paths: [],
-        mergedWorkspacePaths: []
+        mergedWorkspaceGroups: []
       )
     }
     let paths = normalizedPaths(rawPaths)
-    let storedMergedPaths = defaults.array(
+    let pathSet = Set(paths)
+    let storedGroups = defaults.array(
+      forKey: Self.mergedWorkspaceGroupsKey
+    ) as? [[String]]
+    let legacyPaths = defaults.array(
       forKey: Self.mergedWorkspacePathsKey
     ) as? [String]
-    let mergedCandidates = storedMergedPaths ?? (
-      defaults.bool(forKey: Self.mergedWorkspacesKey) ? paths : []
-    )
-    let pathSet = Set(paths)
-    let mergedPaths = normalizedPaths(mergedCandidates).filter {
-      pathSet.contains($0)
-    }
+    let candidates = storedGroups ?? [
+      legacyPaths ?? (
+        defaults.bool(forKey: Self.mergedWorkspacesKey) ? paths : []
+      )
+    ]
+    let mergedGroups = normalizedGroups(candidates, pathSet: pathSet)
     return GitDesktopWorkspaceRestoreSnapshot(
       paths: paths,
-      mergedWorkspacePaths: mergedPaths.count > 1 ? mergedPaths : []
+      mergedWorkspaceGroups: mergedGroups
     )
   }
 
@@ -491,21 +541,33 @@ final class GitDesktopWorkspaceRestoreStore {
   func save(
     paths: [String],
     restoresMergedWorkspaces: Bool = false,
-    mergedWorkspacePaths: [String]? = nil
+    mergedWorkspacePaths: [String]? = nil,
+    mergedWorkspaceGroups: [[String]]? = nil
   ) {
     let normalized = normalizedPaths(paths)
     let normalizedSet = Set(normalized)
-    let requestedMergedPaths = mergedWorkspacePaths ?? (
-      restoresMergedWorkspaces ? normalized : []
+    let requestedGroups = mergedWorkspaceGroups ?? [
+      mergedWorkspacePaths ?? (
+        restoresMergedWorkspaces ? normalized : []
+      )
+    ]
+    let persistedGroups = normalizedGroups(
+      requestedGroups,
+      pathSet: normalizedSet
     )
-    let merged = normalizedPaths(requestedMergedPaths).filter {
-      normalizedSet.contains($0)
-    }
-    let persistedMerged = merged.count > 1 ? merged : []
     defaults.set(normalized, forKey: Self.pathsKey)
-    defaults.set(persistedMerged, forKey: Self.mergedWorkspacePathsKey)
+    defaults.set(persistedGroups, forKey: Self.mergedWorkspaceGroupsKey)
+    // Keep the legacy keys in sync for older builds that may be launched
+    // after this version. The first group is the only representation they
+    // understand.
     defaults.set(
-      persistedMerged.count == normalized.count && normalized.count > 1,
+      persistedGroups.first ?? [],
+      forKey: Self.mergedWorkspacePathsKey
+    )
+    defaults.set(
+      persistedGroups.count == 1 &&
+        persistedGroups.first?.count == normalized.count &&
+        normalized.count > 1,
       forKey: Self.mergedWorkspacesKey
     )
   }
@@ -519,6 +581,27 @@ final class GitDesktopWorkspaceRestoreStore {
         continue
       }
       result.append(path)
+    }
+    return result
+  }
+
+  /// Canonicalizes and filters every persisted group without allowing a path
+  /// to appear twice in one group or a one-window group to masquerade as a
+  /// merged group.
+  /// 中文：规范化并过滤全部持久化组，避免组内重复路径或单窗口伪合并。
+  private func normalizedGroups(
+    _ candidates: [[String]],
+    pathSet: Set<String>
+  ) -> [[String]] {
+    var result: [[String]] = []
+    var claimed: Set<String> = []
+    for candidate in candidates {
+      let group = normalizedPaths(candidate).filter {
+        pathSet.contains($0) && !claimed.contains($0)
+      }
+      guard group.count > 1 else { continue }
+      claimed.formUnion(group)
+      result.append(group)
     }
     return result
   }
@@ -755,9 +838,10 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   private(set) var canCommitSelectedFromMenu = false
 
   /// The active recoverable Git operation and its latest validated actions.
-  /// 中文：当前可恢复 Git 操作及其最近一次校验的继续、中止能力。
+  /// 中文：当前可恢复 Git 操作及其最近一次校验的继续、跳过、中止能力。
   private(set) var activeRepositoryOperationFromMenu: GitDesktopRepositoryOperation?
   private(set) var canContinueOperationFromMenu = false
+  private(set) var canSkipOperationFromMenu = false
   private(set) var canAbortOperationFromMenu = false
 
   /// Flutter-validated actions and labels for the selected conflict file.
@@ -825,6 +909,11 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// Flutter 的分支管理流程重新校验 Git 状态。
   private(set) var canCreateBranchFromMenu = false
 
+  /// Flutter's last validated Git-flow v1 Start availability for this Engine.
+  /// 中文：此 Engine 最近一次由 Flutter 校验的 Git-flow v1 Start 可用状态；实际执行前
+  /// Flutter 会重新读取工作区、引用和进行中的 Git 操作。
+  private(set) var canStartGitFlowFromMenu = false
+
   /// Flutter's last validated Stash availability for this Engine.
   ///
   /// 中文：此 Engine 最近一次由 Flutter 校验的“贮藏”可用状态；实际写入前仍由
@@ -839,6 +928,10 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// Whether the current single visible file selection has readable history.
   /// 中文：当前单个可见文件选择是否可读取修改日志。
   private(set) var canViewSelectedFileHistoryFromMenu = false
+
+  /// Whether the current single visible file selection supports read-only Diff.
+  /// 中文：当前单个可见文件选择是否支持只读外部差异比对。
+  private(set) var canExternalDiffSelectedFromMenu = false
 
   /// The newest Flutter menu snapshot accepted by this Engine.
   ///
@@ -1027,9 +1120,6 @@ final class WorkspaceFlutterWindowController: NSWindowController,
       }
       let arguments = call.arguments as? [String: Any]
       let repositoryPath = arguments?["repositoryPath"] as? String
-      if gitDesktopHandleGitHubKeychainCall(call, result: result) {
-        return
-      }
       switch call.method {
       case "openWorkspace":
         let initialAction = arguments?["initialAction"] as? String
@@ -1415,6 +1505,8 @@ final class WorkspaceFlutterWindowController: NSWindowController,
     activeRepositoryOperationFromMenu = activeOperation
     canContinueOperationFromMenu = activeOperation != nil &&
       (arguments?["canContinueOperation"] as? Bool ?? false)
+    canSkipOperationFromMenu = activeOperation != nil &&
+      (arguments?["canSkipOperation"] as? Bool ?? false)
     canAbortOperationFromMenu = activeOperation != nil &&
       (arguments?["canAbortOperation"] as? Bool ?? false)
     canUseConflictStage2FromMenu =
@@ -1443,10 +1535,13 @@ final class WorkspaceFlutterWindowController: NSWindowController,
     canResetToSelectedCommitFromMenu =
       arguments?["canResetToSelectedCommit"] as? Bool ?? false
     canCreateBranchFromMenu = arguments?["canCreateBranch"] as? Bool ?? false
+    canStartGitFlowFromMenu = arguments?["canStartGitFlow"] as? Bool ?? false
     canStashFromMenu = arguments?["canStash"] as? Bool ?? false
     canTagFromMenu = arguments?["canTag"] as? Bool ?? false
     canViewSelectedFileHistoryFromMenu =
       arguments?["canViewSelectedFileHistory"] as? Bool ?? false
+    canExternalDiffSelectedFromMenu =
+      arguments?["canExternalDiffSelected"] as? Bool ?? false
     canIgnoreSelectedFromMenu =
       arguments?["canIgnoreSelected"] as? Bool ?? false
     canCopySelectedFromMenu =
@@ -1631,10 +1726,14 @@ final class WindowCoordinator {
   private let windowSizeStore: GitDesktopWindowSizeStore
   private var repositoryLibraryResizeObserver: NSObjectProtocol?
   private var repositoryLibraryCloseObserver: NSObjectProtocol?
+  private var screenParametersObserver: NSObjectProtocol?
   private var unregisteredWorkspaces: [
     ObjectIdentifier: WorkspaceFlutterWindowController
   ] = [:]
-  private var mergedWorkspaceOrder: [ObjectIdentifier] = []
+  /// Each entry is one independent merged-window group.
+  /// 中文：每个元素代表一个相互独立的合并窗口组。
+  private var mergedWorkspaceGroups: [[ObjectIdentifier]] = []
+  private var activeMergedWorkspaceGroupIndex = 0
   private weak var selectedMergedWorkspaceWindow: MainFlutterWindow?
   private var isMergedWorkspaceTabStripVisible = true
   private var isActivatingMergedWorkspace = false
@@ -1645,7 +1744,42 @@ final class WindowCoordinator {
   private var workspaceRestorationTimeoutWorkItem: DispatchWorkItem?
   private var didRequestWorkspaceRestoration = false
   private var isTerminating = false
-  private var restoredMergedWorkspacePathOrder: [String] = []
+  private var restoredMergedWorkspacePathGroups: [[String]] = []
+
+  /// The currently selected merged group, kept as a computed compatibility
+  /// surface for the existing tab-management code.
+  /// 中文：当前选中的合并组，作为现有标签管理代码的兼容访问面。
+  private var mergedWorkspaceOrder: [ObjectIdentifier] {
+    get {
+      guard mergedWorkspaceGroups.indices.contains(activeMergedWorkspaceGroupIndex)
+      else { return [] }
+      return mergedWorkspaceGroups[activeMergedWorkspaceGroupIndex]
+    }
+    set {
+      guard !mergedWorkspaceGroups.isEmpty else {
+        guard !newValue.isEmpty else { return }
+        mergedWorkspaceGroups = [newValue]
+        activeMergedWorkspaceGroupIndex = 0
+        return
+      }
+      if newValue.isEmpty {
+        mergedWorkspaceGroups.remove(at: activeMergedWorkspaceGroupIndex)
+        activeMergedWorkspaceGroupIndex = min(
+          activeMergedWorkspaceGroupIndex,
+          max(0, mergedWorkspaceGroups.count - 1)
+        )
+        return
+      }
+      mergedWorkspaceGroups[activeMergedWorkspaceGroupIndex] = newValue
+      if newValue.count < 2 {
+        mergedWorkspaceGroups.remove(at: activeMergedWorkspaceGroupIndex)
+        activeMergedWorkspaceGroupIndex = min(
+          activeMergedWorkspaceGroupIndex,
+          max(0, mergedWorkspaceGroups.count - 1)
+        )
+      }
+    }
+  }
 
   /// 中文：创建窗口协调器，并注入可独立测试的恢复、登记与尺寸偏好存储。
   ///
@@ -1661,10 +1795,20 @@ final class WindowCoordinator {
     self.workspaceRestoreStore = workspaceRestoreStore
     self.repositoryLibraryPendingStore = repositoryLibraryPendingStore
     self.windowSizeStore = windowSizeStore
+    screenParametersObserver = NotificationCenter.default.addObserver(
+      forName: NSApplication.didChangeScreenParametersNotification,
+      object: nil,
+      queue: .main
+    ) { [weak self] _ in
+      self?.recoverWindowsAfterScreenParametersChange()
+    }
   }
 
   deinit {
     removeRepositoryLibraryWindowObservers()
+    if let screenParametersObserver {
+      NotificationCenter.default.removeObserver(screenParametersObserver)
+    }
   }
 
   /// 中文：连接首页 Engine，恢复仓库浏览器尺寸并安装有界的尺寸保存监听。
@@ -1730,9 +1874,6 @@ final class WindowCoordinator {
         return
       }
       let arguments = call.arguments as? [String: Any]
-      if gitDesktopHandleGitHubKeychainCall(call, result: result) {
-        return
-      }
       switch call.method {
       case "openWorkspace":
         self.openWorkspace(
@@ -1958,6 +2099,17 @@ final class WindowCoordinator {
       currentWorkspaceController?.canContinueOperationFromMenu == true
   }
 
+  /// Whether the active Git operation can skip its current commit.
+  /// 中文：当前 Git 操作是否可以跳过当前提交。
+  var canSkipOperationFromMenu: Bool {
+    gitDesktopCanPerformSkipOperationMenuAction(
+      hasKeyWorkspace: currentWorkspaceController != nil,
+      operation: activeRepositoryOperationFromMenu,
+      hasValidatedSkipCapability:
+        currentWorkspaceController?.canSkipOperationFromMenu == true
+    )
+  }
+
   /// Whether the active Git operation can be aborted.
   /// 中文：当前 Git 操作是否可中止。
   var canAbortOperationFromMenu: Bool {
@@ -2033,6 +2185,12 @@ final class WindowCoordinator {
     currentWorkspaceController?.canCreateBranchFromMenu == true
   }
 
+  /// Whether the key workspace currently permits the frozen Git-flow Start.
+  /// 中文：当前前台工作区是否允许打开已冻结语义的 Git-flow Start。
+  var canStartGitFlowFromMenu: Bool {
+    currentWorkspaceController?.canStartGitFlowFromMenu == true
+  }
+
   /// Whether the key workspace currently permits opening Stash creation.
   /// 中文：当前前台工作区是否已由 Flutter 校验为允许打开贮藏创建。
   var canStashFromMenu: Bool {
@@ -2052,6 +2210,17 @@ final class WindowCoordinator {
       hasKeyWorkspace: currentWorkspaceController != nil,
       hasValidatedSelection:
         currentWorkspaceController?.canViewSelectedFileHistoryFromMenu == true
+    )
+  }
+
+  /// Whether the key workspace can open a read-only external Diff for its
+  /// single selected file.
+  /// 中文：当前前台工作区是否可为单个所选文件打开只读外部差异比对。
+  var canExternalDiffSelectedFromMenu: Bool {
+    gitDesktopCanPerformSelectedChangeMenuAction(
+      hasKeyWorkspace: currentWorkspaceController != nil,
+      hasValidatedSelection:
+        currentWorkspaceController?.canExternalDiffSelectedFromMenu == true
     )
   }
 
@@ -2210,7 +2379,7 @@ final class WindowCoordinator {
     controller.hasVerifiedRepository = true
     controller.window?.title = "\(URL(fileURLWithPath: repositoryPath).lastPathComponent) (Git)"
     if let window = controller.window as? MainFlutterWindow,
-       mergedWorkspaceOrder.contains(ObjectIdentifier(window)) {
+       selectMergedWorkspaceGroup(containing: window) {
       refreshMergedWorkspaceTabStrips()
     }
     workspaceIndex.register(controller, for: repositoryPath)
@@ -2266,7 +2435,7 @@ final class WindowCoordinator {
   ///
   /// English: Collects only the specified workspaces into the custom strip,
   /// leaving windows outside that batch independent.
-  private func mergeWorkspaceWindows(
+  func mergeWorkspaceWindows(
     _ controllers: [WorkspaceFlutterWindowController]
   ) {
     guard controllers.count > 1 else {
@@ -2279,20 +2448,34 @@ final class WindowCoordinator {
           windows.contains(where: { $0 === primary }) else {
       return
     }
-    let wasAlreadyMerged = mergedWorkspaceWindows.count > 1
+    let newOrder = windows.map(ObjectIdentifier.init)
     let windowIdentifiers = Set(windows.map(ObjectIdentifier.init))
-    for previousWindow in mergedWorkspaceWindows
-    where !windowIdentifiers.contains(ObjectIdentifier(previousWindow)) {
-      previousWindow.removeWorkspaceTabStrip()
-      if !previousWindow.isVisible {
-        previousWindow.orderFront(nil)
+    let overlappingGroups = mergedWorkspaceGroups.filter { group in
+      !Set(group).isDisjoint(with: windowIdentifiers)
+    }
+    for previousIdentifier in overlappingGroups.flatMap({ $0 })
+    where !windowIdentifiers.contains(previousIdentifier) {
+      if let previousWindow = workspaceControllers().first(where: {
+        $0.window.map(ObjectIdentifier.init) == previousIdentifier
+      })?.window as? MainFlutterWindow {
+        previousWindow.removeWorkspaceTabStrip()
+        if !previousWindow.isVisible {
+          previousWindow.orderFront(nil)
+        }
       }
     }
-    mergedWorkspaceOrder = windows.map(ObjectIdentifier.init)
-    selectedMergedWorkspaceWindow = primary
-    if !wasAlreadyMerged {
-      isMergedWorkspaceTabStripVisible = true
+    // A workspace can belong to only one group. Remove any old groups that
+    // overlap this new set, then append the requested group independently.
+    mergedWorkspaceGroups = mergedWorkspaceGroups.enumerated().compactMap {
+      index, group in
+      let remaining = group.filter { !windowIdentifiers.contains($0) }
+      guard remaining.count > 1 else { return nil }
+      return remaining
     }
+    mergedWorkspaceGroups.append(newOrder)
+    activeMergedWorkspaceGroupIndex = mergedWorkspaceGroups.count - 1
+    selectedMergedWorkspaceWindow = primary
+    isMergedWorkspaceTabStripVisible = true
     let sharedFrame = primary.frame
     windows.forEach { $0.cancelPendingBringToFront() }
     for window in windows where window !== primary {
@@ -2311,7 +2494,7 @@ final class WindowCoordinator {
     guard windows.count > 1 else {
       return false
     }
-    let mergedIdentifiers = Set(mergedWorkspaceOrder)
+    let mergedIdentifiers = Set(mergedWorkspaceGroups.flatMap { $0 })
     return windows.contains { !mergedIdentifiers.contains(ObjectIdentifier($0)) }
   }
 
@@ -2321,12 +2504,37 @@ final class WindowCoordinator {
     closingWindow?.cancelPendingBringToFront()
     let closingFrame = closingWindow?.frame
     let closingIdentifier = closingWindow.map(ObjectIdentifier.init)
-    let closingIndex = closingIdentifier.flatMap {
-      mergedWorkspaceOrder.firstIndex(of: $0)
+    let closingGroupIndex = closingIdentifier.flatMap { identifier in
+      mergedWorkspaceGroups.firstIndex { $0.contains(identifier) }
+    }
+    let closingIndex = closingIdentifier.flatMap { identifier in
+      closingGroupIndex.flatMap {
+        mergedWorkspaceGroups[$0].firstIndex(of: identifier)
+      }
     }
     let wasSelected = closingWindow === selectedMergedWorkspaceWindow
+    var remainingClosingGroupIdentifiers: [ObjectIdentifier] = []
     if let closingIdentifier {
-      mergedWorkspaceOrder.removeAll { $0 == closingIdentifier }
+      if let closingGroupIndex {
+        remainingClosingGroupIdentifiers = mergedWorkspaceGroups[
+          closingGroupIndex
+        ].filter { $0 != closingIdentifier }
+        if remainingClosingGroupIdentifiers.count > 1 {
+          mergedWorkspaceGroups[closingGroupIndex] =
+            remainingClosingGroupIdentifiers
+        } else {
+          mergedWorkspaceGroups.remove(at: closingGroupIndex)
+        }
+      } else {
+        mergedWorkspaceGroups = mergedWorkspaceGroups.compactMap { group in
+          let remaining = group.filter { $0 != closingIdentifier }
+          return remaining.count > 1 ? remaining : nil
+        }
+      }
+      activeMergedWorkspaceGroupIndex = min(
+        activeMergedWorkspaceGroupIndex,
+        max(0, mergedWorkspaceGroups.count - 1)
+      )
     }
     workspaceIndex.remove(controller)
     unregisteredWorkspaces.removeValue(forKey: ObjectIdentifier(controller))
@@ -2334,19 +2542,22 @@ final class WindowCoordinator {
     guard !isTerminating else {
       return
     }
-    let remainingMergedWindows = mergedWorkspaceWindows
-    if remainingMergedWindows.count < 2 {
+    let liveWindowByIdentifier = Dictionary(
+      uniqueKeysWithValues: workspaceControllers().compactMap { controller in
+        (controller.window as? MainFlutterWindow).map {
+          (ObjectIdentifier($0), $0)
+        }
+      }
+    )
+    let remainingMergedWindows = remainingClosingGroupIdentifiers.compactMap {
+      liveWindowByIdentifier[$0]
+    }
+    if remainingClosingGroupIdentifiers.count < 2 {
       remainingMergedWindows.forEach { $0.removeWorkspaceTabStrip() }
-      mergedWorkspaceOrder.removeAll()
       selectedMergedWorkspaceWindow = nil
       isMergedWorkspaceTabStripVisible = true
-      if wasSelected, let remainingWindow = remainingMergedWindows.first {
-        if let closingFrame {
-          remainingWindow.setFrame(closingFrame, display: false)
-        }
-        DispatchQueue.main.async {
-          remainingWindow.bringToFrontImmediately()
-        }
+      if wasSelected, let fallback = workspaceHistory.mostRecent?.window {
+        fallback.orderFrontRegardless()
       }
     } else if wasSelected {
       let nextIndex = min(closingIndex ?? 0, remainingMergedWindows.count - 1)
@@ -2407,6 +2618,42 @@ final class WindowCoordinator {
     return mergedWorkspaceOrder.compactMap { windowByIdentifier[$0] }
   }
 
+  /// Selects the independent merged group containing [window], if any.
+  /// 中文：选择包含指定窗口的独立合并组。
+  @discardableResult
+  private func selectMergedWorkspaceGroup(
+    containing window: MainFlutterWindow
+  ) -> Bool {
+    guard let index = mergedWorkspaceGroups.firstIndex(where: {
+      $0.contains(ObjectIdentifier(window))
+    }) else {
+      return false
+    }
+    activeMergedWorkspaceGroupIndex = index
+    selectedMergedWorkspaceWindow = mergedWorkspaceGroups[index].first.flatMap {
+      identifier in
+      workspaceControllers().compactMap { $0.window as? MainFlutterWindow }
+        .first(where: { ObjectIdentifier($0) == identifier })
+    }
+    return true
+  }
+
+  /// Removes a window from every persisted/in-memory group and drops groups
+  /// that no longer contain two windows.
+  /// 中文：从所有组移除窗口，并丢弃不足两个窗口的组。
+  private func removeWindowFromMergedWorkspaceGroups(
+    _ identifier: ObjectIdentifier
+  ) {
+    mergedWorkspaceGroups = mergedWorkspaceGroups.compactMap { group in
+      let remaining = group.filter { $0 != identifier }
+      return remaining.count > 1 ? remaining : nil
+    }
+    activeMergedWorkspaceGroupIndex = min(
+      activeMergedWorkspaceGroupIndex,
+      max(0, mergedWorkspaceGroups.count - 1)
+    )
+  }
+
   /// 中文：若已有合并标签组，将刚完成仓库验证的新窗口追加到该组。
   ///
   /// English: Appends a newly verified workspace to an existing merged group,
@@ -2418,6 +2665,9 @@ final class WindowCoordinator {
       return
     }
     let controllers = workspaceControllers()
+    if let selectedMergedWorkspaceWindow {
+      _ = selectMergedWorkspaceGroup(containing: selectedMergedWorkspaceWindow)
+    }
     let controllerByWindowIdentifier = Dictionary(
       uniqueKeysWithValues: controllers.compactMap { candidate in
         (candidate.window as? MainFlutterWindow).map {
@@ -2446,11 +2696,13 @@ final class WindowCoordinator {
   /// English: Re-merges verified windows explicitly listed in the restored
   /// group, without absorbing independently restored workspaces.
   private func mergeVerifiedRestoredWorkspaceGroupIfPossible() {
-    let controllers = restoredMergedWorkspacePathOrder.compactMap {
-      workspaceIndex.host(for: $0)
-    }.filter(\.hasVerifiedRepository)
-    if controllers.count > 1 {
-      mergeWorkspaceWindows(controllers)
+    for group in restoredMergedWorkspacePathGroups {
+      let controllers = group.compactMap {
+        workspaceIndex.host(for: $0)
+      }.filter(\.hasVerifiedRepository)
+      if controllers.count > 1 {
+        mergeWorkspaceWindows(controllers)
+      }
     }
   }
 
@@ -2476,7 +2728,7 @@ final class WindowCoordinator {
     guard window.role == .workspace else {
       return
     }
-    if mergedWorkspaceOrder.contains(ObjectIdentifier(window)),
+    if selectMergedWorkspaceGroup(containing: window),
        selectedMergedWorkspaceWindow !== window,
        !isActivatingMergedWorkspace {
       activateMergedWorkspace(window)
@@ -2496,6 +2748,9 @@ final class WindowCoordinator {
     from window: MainFlutterWindow,
     offset: Int
   ) -> Bool {
+    guard selectMergedWorkspaceGroup(containing: window) else {
+      return false
+    }
     let windows = mergedWorkspaceWindows
     guard windows.count > 1,
           let currentIndex = windows.firstIndex(where: { $0 === window }) else {
@@ -2531,6 +2786,9 @@ final class WindowCoordinator {
   /// 不启动应用的情况下验证选择和过期窗口清理。
   @discardableResult
   func showMergedWorkspaceOverview(from window: MainFlutterWindow) -> Bool {
+    guard selectMergedWorkspaceGroup(containing: window) else {
+      return false
+    }
     let windows = mergedWorkspaceWindows
     guard windows.count > 1,
           windows.contains(where: { $0 === window }),
@@ -2592,8 +2850,8 @@ final class WindowCoordinator {
   /// English: Returns whether a workspace window belongs to a manageable
   /// merged group.
   private func canManageMergedWorkspace(_ window: MainFlutterWindow) -> Bool {
-    mergedWorkspaceWindows.count > 1 &&
-      mergedWorkspaceOrder.contains(ObjectIdentifier(window))
+    guard selectMergedWorkspaceGroup(containing: window) else { return false }
+    return mergedWorkspaceWindows.count > 1
   }
 
   /// 中文：当前合并工作区是否显示自绘标签栏。
@@ -2653,11 +2911,18 @@ final class WindowCoordinator {
     let detachedRepositoryPath = workspaceControllers().first {
       $0.window === detachedWindow
     }?.repositoryPath
-    restoredMergedWorkspacePathOrder = gitDesktopMergedWorkspacePaths(
-      restoredMergedWorkspacePathOrder,
-      afterDetaching: detachedRepositoryPath
-    )
+    restoredMergedWorkspacePathGroups = restoredMergedWorkspacePathGroups.map {
+      gitDesktopMergedWorkspacePaths(
+        $0,
+        afterDetaching: detachedRepositoryPath
+      )
+    }.filter { $0.count > 1 }
     let sharedFrame = detachedWindow.frame
+    // Capture the group's live windows before changing the compatibility
+    // order. When removing the final tab, the order setter drops the group,
+    // so resolving `mergedWorkspaceWindows` afterwards would lose the last
+    // remaining window whose strip still needs to be removed.
+    let currentGroupWindows = mergedWorkspaceWindows
     mergedWorkspaceOrder.remove(at: detachedIndex)
     detachedWindow.removeWorkspaceTabStrip()
     let remainingWindows = mergedWorkspaceWindows
@@ -2669,8 +2934,14 @@ final class WindowCoordinator {
       refreshMergedWorkspaceTabStrips()
       nextWindow.orderFront(nil)
     } else {
-      remainingWindows.forEach { $0.removeWorkspaceTabStrip() }
-      mergedWorkspaceOrder.removeAll()
+      currentGroupWindows.forEach { $0.removeWorkspaceTabStrip() }
+      if mergedWorkspaceGroups.indices.contains(activeMergedWorkspaceGroupIndex) {
+        mergedWorkspaceGroups.remove(at: activeMergedWorkspaceGroupIndex)
+      }
+      activeMergedWorkspaceGroupIndex = min(
+        activeMergedWorkspaceGroupIndex,
+        max(0, mergedWorkspaceGroups.count - 1)
+      )
       selectedMergedWorkspaceWindow = nil
       isMergedWorkspaceTabStripVisible = true
       if let remainingWindow = remainingWindows.first {
@@ -2699,6 +2970,9 @@ final class WindowCoordinator {
     to destinationIndex: Int
   ) {
     dismissWorkspaceTabOverview()
+    guard selectMergedWorkspaceGroup(containing: window) else {
+      return
+    }
     let windowIdentifier = ObjectIdentifier(window)
     guard let sourceIndex = mergedWorkspaceOrder.firstIndex(
       of: windowIdentifier
@@ -2721,7 +2995,7 @@ final class WindowCoordinator {
   /// English: Activates one workspace in the merged set while reusing the
   /// currently visible window's frame.
   private func activateMergedWorkspace(_ window: MainFlutterWindow) {
-    guard mergedWorkspaceOrder.contains(ObjectIdentifier(window)) else {
+    guard selectMergedWorkspaceGroup(containing: window) else {
       window.bringToFront()
       return
     }
@@ -2747,28 +3021,43 @@ final class WindowCoordinator {
   /// English: Refreshes the single rectangular strip hosted by every workspace
   /// in the custom merged set.
   private func refreshMergedWorkspaceTabStrips() {
-    let windows = mergedWorkspaceWindows
-    guard windows.count > 1,
-          let selectedWindow = selectedMergedWorkspaceWindow,
-          windows.contains(where: { $0 === selectedWindow }) else {
-      windows.forEach { $0.removeWorkspaceTabStrip() }
-      return
+    let liveWindows = workspaceControllers().compactMap {
+      $0.window as? MainFlutterWindow
     }
-    guard isMergedWorkspaceTabStripVisible else {
-      windows.forEach { $0.removeWorkspaceTabStrip() }
-      return
-    }
-    windows.forEach { candidate in
-      candidate.configureWorkspaceTabStrip(
-        windows: windows,
-        selectedWindow: selectedWindow,
-        selectionHandler: { [weak self] requestedWindow in
-          self?.activateMergedWorkspace(requestedWindow)
-        },
-        reorderHandler: { [weak self] movedWindow, destinationIndex in
-          self?.moveMergedWorkspace(movedWindow, to: destinationIndex)
-        }
-      )
+    let windowByIdentifier = Dictionary(
+      uniqueKeysWithValues: liveWindows.map { (ObjectIdentifier($0), $0) }
+    )
+    for (index, group) in mergedWorkspaceGroups.enumerated() {
+      let windows = group.compactMap { windowByIdentifier[$0] }
+      guard windows.count > 1 else {
+        windows.forEach { $0.removeWorkspaceTabStrip() }
+        continue
+      }
+      let selectedWindow: MainFlutterWindow
+      if index == activeMergedWorkspaceGroupIndex,
+         let current = selectedMergedWorkspaceWindow,
+         windows.contains(where: { $0 === current }) {
+        selectedWindow = current
+      } else {
+        selectedWindow = windows[0]
+      }
+      if index == activeMergedWorkspaceGroupIndex &&
+          !isMergedWorkspaceTabStripVisible {
+        windows.forEach { $0.removeWorkspaceTabStrip() }
+        continue
+      }
+      windows.forEach { candidate in
+        candidate.configureWorkspaceTabStrip(
+          windows: windows,
+          selectedWindow: selectedWindow,
+          selectionHandler: { [weak self] requestedWindow in
+            self?.activateMergedWorkspace(requestedWindow)
+          },
+          reorderHandler: { [weak self] movedWindow, destinationIndex in
+            self?.moveMergedWorkspace(movedWindow, to: destinationIndex)
+          }
+        )
+      }
     }
   }
 
@@ -2872,7 +3161,8 @@ final class WindowCoordinator {
     workspaceIndex.removeAll()
     unregisteredWorkspaces.removeAll()
     workspaceHistory.removeAll()
-    mergedWorkspaceOrder.removeAll()
+    mergedWorkspaceGroups.removeAll()
+    activeMergedWorkspaceGroupIndex = 0
     selectedMergedWorkspaceWindow = nil
     repositoryLibraryChannel?.setMethodCallHandler(nil)
   }
@@ -2897,17 +3187,17 @@ final class WindowCoordinator {
         self.isReadableDirectory(at: $0)
       }
       let restorablePathSet = Set(restorablePaths)
-      let mergedWorkspacePaths = savedSnapshot.mergedWorkspacePaths.filter {
-        restorablePathSet.contains($0)
-      }
-      self.restoredMergedWorkspacePathOrder = mergedWorkspacePaths
+      let mergedWorkspaceGroups = savedSnapshot.mergedWorkspaceGroups.map {
+        $0.filter { restorablePathSet.contains($0) }
+      }.filter { $0.count > 1 }
+      self.restoredMergedWorkspacePathGroups = mergedWorkspaceGroups
       self.workspaceRestoreStore.save(
         paths: restorablePaths,
-        mergedWorkspacePaths: mergedWorkspacePaths
+        mergedWorkspaceGroups: mergedWorkspaceGroups
       )
       self.workspaceRestorationGate.begin(
         paths: restorablePaths,
-        mergedPaths: mergedWorkspacePaths
+        mergedGroups: mergedWorkspaceGroups
       )
       self.scheduleWorkspaceRestorationTimeout()
       for repositoryPath in restorablePaths {
@@ -2915,7 +3205,9 @@ final class WindowCoordinator {
           repositoryPath: repositoryPath,
           initialAction: nil,
           restoresPreviouslyOpenWorkspace: true,
-          restoresMergedWorkspace: mergedWorkspacePaths.contains(repositoryPath)
+          restoresMergedWorkspace: mergedWorkspaceGroups.contains {
+            $0.contains(repositoryPath)
+          }
         ) { [weak self] error in
           guard error != nil else {
             return
@@ -2980,11 +3272,17 @@ final class WindowCoordinator {
     workspaceRestorationTimeoutWorkItem?.cancel()
     workspaceRestorationTimeoutWorkItem = nil
 
-    let restoredControllers = completion.mergedPathsToRestore.compactMap {
-      workspaceIndex.host(for: $0)
-    }
-    if completion.shouldMerge, restoredControllers.count > 1 {
-      mergeWorkspaceWindows(restoredControllers)
+    if completion.shouldMerge {
+      for group in completion.mergedGroupsToRestore {
+        let restoredControllers = group.compactMap {
+          workspaceIndex.host(for: $0)
+        }
+        guard restoredControllers.count > 1 else { continue }
+        mergeWorkspaceWindows(restoredControllers)
+      }
+      if completion.mergedGroupsToRestore.isEmpty {
+        persistOpenWorkspaces()
+      }
     } else {
       persistOpenWorkspaces()
     }
@@ -3017,19 +3315,59 @@ final class WindowCoordinator {
         }
       }
     )
-    let mergedControllers = mergedWorkspaceOrder.compactMap {
-      controllerByWindowIdentifier[$0]
-    }
+    let mergedControllerGroups = mergedWorkspaceGroups.map { group in
+      group.compactMap { controllerByWindowIdentifier[$0] }
+    }.filter { $0.count > 1 }
     let mergedControllerIdentifiers = Set(
-      mergedControllers.map(ObjectIdentifier.init)
+      mergedControllerGroups.flatMap { $0 }.map(ObjectIdentifier.init)
     )
-    let controllersInRestoreOrder = mergedControllers + controllers.filter {
-      !mergedControllerIdentifiers.contains(ObjectIdentifier($0))
-    }
+    let controllersInRestoreOrder = mergedControllerGroups.flatMap { $0 } +
+      controllers.filter {
+        !mergedControllerIdentifiers.contains(ObjectIdentifier($0))
+      }
     workspaceRestoreStore.save(
       paths: controllersInRestoreOrder.compactMap(\.repositoryPath),
-      mergedWorkspacePaths: mergedControllers.compactMap(\.repositoryPath)
+      mergedWorkspaceGroups: mergedControllerGroups.map {
+        $0.compactMap(\.repositoryPath)
+      }
     )
+  }
+
+  /// 中文：显示器拔出或排列变化后恢复所有应用窗口的可见边界。
+  ///
+  /// English: Recovers every app window into the visible bounds after a
+  /// display is removed or the display arrangement changes.
+  private func recoverWindowsAfterScreenParametersChange() {
+    guard !isTerminating else { return }
+    var changed = false
+    var windows: [MainFlutterWindow] = []
+    if let repositoryLibraryWindow {
+      windows.append(repositoryLibraryWindow)
+    }
+    windows.append(contentsOf: workspaceControllers().compactMap {
+      $0.window as? MainFlutterWindow
+    })
+    var seen: Set<ObjectIdentifier> = []
+    for window in windows where seen.insert(ObjectIdentifier(window)).inserted {
+      guard gitDesktopShouldRecoverWindowFrame(window) else {
+        continue
+      }
+      guard let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame
+      else {
+        continue
+      }
+      let recovered = gitDesktopRecoveredWindowFrame(
+        currentFrame: window.frame,
+        visibleFrame: visibleFrame
+      )
+      guard recovered != window.frame else { continue }
+      window.setFrame(recovered, display: window.isVisible, animate: false)
+      saveContentSize(of: window, for: window.role)
+      changed = true
+    }
+    if changed {
+      persistOpenWorkspaces()
+    }
   }
 
   private func prepareRepositoryLibrary(
@@ -3443,6 +3781,16 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     windowCoordinator.performWorkspaceAction("createBranch")
   }
 
+  /// Opens the local-only Git-flow v1 Start flow in the current key workspace.
+  /// 中文：在当前 key workspace 打开仅修改本地引用的 Git-flow v1 Start 流程。
+  @IBAction func startGitFlowRepositoryFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canStartGitFlowFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("startGitFlow")
+  }
+
   @IBAction func stashRepositoryFromMenu(_ sender: Any?) {
     guard windowCoordinator.canStashFromMenu else {
       NSSound.beep()
@@ -3463,6 +3811,16 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
       return
     }
     windowCoordinator.performWorkspaceAction("continueOperation")
+  }
+
+  /// Skips the current commit in the active sequencer or rebase operation.
+  /// 中文：跳过当前前台工作区变基、遴选或回滚操作中的当前提交。
+  @IBAction func skipRepositoryOperationFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canSkipOperationFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("skipOperation")
   }
 
   /// Requests confirmation before aborting the active Git operation.
@@ -3513,6 +3871,16 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
       return
     }
     windowCoordinator.performWorkspaceAction("viewSelectedFileHistory")
+  }
+
+  /// Opens the selected file in the configured read-only Diff or FileMerge.
+  /// 中文：为当前所选文件打开配置的只读 Diff 工具或 Apple FileMerge。
+  @IBAction func externalDiffSelectedFromMenu(_ sender: Any?) {
+    guard windowCoordinator.canExternalDiffSelectedFromMenu else {
+      NSSound.beep()
+      return
+    }
+    windowCoordinator.performWorkspaceAction("externalDiffSelected")
   }
 
   /// Opens the ignore-rule preview for the key workspace's selection.
@@ -3852,6 +4220,12 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
       } ?? "中止"
       return windowCoordinator.canAbortOperationFromMenu
     }
+    if menuItem.action == #selector(skipRepositoryOperationFromMenu(_:)) {
+      menuItem.title = windowCoordinator.activeRepositoryOperationFromMenu.map {
+        "跳过当前\($0.menuName)提交"
+      } ?? "跳过当前提交"
+      return windowCoordinator.canSkipOperationFromMenu
+    }
     if menuItem.action == #selector(useConflictStage2FromMenu(_:)) {
       menuItem.title =
         "使用\(windowCoordinator.conflictStage2LabelFromMenu)（Git stage 2）"
@@ -3867,6 +4241,9 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     }
     if menuItem.action == #selector(viewSelectedFileHistoryFromMenu(_:)) {
       return windowCoordinator.canViewSelectedFileHistoryFromMenu
+    }
+    if menuItem.action == #selector(externalDiffSelectedFromMenu(_:)) {
+      return windowCoordinator.canExternalDiffSelectedFromMenu
     }
     if menuItem.action == #selector(ignoreSelectedFromMenu(_:)) {
       return windowCoordinator.canIgnoreSelectedFromMenu
@@ -3918,6 +4295,9 @@ class AppDelegate: FlutterAppDelegate, NSMenuDelegate {
     }
     if menuItem.action == #selector(createBranchRepositoryFromMenu(_:)) {
       return windowCoordinator.canCreateBranchFromMenu
+    }
+    if menuItem.action == #selector(startGitFlowRepositoryFromMenu(_:)) {
+      return windowCoordinator.canStartGitFlowFromMenu
     }
     if menuItem.action == #selector(stashRepositoryFromMenu(_:)) {
       return windowCoordinator.canStashFromMenu

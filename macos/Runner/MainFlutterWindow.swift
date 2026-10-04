@@ -13,6 +13,11 @@ enum GitDesktopWindowPlacement: Equatable {
   case trailing
 }
 
+let gitDesktopMinimumFullScreenTileContentSize = NSSize(
+  width: 640,
+  height: 600
+)
+
 /// 中文：按当前显示器可见区域计算填充、居中或左右贴靠的窗口位置。
 ///
 /// English: Computes a fill, centered, or side-aligned window frame within the
@@ -71,6 +76,35 @@ func gitDesktopWindowFrame(
   return NSRect(origin: NSPoint(x: originX, y: originY), size: size)
 }
 
+/// 中文：显示器参数变化后，将窗口尺寸和中心约束回新的可见工作区。
+///
+/// English: Keeps a window's size and approximate center inside the new
+/// visible work area after display parameters change.
+func gitDesktopRecoveredWindowFrame(
+  currentFrame: NSRect,
+  visibleFrame: NSRect
+) -> NSRect {
+  guard visibleFrame.width > 0, visibleFrame.height > 0 else {
+    return currentFrame
+  }
+  let size = NSSize(
+    width: min(currentFrame.width, visibleFrame.width),
+    height: min(currentFrame.height, visibleFrame.height)
+  )
+  let minimumX = visibleFrame.minX
+  let maximumX = max(minimumX, visibleFrame.maxX - size.width)
+  let minimumY = visibleFrame.minY
+  let maximumY = max(minimumY, visibleFrame.maxY - size.height)
+  let centeredX = currentFrame.midX - (size.width / 2)
+  let centeredY = currentFrame.midY - (size.height / 2)
+  return NSRect(
+    x: min(max(centeredX, minimumX), maximumX),
+    y: min(max(centeredY, minimumY), maximumY),
+    width: size.width,
+    height: size.height
+  )
+}
+
 /// 中文：判断窗口菜单占位动作是否能安全显示在当前应用窗口中。
 ///
 /// English: Returns whether a pending Window-menu action can be presented in
@@ -93,6 +127,20 @@ func gitDesktopCanPerformWindowPlacement(_ keyWindow: NSWindow?) -> Bool {
   }
   return keyWindow.styleMask.contains(.resizable) &&
     !keyWindow.styleMask.contains(.fullScreen)
+}
+
+/// 中文：判断显示器参数变化后是否应直接改写窗口 frame；系统全屏或全屏平铺
+/// Space 由 AppKit 管理，应用不得在通知回调中把它拉回普通桌面几何。
+///
+/// English: Returns whether display-parameter recovery may directly rewrite a
+/// window frame. AppKit owns windows in full-screen or full-screen tiled
+/// Spaces, so notification handling must not force them back to desktop
+/// geometry.
+func gitDesktopShouldRecoverWindowFrame(_ window: NSWindow?) -> Bool {
+  guard window is MainFlutterWindow, let window else {
+    return false
+  }
+  return !window.styleMask.contains(.fullScreen)
 }
 
 private let gitDesktopWorkspaceTabbingIdentifier =
@@ -1252,6 +1300,18 @@ class MainFlutterWindow: NSWindow {
     // 工作区在用户从“窗口”菜单明确合并前始终彼此独立；仅协调器可为该合并启用
     // 原生标签能力，避免系统自动合并不同 Flutter Engine。
     tabbingMode = .disallowed
+    // Both app window roles remain ordinary independent NSWindows, but opt in
+    // to AppKit's public full-screen tiling contract. Side selection remains
+    // owned by the system green-button UI until AppKit exposes a public
+    // directional tiling API.
+    // 两类应用窗口仍是独立 NSWindow，但明确加入 AppKit 的公开全屏平铺契约；
+    // 在系统提供公开方向 API 前，左右位置仍由绿色按钮的系统界面决定。
+    collectionBehavior.remove(.fullScreenNone)
+    collectionBehavior.remove(.fullScreenAuxiliary)
+    collectionBehavior.remove(.fullScreenDisallowsTiling)
+    collectionBehavior.insert(.fullScreenPrimary)
+    collectionBehavior.insert(.fullScreenAllowsTiling)
+    minFullScreenContentSize = gitDesktopMinimumFullScreenTileContentSize
     directoryDropContainer?.acceptsDirectoryDrops =
       role == .repositoryLibrary
   }

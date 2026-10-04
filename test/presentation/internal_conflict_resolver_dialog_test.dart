@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:git_desktop/src/presentation/presentation.dart';
 
@@ -29,6 +30,31 @@ void main() {
     );
   });
 
+  test(
+    'parses complete conflict marker regions and preserves line content',
+    () {
+      final regions = parseConflictMarkerRegions(
+        'prefix\n'
+        '<<<<<<< HEAD\nours 1\n=======\ntheirs 1\n>>>>>>> feature\n'
+        'middle\n'
+        '<<<<<<< HEAD\nours 2\n=======\ntheirs 2\n>>>>>>> feature',
+      );
+
+      expect(regions, hasLength(2));
+      expect(regions[0].oursText, 'ours 1\n');
+      expect(regions[0].theirsText, 'theirs 1\n');
+      expect(regions[1].oursText, 'ours 2\n');
+      expect(regions[1].theirsText, 'theirs 2\n');
+    },
+  );
+
+  test('does not expose an incomplete marker as a selectable region', () {
+    expect(
+      parseConflictMarkerRegions('<<<<<<< HEAD\nours\n=======\n'),
+      isEmpty,
+    );
+  });
+
   testWidgets('compares both sides and returns the edited merge result', (
     tester,
   ) async {
@@ -47,10 +73,11 @@ void main() {
                 builder: (context) => const InternalConflictResolverDialog(
                   path: 'lib/example.dart',
                   currentBranch: 'main',
-                  oursText: 'same\nours\n',
-                  theirsText: 'same\ntheirs\n',
+                  oursText: 'same\nours\nsame2\nours2\n',
+                  theirsText: 'same\ntheirs\nsame2\ntheirs2\n',
                   workingText:
-                      'same\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feature\n',
+                      'same\n<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feature\n'
+                      'same2\n<<<<<<< HEAD\nours2\n=======\ntheirs2\n>>>>>>> feature\n',
                 ),
               );
             },
@@ -72,13 +99,42 @@ void main() {
       find.byKey(const ValueKey('conflict-difference-row-1')),
       findsOneWidget,
     );
+    expect(
+      find.byKey(const ValueKey('conflict-difference-row-3')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('conflict-equal-row-0')), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('next-conflict-difference')));
+    await tester.pumpAndSettle();
+    expect(find.text('1/2'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('next-conflict-difference')));
+    await tester.pumpAndSettle();
+    expect(find.text('2/2'), findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey('previous-conflict-difference')),
+    );
+    await tester.pumpAndSettle();
+    expect(find.text('1/2'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('conflict-difference-row-1')));
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    expect(find.text('2/2'), findsOneWidget);
+
+    await tester.tap(find.byKey(const ValueKey('toggle-conflict-differences')));
+    await tester.pump();
+    expect(find.byTooltip('显示全部（2 处差异）'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey('conflict-difference-row-1')),
+      findsOneWidget,
+    );
+    expect(find.byKey(const ValueKey('conflict-equal-row-0')), findsNothing);
 
     await tester.tap(find.byKey(const ValueKey('use-theirs-version')));
     await tester.pump();
     var editor = tester.widget<TextField>(
       find.byKey(const ValueKey('conflict-result-editor')),
     );
-    expect(editor.controller!.text, 'same\ntheirs\n');
+    expect(editor.controller!.text, 'same\ntheirs\nsame2\ntheirs2\n');
 
     await tester.enterText(
       find.byKey(const ValueKey('conflict-result-editor')),
@@ -88,6 +144,230 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(savedResult, 'same\nmerged\n');
+  });
+
+  testWidgets('reveals the shared base version on demand', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: InternalConflictResolverDialog(
+          path: 'lib/example.dart',
+          currentBranch: 'main',
+          baseText: 'base line\n',
+          hasBaseVersion: true,
+          oursText: 'ours\n',
+          theirsText: 'theirs\n',
+          workingText: 'merged\n',
+        ),
+      ),
+    );
+
+    expect(find.byKey(const ValueKey('conflict-base-preview')), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('toggle-conflict-base')));
+    await tester.pump();
+
+    expect(find.byKey(const ValueKey('conflict-base-preview')), findsOneWidget);
+    expect(find.text('base line\n'), findsOneWidget);
+  });
+
+  testWidgets('can seed the merge result from the shared base version', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: InternalConflictResolverDialog(
+          path: 'lib/example.dart',
+          currentBranch: 'main',
+          baseText: 'base line\n',
+          hasBaseVersion: true,
+          oursText: 'ours\n',
+          theirsText: 'theirs\n',
+          workingText: 'merged\n',
+        ),
+      ),
+    );
+
+    await tester.tap(find.byKey(const ValueKey('use-base-version')));
+    await tester.pump();
+
+    final editor = tester.widget<TextField>(
+      find.byKey(const ValueKey('conflict-result-editor')),
+    );
+    expect(editor.controller!.text, 'base line\n');
+  });
+
+  testWidgets('resolves only the selected conflict marker region', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    const working =
+        'before\n'
+        '<<<<<<< HEAD\nours 1\n=======\ntheirs 1\n>>>>>>> feature\n'
+        'middle\n'
+        '<<<<<<< HEAD\nours 2\n=======\ntheirs 2\n>>>>>>> feature\n'
+        'after\n';
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: InternalConflictResolverDialog(
+          path: 'lib/example.dart',
+          currentBranch: 'main',
+          oursText: 'ours\n',
+          theirsText: 'theirs\n',
+          workingText: working,
+        ),
+      ),
+    );
+
+    expect(find.text('逐段处理（共 2 段）'), findsOneWidget);
+    await tester.tap(find.byKey(const ValueKey('conflict-region-selector')));
+    await tester.pumpAndSettle();
+    expect(find.text('第 2 段'), findsOneWidget);
+    await tester.tap(find.text('第 2 段'));
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('use-ours-conflict-region')));
+    await tester.pump();
+    var editor = tester.widget<TextField>(
+      find.byKey(const ValueKey('conflict-result-editor')),
+    );
+    expect(editor.controller!.text, contains('ours 2'));
+    expect(editor.controller!.text, isNot(contains('<<<<<<< HEAD\nours 2')));
+    expect(editor.controller!.text, contains('<<<<<<< HEAD\nours 1'));
+
+    await tester.tap(find.byKey(const ValueKey('use-theirs-conflict-region')));
+    await tester.pump();
+    editor = tester.widget<TextField>(
+      find.byKey(const ValueKey('conflict-result-editor')),
+    );
+    expect(editor.controller!.text, contains('theirs 1'));
+    expect(editor.controller!.text, isNot(contains('<<<<<<< HEAD\nours 1')));
+  });
+
+  testWidgets('allows an empty shared base for add/delete conflicts', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: InternalConflictResolverDialog(
+          path: 'lib/example.dart',
+          currentBranch: 'main',
+          baseText: '',
+          hasBaseVersion: true,
+          oursText: 'ours\n',
+          theirsText: '',
+          workingText: 'merged\n',
+        ),
+      ),
+    );
+
+    expect(find.byKey(const ValueKey('conflict-base-preview')), findsNothing);
+    await tester.tap(find.byKey(const ValueKey('use-base-version')));
+    await tester.pump();
+
+    final editor = tester.widget<TextField>(
+      find.byKey(const ValueKey('conflict-result-editor')),
+    );
+    expect(editor.controller!.text, isEmpty);
+  });
+
+  testWidgets('requires confirmation before saving conflict markers', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    String? savedResult;
+    const conflictedText =
+        '<<<<<<< HEAD\nours\n=======\ntheirs\n>>>>>>> feature\n';
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => FilledButton(
+            onPressed: () async {
+              savedResult = await showDialog<String>(
+                context: context,
+                builder: (context) => const InternalConflictResolverDialog(
+                  path: 'lib/example.dart',
+                  currentBranch: 'main',
+                  oursText: 'ours\n',
+                  theirsText: 'theirs\n',
+                  workingText: conflictedText,
+                ),
+              );
+            },
+            child: const Text('open'),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('save-conflict-result')));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('conflict-marker-warning-dialog')),
+      findsOneWidget,
+    );
+    expect(savedResult, isNull);
+
+    await tester.tap(
+      find.byKey(const ValueKey('confirm-conflict-marker-save')),
+    );
+    await tester.pumpAndSettle();
+
+    expect(savedResult, conflictedText);
+  });
+
+  testWidgets('warns for a partial conflict marker left in the result', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    String? savedResult;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: Builder(
+          builder: (context) => FilledButton(
+            onPressed: () async {
+              savedResult = await showDialog<String>(
+                context: context,
+                builder: (context) => const InternalConflictResolverDialog(
+                  path: 'lib/example.dart',
+                  currentBranch: 'main',
+                  oursText: 'ours\n',
+                  theirsText: 'theirs\n',
+                  workingText: 'resolved\n<<<<<<< stale marker\n',
+                ),
+              );
+            },
+            child: const Text('open'),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('open'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('save-conflict-result')));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.byKey(const ValueKey('conflict-marker-warning-dialog')),
+      findsOneWidget,
+    );
+    expect(savedResult, isNull);
   });
 
   testWidgets('prevents saving binary conflict contents', (tester) async {

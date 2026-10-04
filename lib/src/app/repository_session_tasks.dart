@@ -33,6 +33,14 @@ extension on RepositorySessionController {
 
     if (remaining() > Duration.zero) {
       try {
+        await _externalToolRunner.closeAll().timeout(remaining());
+      } on TimeoutException {
+        // Provider disposal performs one final best-effort snapshot cleanup.
+      }
+    }
+
+    if (remaining() > Duration.zero) {
+      try {
         await _changeMonitor.stop().timeout(remaining());
       } on TimeoutException {
         // Provider disposal makes a final best-effort cancellation attempt.
@@ -108,7 +116,13 @@ extension on RepositorySessionController {
     _copyCancellation?.cancel();
     _moveCancellation?.cancel();
     _historyMutationCancellation?.cancel();
+    _historyQueryCancellation?.cancel();
     _repositoryDetailsCancellation?.cancel();
+    _tagInspectionCancellation?.cancel();
+    _tagMutationCancellation?.cancel();
+    _remoteTagDeletionCancellation?.cancel();
+    _gitFlowStartCancellation?.cancel();
+    _gitFlowFinishCancellation?.cancel();
   }
 }
 
@@ -154,10 +168,40 @@ extension on RepositorySessionController {
   set _historyMutationCancellation(GitCancellationToken? value) =>
       _taskTracker.historyMutationCancellation = value;
 
+  GitCancellationToken? get _historyQueryCancellation =>
+      _taskTracker.historyQueryCancellation;
+  set _historyQueryCancellation(GitCancellationToken? value) =>
+      _taskTracker.historyQueryCancellation = value;
+
   GitCancellationToken? get _repositoryDetailsCancellation =>
       _taskTracker.repositoryDetailsCancellation;
   set _repositoryDetailsCancellation(GitCancellationToken? value) =>
       _taskTracker.repositoryDetailsCancellation = value;
+
+  GitCancellationToken? get _tagInspectionCancellation =>
+      _taskTracker.tagInspectionCancellation;
+  set _tagInspectionCancellation(GitCancellationToken? value) =>
+      _taskTracker.tagInspectionCancellation = value;
+
+  GitCancellationToken? get _remoteTagDeletionCancellation =>
+      _taskTracker.remoteTagDeletionCancellation;
+  set _remoteTagDeletionCancellation(GitCancellationToken? value) =>
+      _taskTracker.remoteTagDeletionCancellation = value;
+
+  GitCancellationToken? get _tagMutationCancellation =>
+      _taskTracker.tagMutationCancellation;
+  set _tagMutationCancellation(GitCancellationToken? value) =>
+      _taskTracker.tagMutationCancellation = value;
+
+  GitCancellationToken? get _gitFlowStartCancellation =>
+      _taskTracker.gitFlowStartCancellation;
+  set _gitFlowStartCancellation(GitCancellationToken? value) =>
+      _taskTracker.gitFlowStartCancellation = value;
+
+  GitCancellationToken? get _gitFlowFinishCancellation =>
+      _taskTracker.gitFlowFinishCancellation;
+  set _gitFlowFinishCancellation(GitCancellationToken? value) =>
+      _taskTracker.gitFlowFinishCancellation = value;
 
   Set<Future<void>> get _activeGitTasks => _taskTracker.activeGitTasks;
   bool get _isShuttingDown => _taskTracker.isShuttingDown;
@@ -178,7 +222,13 @@ final class _RepositoryTaskTracker {
   GitCancellationToken? copyCancellation;
   GitCancellationToken? moveCancellation;
   GitCancellationToken? historyMutationCancellation;
+  GitCancellationToken? historyQueryCancellation;
   GitCancellationToken? repositoryDetailsCancellation;
+  GitCancellationToken? tagInspectionCancellation;
+  GitCancellationToken? tagMutationCancellation;
+  GitCancellationToken? remoteTagDeletionCancellation;
+  GitCancellationToken? gitFlowStartCancellation;
+  GitCancellationToken? gitFlowFinishCancellation;
   final Set<Future<void>> activeGitTasks = <Future<void>>{};
   var isShuttingDown = false;
 }

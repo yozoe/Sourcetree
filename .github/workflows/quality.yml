@@ -47,7 +47,7 @@ jobs:
           cache: true
 
       - run: flutter pub get
-      - run: xcodebuild test -workspace macos/Runner.xcworkspace -scheme Runner -configuration Debug -destination 'platform=macOS'
+      - run: xcodebuild test -workspace macos/Runner.xcworkspace/ -scheme Runner -configuration Debug -destination 'platform=macOS'
 
   macos-integration:
     name: macOS integration tests

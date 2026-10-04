@@ -43,6 +43,9 @@ void main() {
     const expected = RepositorySessionSnapshot(
       openRepositoryPaths: ['/tmp/first', '/tmp/second'],
       activeRepositoryPath: '/tmp/second',
+      favoriteRepositoryPaths: ['/tmp/first'],
+      workspaceGroups: ['Work'],
+      repositoryGroups: {'/tmp/first': 'Work'},
     );
 
     await store.save(expected);
@@ -50,6 +53,9 @@ void main() {
     final restored = await store.load();
     expect(restored.openRepositoryPaths, expected.openRepositoryPaths);
     expect(restored.activeRepositoryPath, expected.activeRepositoryPath);
+    expect(restored.favoriteRepositoryPaths, ['/tmp/first']);
+    expect(restored.workspaceGroups, ['Work']);
+    expect(restored.repositoryGroups, {'/tmp/first': 'Work'});
     expect(
       await directory
           .list()
@@ -58,6 +64,48 @@ void main() {
       isEmpty,
     );
   });
+
+  test(
+    'ignores favorite paths that are not open and supports old snapshots',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'git-session-favorites-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final file = File('${directory.path}/repository-session.json');
+      final store = FileRepositorySessionStore(file: file);
+
+      await file.writeAsString('''
+{"openRepositoryPaths":["/tmp/open"],"activeRepositoryPath":"/tmp/open","favoriteRepositoryPaths":["/tmp/open","/tmp/closed"]}
+''');
+      final restored = await store.load();
+      expect(restored.favoriteRepositoryPaths, ['/tmp/open']);
+
+      await file.writeAsString(
+        '{"openRepositoryPaths":["/tmp/open"],"activeRepositoryPath":null}',
+      );
+      expect((await store.load()).favoriteRepositoryPaths, isEmpty);
+    },
+  );
+
+  test(
+    'ignores group assignments for closed repositories or unknown groups',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'git-session-groups-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final file = File('${directory.path}/repository-session.json');
+      final store = FileRepositorySessionStore(file: file);
+
+      await file.writeAsString('''
+{"openRepositoryPaths":["/tmp/open"],"workspaceGroups":["Work"],"repositoryGroups":{"/tmp/open":"Work","/tmp/closed":"Work","/tmp/other":"Missing"}}
+''');
+      final restored = await store.load();
+      expect(restored.workspaceGroups, ['Work']);
+      expect(restored.repositoryGroups, {'/tmp/open': 'Work'});
+    },
+  );
 
   test('failed restore never overwrites the prior repository list', () async {
     final store = _FailingLoadStore();

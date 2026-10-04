@@ -62,6 +62,21 @@ void main() {
     expect(snapshot.entries[3].kind, GitFileStatusKind.ignored);
   });
 
+  test('retains submodule status bits from porcelain v2', () {
+    final snapshot = parser.parse(
+      utf8.encode(
+        '1 .M S.MU 160000 160000 160000 '
+        'aaaaaaaa bbbbbbbb vendor/library\u0000',
+      ),
+    );
+
+    final submodule = snapshot.entries.single.submodule!;
+    expect(submodule.isSubmodule, isTrue);
+    expect(submodule.commitChanged, isFalse);
+    expect(submodule.hasTrackedChanges, isTrue);
+    expect(submodule.hasUntrackedChanges, isTrue);
+  });
+
   test('marks a configured upstream without branch.ab as gone', () {
     final snapshot = parser.parse(
       utf8.encode(

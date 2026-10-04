@@ -2,6 +2,7 @@ import 'dart:math' as math;
 import 'dart:typed_data';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 /// One aligned row in the internal conflict comparison.
 ///
@@ -20,6 +21,62 @@ final class ConflictDiffLine {
   final String? theirsText;
 
   bool get isEqual => oursText != null && oursText == theirsText;
+}
+
+/// One standard Git conflict-marker region in editable text.
+///
+/// 中文：可编辑结果中的一个标准 Git 冲突标记区段，保留当前区段在原文中的
+/// 字符偏移范围以及两侧内容，供逐段选择而不影响其他冲突区段。
+final class ConflictMarkerRegion {
+  const ConflictMarkerRegion({
+    required this.startOffset,
+    required this.endOffset,
+    required this.oursText,
+    required this.theirsText,
+  });
+
+  final int startOffset;
+  final int endOffset;
+  final String oursText;
+  final String theirsText;
+}
+
+/// Parses standard Git conflict markers without interpreting arbitrary source
+/// text as a conflict region.
+///
+/// 中文：解析标准 Git 冲突标记，只有完整的 `<<<<<<<`、`=======`、
+/// `>>>>>>>` 行才会形成区段；不完整或嵌套的标记会留给现有保存警告处理。
+List<ConflictMarkerRegion> parseConflictMarkerRegions(String text) {
+  final regions = <ConflictMarkerRegion>[];
+  var searchOffset = 0;
+  final startPattern = RegExp(r'^<<<<<<<[^\n]*(?:\n|$)', multiLine: true);
+  final separatorPattern = RegExp(r'^=======[^\n]*(?:\n|$)', multiLine: true);
+  final endPattern = RegExp(r'^>>>>>>>[^\n]*(?:\n|$)', multiLine: true);
+
+  while (searchOffset < text.length) {
+    final start = startPattern.firstMatch(text.substring(searchOffset));
+    if (start == null) break;
+    final startOffset = searchOffset + start.start;
+    final contentStart = searchOffset + start.end;
+    final separator = separatorPattern.firstMatch(text.substring(contentStart));
+    if (separator == null) break;
+    final separatorStart = contentStart + separator.start;
+    final theirsStart = contentStart + separator.end;
+    final end = endPattern.firstMatch(text.substring(theirsStart));
+    if (end == null) break;
+    final endStart = theirsStart + end.start;
+    final endOffset = theirsStart + end.end;
+    regions.add(
+      ConflictMarkerRegion(
+        startOffset: startOffset,
+        endOffset: endOffset,
+        oursText: text.substring(contentStart, separatorStart),
+        theirsText: text.substring(theirsStart, endStart),
+      ),
+    );
+    searchOffset = endOffset;
+  }
+  return regions;
 }
 
 const int _maximumLcsCells = 250000;
@@ -129,6 +186,8 @@ class InternalConflictResolverDialog extends StatefulWidget {
     super.key,
     required this.path,
     required this.currentBranch,
+    this.baseText,
+    this.hasBaseVersion = false,
     required this.oursText,
     required this.theirsText,
     required this.workingText,
@@ -140,6 +199,8 @@ class InternalConflictResolverDialog extends StatefulWidget {
 
   final String path;
   final String currentBranch;
+  final String? baseText;
+  final bool hasBaseVersion;
   final String oursText;
   final String theirsText;
   final String workingText;
@@ -158,6 +219,8 @@ class InternalConflictResolverDialog extends StatefulWidget {
 class _InternalConflictResolverDialogState
     extends State<InternalConflictResolverDialog> {
   late final TextEditingController _resultController;
+  bool _showBase = false;
+  int _selectedConflictRegion = 0;
 
   bool get _canSave => !widget.isBinary && !widget.isTruncated;
 
@@ -167,14 +230,31 @@ class _InternalConflictResolverDialogState
   void initState() {
     super.initState();
     _resultController = TextEditingController(text: widget.workingText);
+    _resultController.addListener(_handleResultChanged);
   }
 
   /// 中文：释放合并结果编辑器。
   /// English: Releases the merge-result editor.
   @override
   void dispose() {
+    _resultController.removeListener(_handleResultChanged);
     _resultController.dispose();
     super.dispose();
+  }
+
+  /// 中文：编辑结果变化后刷新逐段冲突操作，确保区段索引不会过期。
+  /// English: Refreshes per-region conflict actions after edits so the index
+  /// never points at stale marker offsets.
+  void _handleResultChanged() {
+    if (!mounted) return;
+    final count = parseConflictMarkerRegions(_resultController.text).length;
+    if (_selectedConflictRegion >= count && count > 0) {
+      setState(() => _selectedConflictRegion = count - 1);
+    } else if (count == 0 && _selectedConflictRegion != 0) {
+      setState(() => _selectedConflictRegion = 0);
+    } else {
+      setState(() {});
+    }
   }
 
   /// 中文：将选定一侧的完整内容放入可编辑的合并结果。
@@ -184,6 +264,67 @@ class _InternalConflictResolverDialogState
       text: text,
       selection: TextSelection.collapsed(offset: text.length),
     );
+  }
+
+  /// 中文：仅替换当前冲突标记区段的一侧内容，保留其他区段继续处理。
+  /// English: Replaces only the selected conflict-marker region with one side
+  /// while leaving every other region available for later resolution.
+  void _useConflictRegionVersion({required bool ours}) {
+    if (!_canSave) return;
+    final text = _resultController.text;
+    final regions = parseConflictMarkerRegions(text);
+    if (_selectedConflictRegion >= regions.length) return;
+    final region = regions[_selectedConflictRegion];
+    final replacement = ours ? region.oursText : region.theirsText;
+    final updated = text.replaceRange(
+      region.startOffset,
+      region.endOffset,
+      replacement,
+    );
+    _resultController.value = TextEditingValue(
+      text: updated,
+      selection: TextSelection.collapsed(
+        offset: math.min(
+          region.startOffset + replacement.length,
+          updated.length,
+        ),
+      ),
+    );
+  }
+
+  /// 中文：保存编辑结果前警告仍保留任意 Git 冲突标记的内容，并等待明确确认。
+  /// English: Warns before saving content that still contains any Git conflict
+  /// marker and waits for explicit confirmation.
+  Future<void> _saveResult() async {
+    if (!_canSave) return;
+    final result = _resultController.text;
+    if (_containsConflictMarkers(result)) {
+      final confirmed = await showDialog<bool>(
+        context: context,
+        builder: (context) => AlertDialog(
+          key: const ValueKey('conflict-marker-warning-dialog'),
+          title: const Text('仍包含冲突标记'),
+          content: const Text(
+            '当前合并结果仍包含 <<<<<<<、======= 或 >>>>>>> 标记。'
+            '继续保存会让 Git 将这些标记当作普通文件内容并标记为已解决。',
+          ),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.of(context).pop(false),
+              child: const Text('返回编辑'),
+            ),
+            FilledButton(
+              key: const ValueKey('confirm-conflict-marker-save'),
+              onPressed: () => Navigator.of(context).pop(true),
+              child: const Text('仍然保存'),
+            ),
+          ],
+        ),
+      );
+      if (!mounted || confirmed != true) return;
+    }
+    if (!mounted) return;
+    Navigator.of(context).pop(result);
   }
 
   /// 中文：构建内部冲突 Diff 与可编辑合并结果。
@@ -239,6 +380,50 @@ class _InternalConflictResolverDialogState
                         theirsText: widget.theirsText,
                       ),
                     ),
+                    if (widget.hasBaseVersion &&
+                        widget.baseText != null &&
+                        widget.baseText!.isNotEmpty) ...[
+                      const SizedBox(height: 8),
+                      Align(
+                        alignment: Alignment.centerLeft,
+                        child: TextButton.icon(
+                          key: const ValueKey('toggle-conflict-base'),
+                          onPressed: () {
+                            setState(() => _showBase = !_showBase);
+                          },
+                          icon: Icon(
+                            _showBase
+                                ? Icons.visibility_off_outlined
+                                : Icons.visibility_outlined,
+                            size: 16,
+                          ),
+                          label: Text(_showBase ? '隐藏共同基线' : '显示共同基线'),
+                        ),
+                      ),
+                      if (_showBase)
+                        ConstrainedBox(
+                          key: const ValueKey('conflict-base-preview'),
+                          constraints: const BoxConstraints(maxHeight: 110),
+                          child: DecoratedBox(
+                            decoration: BoxDecoration(
+                              border: Border.all(color: theme.dividerColor),
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              child: SingleChildScrollView(
+                                child: Padding(
+                                  padding: const EdgeInsets.all(10),
+                                  child: Text(
+                                    widget.baseText!,
+                                    style: _monospaceStyle(theme),
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
                     const SizedBox(height: 10),
                     LayoutBuilder(
                       builder: (context, constraints) {
@@ -277,23 +462,37 @@ class _InternalConflictResolverDialogState
                               ),
                             ),
                           ),
+                          if (widget.hasBaseVersion && widget.baseText != null)
+                            OutlinedButton.icon(
+                              key: const ValueKey('use-base-version'),
+                              onPressed: _canSave
+                                  ? () => _useVersion(widget.baseText!)
+                                  : null,
+                              icon: const Icon(Icons.history, size: 16),
+                              label: const Tooltip(
+                                message: '使用共同基线版本',
+                                child: Text(
+                                  '使用共同基线',
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                ),
+                              ),
+                            ),
                         ];
-                        final useVerticalLayout = constraints.maxWidth < 620;
-                        if (useVerticalLayout) {
-                          return Column(
-                            crossAxisAlignment: CrossAxisAlignment.stretch,
-                            children: [
-                              buttons.first,
-                              const SizedBox(height: 8),
-                              buttons.last,
-                            ],
-                          );
-                        }
-                        return Row(
+                        return Wrap(
+                          spacing: 8,
+                          runSpacing: 8,
                           children: [
-                            Expanded(child: buttons.first),
-                            const SizedBox(width: 8),
-                            Expanded(child: buttons.last),
+                            for (final button in buttons)
+                              SizedBox(
+                                width: math.max(
+                                  180,
+                                  (constraints.maxWidth -
+                                          (buttons.length - 1) * 8) /
+                                      buttons.length,
+                                ),
+                                child: button,
+                              ),
                           ],
                         );
                       },
@@ -301,6 +500,71 @@ class _InternalConflictResolverDialogState
                     const SizedBox(height: 10),
                     Text('合并结果', style: theme.textTheme.titleSmall),
                     const SizedBox(height: 6),
+                    Builder(
+                      builder: (context) {
+                        final regions = parseConflictMarkerRegions(
+                          _resultController.text,
+                        );
+                        if (regions.isEmpty) return const SizedBox.shrink();
+                        final selected = math.min(
+                          _selectedConflictRegion,
+                          regions.length - 1,
+                        );
+                        return Padding(
+                          padding: const EdgeInsets.only(bottom: 8),
+                          child: Wrap(
+                            spacing: 8,
+                            runSpacing: 8,
+                            crossAxisAlignment: WrapCrossAlignment.center,
+                            children: [
+                              Text('逐段处理（共 ${regions.length} 段）'),
+                              DropdownButton<int>(
+                                key: const ValueKey('conflict-region-selector'),
+                                value: selected,
+                                isDense: true,
+                                items: [
+                                  for (
+                                    var index = 0;
+                                    index < regions.length;
+                                    index++
+                                  )
+                                    DropdownMenuItem(
+                                      value: index,
+                                      child: Text('第 ${index + 1} 段'),
+                                    ),
+                                ],
+                                onChanged: _canSave
+                                    ? (value) {
+                                        if (value == null) return;
+                                        setState(
+                                          () => _selectedConflictRegion = value,
+                                        );
+                                      }
+                                    : null,
+                              ),
+                              OutlinedButton(
+                                key: const ValueKey('use-ours-conflict-region'),
+                                onPressed: _canSave
+                                    ? () =>
+                                          _useConflictRegionVersion(ours: true)
+                                    : null,
+                                child: const Text('当前段用我的版本'),
+                              ),
+                              OutlinedButton(
+                                key: const ValueKey(
+                                  'use-theirs-conflict-region',
+                                ),
+                                onPressed: _canSave
+                                    ? () =>
+                                          _useConflictRegionVersion(ours: false)
+                                    : null,
+                                child: const Text('当前段用他们的版本'),
+                              ),
+                            ],
+                          ),
+                        );
+                      },
+                    ),
                     Expanded(
                       flex: 2,
                       child: TextField(
@@ -337,10 +601,7 @@ class _InternalConflictResolverDialogState
                   const SizedBox(width: 8),
                   FilledButton.icon(
                     key: const ValueKey('save-conflict-result'),
-                    onPressed: _canSave
-                        ? () =>
-                              Navigator.of(context).pop(_resultController.text)
-                        : null,
+                    onPressed: _canSave ? _saveResult : null,
                     icon: const Icon(Icons.check, size: 17),
                     label: const Text('保存并标记为已解决'),
                   ),
@@ -352,6 +613,17 @@ class _InternalConflictResolverDialogState
       ),
     );
   }
+}
+
+/// 中文：判断文本是否包含任意 Git 冲突标记行。
+/// English: Returns whether text contains any Git conflict marker line.
+bool _containsConflictMarkers(String text) {
+  return text.split('\n').any((line) {
+    final trimmed = line.trimLeft();
+    return trimmed.startsWith('<<<<<<<') ||
+        trimmed.startsWith('=======') ||
+        trimmed.startsWith('>>>>>>>');
+  });
 }
 
 class _DialogHeader extends StatelessWidget {
@@ -403,7 +675,7 @@ class _DialogHeader extends StatelessWidget {
   }
 }
 
-class _SideBySideDiff extends StatelessWidget {
+class _SideBySideDiff extends StatefulWidget {
   const _SideBySideDiff({
     required this.oursLabel,
     required this.theirsLabel,
@@ -416,16 +688,87 @@ class _SideBySideDiff extends StatelessWidget {
   final String oursText;
   final String theirsText;
 
+  @override
+  State<_SideBySideDiff> createState() => _SideBySideDiffState();
+}
+
+class _SideBySideDiffState extends State<_SideBySideDiff> {
+  late final ScrollController _scrollController;
+  late final FocusNode _focusNode;
+  bool _showOnlyDifferences = false;
+  int? _activeDifferenceIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController = ScrollController();
+    _focusNode = FocusNode(debugLabel: 'Conflict difference navigator');
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  /// 中文：循环定位到上一处或下一处差异，并同步保留原始行号。
+  /// English: Cycles to the previous or next difference while retaining the
+  /// original aligned row index.
+  void _jumpToDifference({
+    required List<int> differenceIndices,
+    required List<(int, ConflictDiffLine)> visibleLines,
+    required double rowHeight,
+    required bool forward,
+  }) {
+    if (differenceIndices.isEmpty) return;
+    final currentPosition = _activeDifferenceIndex == null
+        ? -1
+        : differenceIndices.indexOf(_activeDifferenceIndex!);
+    final nextPosition = forward
+        ? (currentPosition + 1) % differenceIndices.length
+        : (currentPosition <= 0
+              ? differenceIndices.length - 1
+              : currentPosition - 1);
+    final targetIndex = differenceIndices[nextPosition];
+    final visiblePosition = visibleLines.indexWhere(
+      (entry) => entry.$1 == targetIndex,
+    );
+    if (visiblePosition < 0) return;
+    setState(() => _activeDifferenceIndex = targetIndex);
+    if (!_scrollController.hasClients) return;
+    final targetOffset = (visiblePosition * rowHeight).clamp(
+      0.0,
+      _scrollController.position.maxScrollExtent,
+    );
+    _scrollController.animateTo(
+      targetOffset,
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOut,
+    );
+  }
+
   /// 中文：构建共用行对齐与差异高亮的左右版本列表。
   /// English: Builds the aligned side-by-side version list with difference
   /// highlighting.
   @override
   Widget build(BuildContext context) {
-    final lines = alignConflictLines(oursText, theirsText);
+    final allLines = alignConflictLines(widget.oursText, widget.theirsText);
+    final differenceIndices = <int>[
+      for (var index = 0; index < allLines.length; index++)
+        if (!allLines[index].isEqual) index,
+    ];
+    final differenceCount = differenceIndices.length;
+    final lines = <(int, ConflictDiffLine)>[
+      for (var index = 0; index < allLines.length; index++)
+        if (!_showOnlyDifferences || !allLines[index].isEqual)
+          (index, allLines[index]),
+    ];
     final theme = Theme.of(context);
     final rowHeight = _scaledHeight(context, 24);
 
-    final longestLine = lines.fold<int>(0, (longest, line) {
+    final longestLine = lines.fold<int>(0, (longest, entry) {
+      final line = entry.$2;
       return math.max(
         longest,
         math.max(line.oursText?.length ?? 0, line.theirsText?.length ?? 0),
@@ -438,74 +781,147 @@ class _SideBySideDiff extends StatelessWidget {
           constraints.maxWidth,
           math.min(32768.0, (70 + longestLine * 7.2 * textScale) * 2),
         );
-        return SingleChildScrollView(
-          key: const ValueKey('conflict-horizontal-scroll'),
-          scrollDirection: Axis.horizontal,
-          child: SizedBox(
-            width: contentWidth,
-            height: constraints.maxHeight,
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                border: Border.all(color: theme.dividerColor),
-                borderRadius: BorderRadius.circular(6),
-              ),
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(5),
-                child: Column(
-                  children: [
-                    _DiffHeader(oursLabel: oursLabel, theirsLabel: theirsLabel),
-                    Expanded(
-                      child: ListView.builder(
-                        key: const ValueKey('conflict-side-by-side-diff'),
-                        itemExtent: rowHeight,
-                        itemCount: lines.length,
-                        itemBuilder: (context, index) {
-                          final line = lines[index];
-                          final differs = !line.isEqual;
-                          return Container(
-                            key: ValueKey(
-                              differs
-                                  ? 'conflict-difference-row-$index'
-                                  : 'conflict-equal-row-$index',
-                            ),
-                            decoration: BoxDecoration(
-                              color: differs
-                                  ? theme.colorScheme.tertiaryContainer
-                                        .withValues(alpha: .32)
-                                  : null,
-                              border: Border(
-                                bottom: BorderSide(
-                                  color: theme.dividerColor.withValues(
-                                    alpha: .35,
+        return Focus(
+          focusNode: _focusNode,
+          onKeyEvent: (node, event) {
+            if (event is! KeyDownEvent) return KeyEventResult.ignored;
+            if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+              _jumpToDifference(
+                differenceIndices: differenceIndices,
+                visibleLines: lines,
+                rowHeight: rowHeight,
+                forward: true,
+              );
+              return KeyEventResult.handled;
+            }
+            if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+              _jumpToDifference(
+                differenceIndices: differenceIndices,
+                visibleLines: lines,
+                rowHeight: rowHeight,
+                forward: false,
+              );
+              return KeyEventResult.handled;
+            }
+            return KeyEventResult.ignored;
+          },
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: _focusNode.requestFocus,
+            child: Semantics(
+              container: true,
+              label: differenceCount == 0
+                  ? '冲突差异对比，无差异'
+                  : '冲突差异对比，共 $differenceCount 处差异；可用上下方向键定位',
+              child: SingleChildScrollView(
+                key: const ValueKey('conflict-horizontal-scroll'),
+                scrollDirection: Axis.horizontal,
+                child: SizedBox(
+                  width: contentWidth,
+                  height: constraints.maxHeight,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      border: Border.all(color: theme.dividerColor),
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: ClipRRect(
+                      borderRadius: BorderRadius.circular(5),
+                      child: Column(
+                        children: [
+                          _DiffHeader(
+                            oursLabel: widget.oursLabel,
+                            theirsLabel: widget.theirsLabel,
+                            differenceCount: differenceCount,
+                            activeDifferencePosition:
+                                _activeDifferenceIndex == null
+                                ? null
+                                : differenceIndices.indexOf(
+                                        _activeDifferenceIndex!,
+                                      ) +
+                                      1,
+                            showOnlyDifferences: _showOnlyDifferences,
+                            onToggleDifferences: differenceCount == 0
+                                ? null
+                                : () => setState(() {
+                                    _showOnlyDifferences =
+                                        !_showOnlyDifferences;
+                                  }),
+                            onPreviousDifference: differenceCount == 0
+                                ? null
+                                : () => _jumpToDifference(
+                                    differenceIndices: differenceIndices,
+                                    visibleLines: lines,
+                                    rowHeight: rowHeight,
+                                    forward: false,
                                   ),
-                                ),
-                              ),
-                            ),
-                            child: Row(
-                              children: [
-                                Expanded(
-                                  child: _VersionLine(
-                                    lineNumber: line.oursLineNumber,
-                                    text: line.oursText,
+                            onNextDifference: differenceCount == 0
+                                ? null
+                                : () => _jumpToDifference(
+                                    differenceIndices: differenceIndices,
+                                    visibleLines: lines,
+                                    rowHeight: rowHeight,
+                                    forward: true,
                                   ),
-                                ),
-                                VerticalDivider(
-                                  width: 1,
-                                  color: theme.dividerColor,
-                                ),
-                                Expanded(
-                                  child: _VersionLine(
-                                    lineNumber: line.theirsLineNumber,
-                                    text: line.theirsText,
+                          ),
+                          Expanded(
+                            child: ListView.builder(
+                              key: const ValueKey('conflict-side-by-side-diff'),
+                              controller: _scrollController,
+                              itemExtent: rowHeight,
+                              itemCount: lines.length,
+                              itemBuilder: (context, index) {
+                                final (originalIndex, line) = lines[index];
+                                final differs = !line.isEqual;
+                                return Container(
+                                  key: ValueKey(
+                                    differs
+                                        ? 'conflict-difference-row-$originalIndex'
+                                        : 'conflict-equal-row-$originalIndex',
                                   ),
-                                ),
-                              ],
+                                  decoration: BoxDecoration(
+                                    color:
+                                        _activeDifferenceIndex == originalIndex
+                                        ? theme.colorScheme.primaryContainer
+                                        : differs
+                                        ? theme.colorScheme.tertiaryContainer
+                                              .withValues(alpha: .32)
+                                        : null,
+                                    border: Border(
+                                      bottom: BorderSide(
+                                        color: theme.dividerColor.withValues(
+                                          alpha: .35,
+                                        ),
+                                      ),
+                                    ),
+                                  ),
+                                  child: Row(
+                                    children: [
+                                      Expanded(
+                                        child: _VersionLine(
+                                          lineNumber: line.oursLineNumber,
+                                          text: line.oursText,
+                                        ),
+                                      ),
+                                      VerticalDivider(
+                                        width: 1,
+                                        color: theme.dividerColor,
+                                      ),
+                                      Expanded(
+                                        child: _VersionLine(
+                                          lineNumber: line.theirsLineNumber,
+                                          text: line.theirsText,
+                                        ),
+                                      ),
+                                    ],
+                                  ),
+                                );
+                              },
                             ),
-                          );
-                        },
+                          ),
+                        ],
                       ),
                     ),
-                  ],
+                  ),
                 ),
               ),
             ),
@@ -517,10 +933,25 @@ class _SideBySideDiff extends StatelessWidget {
 }
 
 class _DiffHeader extends StatelessWidget {
-  const _DiffHeader({required this.oursLabel, required this.theirsLabel});
+  const _DiffHeader({
+    required this.oursLabel,
+    required this.theirsLabel,
+    required this.differenceCount,
+    required this.activeDifferencePosition,
+    required this.showOnlyDifferences,
+    required this.onToggleDifferences,
+    required this.onPreviousDifference,
+    required this.onNextDifference,
+  });
 
   final String oursLabel;
   final String theirsLabel;
+  final int differenceCount;
+  final int? activeDifferencePosition;
+  final bool showOnlyDifferences;
+  final VoidCallback? onToggleDifferences;
+  final VoidCallback? onPreviousDifference;
+  final VoidCallback? onNextDifference;
 
   /// 中文：构建左右版本的标题行。
   /// English: Builds the two version headings.
@@ -556,6 +987,62 @@ class _DiffHeader extends StatelessWidget {
                 overflow: TextOverflow.ellipsis,
                 style: style,
               ),
+            ),
+          ),
+          SizedBox(
+            width: _scaledHeight(context, 220),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  activeDifferencePosition == null
+                      ? '$differenceCount'
+                      : '$activeDifferencePosition/$differenceCount',
+                  semanticsLabel: activeDifferencePosition == null
+                      ? '$differenceCount 处差异'
+                      : '第 $activeDifferencePosition 处，共 $differenceCount 处差异',
+                  style: style,
+                ),
+                Tooltip(
+                  message: '上一处差异',
+                  child: IconButton(
+                    key: const ValueKey('previous-conflict-difference'),
+                    onPressed: onPreviousDifference,
+                    padding: EdgeInsets.zero,
+                    iconSize: _scaledHeight(context, 17),
+                    tooltip: '上一处差异',
+                    icon: const Icon(Icons.keyboard_arrow_up),
+                  ),
+                ),
+                Tooltip(
+                  message: '下一处差异',
+                  child: IconButton(
+                    key: const ValueKey('next-conflict-difference'),
+                    onPressed: onNextDifference,
+                    padding: EdgeInsets.zero,
+                    iconSize: _scaledHeight(context, 17),
+                    tooltip: '下一处差异',
+                    icon: const Icon(Icons.keyboard_arrow_down),
+                  ),
+                ),
+                Tooltip(
+                  message: showOnlyDifferences
+                      ? '显示全部（$differenceCount 处差异）'
+                      : '仅显示差异（$differenceCount 处差异）',
+                  child: IconButton(
+                    key: const ValueKey('toggle-conflict-differences'),
+                    onPressed: onToggleDifferences,
+                    padding: EdgeInsets.zero,
+                    iconSize: _scaledHeight(context, 17),
+                    tooltip: showOnlyDifferences ? '显示全部' : '仅显示差异',
+                    icon: Icon(
+                      showOnlyDifferences
+                          ? Icons.filter_alt_off_outlined
+                          : Icons.filter_alt_outlined,
+                    ),
+                  ),
+                ),
+              ],
             ),
           ),
         ],

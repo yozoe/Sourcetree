@@ -295,6 +295,19 @@ final class GitSubmoduleStatus {
   final bool commitChanged;
   final bool hasTrackedChanges;
   final bool hasUntrackedChanges;
+
+  /// Returns a bounded, read-only label suitable for a changed-file row.
+  ///
+  /// 中文：返回可用于改动行的只读状态标签；该标签不暗示或触发子模块写操作。
+  String? get displayLabel {
+    if (!isSubmodule) return null;
+    final details = <String>[
+      if (commitChanged) '提交已变化',
+      if (hasTrackedChanges) '有已跟踪改动',
+      if (hasUntrackedChanges) '有未跟踪内容',
+    ];
+    return details.isEmpty ? '无改动' : details.join('，');
+  }
 }
 
 /// One entry from `git status --porcelain=v2 -z`.
@@ -359,13 +372,15 @@ final class GitStatusEntry {
 /// 中文：内部冲突解决器使用的文本快照。
 ///
 /// English: Text snapshots used by the internal conflict resolver. Missing
-/// index stages are represented by empty text, as happens for
-/// add/delete conflicts. Binary or truncated snapshots are read-only in the
-/// presentation layer so they cannot be accidentally rewritten as UTF-8.
+/// index stages are represented by empty text, as happens for add/delete
+/// conflicts, and [hasBaseVersion] preserves whether stage 1 actually exists.
+/// Binary or truncated snapshots are read-only in the presentation layer so
+/// they cannot be accidentally rewritten as UTF-8.
 final class GitConflictFileVersions {
   const GitConflictFileVersions({
     required this.path,
     required this.baseText,
+    required this.hasBaseVersion,
     required this.oursText,
     required this.theirsText,
     required this.workingText,
@@ -375,6 +390,7 @@ final class GitConflictFileVersions {
 
   final GitPath path;
   final String baseText;
+  final bool hasBaseVersion;
   final String oursText;
   final String theirsText;
   final String workingText;
@@ -446,16 +462,71 @@ final class GitRemoteBranch {
 ///
 /// 中文：通过 `git for-each-ref` 读取的本地标签。对于附注标签，[targetObjectId]
 /// 是 Git 解包后的实际目标对象，因此历史视图可以与提交 ID 直接匹配。
+enum GitTagSignatureStatus {
+  /// The tag is lightweight and has no tag object to verify.
+  notAnnotated,
+
+  /// Git verified the tag signature successfully.
+  valid,
+
+  /// The tag object exists but contains no verifiable signature.
+  unsigned,
+
+  /// A signature exists but Git rejected it.
+  invalid,
+
+  /// Git could not run or identify the configured signature verifier.
+  unavailable,
+}
+
+/// Comparison of a local tag ref with the same name on a remote.
+/// 中文：本地标签引用与远端同名标签引用的比较结果。
+enum GitTagRemoteStatus { notChecked, matching, missing, different }
+
+/// A tag advertised by one configured remote.
+///
+/// 中文：一个配置远端公开的标签引用；对象 ID 是远端 `refs/tags/*` 的直接目标，
+/// 对附注标签而言通常是标签对象而不是解包后的提交对象。
+final class GitRemoteTag {
+  const GitRemoteTag({
+    required this.remoteName,
+    required this.name,
+    required this.objectId,
+  });
+
+  final String remoteName;
+  final String name;
+  final String objectId;
+}
+
+/// Compares the direct ref object IDs without conflating annotated tags with
+/// their peeled commit targets.
+///
+/// 中文：比较标签引用直接存储的对象 ID；附注标签必须比较标签对象本身，不能只比较
+/// 解包后的提交，否则远端重新签名或重建标签时会被误报为一致。
+GitTagRemoteStatus compareGitTagWithRemote(GitTag local, GitRemoteTag? remote) {
+  if (remote == null) return GitTagRemoteStatus.missing;
+  return local.refObjectId == remote.objectId
+      ? GitTagRemoteStatus.matching
+      : GitTagRemoteStatus.different;
+}
+
 final class GitTag {
   const GitTag({
     required this.name,
+    required this.refObjectId,
     required this.targetObjectId,
     required this.targetObjectType,
     required this.isAnnotated,
+    this.signatureStatus = GitTagSignatureStatus.notAnnotated,
   });
 
   /// The short tag name without the `refs/tags/` prefix.
   final String name;
+
+  /// The object ID stored directly in `refs/tags/<name>`.
+  /// 中文：标签引用直接存储的对象 ID；附注标签与解包目标不同。
+  final String refObjectId;
 
   /// The peeled target object ID for annotated tags, or the direct target for
   /// lightweight tags.
@@ -471,6 +542,20 @@ final class GitTag {
 
   /// Whether Git stored an annotated tag object instead of a direct ref.
   final bool isAnnotated;
+
+  /// The last Git-backed signature verification result, when available.
+  final GitTagSignatureStatus signatureStatus;
+
+  /// Copies the tag while replacing verification state after a Git read.
+  /// 中文：复制标签并替换 Git 读取到的签名验证状态。
+  GitTag copyWith({GitTagSignatureStatus? signatureStatus}) => GitTag(
+    name: name,
+    refObjectId: refObjectId,
+    targetObjectId: targetObjectId,
+    targetObjectType: targetObjectType,
+    isAnnotated: isAnnotated,
+    signatureStatus: signatureStatus ?? this.signatureStatus,
+  );
 }
 
 /// One saved working-tree snapshot reported by `git stash list`.
@@ -544,6 +629,7 @@ final class GitCreateTagOptions {
     required this.objectId,
     this.annotation,
     this.isAnnotated = false,
+    this.sign = false,
     this.pushRemoteName,
   });
 
@@ -551,6 +637,11 @@ final class GitCreateTagOptions {
   final String objectId;
   final String? annotation;
   final bool isAnnotated;
+
+  /// Whether Git should create a cryptographically signed annotated tag using
+  /// the repository's configured signing key.
+  /// 中文：是否使用仓库配置的签名密钥创建带签名的附注标签。
+  final bool sign;
 
   /// When supplied, push only this new tag to the configured remote.
   final String? pushRemoteName;
@@ -718,7 +809,91 @@ final class GitFileHistoryEntry {
   final GitPath path;
 }
 
+/// One line from `git blame --line-porcelain` for the current work tree.
+///
+/// 中文：当前工作树文件的一行责任归属信息；保留 Git 给出的提交、作者、原始
+/// 行号和当前行号，展示层不需要重新解析人类格式输出。
+final class GitBlameLine {
+  const GitBlameLine({
+    required this.lineNumber,
+    required this.sourceLineNumber,
+    required this.objectId,
+    required this.author,
+    required this.authorEmail,
+    required this.authoredAt,
+    required this.summary,
+    required this.text,
+    this.isBoundary = false,
+  });
+
+  /// One-based line number in the current file.
+  final int lineNumber;
+
+  /// One-based line number in the source commit.
+  final int sourceLineNumber;
+
+  /// Commit object responsible for this line.
+  final String objectId;
+
+  final String author;
+  final String authorEmail;
+  final DateTime authoredAt;
+  final String summary;
+  final String text;
+  final bool isBoundary;
+}
+
+/// One entry from Git's reflog, preserving the ref and selector supplied by
+/// Git so callers can identify the exact historical movement.
+///
+/// 中文：一条 Git reflog 记录；保留 Git 返回的引用和选择器，调用方可以精确
+/// 定位某次历史移动，而不会依赖展示文本或当前分支状态。
+final class GitReflogEntry {
+  const GitReflogEntry({
+    required this.objectId,
+    required this.reference,
+    required this.selector,
+    required this.message,
+    required this.createdAt,
+  });
+
+  /// Object currently recorded by this reflog entry.
+  final String objectId;
+
+  /// Full ref name, for example `refs/heads/main@{0}`.
+  final String reference;
+
+  /// Short selector, for example `main@{0}` or `HEAD@{0}`.
+  final String selector;
+
+  /// Reflog subject supplied by Git.
+  final String message;
+
+  /// Committer timestamp recorded by the reflog.
+  final DateTime createdAt;
+}
+
 enum GitDiffSource { workingTree, staged, commit }
+
+/// Controls how Git treats whitespace while producing a read-only Diff.
+/// 中文：控制 Git 生成只读 Diff 时如何处理空白字符。
+enum GitDiffWhitespaceMode {
+  /// Preserve Git's default whitespace-sensitive comparison.
+  /// 中文：保留 Git 默认的空白敏感比较。
+  preserve,
+
+  /// Ignore all whitespace, equivalent to `git diff --ignore-all-space`.
+  /// 中文：忽略所有空白差异，对应 `git diff --ignore-all-space`。
+  ignoreAll,
+
+  /// Ignore changes in the amount of whitespace, equivalent to `-b`.
+  /// 中文：忽略空白数量变化，但保留空白与非空白的变化，对应 `-b`。
+  ignoreChanges,
+
+  /// Ignore blank-only lines, equivalent to `--ignore-blank-lines`.
+  /// 中文：忽略只由空白组成的行变化，对应 `--ignore-blank-lines`。
+  ignoreBlankLines,
+}
 
 /// An operation marker currently owned by Git in this repository.
 /// 中文：仓库中当前由 Git 持有的进行中操作标记。
@@ -770,6 +945,7 @@ final class GitUnifiedDiff {
     required List<int> bytes,
     required this.text,
     required this.isTruncated,
+    this.whitespaceMode = GitDiffWhitespaceMode.preserve,
   }) : bytes = List<int>.unmodifiable(bytes);
 
   final GitPath path;
@@ -777,6 +953,10 @@ final class GitUnifiedDiff {
   final List<int> bytes;
   final String text;
   final bool isTruncated;
+
+  /// Whitespace policy used by the Git process that produced this Diff.
+  /// 中文：生成此 Diff 的 Git 进程实际采用的空白策略。
+  final GitDiffWhitespaceMode whitespaceMode;
 
   /// 中文：此 Diff 是否同时修改了已有文件的模式（例如 executable bit）。
   /// 新增/删除文件的模式头不属于该情况，因为它们是补丁语义的一部分。

@@ -12,10 +12,22 @@ final class RepositorySessionSnapshot {
   const RepositorySessionSnapshot({
     this.openRepositoryPaths = const [],
     this.activeRepositoryPath,
+    this.favoriteRepositoryPaths = const [],
+    this.workspaceGroups = const [],
+    this.repositoryGroups = const {},
   });
 
   final List<String> openRepositoryPaths;
   final String? activeRepositoryPath;
+  final List<String> favoriteRepositoryPaths;
+
+  /// User-created home-window group names, retained independently of Git.
+  /// 中文：首页用户创建的工作区分组名称；与 Git 仓库内容和凭据无关。
+  final List<String> workspaceGroups;
+
+  /// Maps normalized repository paths to user-created group names.
+  /// 中文：把规范化仓库路径映射到用户分组名称；未知路径不会被恢复。
+  final Map<String, String> repositoryGroups;
 }
 
 abstract interface class RepositorySessionStore {
@@ -93,9 +105,51 @@ final class FileRepositorySessionStore implements RepositorySessionStore {
           rawActivePath is String && paths.contains(rawActivePath)
           ? rawActivePath
           : null;
+      final rawFavoritePaths = decoded['favoriteRepositoryPaths'];
+      final favoritePaths = <String>[];
+      final seenFavoritePaths = <String>{};
+      if (rawFavoritePaths is List<Object?>) {
+        for (final rawPath in rawFavoritePaths) {
+          if (rawPath is! String) continue;
+          final normalizedPath = rawPath.trim();
+          if (paths.contains(normalizedPath) &&
+              seenFavoritePaths.add(normalizedPath)) {
+            favoritePaths.add(normalizedPath);
+          }
+        }
+      }
+      final rawGroups = decoded['workspaceGroups'];
+      final groups = <String>[];
+      final seenGroups = <String>{};
+      if (rawGroups is List<Object?>) {
+        for (final rawGroup in rawGroups) {
+          if (rawGroup is! String) continue;
+          final normalizedGroup = rawGroup.trim();
+          if (normalizedGroup.isNotEmpty && seenGroups.add(normalizedGroup)) {
+            groups.add(normalizedGroup);
+          }
+        }
+      }
+      final rawRepositoryGroups = decoded['repositoryGroups'];
+      final repositoryGroups = <String, String>{};
+      if (rawRepositoryGroups is Map<Object?, Object?>) {
+        rawRepositoryGroups.forEach((rawPath, rawGroup) {
+          if (rawPath is! String || rawGroup is! String) return;
+          final normalizedPath = rawPath.trim();
+          final normalizedGroup = rawGroup.trim();
+          if (paths.contains(normalizedPath) &&
+              normalizedGroup.isNotEmpty &&
+              seenGroups.contains(normalizedGroup)) {
+            repositoryGroups[normalizedPath] = normalizedGroup;
+          }
+        });
+      }
       return RepositorySessionSnapshot(
         openRepositoryPaths: List<String>.unmodifiable(paths),
         activeRepositoryPath: activePath,
+        favoriteRepositoryPaths: List<String>.unmodifiable(favoritePaths),
+        workspaceGroups: List<String>.unmodifiable(groups),
+        repositoryGroups: Map<String, String>.unmodifiable(repositoryGroups),
       );
     } on FormatException catch (error) {
       throw RepositorySessionLoadException(
@@ -121,7 +175,7 @@ final class FileRepositorySessionStore implements RepositorySessionStore {
       temporaryFile = File('${file.path}.tmp.$pid.${_randomToken()}');
       await temporaryFile.create(exclusive: true);
       await temporaryFile.writeAsString(
-        '${jsonEncode({'openRepositoryPaths': snapshot.openRepositoryPaths, 'activeRepositoryPath': snapshot.activeRepositoryPath})}\n',
+        '${jsonEncode({'openRepositoryPaths': snapshot.openRepositoryPaths, 'activeRepositoryPath': snapshot.activeRepositoryPath, 'favoriteRepositoryPaths': snapshot.favoriteRepositoryPaths, 'workspaceGroups': snapshot.workspaceGroups, 'repositoryGroups': snapshot.repositoryGroups})}\n',
         flush: true,
       );
       await temporaryFile.rename(file.path);

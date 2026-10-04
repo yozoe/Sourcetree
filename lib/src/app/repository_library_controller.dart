@@ -45,6 +45,8 @@ final class RepositoryTab {
     this.isDetached = false,
     this.isUnborn = false,
     this.hasStatus = false,
+    this.isFavorite = false,
+    this.workspaceGroup,
   }) : baseLabel = baseLabel ?? label;
 
   /// Absolute Git command directory used to reopen this repository.
@@ -70,6 +72,44 @@ final class RepositoryTab {
 
   /// Whether the branch and change summary was successfully read from Git.
   final bool hasStatus;
+
+  /// Whether the user marked this repository as a favorite in the home window.
+  /// 中文：首页用户是否将此仓库标记为收藏。
+  final bool isFavorite;
+
+  /// User-created home-window group containing this repository, if any.
+  /// 中文：该仓库所属的首页用户分组；为空表示未分组。
+  final String? workspaceGroup;
+
+  /// Returns this tab with a changed favorite marker while preserving Git data.
+  /// 中文：仅更新收藏标记，保留仓库状态和显示标签。
+  RepositoryTab copyWithFavorite(bool favorite) => RepositoryTab(
+    path: path,
+    label: label,
+    baseLabel: baseLabel,
+    branchName: branchName,
+    changedFileCount: changedFileCount,
+    isDetached: isDetached,
+    isUnborn: isUnborn,
+    hasStatus: hasStatus,
+    isFavorite: favorite,
+    workspaceGroup: workspaceGroup,
+  );
+
+  /// Returns this tab with a changed user-group assignment.
+  /// 中文：只更新首页用户分组归属，保留 Git 状态和显示标签。
+  RepositoryTab copyWithWorkspaceGroup(String? group) => RepositoryTab(
+    path: path,
+    label: label,
+    baseLabel: baseLabel,
+    branchName: branchName,
+    changedFileCount: changedFileCount,
+    isDetached: isDetached,
+    isUnborn: isUnborn,
+    hasStatus: hasStatus,
+    isFavorite: isFavorite,
+    workspaceGroup: group,
+  );
 }
 
 /// Immutable state for the repository home window.
@@ -78,18 +118,24 @@ final class RepositoryTab {
 final class RepositoryLibraryState {
   const RepositoryLibraryState({
     this.repositories = const <RepositoryTab>[],
+    this.workspaceGroups = const <String>[],
+    this.repositoryGroups = const <String, String>{},
     this.activeRepositoryPath,
     this.persistenceFailureCount = 0,
     this.persistenceError,
   });
 
   final List<RepositoryTab> repositories;
+  final List<String> workspaceGroups;
+  final Map<String, String> repositoryGroups;
   final String? activeRepositoryPath;
   final int persistenceFailureCount;
   final String? persistenceError;
 
   RepositoryLibraryState copyWith({
     List<RepositoryTab>? repositories,
+    List<String>? workspaceGroups,
+    Map<String, String>? repositoryGroups,
     String? activeRepositoryPath,
     bool clearActiveRepositoryPath = false,
     int? persistenceFailureCount,
@@ -97,6 +143,8 @@ final class RepositoryLibraryState {
     bool clearPersistenceError = false,
   }) => RepositoryLibraryState(
     repositories: repositories ?? this.repositories,
+    workspaceGroups: workspaceGroups ?? this.workspaceGroups,
+    repositoryGroups: repositoryGroups ?? this.repositoryGroups,
     activeRepositoryPath: clearActiveRepositoryPath
         ? null
         : activeRepositoryPath ?? this.activeRepositoryPath,
@@ -139,6 +187,7 @@ final class RepositoryLibraryController
   var _persistenceEnabled = false;
   var _acceptsMutations = true;
   Object? _lastPersistenceError;
+  final Set<String> _favoriteRepositoryPaths = <String>{};
 
   @override
   RepositoryLibraryState build() {
@@ -162,6 +211,21 @@ final class RepositoryLibraryController
         final snapshot = await _store.load();
         restored = true;
         _persistenceEnabled = true;
+        _favoriteRepositoryPaths
+          ..clear()
+          ..addAll(snapshot.favoriteRepositoryPaths);
+        final knownGroups = <String>[];
+        final seenGroups = <String>{};
+        for (final group in snapshot.workspaceGroups) {
+          final normalizedGroup = group.trim();
+          if (normalizedGroup.isNotEmpty && seenGroups.add(normalizedGroup)) {
+            knownGroups.add(normalizedGroup);
+          }
+        }
+        state = state.copyWith(
+          workspaceGroups: List<String>.unmodifiable(knownGroups),
+          repositoryGroups: const <String, String>{},
+        );
         if (!ref.mounted) return;
         for (final path in snapshot.openRepositoryPaths) {
           final result = await _add(path, persist: false);
@@ -178,6 +242,22 @@ final class RepositoryLibraryController
             )) {
           state = state.copyWith(activeRepositoryPath: activePath);
         }
+        final restoredAssignments = <String, String>{};
+        for (final entry in snapshot.repositoryGroups.entries) {
+          if (state.repositories.any((tab) => tab.path == entry.key) &&
+              knownGroups.contains(entry.value)) {
+            restoredAssignments[entry.key] = entry.value;
+          }
+        }
+        state = state.copyWith(
+          repositoryGroups: Map<String, String>.unmodifiable(
+            restoredAssignments,
+          ),
+          repositories: _withRepositoryGroups(
+            state.repositories,
+            restoredAssignments,
+          ),
+        );
       } finally {
         _isRestoring = false;
         if (ref.mounted && restored) await _persist();
@@ -260,7 +340,15 @@ final class RepositoryLibraryController
           .firstOrNull;
       final tab = existingTab != null && !inspectedTab.hasStatus
           ? existingTab
-          : inspectedTab;
+          : inspectedTab
+                .copyWithFavorite(
+                  existingTab?.isFavorite ??
+                      _favoriteRepositoryPaths.contains(inspectedTab.path),
+                )
+                .copyWithWorkspaceGroup(
+                  existingTab?.workspaceGroup ??
+                      state.repositoryGroups[inspectedTab.path],
+                );
       final existing = existingTab != null;
       final nextRepositories = _disambiguateLabels([
         for (final item in state.repositories)
@@ -315,6 +403,7 @@ final class RepositoryLibraryController
           path: normalizedPath,
           label: baseLabel.isEmpty ? normalizedPath : baseLabel,
           baseLabel: baseLabel.isEmpty ? normalizedPath : baseLabel,
+          isFavorite: _favoriteRepositoryPaths.contains(normalizedPath),
         ),
       ]),
     );
@@ -352,6 +441,123 @@ final class RepositoryLibraryController
     unawaited(_persist().catchError((_) {}));
   }
 
+  /// Toggles a repository's favorite marker and persists the home-window state.
+  /// 中文：切换仓库收藏标记并持久化；不会打开仓库或修改 Git 状态。
+  void toggleFavorite(String repositoryPath) {
+    if (!_acceptsMutations) return;
+    final index = state.repositories.indexWhere(
+      (repository) => repository.path == repositoryPath,
+    );
+    if (index < 0) return;
+    final current = state.repositories[index];
+    final favorite = !current.isFavorite;
+    if (favorite) {
+      _favoriteRepositoryPaths.add(repositoryPath);
+    } else {
+      _favoriteRepositoryPaths.remove(repositoryPath);
+    }
+    final repositories = [...state.repositories];
+    repositories[index] = current.copyWithFavorite(favorite);
+    state = state.copyWith(repositories: _disambiguateLabels(repositories));
+    unawaited(_persist().catchError((_) {}));
+  }
+
+  /// Creates a named home-window workspace group and persists it.
+  /// 中文：创建首页用户命名的工作区分组并持久化；不会改变 Git 状态。
+  bool createWorkspaceGroup(String name) {
+    if (!_acceptsMutations) return false;
+    final normalizedName = name.trim();
+    if (normalizedName.isEmpty ||
+        state.workspaceGroups.contains(normalizedName)) {
+      return false;
+    }
+    state = state.copyWith(
+      workspaceGroups: List<String>.unmodifiable([
+        ...state.workspaceGroups,
+        normalizedName,
+      ]),
+    );
+    unawaited(_persist().catchError((_) {}));
+    return true;
+  }
+
+  /// Renames a home-window workspace group without moving its repositories.
+  /// 中文：重命名首页工作区分组并保留其仓库归属，不修改 Git。
+  bool renameWorkspaceGroup(String oldName, String newName) {
+    if (!_acceptsMutations) return false;
+    final from = oldName.trim();
+    final to = newName.trim();
+    if (from.isEmpty ||
+        to.isEmpty ||
+        !state.workspaceGroups.contains(from) ||
+        (from != to && state.workspaceGroups.contains(to))) {
+      return false;
+    }
+    final groups = [
+      for (final group in state.workspaceGroups) group == from ? to : group,
+    ];
+    final assignments = {
+      for (final entry in state.repositoryGroups.entries)
+        entry.key: entry.value == from ? to : entry.value,
+    };
+    state = state.copyWith(
+      workspaceGroups: List<String>.unmodifiable(groups),
+      repositoryGroups: Map<String, String>.unmodifiable(assignments),
+      repositories: _withRepositoryGroups(state.repositories, assignments),
+    );
+    unawaited(_persist().catchError((_) {}));
+    return true;
+  }
+
+  /// Deletes a group and leaves its repositories ungrouped.
+  /// 中文：删除首页工作区分组，仓库保留在清单中并回到未分组状态。
+  bool deleteWorkspaceGroup(String name) {
+    if (!_acceptsMutations) return false;
+    final normalizedName = name.trim();
+    if (!state.workspaceGroups.contains(normalizedName)) return false;
+    state = state.copyWith(
+      workspaceGroups: List<String>.unmodifiable(
+        state.workspaceGroups.where((group) => group != normalizedName),
+      ),
+      repositoryGroups: Map<String, String>.unmodifiable({
+        for (final entry in state.repositoryGroups.entries)
+          if (entry.value != normalizedName) entry.key: entry.value,
+      }),
+      repositories: _withRepositoryGroups(state.repositories, {
+        for (final entry in state.repositoryGroups.entries)
+          if (entry.value != normalizedName) entry.key: entry.value,
+      }),
+    );
+    unawaited(_persist().catchError((_) {}));
+    return true;
+  }
+
+  /// Assigns a repository to a named group, or clears its assignment.
+  /// 中文：把仓库移入指定首页分组；传入 null 会移回未分组。
+  bool assignRepositoryToWorkspaceGroup(String repositoryPath, String? group) {
+    if (!_acceptsMutations ||
+        !state.repositories.any((tab) => tab.path == repositoryPath)) {
+      return false;
+    }
+    final normalizedGroup = group?.trim();
+    if (normalizedGroup != null &&
+        !state.workspaceGroups.contains(normalizedGroup)) {
+      return false;
+    }
+    final assignments = {...state.repositoryGroups};
+    if (normalizedGroup == null || normalizedGroup.isEmpty) {
+      assignments.remove(repositoryPath);
+    } else {
+      assignments[repositoryPath] = normalizedGroup;
+    }
+    state = state.copyWith(
+      repositoryGroups: Map<String, String>.unmodifiable(assignments),
+      repositories: _withRepositoryGroups(state.repositories, assignments),
+    );
+    unawaited(_persist().catchError((_) {}));
+    return true;
+  }
+
   /// Converts a Git repository and its recent status into one library entry.
   ///
   /// 中文：将 Git 仓库及其最近状态转换为一个首页清单条目。
@@ -370,6 +576,10 @@ final class RepositoryLibraryController
       isDetached: branch?.isDetached ?? false,
       isUnborn: branch?.isUnborn ?? false,
       hasStatus: status != null,
+      isFavorite: _favoriteRepositoryPaths.contains(
+        repository.commandDirectory,
+      ),
+      workspaceGroup: state.repositoryGroups[repository.commandDirectory],
     );
   }
 
@@ -405,9 +615,20 @@ final class RepositoryLibraryController
           isDetached: tab.isDetached,
           isUnborn: tab.isUnborn,
           hasStatus: tab.hasStatus,
+          isFavorite: tab.isFavorite,
+          workspaceGroup: tab.workspaceGroup,
         ),
     ]);
   }
+
+  /// Applies persisted user-group markers without changing repository order.
+  /// 中文：把用户分组映射同步到条目，保持仓库顺序和 Git 状态不变。
+  List<RepositoryTab> _withRepositoryGroups(
+    List<RepositoryTab> tabs,
+    Map<String, String> assignments,
+  ) => _disambiguateLabels([
+    for (final tab in tabs) tab.copyWithWorkspaceGroup(assignments[tab.path]),
+  ]);
 
   Future<void> _persist() async {
     if (!_persistenceEnabled || _isRestoring) return;
@@ -416,6 +637,17 @@ final class RepositoryLibraryController
         state.repositories.map((repository) => repository.path),
       ),
       activeRepositoryPath: state.activeRepositoryPath,
+      favoriteRepositoryPaths: List<String>.unmodifiable(
+        state.repositories
+            .where((repository) => repository.isFavorite)
+            .map((repository) => repository.path),
+      ),
+      workspaceGroups: state.workspaceGroups,
+      repositoryGroups: Map<String, String>.unmodifiable({
+        for (final entry in state.repositoryGroups.entries)
+          if (state.repositories.any((tab) => tab.path == entry.key))
+            entry.key: entry.value,
+      }),
     );
     _writeTail = _writeTail.then((_) async {
       try {
