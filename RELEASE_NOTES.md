@@ -81,6 +81,7 @@
 - 外部 Diff 配置新增 Engine 级状态 controller：配置写入保持顺序，失败可见且不会启用未保存配置，窗口关闭前会等待已排队写入完成；原生“动作 → 外部差异比对”现已接入同一安全流程。
 - 新增 M4 外部集成语义冻结文档，明确 Submodule/LFS 当前只读边界、Git-flow Start/单目标 Finish 的本地边界，以及托管平台和 Pull Request 在授权与失败恢复语义确定前继续保持待实现。
 - Git-flow v1 Start 与单目标 Finish 已接入原生菜单：两者要求清洁工作区、附着 HEAD 且没有其他 Git 操作；Start 显式选择本地起点并 dry-run 预览后创建并检出 feature/release/hotfix 分支，Finish 显式选择本地目标并以 `merge --no-edit --no-ff` 合并当前 Git-flow 分支。Finish 冲突保留 Continue/Abort 恢复入口，取消或窗口关闭会终止 Git 进程，不自动推送、删除来源或修改 upstream；批量 Finish、版本发布和其他托管能力仍保持“（待实现）”。
+- Git-flow Finish 目标选择器现在按分支类型优先建议常见集成分支（feature → develop/main/master，release/hotfix → main/master/develop），但不隐藏其他本地分支；Start/Finish 执行前会重新读取仓库状态，过期预览只返回明确的安全门禁原因，不会执行检出或合并。
 - M4 GitHub.com Pull Request 评估已冻结进入条件：创建 PR 不会隐式 Push 或修改 upstream，应用只打开用户确认的 GitHub.com 页面；在 URL 构造、分支选择和浏览器交接失败恢复完成前，托管仓库浏览和“创建拉取请求…”继续保持“（待实现）”。
 
 - 修复工作区引用导航的“文件状态/历史”切换边界：选择“文件状态”会可靠打开完整工作区文件面板，

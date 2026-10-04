@@ -320,6 +320,8 @@ LFS 仅保留仓库详情中的既有只读摘要；不规划下载、上传、�
 - [macOS 窗口模型](docs/MACOS_WINDOW_MODEL.md)
 - [macOS 原生菜单开发规范](docs/MACOS_NATIVE_MENU_SPEC.md)
 
+Git-flow Finish 的目标选择器会按分支类型优先建议常见集成分支（feature 优先 develop，release/hotfix 优先 main/master），但仍保留全部已加载的本地分支供用户明确选择；Start/Finish 执行前会重新读取状态，预览过期时不会执行检出或合并，并会说明具体安全门禁原因。
+
 ## 当前验证环境
 
 - macOS 26.3.1（arm64）

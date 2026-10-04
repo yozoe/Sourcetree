@@ -3756,6 +3756,10 @@ void main() {
         container.read(repositorySessionProvider).operations.first.outcome,
         RepositoryOperationOutcome.succeeded,
       );
+      expect(
+        container.read(repositorySessionProvider).operations.first.kind,
+        RepositoryOperationKind.ref,
+      );
     },
   );
 
@@ -3779,7 +3783,9 @@ void main() {
       baseBranch: 'main',
       version: null,
     );
-    expect(await controller.startGitFlowBranch(dirtyPlan), isNull);
+    final dirtyResult = await controller.startGitFlowBranch(dirtyPlan);
+    expect(dirtyResult?.succeeded, isFalse);
+    expect(dirtyResult?.message, contains('干净的工作区'));
     expect(
       (await repository.runGit([
         'branch',
@@ -3791,7 +3797,9 @@ void main() {
     await repository.runGit(['restore', '--', 'README.md']);
     await repository.runGit(['switch', '--detach', 'HEAD']);
     await controller.refresh();
-    expect(await controller.startGitFlowBranch(dirtyPlan), isNull);
+    final detachedResult = await controller.startGitFlowBranch(dirtyPlan);
+    expect(detachedResult?.succeeded, isFalse);
+    expect(detachedResult?.message, contains('附着'));
     expect(
       (await repository.runGit([
         'branch',
@@ -3861,6 +3869,10 @@ void main() {
         container.read(repositorySessionProvider).operations.first.outcome,
         RepositoryOperationOutcome.succeeded,
       );
+      expect(
+        container.read(repositorySessionProvider).operations.first.kind,
+        RepositoryOperationKind.ref,
+      );
     },
   );
 
@@ -3899,6 +3911,54 @@ void main() {
         'main',
       );
     }
+  });
+
+  test('rejects a stale Git-flow Finish preview before any write', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('base');
+    await repository.runGit(['switch', '-c', 'feature/stale']);
+    await repository.writeFile('feature.txt', 'feature\n');
+    await repository.commit('feature');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final plan = validateGitFlowFinish(
+      sourceBranch: 'feature/stale',
+      targetBranch: 'main',
+      existingBranches: container
+          .read(repositorySessionProvider)
+          .localBranches
+          .map((branch) => branch.name),
+      isAttachedHead: true,
+      isWorkingTreeClean: true,
+      hasActiveOperation: false,
+    ).plan!;
+
+    await repository.runGit(['switch', 'main']);
+    await controller.refresh();
+    final result = await controller.finishGitFlowBranch(plan);
+
+    expect(result?.merged, isFalse);
+    expect(result?.message, contains('当前分支已从 feature/stale 变为 main'));
+    expect(
+      (await repository.runGit([
+        'branch',
+        '--show-current',
+      ])).stdout.toString().trim(),
+      'main',
+    );
+    expect(
+      (await repository.runGit([
+        'log',
+        '-1',
+        '--format=%s',
+      ])).stdout.toString().trim(),
+      'base',
+    );
   });
 
   test(

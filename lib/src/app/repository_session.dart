@@ -7062,6 +7062,9 @@ final class RepositorySessionController
   /// The method keeps both Git writes inside one Engine task. If creation
   /// succeeds but checkout fails, the returned result preserves that partial
   /// success and the created branch remains visible after refresh.
+  /// A stale plan is returned as an explicit unsuccessful result so the UI can
+  /// explain which safety gate changed after the preview was shown.
+  /// 中文：如果预览后仓库状态发生变化，会返回带明确原因的失败结果，而不是静默丢弃请求。
   Future<GitFlowStartExecutionResult?> startGitFlowBranch(
     GitFlowStartPlan plan,
   ) async {
@@ -7084,7 +7087,11 @@ final class RepositorySessionController
         state.operationState != GitRepositoryOperationState.none ||
         !state.localBranches.any((branch) => branch.name == plan.baseBranch) ||
         state.localBranches.any((branch) => branch.name == plan.branchName)) {
-      return null;
+      return GitFlowStartExecutionResult(
+        branchCreated: false,
+        checkedOut: false,
+        message: _gitFlowStartPreflightMessage(plan),
+      );
     }
 
     state = state.copyWith(
@@ -7168,6 +7175,31 @@ final class RepositorySessionController
   /// 中文：取消正在进行的 Git-flow Start；不会尝试回滚 Git 可能已经创建的分支。
   void cancelGitFlowStart() => _gitFlowStartCancellation?.cancel();
 
+  /// Explains why a previously previewed Git-flow Start plan is no longer safe.
+  /// 中文：说明已预览的 Git-flow Start 计划为何不再满足安全门槛。
+  String _gitFlowStartPreflightMessage(GitFlowStartPlan plan) {
+    if (_isShuttingDown) return 'Git-flow Start 已取消：仓库窗口正在关闭。';
+    if (state.phase != RepositorySessionPhase.ready ||
+        state.repository == null ||
+        state.status == null) {
+      return 'Git-flow Start 未执行：仓库状态尚未就绪，请刷新后重试。';
+    }
+    final status = state.status!;
+    if (status.branch.isDetached) return 'Git-flow Start 需要附着在本地分支上。';
+    if (status.branch.isUnborn) return 'Git-flow Start 需要已有提交的本地分支。';
+    if (!status.isClean) return 'Git-flow Start 需要干净的工作区。';
+    if (state.operationState != GitRepositoryOperationState.none) {
+      return '当前存在未完成的 Git 操作，暂时不能开始 Git-flow 分支。';
+    }
+    if (!state.localBranches.any((branch) => branch.name == plan.baseBranch)) {
+      return '起点分支 ${plan.baseBranch} 已不存在或状态已变化，请重新打开 Git-flow Start。';
+    }
+    if (state.localBranches.any((branch) => branch.name == plan.branchName)) {
+      return '分支 ${plan.branchName} 已存在，请重新打开 Git-flow Start。';
+    }
+    return 'Git-flow Start 的仓库状态已变化，请重新打开对话框后重试。';
+  }
+
   /// Executes one validated Git-flow Finish by checking out the explicit
   /// target branch and merging the current feature/release/hotfix branch into
   /// it. No push, source deletion, or upstream change is attempted.
@@ -7175,6 +7207,9 @@ final class RepositorySessionController
   /// feature/release/hotfix 分支合并进去；不会推送、删除来源或修改 upstream。
   /// If checkout succeeds but merge fails, the target branch and Git's actual
   /// conflict state are preserved for recovery through Continue/Abort.
+  /// A stale plan is returned as an explicit unsuccessful result so the UI can
+  /// explain why no checkout or merge was started.
+  /// 中文：如果预览后仓库状态发生变化，会返回带明确原因的失败结果，并且不会开始检出或合并。
   Future<GitFlowFinishExecutionResult?> finishGitFlowBranch(
     GitFlowFinishPlan plan,
   ) async {
@@ -7209,7 +7244,10 @@ final class RepositorySessionController
           (branch) => branch.name == plan.targetBranch,
         ) ||
         plan.sourceBranch == plan.targetBranch) {
-      return null;
+      return GitFlowFinishExecutionResult(
+        merged: false,
+        message: _gitFlowFinishPreflightMessage(plan),
+      );
     }
 
     state = state.copyWith(
@@ -7219,7 +7257,7 @@ final class RepositorySessionController
       clearSelectedChange: true,
       clearMessage: true,
     );
-    final operation = _startOperation(RepositoryOperationKind.history);
+    final operation = _startOperation(RepositoryOperationKind.ref);
     final cancellation = GitCancellationToken();
     _gitFlowFinishCancellation = cancellation;
     var checkedOutTarget = false;
@@ -7289,6 +7327,45 @@ final class RepositorySessionController
   /// undo a merge that Git may already have started.
   /// 中文：取消正在进行的 Git-flow Finish；不会自动切回来源分支或回滚 Git 已开始的合并。
   void cancelGitFlowFinish() => _gitFlowFinishCancellation?.cancel();
+
+  /// Explains why a previously previewed Git-flow Finish plan is no longer safe.
+  /// 中文：说明已预览的 Git-flow Finish 计划为何不再满足安全门槛。
+  String _gitFlowFinishPreflightMessage(GitFlowFinishPlan plan) {
+    if (_isShuttingDown) return 'Git-flow Finish 已取消：仓库窗口正在关闭。';
+    if (state.phase != RepositorySessionPhase.ready ||
+        state.repository == null ||
+        state.status == null) {
+      return 'Git-flow Finish 未执行：仓库状态尚未就绪，请刷新后重试。';
+    }
+    final status = state.status!;
+    final currentBranch = status.branch.head;
+    if (status.branch.isDetached) return 'Git-flow Finish 需要附着在本地分支上。';
+    if (status.branch.isUnborn) return 'Git-flow Finish 需要已有提交的本地分支。';
+    if (!status.isClean) return 'Git-flow Finish 需要干净的工作区。';
+    if (state.operationState != GitRepositoryOperationState.none) {
+      return '当前存在未完成的 Git 操作，暂时不能完成 Git-flow 分支。';
+    }
+    if (currentBranch != plan.sourceBranch) {
+      return '当前分支已从 ${plan.sourceBranch} 变为 ${currentBranch ?? '未知'}，未执行合并。';
+    }
+    if (gitFlowBranchKindForName(currentBranch ?? '') != plan.kind) {
+      return '当前分支不再是与预览一致的 Git-flow 分支，未执行合并。';
+    }
+    if (!state.localBranches.any(
+      (branch) => branch.name == plan.sourceBranch,
+    )) {
+      return '来源分支 ${plan.sourceBranch} 已不存在或状态已变化，请重新打开 Git-flow Finish。';
+    }
+    if (!state.localBranches.any(
+      (branch) => branch.name == plan.targetBranch,
+    )) {
+      return '目标分支 ${plan.targetBranch} 已不存在或状态已变化，请重新打开 Git-flow Finish。';
+    }
+    if (plan.sourceBranch == plan.targetBranch) {
+      return 'Git-flow Finish 的来源和目标分支不能相同。';
+    }
+    return 'Git-flow Finish 的仓库状态已变化，请重新打开对话框后重试。';
+  }
 
   /// Switches to a local branch while preserving safe working-tree changes.
   /// 中文：切换到本地分支；保留可安全携带的工作区改动，并拒绝冲突状态。
