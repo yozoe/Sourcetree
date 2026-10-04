@@ -1,6 +1,76 @@
 import Cocoa
 import FlutterMacOS
 import QuickLookUI
+import Security
+
+private let gitDesktopGitHubKeychainService = "com.yeknom.git_desktop.github"
+
+/// Validates a GitHub access token before it reaches the Keychain API.
+/// 中文：在令牌进入 Keychain API 前校验其边界；不会记录或返回令牌内容。
+func gitDesktopIsValidGitHubAccessToken(_ token: String) -> Bool {
+  !token.isEmpty &&
+    token == token.trimmingCharacters(in: .whitespacesAndNewlines) &&
+    token.rangeOfCharacter(from: .controlCharacters) == nil
+}
+
+/// Handles the dedicated GitHub Keychain MethodChannel calls.
+/// 中文：处理专用 GitHub Keychain 通道；返回 true 表示已消费该调用。
+@discardableResult
+func gitDesktopHandleGitHubKeychainCall(
+  _ call: FlutterMethodCall,
+  result: @escaping FlutterResult
+) -> Bool {
+  let query: [String: Any] = [
+    kSecClass as String: kSecClassGenericPassword,
+    kSecAttrService as String: gitDesktopGitHubKeychainService,
+    kSecAttrAccount as String: "default"
+  ]
+  switch call.method {
+  case "readAccessToken":
+    var item: AnyObject?
+    let readQuery = query.merging([kSecReturnData as String: true]) { _, new in new }
+    let status = SecItemCopyMatching(readQuery as CFDictionary, &item)
+    if status == errSecItemNotFound {
+      result(nil)
+    } else if status == errSecSuccess,
+              let data = item as? Data,
+              let token = String(data: data, encoding: .utf8),
+              gitDesktopIsValidGitHubAccessToken(token) {
+      result(token)
+    } else {
+      result(FlutterError(code: "github_keychain_read_failed", message: "GitHub token could not be read.", details: nil))
+    }
+    return true
+  case "writeAccessToken":
+    guard let arguments = call.arguments as? [String: Any],
+          let token = arguments["token"] as? String,
+          gitDesktopIsValidGitHubAccessToken(token) else {
+      result(FlutterError(code: "github_keychain_invalid_token", message: "The GitHub token is invalid.", details: nil))
+      return true
+    }
+    SecItemDelete(query as CFDictionary)
+    var attributes = query
+    attributes[kSecValueData as String] = token.data(using: .utf8)
+    attributes[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
+    let status = SecItemAdd(attributes as CFDictionary, nil)
+    if status == errSecSuccess {
+      result(nil)
+    } else {
+      result(FlutterError(code: "github_keychain_write_failed", message: "GitHub token could not be stored.", details: nil))
+    }
+    return true
+  case "deleteAccessToken":
+    let status = SecItemDelete(query as CFDictionary)
+    if status == errSecSuccess || status == errSecItemNotFound {
+      result(nil)
+    } else {
+      result(FlutterError(code: "github_keychain_delete_failed", message: "GitHub token could not be removed.", details: nil))
+    }
+    return true
+  default:
+    return false
+  }
+}
 
 private let gitDesktopEngineCleanupTimeout: TimeInterval = 3.5
 private let gitDesktopWorkspaceRestorationTimeout: TimeInterval = 30
@@ -1027,6 +1097,9 @@ final class WorkspaceFlutterWindowController: NSWindowController,
       }
       let arguments = call.arguments as? [String: Any]
       let repositoryPath = arguments?["repositoryPath"] as? String
+      if gitDesktopHandleGitHubKeychainCall(call, result: result) {
+        return
+      }
       switch call.method {
       case "openWorkspace":
         let initialAction = arguments?["initialAction"] as? String
@@ -1727,6 +1800,9 @@ final class WindowCoordinator {
         return
       }
       let arguments = call.arguments as? [String: Any]
+      if gitDesktopHandleGitHubKeychainCall(call, result: result) {
+        return
+      }
       switch call.method {
       case "openWorkspace":
         self.openWorkspace(

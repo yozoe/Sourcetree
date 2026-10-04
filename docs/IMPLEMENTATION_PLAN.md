@@ -564,6 +564,7 @@ CRLF、长路径、大小写、symlink、可执行位、窗口和系统菜单差
 - [ ] 明确 GitHub.com 的托管平台与认证边界后，实现远端仓库浏览和创建拉取请求；GitHub Enterprise 不在范围内。
 - [x] 完成 GitHub.com 第一阶段的本地安全契约：只接受无凭据的 GitHub.com HTTPS/SSH remote，拒绝企业/自定义域名、API 地址、查询串和片段；Pull Request 草稿必须显式提供并校验仓库、head、base、标题和正文，不触发网络、凭据读取或 Push。
 - [x] 完成固定 `https://api.github.com` 的只读请求层：支持仓库详情和显式分页的分支读取，令牌只由调用方显式提供并注入内存请求；覆盖取消、超时、HTTP/JSON 错误、响应大小上限和令牌脱敏。当前尚未接入 UI、OAuth/Keychain 存储或任何写 API。
+- [x] 完成 macOS GitHub.com 令牌存储边界：Dart 仅通过专用 MethodChannel 请求读写/删除，原生层使用固定 Keychain generic-password 项并拒绝空白或控制字符；当前不自动启动 OAuth、不从 Git 认证链推断令牌，窗口关闭和 Engine 销毁可调用传输关闭接口。
 - [ ] 为自定义操作建立默认关闭的信任模型、结构化 argv、环境白名单和可见执行范围。
 - [ ] 完成固定 macOS/参考 Sourcetree 版本下的菜单层级、快捷键、键盘、VoiceOver、深浅主题与
   多显示器人工验收，记录因安全或平台限制保留的差异。

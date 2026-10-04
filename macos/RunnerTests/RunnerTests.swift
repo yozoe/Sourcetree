@@ -6,6 +6,13 @@ import XCTest
 class RunnerTests: XCTestCase {
   private final class TestWorkspace {}
 
+  func testGitHubAccessTokenValidationRejectsWhitespaceAndControls() {
+    XCTAssertTrue(gitDesktopIsValidGitHubAccessToken("ghp_valid"))
+    XCTAssertFalse(gitDesktopIsValidGitHubAccessToken(""))
+    XCTAssertFalse(gitDesktopIsValidGitHubAccessToken(" ghp_valid"))
+    XCTAssertFalse(gitDesktopIsValidGitHubAccessToken("ghp_valid\n"))
+  }
+
   func testRuntimeDockIconDoesNotApplyASecondSafeAreaInset() {
     let bounds = NSRect(x: 0, y: 0, width: 128, height: 128)
 
