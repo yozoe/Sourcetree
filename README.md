@@ -304,6 +304,8 @@ Gatekeeper 或修改任何 macOS 安全设置。
 
 ## 首发目标
 
+LFS 仅保留仓库详情中的既有只读摘要；不规划下载、上传、迁移、清理、配置修改或独立 LFS 管理入口。
+
 托管平台首期范围仅为 GitHub.com（含 GitHub.com 私有仓库）；GitHub Enterprise、企业域名和企业 SSO 不在产品范围内。当前 GitHub.com 仓库浏览与“创建拉取请求…”仍保持“待实现”。后续 PR 入口采用浏览器交接：只接受无凭据的 GitHub.com HTTPS/SSH remote，在用户明确选择 head、base、标题和正文且确认 head 已推送后打开 GitHub.com PR 页面；应用不接入 OAuth、不调用 GitHub API、不保存 GitHub API 令牌，也不自动 Push。
 
 - macOS 优先，Apple Silicon 为第一验证平台。

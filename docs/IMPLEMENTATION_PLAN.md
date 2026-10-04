@@ -61,7 +61,7 @@
 | 远端 | 按已配置远端分组展示跟踪引用和符号 HEAD、按远端配置 Pull/Fetch/Push、右键安全移除本地远端配置、进度和取消；Clone 拒绝凭据化地址、remote-helper 与未知协议，远端写操作验证字面远端名 | Prune、安全 Force Push | 托管平台适配 |
 | 高级操作 | 本地分支安全合并、拉取变基、从历史提交变基及可编辑交互式 todo（当前支持 pick、edit、squash、fixup、drop；内置提交信息编辑器完成前不暴露 reword）、合并/变基/遴选/回滚 Continue/Skip/Abort、Cherry-pick、Revert、Reset、从原生“动作”菜单创建/检查/应用补丁和停止追踪；创建补丁复用历史页的提交 Graph、引用、文件、Diff 与详情视图，支持多选并合并或独立导出；应用补丁明确区分默认 Git `-p1` 与显式 strip 值；原生“动作”菜单的停止追踪按当前 key workspace 的 Flutter 选择快照动态启用，适用于普通已追踪改动、已暂存新增文件和历史提交文件；历史文件优先作为路径来源并在确认框显示，应用层会重读当前索引和本地文件状态后才执行；同一路径混合暂存/未暂存修改时仍只移除索引项并保留本地最新文件；其余动作入口保留并将未实现项标注待实现且不执行写操作；菜单只路由当前前台工作区，补丁窗口支持四边/四角缩放并保持在可见边界；原生“仓库”菜单可显示当前仓库的 Git 详情（提交、引用、文件、作者、LFS 和本地占用），其余入口明确标注待实现且不执行写操作；冲突状态展示、贮藏创建/恢复/弹出/删除（工具栏和左侧入口创建；左侧固定显示真实贮藏列表，选择后在引用导航右侧完整预览文件和 Diff；仅在可安全保存已跟踪改动时启用） | 高级批量操作 | 高级查询 |
 | 冲突 | 检测并展示进行中状态；内置文本 Diff 左右对比、整文件或按标准冲突标记逐段选边、编辑结果并标记已解决；合并/变基/遴选/回滚可 Continue/Skip/Abort；变基、遴选和回滚暂停时分别支持 Git `rebase --skip`、`cherry-pick --skip`、`revert --skip` 跳过当前提交 | 外部工具 | 二进制和高级三方合并器评估 |
-| Git 扩展 | — | Submodule 只读状态展示已交付；LFS 过滤器配置摘要已交付，下载、上传、迁移和清理等基础操作待评估和实现 | 深度增强 |
+| Git 扩展 | — | Submodule 只读状态展示已交付；LFS 仅保留仓库详情中的既有只读摘要，不提供下载、上传、迁移、清理或独立管理入口 | 不再扩展 LFS |
 | 桌面集成 | 快捷键、深浅主题、原生仓库/动作/窗口菜单（动作菜单已支持系统打开、Finder、Terminal 和 Quick Look；窗口菜单已支持填充、居中、靠左/靠右、动态跨显示器移动、普通窗口的显示器参数恢复、AppKit 系统全屏平铺资格、多个持久化合并窗口组、合并标签循环切换/移出、标签栏显隐和键盘可访问的标签总览；菜单方向选择仍待公开系统 API） | 中英文、自定义终端、外部 Diff/Merge、自动更新 | Windows/Linux 原生集成 |
 
 ## 4. 首版信息架构
@@ -428,7 +428,7 @@ Git 进程不阻塞 UI，危险操作不静默执行。
 ### P3：Beta
 
 - 更丰富的文件历史高级查询与保存查询预设。
-- Submodule 递归操作与 LFS 基础能力（只读 submodule 状态展示已提前交付，剩余写操作需先完成安全边界和兼容性评估）。
+- Submodule 递归操作与 LFS 深度能力不进入范围（只读 submodule 状态展示已提前交付，LFS 仅保留仓库详情只读摘要）。
 - 安全 Force Push、后台 Fetch、可配置的外部 Diff/Merge 工具。
 - 中英文、无障碍和完整人工验收。
 - 自动更新、诊断包、正式签名和公证。
@@ -557,7 +557,9 @@ CRLF、长路径、大小写、symlink、可执行位、窗口和系统菜单差
 
 #### M4：平台与外部集成
 
-- [x] 完成外部 Diff（只读 argv 工具 + Apple FileMerge 回退）、Submodule 只读状态、Git-flow v1 Start/单目标 Finish 和 Git LFS 只读摘要的语义冻结、实现与生命周期验收；Subtree、Git-flow 自动删除/推送/版本发布和 LFS 写操作仍待单独决策，Mercurial/hg flow 不进入范围。
+范围调整：LFS 不再进入后续功能评估，仓库详情中的既有过滤器、工具可用性和指针文件数量只读摘要继续保留；不实现下载、上传、迁移、清理、配置修改或独立 LFS 管理入口。
+
+- [x] 完成外部 Diff（只读 argv 工具 + Apple FileMerge 回退）、Submodule 只读状态和 Git-flow v1 Start/单目标 Finish 的语义冻结、实现与生命周期验收；LFS 仅保留仓库详情只读摘要，不再扩展下载、上传、迁移、清理或独立管理；Subtree、Git-flow 自动删除/推送/版本发布和 Mercurial/hg flow 不进入范围。
 - [x] 冻结托管平台 / Pull Request 的进入条件：平台身份不从 Git credential helper、SSH agent、AskPass
   或 remote URL 隐式推断；未声明具体平台、令牌存储、最小权限、取消和结果不确定语义前，不调用平台 API，
   也不启用相关入口。
@@ -596,7 +598,7 @@ Apple FileMerge 是默认的内置外部 Diff 适配；仓库详情已提供应�
    Merge 写回仍不可用。
    Merge 写回仍不可用。
 2. Submodule/Subtree：先只读探测 Git 对象、路径、嵌套仓库和同步状态；未定义 update/push 语义前不提供写操作。
-3. Git LFS：仓库详情已确认过滤器、只读检查 `git-lfs` 可执行性，并在工具可用时读取 `git lfs ls-files --name-only` 的跟踪文件数量；下载、迁移和清理仍需要单独的磁盘、网络和取消契约。
+3. Git LFS：仅保留仓库详情的过滤器、`git-lfs` 可执行性和跟踪文件数量只读摘要；下载、上传、迁移、清理和配置修改不进入产品范围。
 4. Git-flow：v1 已冻结 `feature/`、`release/`、`hotfix/` 前缀、显式 SemVer、清洁工作区门槛、
    dry-run、Continue/Abort、部分成功和默认不删除/不推送契约；单分支 Start 与单目标 Finish
    已实现并由真实临时仓库覆盖成功、冲突、取消和来源分支保留。Finish 仍不批量处理、不推送、
@@ -627,7 +629,7 @@ Apple FileMerge 是默认的内置外部 Diff 适配；仓库详情已提供应�
 - 各类文本、二进制、rename/delete、modify/delete 冲突。
 - ahead/behind/diverged/non-fast-forward 和远端分支删除。
 - 中断的 merge/rebase/cherry-pick/revert。
-- detached HEAD、shallow、worktree 和 sparse checkout；Submodule/LFS 在对应能力交付前标为目标 fixture。
+- detached HEAD、shallow、worktree 和 sparse checkout；Submodule 使用目标 fixture 验证只读状态，LFS 不新增独立 fixture。
 - index.lock、只读目录、损坏对象、远端不可达和认证失败；尚未具备稳定 fixture 的项目不得标记为已覆盖。
 
 所有核心旅程必须覆盖成功、失败、取消、冲突和应用重启恢复；所有关键操作
@@ -722,6 +724,8 @@ Apple FileMerge 是默认的内置外部 Diff 适配；仓库详情已提供应�
 
 ## 14. 下一步
 
+LFS 不在后续功能评估范围内；仅维护仓库详情中的只读摘要，不新增 LFS 写操作或管理入口。
+
 按当前实现状态，下一阶段按以下顺序推进：
 
 1. [x] 完成性能任务：引用导航懒构建、历史搜索防抖，并在 Small/Medium fixture 上记录可比较的
@@ -734,5 +738,5 @@ Apple FileMerge 是默认的内置外部 Diff 适配；仓库详情已提供应�
 4. 已交付 AppKit 系统全屏平铺资格与全屏 Space 的 frame 保护；后续在公开方向选择 API
    或产品批准的系统接口可用后，完成菜单左/右动作，并补充真实显示器热插拔、布局迁移和恢复验收；
    多个并存窗口组的持久化基础已交付。
-5. 在上述基础稳定后，再评估 Submodule、Subtree、LFS、Git-flow、可配置外部 Diff/Merge、
+5. 在上述基础稳定后，再评估 Submodule、Subtree、Git-flow、可配置外部 Diff/Merge、
    托管平台和自定义操作。
