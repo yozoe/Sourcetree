@@ -182,7 +182,7 @@ global/system 配置或 `safe.directory`。未确认和受限状态下，应用�
 冲突并确认合并提交。远端 URL 在显示前会脱敏，避免把 URL 中的用户名、Token 或密码展示到界面。
 合并目标会固定解析为本地分支引用，即使仓库存在同名 Tag 也不会合并错误对象。
 macOS bundle 的用户主动远端操作使用操作级受控 AskPass，可在同一 Git 操作内依次请求用户名和密码，helper、broker 与应用共享同一个按提示阶段重置的空闲超时（默认 60 秒）；应用会清除 IDE 或启动终端继承的外部 AskPass，仅显式远端操作注入捆绑 helper。Clone 会拒绝带凭据的 URI userinfo、query/fragment、SCP 密码形态、Git remote-helper 或未知协议地址，凭据必须通过受保护提示或现有 credential helper 提供，不得进入 Git 参数或 `remote.origin.url`。发布签名、真实私有远端和
-Release bundle 会将 AskPass helper/broker 编译为 arm64 与 x86_64 双架构，并在本地通过嵌套签名完整性检查；本项目当前不进行外部发布签名或 Gatekeeper 验证。GitHub HTTPS/macOS Keychain 与 SSH Agent 已完成受控验证，企业 SSO 等其他系统凭据兼容性仍在验证中。
+Release bundle 会将 AskPass helper/broker 编译为 arm64 与 x86_64 双架构，并在本地通过嵌套签名完整性检查；本项目当前不进行外部发布签名或 Gatekeeper 验证。GitHub.com HTTPS/macOS Keychain 与 SSH Agent 已完成受控验证；GitHub Enterprise、企业域名和企业 SSO 不在支持范围内。
 
 真实认证远端的兼容性验证提供了一个默认跳过的受控测试入口：设置
 `GIT_DESKTOP_AUTH_TEST_URL` 与 `GIT_DESKTOP_AUTH_TEST_EXPECTED_REF` 后运行
@@ -193,7 +193,7 @@ userinfo、query、fragment、SCP 密码形态和控制字符，不会打印远�
 本机的 Keychain helper 或 `SSH_AUTH_SOCK` Unix socket，SSO 仍以受控远端的最终 `ls-remote`
 结果作为可移植验收边界。未显式设置两个必需变量时测试保持跳过，因此默认测试和 CI 不依赖私有
 仓库、账号或网络。本项目已在 GitHub 私有仓库上分别验证 SSH Agent 与 HTTPS/macOS Keychain
-两条认证路径；企业 SSO 尚未做端到端验收。
+两条认证路径；GitHub Enterprise、企业域名和企业 SSO 不在支持范围内。
 
 macOS 启动后首先显示独立的仓库首页，并自动重新打开上次退出时仍处于打开状态的仓库工作区；关闭某个工作区后不会在下次启动时恢复它，已移动、删除、不可读或不再能由 Git 验证的路径会跳过并清除。之后从 Dock 重新激活应用时会恢复最后位于最前方的首页或仓库工作区，不会总是跳回首页。仓库首页和仓库工作区会分别记住用户最后调整的内容区尺寸，下次启动按窗口类型恢复并重新居中；恢复值受最小尺寸和当前显示器可见区域约束，不保存屏幕坐标，多个工作区共享同一尺寸偏好。工作区尺寸在实时缩放结束时保存，退出应用时以最近使用的工作区为准；关闭其他旧工作区不会覆盖最近调整的尺寸。首页保存并恢复成功打开过的仓库路径，支持筛选、
 打开、克隆和初始化；恢复时暂时不可读或离线的路径会保留在清单中并显示恢复提示，不会被一次探测失败永久删除。仓库根目录中存在可读取的
@@ -303,6 +303,8 @@ status、refs、历史读取延迟和 benchmark 进程 RSS，旧结果没有 RSS
 Gatekeeper 或修改任何 macOS 安全设置。
 
 ## 首发目标
+
+托管平台首期范围仅为 GitHub.com（含 GitHub.com 私有仓库）；GitHub Enterprise、企业域名和企业 SSO 不在产品范围内。当前 GitHub.com 仓库浏览与“创建拉取请求…”仍保持“待实现”。
 
 - macOS 优先，Apple Silicon 为第一验证平台。
 - 使用系统或用户指定的 Git CLI，Git 仓库是唯一事实来源。

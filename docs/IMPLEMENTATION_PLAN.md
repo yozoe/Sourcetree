@@ -366,11 +366,11 @@ detached HEAD、SHA-1/SHA-256 等边界。
   双架构且不注入 `get-task-allow`；本项目当前不进行外部发布签名或 Gatekeeper 验证。新增本地
   Basic-auth HTTP fixture 的 Flutter UI 链路测试，覆盖从界面输入用户名/密码到真实
   `git ls-remote` ref 读取；GitHub 私有仓库的 SSH Agent 与 HTTPS/macOS Keychain 真实链路
-  也已在受控环境完成验证，企业 SSO 仍不在已验证范围。
+  也已在受控环境完成验证；GitHub Enterprise、企业域名和企业 SSO 不在支持范围。
 - AskPass 真实 Git 链路：新增完全本地的 Basic-auth HTTP Git fixture，实际覆盖 Git `ls-remote`
   的 401 challenge、native helper/broker、用户名/密码串行提示、用户取消后的失败清理、再次操作
   的恢复以及最终 ref 读取；不使用外部远端、用户凭据或网络，因此不能替代真实 Keychain、SSH
-  Agent、企业 SSO 和私有远端验收。
+  Agent 和 GitHub.com 私有远端验收；企业平台不在支持范围。
 - AskPass IPC 安全设计评估：保持无交互认证默认值，冻结操作级 helper、nonce、权限、串行多提示、取消和脱敏契约，并以 macOS helper/broker 实施。
 - AskPass 应用侧协议校验：拒绝非法 nonce、未知字段和超限 prompt，且协议对象不保存秘密。
 - AskPass macOS helper：固定路径的 socket 转发 helper 已编译并打包进 Debug/Release app；正式
@@ -389,10 +389,10 @@ detached HEAD、SHA-1/SHA-256 等边界。
   开发/测试 runtime 不猜测 helper 路径或设置 `GIT_ASKPASS`，保留 Git 配置中的 credential helper /
   SSH Agent 的无交互兼容；源码泄漏扫描和 URL/Header/query 脱敏测试、credential helper 调用
   顺序与 SSH Agent socket 环境契约测试已完成；GitHub 私有远端的 SSH Agent 与 HTTPS/macOS
-  Keychain 兼容性已完成受控验证，Release 签名和企业 SSO 兼容性仍待完成。
+  Keychain 兼容性已完成受控验证；GitHub Enterprise、企业域名和企业 SSO 不在支持范围。
 
-待完成：企业 SSO 兼容性验证；本地受认证 HTTP fixture 已覆盖 macOS 认证等待、取消、恢复
-UI E2E，GitHub 私有远端的真实账户验收已覆盖 SSH Agent 与 HTTPS/macOS Keychain。
+本地受认证 HTTP fixture 已覆盖 macOS 认证等待、取消、恢复 UI E2E，GitHub.com 私有远端的真实账户验收
+已覆盖 SSH Agent 与 HTTPS/macOS Keychain；GitHub Enterprise、企业域名和企业 SSO 不在支持范围。
 
 为便于受控环境验收，新增默认跳过的
 `test/git/git_remote_auth_compatibility_test.dart`。设置
@@ -420,7 +420,7 @@ Git 进程不阻塞 UI，危险操作不静默执行。
   不使用 force，部分成功会记录逐项结果和引用操作日志；批量删除远端标签也会先读取真实远端标签、
   多选并二次确认，逐项重验证后删除，保留本地同名标签和部分成功结果。三类批量写操作均提供用户主动
   取消按钮，取消只阻止后续子进程并保留已完成项。
-- 企业 SSO 与受认证远端的端到端兼容性验证。
+- GitHub.com 受认证远端的持续回归验证；GitHub Enterprise、企业域名和企业 SSO 不在支持范围。
 
 退出条件：真实 Git 集成测试覆盖核心成功、失败、取消、冲突和恢复流程；
 应用重启后能识别正在进行的操作，区块暂存后的 index 内容可精确验证。
@@ -561,7 +561,7 @@ CRLF、长路径、大小写、symlink、可执行位、窗口和系统菜单差
 - [x] 冻结托管平台 / Pull Request 的进入条件：平台身份不从 Git credential helper、SSH agent、AskPass
   或 remote URL 隐式推断；未声明具体平台、令牌存储、最小权限、取消和结果不确定语义前，不调用平台 API，
   也不启用相关入口。
-- [ ] 明确受支持托管平台与认证边界后，实现远端仓库浏览和创建拉取请求。
+- [ ] 明确 GitHub.com 的托管平台与认证边界后，实现远端仓库浏览和创建拉取请求；GitHub Enterprise 不在范围内。
 - [ ] 为自定义操作建立默认关闭的信任模型、结构化 argv、环境白名单和可见执行范围。
 - [ ] 完成固定 macOS/参考 Sourcetree 版本下的菜单层级、快捷键、键盘、VoiceOver、深浅主题与
   多显示器人工验收，记录因安全或平台限制保留的差异。
@@ -598,9 +598,9 @@ Apple FileMerge 是默认的内置外部 Diff 适配；仓库详情已提供应�
    dry-run、Continue/Abort、部分成功和默认不删除/不推送契约；单分支 Start 与单目标 Finish
    已实现并由真实临时仓库覆盖成功、冲突、取消和来源分支保留。Finish 仍不批量处理、不推送、
    不删除来源或修改 upstream；版本发布和其他自动化继续待实现。
-5. 托管平台/Pull Request：语义冻结已完成，明确不得从 Git remote 或 credential helper 猜测平台身份，
-   不自动 Push/改 upstream，API 取消与结果不确定路径已定义；仍需先声明具体支持平台、OAuth/Keychain/SSO
-   边界、令牌存储和最小 API 权限，再设计远端浏览和 PR 创建。
+5. 托管平台/Pull Request：语义冻结已完成，首期仅考虑 GitHub.com，明确不得从 Git remote 或 credential helper 猜测平台身份，
+   不自动 Push/改 upstream，API 取消与结果不确定路径已定义；仍需先声明 OAuth/Keychain 边界、令牌存储和最小 API 权限，
+   再设计远端浏览和 PR 创建。GitHub Enterprise、企业域名和企业 SSO 不在范围内。
 
 ## 10. 测试与验收
 
@@ -713,7 +713,7 @@ Apple FileMerge 是默认的内置外部 Diff 适配；仓库详情已提供应�
 2. 正式产品名、图标和独立视觉方向。
 3. macOS 最低支持版本，是否发布 Intel 构建。
 4. 首发是否只用系统 Git，是否允许选择 Homebrew/自定义 Git。
-5. 1.0 是否包含 GitHub/GitLab/Bitbucket OAuth 与托管平台 API。
+5. [x] 1.0 托管平台范围仅为 GitHub.com；GitHub Enterprise、企业域名和企业 SSO 不在范围内。
 6. 发行方式：Developer ID 站外 DMG，还是另行投入 Mac App Store 适配。
 7. 是否采集完全匿名、默认关闭的崩溃和性能遥测。
 
@@ -724,8 +724,8 @@ Apple FileMerge 是默认的内置外部 Diff 适配；仓库详情已提供应�
 1. [x] 完成性能任务：引用导航懒构建、历史搜索防抖，并在 Small/Medium fixture 上记录可比较的
    P95 和 benchmark 进程 RSS 结果；Flutter 首帧/滚动测量入口及一轮当前环境采样已交付。启动
    样本仍不足以作为稳定验收，应用内存快照仍属于后续专项测量。
-2. 继续完成 AskPass 兼容性验证：企业 SSO；真实 GitHub 远端、Keychain、SSH Agent 以及认证等待、
-   取消、恢复的本地 UI E2E 已交付，仍需在具体 SSO 账户环境复核结果。
+2. [x] 收敛 AskPass 兼容性验证范围：真实 GitHub.com 远端、Keychain、SSH Agent 以及认证等待、
+   取消、恢复的本地 UI E2E 已交付；GitHub Enterprise、企业域名和企业 SSO 明确排除在产品范围外。
 3. 冻结“隐藏变更…”“刷新远程仓库状态”“更新”的产品语义，再决定是否进入实现；在语义冻结前
    不得将它们映射为 Stash、Fetch 或 Pull。
 4. 已交付 AppKit 系统全屏平铺资格与全屏 Space 的 frame 保护；后续在公开方向选择 API

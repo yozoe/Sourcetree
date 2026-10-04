@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- 范围边界已明确：托管平台首期仅支持 GitHub.com（含 GitHub.com 私有仓库）；GitHub Enterprise、企业域名和企业 SSO 不在产品范围内，相关入口继续标记为“（待实现）”。
+
 - 仓库详情的 LFS 摘要现在在检测到 `filter=lfs` 时同时检查本机 `git-lfs` 是否可用，并在工具可用时显示 `git lfs ls-files` 返回的只读跟踪文件数量；只读显示“已配置 LFS”“已配置 LFS（指针文件 N 个）”或“已配置 LFS（工具不可用）”，不会触发下载、迁移、清理或其他写操作。
 - M4 低风险评估开始交付 submodule 只读状态：工作区改动行会显示 Git porcelain v2 返回的提交、已跟踪和未跟踪状态；不会递归更新子模块，也不会为子模块提供外部 Diff 或写操作入口。
 - 历史搜索现在支持 `author:`、`committer:`、`path:`、`after:` 和 `before:` 组合条件；结构化查询通过真实 Git `log` 读取并保持固定引用快照分页，路径和查询长度经过校验，切换查询或关闭工作区会取消过期读取。普通文本仍可快速筛选已加载提交的标题、正文、作者和对象 ID。
@@ -29,8 +31,8 @@
   `GIT_DESKTOP_AUTH_TEST_URL` 与 `GIT_DESKTOP_AUTH_TEST_EXPECTED_REF` 后，可通过当前 Git
   credential helper、macOS Keychain 或 `SSH_AUTH_SOCK` 验证 `git ls-remote`；测试不输出远端
   URL、stderr 或凭据，默认 CI 不依赖私有仓库。
-- 已在 GitHub 私有仓库上完成两条真实认证验收：SSH Agent，以及 HTTPS 配合 macOS Keychain
-  credential helper；企业 SSO 仍未做端到端验证。
+- 已在 GitHub.com 私有仓库上完成两条真实认证验收：SSH Agent，以及 HTTPS 配合 macOS Keychain
+  credential helper；GitHub Enterprise、企业域名和企业 SSO 不在支持范围内。
 
 - P2 Alpha 开始接入只读引用日志：本地分支右键菜单的“查看引用日志”会读取 Git 的真实分支 reflog（底层同时保留 HEAD 记录），显示选择器、提交对象 ID、消息和时间，支持筛选并定位到对应提交；读取支持取消，不会改变当前分支、工作区或仓库引用。
 - 历史文件只读修改日志窗口新增 Blame：按 `git blame --line-porcelain` 的真实结果显示责任提交、作者、源码行和摘要；读取支持取消，删除文件和不安全路径不会伪装成可用操作。
@@ -42,8 +44,7 @@
 - 受控真实认证测试在执行 `ls-remote` 前拒绝 userinfo、query、fragment 和 SCP 密码形态，避免
   测试配置把凭据或控制字符带入 Git 参数；期望 ref 也会拒绝控制字符，避免断言歧义。
 - 受控认证测试现在会按 `GIT_DESKTOP_AUTH_TEST_MODE` 先检查 Keychain helper 或 SSH Agent socket
-  前置条件；企业 SSO 保留以最终受控远端 `ls-remote` 成功作为跨提供商兼容性边界，不会伪造本地
-  登录状态。
+  前置条件；测试范围限定为 GitHub.com，不会伪造企业平台登录状态。
 - GitRunner 现在强制所有调用保持 `GIT_TERMINAL_PROMPT=0`；即使单次调用环境误传 `1`，也不会让
   隐藏的 Git 子进程回退到终端等待凭据。
 - P2 Alpha 补齐 Tag 状态入口：标签右键菜单现在可只读验证附注标签签名，并比较本地标签与指定远端
@@ -83,7 +84,7 @@
   并在紧凑布局同步切换面板；核心 macOS UI E2E 现已覆盖选择文件状态、
   暂存、提交、创建并检出分支、选择推送分支以及本地 bare remote 的远端 ref/ahead-behind 核验。
 - macOS 首页与工作区窗口现在显式允许 AppKit 系统全屏平铺，并在显示器拔出或重新排列时保留由系统管理的全屏/分屏 Space 状态；用户可通过绿色按钮进入系统布局。由于 AppKit 没有公开的左/右方向调用接口，对应菜单项仍明确标注“待实现”，不会降级成普通半屏窗口。
-- AskPass 新增本地受认证 HTTP Git 回归测试，实际验证 Git 收到 401 后通过 native helper/broker 串行获取用户名和密码、取消后清理并在下一次操作恢复，最终完成 `ls-remote`；测试不连接外部远端，真实 Keychain、SSH Agent、企业 SSO 和私有远端仍待受控环境验证。
+- AskPass 新增本地受认证 HTTP Git 回归测试，实际验证 Git 收到 401 后通过 native helper/broker 串行获取用户名和密码、取消后清理并在下一次操作恢复，最终完成 `ls-remote`；测试不连接外部远端，真实 Keychain、SSH Agent 和 GitHub.com 私有远端已完成受控验证，企业平台不在支持范围内。
 - 多个并存的合并工作区组现在会分别保存成员和标签顺序，并在重启后按原组恢复；旧版“全部合并”快照会自动迁移为单个合并组。
 - macOS 显示器拔出或重新排列后，首页和工作区窗口会自动回到当前显示器的可见区域；窗口过大时会按新屏幕收缩，并尽量保持原来的中心位置。
 - 首页仓库清单支持收藏/取消收藏；收藏状态随本地仓库清单持久化，并在下次启动恢复。星标按钮独立于打开仓库操作，不修改 Git 状态或保存凭据。
