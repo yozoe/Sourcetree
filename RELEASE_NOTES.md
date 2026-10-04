@@ -5,6 +5,7 @@
 ## Unreleased
 
 - 范围边界已明确：托管平台首期仅支持 GitHub.com（含 GitHub.com 私有仓库）；GitHub Enterprise、企业域名和企业 SSO 不在产品范围内，相关入口继续标记为“（待实现）”。
+- GitHub.com 集成首阶段新增本地安全契约测试：只接受无凭据的 GitHub.com HTTPS/SSH remote，拒绝企业/自定义域名、API 地址、查询串和片段；Pull Request 草稿必须显式校验仓库、head、base、标题和正文，不会联网、读取凭据或自动 Push。
 
 - 仓库详情的 LFS 摘要现在在检测到 `filter=lfs` 时同时检查本机 `git-lfs` 是否可用，并在工具可用时显示 `git lfs ls-files` 返回的只读跟踪文件数量；只读显示“已配置 LFS”“已配置 LFS（指针文件 N 个）”或“已配置 LFS（工具不可用）”，不会触发下载、迁移、清理或其他写操作。
 - M4 低风险评估开始交付 submodule 只读状态：工作区改动行会显示 Git porcelain v2 返回的提交、已跟踪和未跟踪状态；不会递归更新子模块，也不会为子模块提供外部 Diff 或写操作入口。
