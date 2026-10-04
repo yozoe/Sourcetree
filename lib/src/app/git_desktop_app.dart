@@ -811,6 +811,8 @@ RepositoryAction? _repositoryActionFromName(String? name) => switch (name) {
 
 enum _RebasePromptAction { continueRebase, skip, abort, cancel }
 
+enum _GitFlowFinishResultAction { close, continueMerge, abortMerge, refresh }
+
 enum _RepositoryCheckoutTargetKind { localBranch, remoteBranch, commit }
 
 enum _CommitScope { stagedIndex, allTracked, selectedPaths }
@@ -2933,13 +2935,128 @@ class _RepositoryWorkspaceScreenState
         .read(repositorySessionProvider.notifier)
         .finishGitFlowBranch(plan);
     if (!mounted) return;
-    final message =
-        result?.message ??
-        ref.read(repositorySessionProvider).message ??
-        'Git-flow Finish 未执行；请刷新仓库状态后重试。';
-    ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(message), duration: const Duration(seconds: 4)),
+    if (result == null) {
+      final message =
+          ref.read(repositorySessionProvider).message ??
+          'Git-flow Finish 未执行；请刷新仓库状态后重试。';
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(message), duration: const Duration(seconds: 4)),
+      );
+      return;
+    }
+    await _showGitFlowFinishResultDialog(plan, result);
+  }
+
+  /// Shows a durable Git-flow Finish result with recovery actions when Git
+  /// leaves a merge paused or the post-write state is uncertain.
+  /// 中文：显示可持续查看的 Git-flow Finish 结果，并在合并暂停或写入结果不确定时
+  /// 提供恢复入口；不会自动推送、删除来源分支或回滚 Git 写入。
+  Future<void> _showGitFlowFinishResultDialog(
+    GitFlowFinishPlan plan,
+    GitFlowFinishExecutionResult result,
+  ) async {
+    final session = ref.read(repositorySessionProvider);
+    final mergePaused =
+        session.operationState == GitRepositoryOperationState.merge;
+    final action = await showDialog<_GitFlowFinishResultAction>(
+      context: context,
+      barrierDismissible: false,
+      builder: (BuildContext context) {
+        final theme = Theme.of(context);
+        final title = result.merged
+            ? 'Git-flow Finish 已完成'
+            : mergePaused
+            ? 'Git-flow Finish 已暂停'
+            : 'Git-flow Finish 未完成';
+        return AlertDialog(
+          title: Row(
+            children: [
+              Icon(
+                result.merged
+                    ? Icons.check_circle_outline
+                    : mergePaused
+                    ? Icons.warning_amber_outlined
+                    : Icons.info_outline,
+                color: result.merged
+                    ? theme.colorScheme.primary
+                    : theme.colorScheme.error,
+              ),
+              const SizedBox(width: 10),
+              Expanded(child: Text(title)),
+            ],
+          ),
+          content: SizedBox(
+            width: 520,
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                Text(result.message),
+                if (mergePaused) ...[
+                  const SizedBox(height: 12),
+                  const Text('当前仓库仍处于合并状态。解决冲突后暂存全部结果，再继续合并；也可以中止合并并恢复合并前状态。'),
+                ] else if (!result.merged) ...[
+                  const SizedBox(height: 12),
+                  const Text('未执行新的恢复操作；请刷新后以 Git 的实际状态为准。'),
+                ],
+                if (result.merged) ...[
+                  const SizedBox(height: 12),
+                  Text('当前分支：${plan.targetBranch}\n来源分支仍保留；未推送、未删除来源分支。'),
+                ],
+              ],
+            ),
+          ),
+          actions: [
+            if (mergePaused)
+              OutlinedButton(
+                onPressed: () => Navigator.of(
+                  context,
+                ).pop(_GitFlowFinishResultAction.abortMerge),
+                child: const Text('中止合并'),
+              ),
+            if (mergePaused)
+              FilledButton(
+                onPressed: () => Navigator.of(
+                  context,
+                ).pop(_GitFlowFinishResultAction.continueMerge),
+                child: const Text('继续合并'),
+              ),
+            if (!result.merged && !mergePaused)
+              OutlinedButton(
+                onPressed: () => Navigator.of(
+                  context,
+                ).pop(_GitFlowFinishResultAction.refresh),
+                child: const Text('刷新状态'),
+              ),
+            TextButton(
+              onPressed: () =>
+                  Navigator.of(context).pop(_GitFlowFinishResultAction.close),
+              child: const Text('关闭'),
+            ),
+          ],
+        );
+      },
     );
+    if (!mounted ||
+        action == null ||
+        action == _GitFlowFinishResultAction.close) {
+      return;
+    }
+    final controller = ref.read(repositorySessionProvider.notifier);
+    switch (action) {
+      case _GitFlowFinishResultAction.continueMerge:
+        await _continueMerge();
+      case _GitFlowFinishResultAction.abortMerge:
+        await _confirmAbortMerge();
+      case _GitFlowFinishResultAction.refresh:
+        await controller.refresh();
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('已刷新仓库状态，请以当前 Git 状态为准。')));
+      case _GitFlowFinishResultAction.close:
+        break;
+    }
   }
 
   /// 中文：确认分支删除的范围、远端影响和本地强制删除风险。

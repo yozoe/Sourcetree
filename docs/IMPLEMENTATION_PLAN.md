@@ -603,7 +603,8 @@ Apple FileMerge 是默认的内置外部 Diff 适配；仓库详情已提供应�
    dry-run、Continue/Abort、部分成功和默认不删除/不推送契约；单分支 Start 与单目标 Finish
    已实现并由真实临时仓库覆盖成功、冲突、取消和来源分支保留。Finish 目标选择器按分支类型
    优先建议常见集成分支但保留全部本地选择；Start/Finish 执行前会二次读取状态，过期预览返回
-   明确安全门禁原因且不执行写操作。Finish 仍不批量处理、不推送、
+   明确安全门禁原因且不执行写操作；Finish 结果面板在冲突暂停时提供继续/中止入口，在其他
+   未完成结果时提供刷新入口。Finish 仍不批量处理、不推送、
    不删除来源或修改 upstream；版本发布和其他自动化继续待实现。
 5. 托管平台/Pull Request：语义冻结已完成，首期仅考虑 GitHub.com，明确不得从 Git remote 或 credential helper 猜测平台身份，
    不自动 Push/改 upstream；PR 使用用户明确确认的 GitHub.com 浏览器页面，不接入 OAuth、GitHub API 或 API 令牌。

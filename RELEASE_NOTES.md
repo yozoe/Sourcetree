@@ -4,6 +4,8 @@
 
 ## Unreleased
 
+- Git-flow Finish 现在使用持久结果面板展示完成、冲突暂停和结果不确定状态；冲突时可直接继续或中止合并，其他未完成结果可直接刷新状态。恢复动作不会自动推送或删除来源分支。
+
 - 范围边界已明确：托管平台首期仅支持 GitHub.com（含 GitHub.com 私有仓库）；GitHub Enterprise、企业域名和企业 SSO 不在产品范围内，相关入口继续标记为“（待实现）”。
 - GitHub.com PR 方案已调整为浏览器交接：只接受无凭据的 GitHub.com HTTPS/SSH remote，用户明确选择 head、base、标题和正文并确认 head 已推送后，应用打开 GitHub.com PR 页面；不接入 OAuth、不调用 GitHub API、不保存 GitHub API 令牌，也不自动 Push。
 - 范围调整：LFS 仅保留仓库详情中的既有只读摘要，不再规划下载、上传、迁移、清理或独立 LFS 管理入口。
