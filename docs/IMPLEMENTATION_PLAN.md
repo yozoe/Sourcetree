@@ -560,13 +560,8 @@ CRLF、长路径、大小写、symlink、可执行位、窗口和系统菜单差
 范围调整：LFS 不再进入后续功能评估，仓库详情中的既有过滤器、工具可用性和指针文件数量只读摘要继续保留；不实现下载、上传、迁移、清理、配置修改或独立 LFS 管理入口。
 
 - [x] 完成外部 Diff（只读 argv 工具 + Apple FileMerge 回退）和 Git-flow v1 Start/单目标 Finish 的语义冻结、实现与生命周期验收；Submodule/LFS 仅保留既有只读兼容显示，不再扩展写操作或独立管理；Subtree、Git-flow 自动删除/推送/版本发布和 Mercurial/hg flow 不进入范围。
-- [x] 冻结托管平台 / Pull Request 的进入条件：平台身份不从 Git credential helper、SSH agent、AskPass
-  或 remote URL 隐式推断；未声明具体平台、令牌存储、最小权限、取消和结果不确定语义前，不调用平台 API，
-  也不启用相关入口。
-- [ ] 明确 GitHub.com 的托管平台与认证边界后，实现远端仓库浏览和创建拉取请求；GitHub Enterprise 不在范围内。
-- [x] 完成 GitHub.com 第一阶段的本地安全契约：只接受无凭据的 GitHub.com HTTPS/SSH remote，拒绝企业/自定义域名、API 地址、查询串和片段；Pull Request 草稿必须显式提供并校验仓库、head、base、标题和正文，不触发网络、凭据读取或 Push。
-- [x] 明确 GitHub.com PR 不接入 OAuth、GitHub API 或 GitHub API 令牌；PR 采用浏览器交接，应用只构造并打开用户确认的 GitHub.com PR 页面，GitHub.com 负责登录、权限和提交。
-- [ ] 清理未接入产品路径的 GitHub API/Keychain 原型代码，并实现浏览器交接的 URL 构造、校验、打开失败恢复和相关测试。
+- [x] 明确托管平台 / Pull Request 不在产品范围内：不提供 GitHub.com 或 GitHub Enterprise 的远端仓库浏览、PR 创建或 PR 管理入口；不接入 OAuth、GitHub API、API 令牌或浏览器交接。
+- [ ] 清理未接入产品路径的 GitHub API/Keychain 原型代码；清理不得影响 Git CLI、SSH Agent、AskPass 或普通 HTTPS 凭据路径。
 - [ ] 为自定义操作建立默认关闭的信任模型、结构化 argv、环境白名单和可见执行范围。
 - [ ] 完成固定 macOS/参考 Sourcetree 版本下的菜单层级、快捷键、键盘、VoiceOver、深浅主题与
   多显示器人工验收，记录因安全或平台限制保留的差异。
@@ -606,9 +601,8 @@ Apple FileMerge 是默认的内置外部 Diff 适配；仓库详情已提供应�
    明确安全门禁原因且不执行写操作；Finish 结果面板在冲突暂停时提供继续/中止入口，在其他
    未完成结果时提供刷新入口。Finish 仍不批量处理、不推送、
    不删除来源或修改 upstream；版本发布和其他自动化继续待实现。
-5. 托管平台/Pull Request：语义冻结已完成，首期仅考虑 GitHub.com，明确不得从 Git remote 或 credential helper 猜测平台身份，
-   不自动 Push/改 upstream；PR 使用用户明确确认的 GitHub.com 浏览器页面，不接入 OAuth、GitHub API 或 API 令牌。
-   仍需实现 URL 构造、校验、打开失败恢复和浏览器交接入口。GitHub Enterprise、企业域名和企业 SSO 不在范围内。
+5. 托管平台/Pull Request：明确不在产品范围内，不新增托管平台浏览、PR 创建或管理入口；不接入 OAuth、GitHub API、
+   API 令牌或浏览器交接。GitHub.com、GitHub Enterprise、企业域名和企业 SSO 均不在范围内。
 
 ## 10. 测试与验收
 
@@ -721,7 +715,8 @@ Apple FileMerge 是默认的内置外部 Diff 适配；仓库详情已提供应�
 2. 正式产品名、图标和独立视觉方向。
 3. macOS 最低支持版本，是否发布 Intel 构建。
 4. 首发是否只用系统 Git，是否允许选择 Homebrew/自定义 Git。
-5. [x] 1.0 托管平台范围仅为 GitHub.com；GitHub Enterprise、企业域名和企业 SSO 不在范围内。
+5. [x] 1.0 明确不提供托管平台或 Pull Request 能力；GitHub.com、GitHub Enterprise、企业域名和企业 SSO
+   均不在产品范围内。
 6. 发行方式：Developer ID 站外 DMG，还是另行投入 Mac App Store 适配。
 7. 是否采集完全匿名、默认关闭的崩溃和性能遥测。
 

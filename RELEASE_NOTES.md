@@ -6,8 +6,7 @@
 
 - Git-flow Finish 现在使用持久结果面板展示完成、冲突暂停和结果不确定状态；冲突时可直接继续或中止合并，其他未完成结果可直接刷新状态。恢复动作不会自动推送或删除来源分支。
 
-- 范围边界已明确：托管平台首期仅支持 GitHub.com（含 GitHub.com 私有仓库）；GitHub Enterprise、企业域名和企业 SSO 不在产品范围内，相关入口继续标记为“（待实现）”。
-- GitHub.com PR 方案已调整为浏览器交接：只接受无凭据的 GitHub.com HTTPS/SSH remote，用户明确选择 head、base、标题和正文并确认 head 已推送后，应用打开 GitHub.com PR 页面；不接入 OAuth、不调用 GitHub API、不保存 GitHub API 令牌，也不自动 Push。
+- 产品范围明确排除托管平台和 Pull Request：不提供 GitHub.com/GitHub Enterprise 的仓库浏览、PR 创建或管理入口；不接入 OAuth、GitHub API、API 令牌或浏览器交接。
 - 范围调整：LFS 仅保留仓库详情中的既有只读摘要，不再规划下载、上传、迁移、清理或独立 LFS 管理入口。
 - 范围调整：Submodule 仅保留工作区中的既有只读状态兼容显示，不再规划添加、初始化、更新、同步、推送、切换或移除操作。
 
@@ -81,10 +80,10 @@
 - 启用且信任仓库后，工作区和历史文件的外部差异入口现在会使用配置的 argv 工具；未启用时继续使用 Apple
   FileMerge，切换仓库会关闭旧工具进程并清理其私有快照。
 - 外部 Diff 配置新增 Engine 级状态 controller：配置写入保持顺序，失败可见且不会启用未保存配置，窗口关闭前会等待已排队写入完成；原生“动作 → 外部差异比对”现已接入同一安全流程。
-- 新增 M4 外部集成语义冻结文档，明确 Submodule/LFS 当前只读边界、Git-flow Start/单目标 Finish 的本地边界，以及托管平台和 Pull Request 在授权与失败恢复语义确定前继续保持待实现。
+- 新增 M4 外部集成语义冻结文档，明确 Submodule/LFS 当前只读边界、Git-flow Start/单目标 Finish 的本地边界，以及托管平台和 Pull Request 明确排除在产品范围外。
 - Git-flow v1 Start 与单目标 Finish 已接入原生菜单：两者要求清洁工作区、附着 HEAD 且没有其他 Git 操作；Start 显式选择本地起点并 dry-run 预览后创建并检出 feature/release/hotfix 分支，Finish 显式选择本地目标并以 `merge --no-edit --no-ff` 合并当前 Git-flow 分支。Finish 冲突保留 Continue/Abort 恢复入口，取消或窗口关闭会终止 Git 进程，不自动推送、删除来源或修改 upstream；批量 Finish、版本发布和其他托管能力仍保持“（待实现）”。
 - Git-flow Finish 目标选择器现在按分支类型优先建议常见集成分支（feature → develop/main/master，release/hotfix → main/master/develop），但不隐藏其他本地分支；Start/Finish 执行前会重新读取仓库状态，过期预览只返回明确的安全门禁原因，不会执行检出或合并。
-- M4 GitHub.com Pull Request 评估已冻结进入条件：创建 PR 不会隐式 Push 或修改 upstream，应用只打开用户确认的 GitHub.com 页面；在 URL 构造、分支选择和浏览器交接失败恢复完成前，托管仓库浏览和“创建拉取请求…”继续保持“（待实现）”。
+- M4 GitHub.com Pull Request 已明确不进入产品路径：不保留“创建拉取请求…”占位入口，不构造 PR URL，不读取平台账户或权限，也不调用 OAuth/API。
 
 - 修复工作区引用导航的“文件状态/历史”切换边界：选择“文件状态”会可靠打开完整工作区文件面板，
   并在紧凑布局同步切换面板；核心 macOS UI E2E 现已覆盖选择文件状态、

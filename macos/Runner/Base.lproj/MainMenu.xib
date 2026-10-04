@@ -340,7 +340,6 @@
                             <menuItem title="Git LFS（待实现）" id="GDA-repository-lfs"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-lfs-action"/></connections></menuItem>
                             <menuItem title="Git Flow（待实现）" id="GDA-repository-flow"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-flow-action"/></connections></menuItem>
                             <menuItem title="显示远程服务器（待实现）" id="GDA-repository-show-remote"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-show-remote-action"/></connections></menuItem>
-                            <menuItem title="创建拉取请求…（待实现）" id="GDA-repository-create-pr"><modifierMask key="keyEquivalentModifierMask"/><connections><action selector="repositoryFeaturePendingFromMenu:" target="Voe-Tx-rLC" id="GDA-repository-create-pr-action"/></connections></menuItem>
                         </items>
                     </menu>
                 </menuItem>
