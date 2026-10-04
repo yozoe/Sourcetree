@@ -306,7 +306,7 @@ Gatekeeper 或修改任何 macOS 安全设置。
 
 LFS 仅保留仓库详情中的既有只读摘要；不规划下载、上传、迁移、清理、配置修改或独立 LFS 管理入口。
 
-本项目不提供 GitHub Pull Request 创建、浏览或管理能力，也不把 PR 作为产品协作流程。GitHub.com、GitHub Enterprise、企业域名和企业 SSO 均不进入托管平台功能范围；应用不接入 OAuth、不调用 GitHub API、不保存 GitHub API 令牌，也不会为 PR 自动 Push。代码库中保留的 GitHub 契约/API/Keychain 原型仅供历史验证与测试，不属于产品路径。
+本项目不提供 GitHub Pull Request 创建、浏览或管理能力，也不把 PR 作为产品协作流程。GitHub.com、GitHub Enterprise、企业域名和企业 SSO 均不进入托管平台功能范围；应用不接入 OAuth、不调用 GitHub API、不保存 GitHub API 令牌，也不会为 PR 自动 Push。此前的 GitHub 契约/API/Keychain 原型已移除，不影响 Git CLI、SSH Agent、AskPass 或普通 HTTPS 凭据路径。
 
 - macOS 优先，Apple Silicon 为第一验证平台。
 - 使用系统或用户指定的 Git CLI，Git 仓库是唯一事实来源。

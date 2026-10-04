@@ -7,6 +7,7 @@
 - Git-flow Finish 现在使用持久结果面板展示完成、冲突暂停和结果不确定状态；冲突时可直接继续或中止合并，其他未完成结果可直接刷新状态。恢复动作不会自动推送或删除来源分支。
 
 - 产品范围明确排除托管平台和 Pull Request：不提供 GitHub.com/GitHub Enterprise 的仓库浏览、PR 创建或管理入口；不接入 OAuth、GitHub API、API 令牌或浏览器交接。
+- 已移除未接入产品路径的 GitHub API、Pull Request 契约和 GitHub Token Keychain 原型及 macOS 专用通道；普通 Git HTTPS、SSH Agent、AskPass 和 macOS 通用凭据路径保持独立。
 - 范围调整：LFS 仅保留仓库详情中的既有只读摘要，不再规划下载、上传、迁移、清理或独立 LFS 管理入口。
 - 范围调整：Submodule 仅保留工作区中的既有只读状态兼容显示，不再规划添加、初始化、更新、同步、推送、切换或移除操作。
 

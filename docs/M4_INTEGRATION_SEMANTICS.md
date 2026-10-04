@@ -13,7 +13,7 @@
 | Submodule | 仅保留读取 Git porcelain v2 的提交、索引和工作树状态，并在文件行显示兼容性只读摘要 | 不添加、初始化、更新、同步、推送、切换、移除或提交嵌套仓库 | 不新增 Submodule 菜单入口 |
 | Git LFS | 仅保留仓库详情中的既有只读摘要：读取 `.gitattributes` 的 `filter=lfs`、本机工具可用性和只读指针文件数量 | 不提供下载、上传、迁移、清理、配置修改或独立 LFS 管理入口 | 不新增 LFS 菜单入口 |
 | Git-flow | v1 Start 支持 feature/release/hotfix 的本地创建并检出；单目标 Finish 支持显式选择本地目标并执行一次 `merge --no-edit --no-ff` | Start 只创建并检出；Finish 只检出目标并合并当前 Git-flow 分支；两者都不推送、不删除、不修改 upstream | “Git Flow…”仅在 Flutter capability 通过时可用；批量 Finish、版本发布和自动清理仍待实现 |
-| 托管平台 / Pull Request | 不提供 GitHub 托管平台、Pull Request 创建、浏览或管理入口 | 不调用平台 API，不保存令牌，不自动 Push；GitHub 契约/API/Keychain 原型不属于产品路径 | 不支持；不新增菜单入口 |
+| 托管平台 / Pull Request | 不提供 GitHub 托管平台、Pull Request 创建、浏览或管理入口 | 不调用平台 API，不保存令牌，不自动 Push；GitHub 契约/API/Keychain 原型已移除 | 不支持；不新增菜单入口 |
 
 ## Git-flow v1 语义冻结与已交付边界
 

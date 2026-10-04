@@ -561,7 +561,7 @@ CRLF、长路径、大小写、symlink、可执行位、窗口和系统菜单差
 
 - [x] 完成外部 Diff（只读 argv 工具 + Apple FileMerge 回退）和 Git-flow v1 Start/单目标 Finish 的语义冻结、实现与生命周期验收；Submodule/LFS 仅保留既有只读兼容显示，不再扩展写操作或独立管理；Subtree、Git-flow 自动删除/推送/版本发布和 Mercurial/hg flow 不进入范围。
 - [x] 明确托管平台 / Pull Request 不在产品范围内：不提供 GitHub.com 或 GitHub Enterprise 的远端仓库浏览、PR 创建或 PR 管理入口；不接入 OAuth、GitHub API、API 令牌或浏览器交接。
-- [ ] 清理未接入产品路径的 GitHub API/Keychain 原型代码；清理不得影响 Git CLI、SSH Agent、AskPass 或普通 HTTPS 凭据路径。
+- [x] 清理未接入产品路径的 GitHub API/Keychain 原型代码；已移除 GitHub 专用 Token 通道，Git CLI、SSH Agent、AskPass 和普通 HTTPS 凭据路径保持独立。
 - [ ] 为自定义操作建立默认关闭的信任模型、结构化 argv、环境白名单和可见执行范围。
 - [ ] 完成固定 macOS/参考 Sourcetree 版本下的菜单层级、快捷键、键盘、VoiceOver、深浅主题与
   多显示器人工验收，记录因安全或平台限制保留的差异。
