@@ -10,6 +10,8 @@ import '../git/git.dart';
 import '../presentation/presentation.dart';
 import 'git_askpass_prompt_coordinator.dart';
 import 'git_sensitive_text_redactor.dart';
+import 'external_tool_runner.dart';
+import 'git_flow_semantics.dart';
 import 'repository_change_monitor.dart';
 
 part 'repository_session_tasks.dart';
@@ -70,6 +72,8 @@ enum RepositoryOperationOutcome {
   partiallySucceeded,
   uncertain,
 }
+
+enum _RebaseRecoveryAction { continueRebase, skip, abort }
 
 /// Returns the directory name Git would conventionally use for [remoteUrl].
 ///
@@ -197,6 +201,70 @@ final class RepositoryChangeRemovalResult {
   bool get hasFailures => failedPaths.isNotEmpty;
 }
 
+/// Per-tag outcomes returned by a multi-delete operation.
+///
+/// 中文：批量删除本地标签的逐项结果；成功、执行前已不存在和删除失败分别保留，
+/// 让不可逆操作的部分成功不会被统一提示掩盖。
+final class RepositoryTagDeletionResult {
+  RepositoryTagDeletionResult({
+    required List<String> deletedNames,
+    required List<String> missingNames,
+    required Map<String, String> failedNames,
+  }) : deletedNames = List<String>.unmodifiable(deletedNames),
+       missingNames = List<String>.unmodifiable(missingNames),
+       failedNames = Map<String, String>.unmodifiable(failedNames);
+
+  final List<String> deletedNames;
+  final List<String> missingNames;
+  final Map<String, String> failedNames;
+
+  bool get hasFailures => missingNames.isNotEmpty || failedNames.isNotEmpty;
+}
+
+/// Per-tag outcomes returned by a multi-push operation.
+///
+/// 中文：批量推送本地标签的逐项结果；成功、执行前已不存在和推送失败分别保留，
+/// 让远端部分成功可以被明确展示和记录。
+final class RepositoryTagPushResult {
+  RepositoryTagPushResult({
+    required List<String> pushedNames,
+    required List<String> missingNames,
+    required Map<String, String> failedNames,
+    required this.remoteName,
+  }) : pushedNames = List<String>.unmodifiable(pushedNames),
+       missingNames = List<String>.unmodifiable(missingNames),
+       failedNames = Map<String, String>.unmodifiable(failedNames);
+
+  final String remoteName;
+  final List<String> pushedNames;
+  final List<String> missingNames;
+  final Map<String, String> failedNames;
+
+  bool get hasFailures => missingNames.isNotEmpty || failedNames.isNotEmpty;
+}
+
+/// Per-tag outcomes returned by a remote multi-delete operation.
+///
+/// 中文：批量删除指定远端标签的逐项结果；成功、执行前已不存在和删除失败分别
+/// 保留。本地同名标签不会被删除，远端部分成功会被明确展示和记录。
+final class RepositoryRemoteTagDeletionResult {
+  RepositoryRemoteTagDeletionResult({
+    required List<String> deletedNames,
+    required List<String> missingNames,
+    required Map<String, String> failedNames,
+    required this.remoteName,
+  }) : deletedNames = List<String>.unmodifiable(deletedNames),
+       missingNames = List<String>.unmodifiable(missingNames),
+       failedNames = Map<String, String>.unmodifiable(failedNames);
+
+  final String remoteName;
+  final List<String> deletedNames;
+  final List<String> missingNames;
+  final Map<String, String> failedNames;
+
+  bool get hasFailures => missingNames.isNotEmpty || failedNames.isNotEmpty;
+}
+
 /// 中文：在暂存状态切换并刷新后，从 Git 状态恢复同一文件在目标分组中的展示数据。
 /// English: Rebuilds the same file's display data in its target group after a
 /// staging toggle and status refresh.
@@ -226,6 +294,7 @@ RepositoryChangeViewData? _changeAfterStageToggle(
     isStaged: isStaged,
     canToggleStage: entry.path.isValidUtf8,
     canExternalDiff: entry.submodule?.isSubmodule != true,
+    submoduleStatus: entry.submodule?.displayLabel,
   );
 }
 
@@ -292,6 +361,10 @@ final class RepositorySessionState {
     this.remoteNames = const [],
     this.remoteBranches = const [],
     this.tags = const [],
+    this.tagRemoteStatuses = const {},
+    this.tagRemoteNames = const {},
+    this.isTagInspectionRunning = false,
+    this.isTagMutationRunning = false,
     this.stashes = const [],
     this.commits = const [],
     this.historyCommits = const [],
@@ -305,12 +378,14 @@ final class RepositorySessionState {
     this.commitChanges = const [],
     this.selectedCommitFile,
     this.commitDiff,
+    this.commitDiffWhitespaceMode = GitDiffWhitespaceMode.preserve,
     this.commitAdditions = 0,
     this.commitDeletions = 0,
     this.isCommitLoading = false,
     this.isCommitDiffLoading = false,
     this.selectedChange,
     this.diff,
+    this.diffWhitespaceMode = GitDiffWhitespaceMode.preserve,
     this.isDiffLoading = false,
     this.isWorkingTreeBusy = false,
     this.isCloneRunning = false,
@@ -339,6 +414,23 @@ final class RepositorySessionState {
   final List<String> remoteNames;
   final List<GitRemoteBranch> remoteBranches;
   final List<GitTag> tags;
+
+  /// Remote comparison results keyed by local tag name.
+  /// 中文：按本地标签名保存的远端比较结果；未检查的标签不进入此映射。
+  final Map<String, GitTagRemoteStatus> tagRemoteStatuses;
+
+  /// Remote used for each tag comparison, keyed by local tag name.
+  /// 中文：按标签名保存最近一次检查所使用的远端名称。
+  final Map<String, String> tagRemoteNames;
+
+  /// Whether a tag signature or remote-status read currently owns the tag
+  /// inspection cancellation boundary.
+  /// 中文：标签签名或远端状态读取是否正在进行。
+  final bool isTagInspectionRunning;
+
+  /// Whether a local or remote batch tag mutation currently owns cancellation.
+  /// 中文：批量标签写操作是否正在运行并占用取消边界。
+  final bool isTagMutationRunning;
   final List<GitStashEntry> stashes;
   final List<GitCommit> commits;
 
@@ -360,12 +452,20 @@ final class RepositorySessionState {
   final List<GitCommitFileChange> commitChanges;
   final SelectedCommitFile? selectedCommitFile;
   final GitUnifiedDiff? commitDiff;
+
+  /// Whitespace mode used for the currently selected committed Diff.
+  /// 中文：当前提交 Diff 采用的空白比较模式。
+  final GitDiffWhitespaceMode commitDiffWhitespaceMode;
   final int commitAdditions;
   final int commitDeletions;
   final bool isCommitLoading;
   final bool isCommitDiffLoading;
   final SelectedRepositoryChange? selectedChange;
   final GitUnifiedDiff? diff;
+
+  /// Whitespace mode used for the currently selected main Diff.
+  /// 中文：当前主 Diff 采用的空白比较模式。
+  final GitDiffWhitespaceMode diffWhitespaceMode;
   final bool isDiffLoading;
   final bool isWorkingTreeBusy;
   final bool isCloneRunning;
@@ -396,6 +496,10 @@ final class RepositorySessionState {
     List<String>? remoteNames,
     List<GitRemoteBranch>? remoteBranches,
     List<GitTag>? tags,
+    Map<String, GitTagRemoteStatus>? tagRemoteStatuses,
+    Map<String, String>? tagRemoteNames,
+    bool? isTagInspectionRunning,
+    bool? isTagMutationRunning,
     List<GitStashEntry>? stashes,
     List<GitCommit>? commits,
     List<GitCommit>? historyCommits,
@@ -409,12 +513,14 @@ final class RepositorySessionState {
     List<GitCommitFileChange>? commitChanges,
     SelectedCommitFile? selectedCommitFile,
     GitUnifiedDiff? commitDiff,
+    GitDiffWhitespaceMode? commitDiffWhitespaceMode,
     int? commitAdditions,
     int? commitDeletions,
     bool? isCommitLoading,
     bool? isCommitDiffLoading,
     SelectedRepositoryChange? selectedChange,
     GitUnifiedDiff? diff,
+    GitDiffWhitespaceMode? diffWhitespaceMode,
     bool? isDiffLoading,
     bool? isWorkingTreeBusy,
     bool? isCloneRunning,
@@ -447,6 +553,11 @@ final class RepositorySessionState {
       remoteNames: remoteNames ?? this.remoteNames,
       remoteBranches: remoteBranches ?? this.remoteBranches,
       tags: tags ?? this.tags,
+      tagRemoteStatuses: tagRemoteStatuses ?? this.tagRemoteStatuses,
+      tagRemoteNames: tagRemoteNames ?? this.tagRemoteNames,
+      isTagInspectionRunning:
+          isTagInspectionRunning ?? this.isTagInspectionRunning,
+      isTagMutationRunning: isTagMutationRunning ?? this.isTagMutationRunning,
       stashes: stashes ?? this.stashes,
       commits: commits ?? this.commits,
       historyCommits: historyCommits ?? this.historyCommits,
@@ -467,6 +578,8 @@ final class RepositorySessionState {
           ? null
           : selectedCommitFile ?? this.selectedCommitFile,
       commitDiff: clearCommitDiff ? null : commitDiff ?? this.commitDiff,
+      commitDiffWhitespaceMode:
+          commitDiffWhitespaceMode ?? this.commitDiffWhitespaceMode,
       commitAdditions: commitAdditions ?? this.commitAdditions,
       commitDeletions: commitDeletions ?? this.commitDeletions,
       isCommitLoading: isCommitLoading ?? this.isCommitLoading,
@@ -475,6 +588,7 @@ final class RepositorySessionState {
           ? null
           : selectedChange ?? this.selectedChange,
       diff: clearDiff ? null : diff ?? this.diff,
+      diffWhitespaceMode: diffWhitespaceMode ?? this.diffWhitespaceMode,
       isDiffLoading: isDiffLoading ?? this.isDiffLoading,
       isWorkingTreeBusy: isWorkingTreeBusy ?? this.isWorkingTreeBusy,
       isCloneRunning: isCloneRunning ?? this.isCloneRunning,
@@ -530,6 +644,7 @@ final class RepositorySessionController
   late GitRepositoryReader _reader;
   late GitRepositoryWriter _writer;
   late RepositoryChangeMonitor _changeMonitor;
+  late ExternalToolRunner _externalToolRunner;
   Future<void> Function()? _refreshHookForTesting;
   int _repositoryGeneration = 0;
   int _historyGeneration = 0;
@@ -547,6 +662,7 @@ final class RepositorySessionController
   var _automaticRefreshPending = false;
   var _automaticRefreshNeedsMetadata = false;
   var _automaticRefreshRequestVersion = 0;
+  var _isDisposed = false;
   DateTime? _lastAutomaticRefreshCompletedAt;
 
   /// 中文：构建当前组件的界面。
@@ -558,8 +674,10 @@ final class RepositorySessionController
     _reader = ref.watch(gitRepositoryReaderProvider);
     _writer = ref.watch(gitRepositoryWriterProvider);
     _changeMonitor = ref.watch(repositoryChangeMonitorProvider);
+    _externalToolRunner = ref.watch(externalToolRunnerProvider);
     _refreshHookForTesting = ref.watch(repositoryRefreshHookForTestingProvider);
     ref.onDispose(() {
+      _isDisposed = true;
       _cancelActiveGitOperations();
       unawaited(_changeMonitor.stop());
     });
@@ -654,7 +772,7 @@ final class RepositorySessionController
       while (_automaticRefreshPending &&
           _automaticRefreshEnabled &&
           !_isShuttingDown &&
-          ref.mounted) {
+          !_isDisposed) {
         final repository = state.repository;
         if (repository == null ||
             state.phase == RepositorySessionPhase.empty ||
@@ -1047,6 +1165,7 @@ final class RepositorySessionController
     int repositoryGeneration,
   ) =>
       !_isShuttingDown &&
+      !_isDisposed &&
       repositoryGeneration == _repositoryGeneration &&
       identical(state.repository, repository);
 
@@ -1089,12 +1208,17 @@ final class RepositorySessionController
     if (normalizedPath.isEmpty) {
       return;
     }
+    // A configured external Diff process owns snapshots for the previous
+    // repository. Close it before publishing the new repository generation so
+    // a GUI tool cannot retain stale paths across workspace switches.
+    await _externalToolRunner.closeAll();
     final previousSelection = preserveWorkingTreeSurface
         ? state.selectedChange
         : null;
     final previousRefId = preserveWorkingTreeSurface
         ? state.selectedRefId
         : null;
+    _historyQueryCancellation?.cancel();
     final generation = ++_repositoryGeneration;
     _historyGeneration++;
     _diffGeneration++;
@@ -1129,6 +1253,14 @@ final class RepositorySessionController
       );
       if (generation != _repositoryGeneration) return;
 
+      GitHistoryQuery? historyQuery;
+      try {
+        final parsed = GitHistoryQuery.tryParse(state.searchQuery);
+        historyQuery = parsed?.isStructured == true ? parsed : null;
+      } on GitException {
+        historyQuery = null;
+      }
+
       final results = await Future.wait<Object?>([
         _reader.readStatus(repository),
         _reader.readRemoteUrl(repository),
@@ -1142,6 +1274,7 @@ final class RepositorySessionController
           repository,
           limit: _historyPageReadLimit,
           revisionSnapshot: historyRevisionSnapshot,
+          query: historyQuery,
         ),
         _readGitVersion(),
       ]);
@@ -1874,13 +2007,21 @@ final class RepositorySessionController
 
   /// Continues the paused rebase after conflict fixes have been staged.
   /// 中文：暂存冲突修复后继续暂停的变基。
-  Future<bool> continueRebase() =>
-      _trackBooleanGitTask(() => _finishPausedRebase(abort: false));
+  Future<bool> continueRebase() => _trackBooleanGitTask(
+    () => _finishPausedRebase(action: _RebaseRecoveryAction.continueRebase),
+  );
+
+  /// Skips the current commit in a paused rebase sequence.
+  /// 中文：复核暂停的变基状态后跳过当前提交，并刷新真实仓库状态。
+  Future<bool> skipRebase() => _trackBooleanGitTask(
+    () => _finishPausedRebase(action: _RebaseRecoveryAction.skip),
+  );
 
   /// Aborts the paused rebase and restores the pre-rebase state.
   /// 中文：中止暂停的变基并恢复变基前状态。
-  Future<bool> abortRebase() =>
-      _trackBooleanGitTask(() => _finishPausedRebase(abort: true));
+  Future<bool> abortRebase() => _trackBooleanGitTask(
+    () => _finishPausedRebase(action: _RebaseRecoveryAction.abort),
+  );
 
   /// Continues a paused merge after all conflict resolutions are staged.
   /// 中文：在所有冲突解决结果已暂存后继续暂停的合并。
@@ -1906,7 +2047,9 @@ final class RepositorySessionController
     ),
   );
 
-  Future<bool> _finishPausedRebase({required bool abort}) async {
+  Future<bool> _finishPausedRebase({
+    required _RebaseRecoveryAction action,
+  }) async {
     final repository = state.repository;
     if (repository == null ||
         state.operationState != GitRepositoryOperationState.rebase ||
@@ -1927,17 +2070,23 @@ final class RepositorySessionController
     try {
       await _runWithAskPassSession(
         cancellation: cancellation,
-        run: (environment) => abort
-            ? _writer.abortRebase(
-                repository,
-                cancellationToken: cancellation,
-                environment: environment,
-              )
-            : _writer.continueRebase(
-                repository,
-                cancellationToken: cancellation,
-                environment: environment,
-              ),
+        run: (environment) => switch (action) {
+          _RebaseRecoveryAction.abort => _writer.abortRebase(
+            repository,
+            cancellationToken: cancellation,
+            environment: environment,
+          ),
+          _RebaseRecoveryAction.skip => _writer.skipRebase(
+            repository,
+            cancellationToken: cancellation,
+            environment: environment,
+          ),
+          _RebaseRecoveryAction.continueRebase => _writer.continueRebase(
+            repository,
+            cancellationToken: cancellation,
+            environment: environment,
+          ),
+        },
       );
       await refresh();
       final succeeded = state.phase == RepositorySessionPhase.ready;
@@ -1947,7 +2096,11 @@ final class RepositorySessionController
             ? RepositoryOperationOutcome.succeeded
             : RepositoryOperationOutcome.uncertain,
         message: succeeded
-            ? (abort ? '已中止变基。' : '已继续变基。')
+            ? switch (action) {
+                _RebaseRecoveryAction.abort => '已中止变基。',
+                _RebaseRecoveryAction.skip => '已跳过当前变基提交。',
+                _RebaseRecoveryAction.continueRebase => '已继续变基。',
+              }
             : '变基恢复可能已完成，但本地刷新失败；请刷新确认当前操作状态。',
       );
       return succeeded;
@@ -1955,7 +2108,7 @@ final class RepositorySessionController
       await refresh();
       final message =
           error is GitCommandException && error.kind == GitErrorKind.conflicts
-          ? '变基仍有冲突。请解决冲突并暂存后继续，或选择中止变基。'
+          ? '变基仍有冲突。请解决冲突并暂存后继续、跳过当前提交，或选择中止变基。'
           : _friendlyError(error);
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
@@ -2003,6 +2156,18 @@ final class RepositorySessionController
     ),
   );
 
+  /// Skips the current commit in a paused cherry-pick sequence.
+  /// 中文：复核遴选暂停状态后跳过当前提交，并刷新真实仓库状态。
+  Future<bool> skipCherryPick() => _trackBooleanGitTask(
+    () => _finishPausedRepositoryOperation(
+      expectedState: GitRepositoryOperationState.cherryPick,
+      successMessage: '已跳过当前遴选提交。',
+      conflictMessage: '遴选仍有冲突，请处理冲突后重试跳过。',
+      run: (repository, cancellation) =>
+          _writer.skipCherryPick(repository, cancellationToken: cancellation),
+    ),
+  );
+
   /// Continues a paused revert after conflict fixes have been staged.
   /// 中文：暂存冲突修复后继续暂停的回滚。
   Future<bool> continueRevert() => _trackBooleanGitTask(
@@ -2024,6 +2189,18 @@ final class RepositorySessionController
       conflictMessage: '回滚仍有冲突。',
       run: (repository, cancellation) =>
           _writer.abortRevert(repository, cancellationToken: cancellation),
+    ),
+  );
+
+  /// Skips the current commit in a paused revert sequence.
+  /// 中文：复核回滚暂停状态后跳过当前提交，并刷新真实仓库状态。
+  Future<bool> skipRevert() => _trackBooleanGitTask(
+    () => _finishPausedRepositoryOperation(
+      expectedState: GitRepositoryOperationState.revert,
+      successMessage: '已跳过当前回滚提交。',
+      conflictMessage: '回滚仍有冲突，请处理冲突后重试跳过。',
+      run: (repository, cancellation) =>
+          _writer.skipRevert(repository, cancellationToken: cancellation),
     ),
   );
 
@@ -2417,7 +2594,18 @@ final class RepositorySessionController
     final existingCommits = state.historyCommits;
     final historyRevisionSnapshot = state.historyRevisionSnapshot;
     final historyOffset = state.historyOffset;
+    GitHistoryQuery? historyQuery;
+    try {
+      final parsed = GitHistoryQuery.tryParse(state.searchQuery);
+      historyQuery = parsed?.isStructured == true ? parsed : null;
+    } on GitException catch (error) {
+      state = state.copyWith(historyLoadError: error.message);
+      return;
+    }
     final generation = ++_historyGeneration;
+    _historyQueryCancellation?.cancel();
+    final cancellation = GitCancellationToken();
+    _historyQueryCancellation = cancellation;
     state = state.copyWith(
       commits: existingCommits,
       historyCommits: existingCommits,
@@ -2431,6 +2619,8 @@ final class RepositorySessionController
         limit: _historyPageReadLimit,
         offset: historyOffset,
         revisionSnapshot: historyRevisionSnapshot,
+        query: historyQuery,
+        cancellationToken: cancellation,
       );
       if (!ref.mounted ||
           generation != _historyGeneration ||
@@ -2462,12 +2652,22 @@ final class RepositorySessionController
         isHistoryLoading: false,
         clearHistoryLoadError: true,
       );
+    } on GitCancelledException {
+      // A newer query or shutdown owns the visible state.
     } on Object catch (error) {
-      if (!ref.mounted || generation != _historyGeneration) return;
+      if (!ref.mounted ||
+          cancellation.isCancelled ||
+          generation != _historyGeneration) {
+        return;
+      }
       state = state.copyWith(
         isHistoryLoading: false,
         historyLoadError: _friendlyError(error),
       );
+    } finally {
+      if (identical(_historyQueryCancellation, cancellation)) {
+        _historyQueryCancellation = null;
+      }
     }
   }
 
@@ -2710,16 +2910,24 @@ final class RepositorySessionController
 
   /// 中文：更新当前选择。
   /// English: Updates the current selection.
-  Future<void> selectCommitFileByPath(String? path) async {
+  Future<void> selectCommitFileByPath(
+    String? path, {
+    GitDiffWhitespaceMode? whitespaceMode,
+  }) async {
     if (!_isInsideTrackedGitTask) {
-      return _trackVoidGitTask(() => selectCommitFileByPath(path));
+      return _trackVoidGitTask(
+        () => selectCommitFileByPath(path, whitespaceMode: whitespaceMode),
+      );
     }
+    final selectedWhitespaceMode =
+        whitespaceMode ?? state.commitDiffWhitespaceMode;
     final objectId = state.selectedCommitId;
     final repository = state.repository;
     if (path == null || objectId == null || repository == null) {
       _commitDiffGeneration++;
       state = state.copyWith(
         isCommitDiffLoading: false,
+        commitDiffWhitespaceMode: selectedWhitespaceMode,
         clearSelectedCommitFile: true,
         clearCommitDiff: true,
       );
@@ -2733,6 +2941,7 @@ final class RepositorySessionController
     final generation = ++_commitDiffGeneration;
     state = state.copyWith(
       selectedCommitFile: SelectedCommitFile(objectId: objectId, file: file),
+      commitDiffWhitespaceMode: selectedWhitespaceMode,
       isCommitDiffLoading: true,
       clearCommitDiff: true,
       clearMessage: true,
@@ -2743,6 +2952,7 @@ final class RepositorySessionController
         objectId: objectId,
         path: file.path.display,
         parentObjectId: parentObjectId,
+        whitespaceMode: selectedWhitespaceMode,
       );
       if (!ref.mounted ||
           generation != _commitDiffGeneration ||
@@ -3047,6 +3257,341 @@ final class RepositorySessionController
     return history;
   }
 
+  /// Reads line ownership for one current tracked file without changing the
+  /// selected commit or working-tree state.
+  ///
+  /// 中文：读取当前已跟踪文件的逐行 Blame，不改变提交选择或工作区状态；仓库
+  /// 切换和关闭会使过期结果失效。
+  Future<List<GitBlameLine>> readBlame(
+    String path, {
+    required GitCancellationToken cancellationToken,
+  }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackRequiredGitTask(
+        () => readBlame(path, cancellationToken: cancellationToken),
+      );
+    }
+    final repository = state.repository;
+    if (repository == null || state.phase != RepositorySessionPhase.ready) {
+      throw StateError('当前没有可读取 Blame 的仓库。');
+    }
+    final blame = await _reader.readBlame(
+      repository,
+      path: path,
+      cancellationToken: cancellationToken,
+    );
+    if (cancellationToken.isCancelled) {
+      throw const GitCancelledException();
+    }
+    if (!ref.mounted || state.repository?.id != repository.id) {
+      throw StateError('仓库已切换，无法继续读取 Blame。');
+    }
+    return blame;
+  }
+
+  /// Reads the current repository reflog for a read-only history dialog.
+  ///
+  /// 中文：读取当前仓库的分支与 HEAD reflog，结果只用于只读历史窗口；如果
+  /// 仓库在读取期间关闭或切换，会拒绝返回属于旧工作区的记录。
+  Future<List<GitReflogEntry>> readReflog({
+    required GitCancellationToken cancellationToken,
+  }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackRequiredGitTask(
+        () => readReflog(cancellationToken: cancellationToken),
+      );
+    }
+    final repository = state.repository;
+    if (repository == null || state.phase != RepositorySessionPhase.ready) {
+      throw StateError('当前没有可读取引用日志的仓库。');
+    }
+    final entries = await _reader.readReflog(
+      repository,
+      cancellationToken: cancellationToken,
+    );
+    if (cancellationToken.isCancelled) {
+      throw const GitCancelledException();
+    }
+    if (!ref.mounted || state.repository?.id != repository.id) {
+      throw StateError('仓库已切换，无法继续读取引用日志。');
+    }
+    return entries;
+  }
+
+  /// Verifies one loaded annotated tag and stores the Git-backed result.
+  ///
+  /// 中文：验证一个已加载标签的签名并写回会话状态；轻量标签会返回
+  /// `notAnnotated`，仓库切换、关闭或取消会使结果失效。
+  Future<GitTagSignatureStatus> verifyTagSignature(String tagName) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackRequiredGitTask(() => verifyTagSignature(tagName));
+    }
+    final repository = state.repository;
+    final tag = state.tags.where((item) => item.name == tagName).firstOrNull;
+    if (repository == null ||
+        tag == null ||
+        state.phase != RepositorySessionPhase.ready) {
+      throw StateError('当前没有可验证的标签。');
+    }
+    _tagInspectionCancellation?.cancel();
+    final cancellation = GitCancellationToken();
+    _tagInspectionCancellation = cancellation;
+    state = state.copyWith(isTagInspectionRunning: true, clearMessage: true);
+    final generation = _repositoryGeneration;
+    try {
+      final result = await _reader.readTagSignature(
+        repository,
+        tag,
+        cancellationToken: cancellation,
+      );
+      if (cancellation.isCancelled ||
+          !ref.mounted ||
+          generation != _repositoryGeneration ||
+          state.repository?.id != repository.id) {
+        throw const GitCancelledException();
+      }
+      state = state.copyWith(
+        tags: [
+          for (final current in state.tags)
+            current.name == tag.name
+                ? current.copyWith(signatureStatus: result)
+                : current,
+        ],
+        clearMessage: true,
+      );
+      return result;
+    } finally {
+      if (identical(_tagInspectionCancellation, cancellation)) {
+        _tagInspectionCancellation = null;
+        if (ref.mounted) {
+          state = state.copyWith(isTagInspectionRunning: false);
+        }
+      }
+    }
+  }
+
+  /// Verifies every loaded tag in one cancellable Git task.
+  ///
+  /// 中文：在同一个可取消任务中验证全部已加载标签；每个标签的结果会原子写回
+  /// 会话状态，仓库切换或关闭会使整批结果失效。
+  Future<Map<String, GitTagSignatureStatus>> verifyAllTagSignatures() async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackRequiredGitTask(verifyAllTagSignatures);
+    }
+    final repository = state.repository;
+    if (repository == null || state.phase != RepositorySessionPhase.ready) {
+      throw StateError('当前没有可验证的标签。');
+    }
+    _tagInspectionCancellation?.cancel();
+    final cancellation = GitCancellationToken();
+    _tagInspectionCancellation = cancellation;
+    state = state.copyWith(isTagInspectionRunning: true, clearMessage: true);
+    final generation = _repositoryGeneration;
+    try {
+      final results = <String, GitTagSignatureStatus>{};
+      for (final tag in state.tags) {
+        final result = await _reader.readTagSignature(
+          repository,
+          tag,
+          cancellationToken: cancellation,
+        );
+        if (cancellation.isCancelled) throw const GitCancelledException();
+        results[tag.name] = result;
+      }
+      if (!ref.mounted ||
+          generation != _repositoryGeneration ||
+          state.repository?.id != repository.id) {
+        throw const GitCancelledException();
+      }
+      state = state.copyWith(
+        tags: [
+          for (final tag in state.tags)
+            tag.copyWith(signatureStatus: results[tag.name]),
+        ],
+        clearMessage: true,
+      );
+      return Map<String, GitTagSignatureStatus>.unmodifiable(results);
+    } finally {
+      if (identical(_tagInspectionCancellation, cancellation)) {
+        _tagInspectionCancellation = null;
+        if (ref.mounted) {
+          state = state.copyWith(isTagInspectionRunning: false);
+        }
+      }
+    }
+  }
+
+  /// Reads one configured remote's tags and compares a local tag without
+  /// updating tracking refs or performing a fetch.
+  ///
+  /// 中文：只读检查本地标签与指定远端标签引用是否一致，不执行 Fetch，也不修改
+  /// 本地远端跟踪引用；结果会写回会话状态。
+  Future<GitTagRemoteStatus> readRemoteTagStatus(
+    String tagName, {
+    required String remoteName,
+  }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackRequiredGitTask(
+        () => readRemoteTagStatus(tagName, remoteName: remoteName),
+      );
+    }
+    final repository = state.repository;
+    final tag = state.tags.where((item) => item.name == tagName).firstOrNull;
+    final normalizedRemote = remoteName.trim();
+    if (repository == null ||
+        tag == null ||
+        !state.remoteNames.contains(normalizedRemote) ||
+        state.phase != RepositorySessionPhase.ready) {
+      throw StateError('当前没有可检查的标签或远端。');
+    }
+    _tagInspectionCancellation?.cancel();
+    final cancellation = GitCancellationToken();
+    _tagInspectionCancellation = cancellation;
+    state = state.copyWith(isTagInspectionRunning: true, clearMessage: true);
+    final generation = _repositoryGeneration;
+    try {
+      final remoteTags = await _reader.readRemoteTags(
+        repository,
+        remoteName: normalizedRemote,
+        cancellationToken: cancellation,
+      );
+      final remote = remoteTags
+          .where((item) => item.name == tag.name)
+          .firstOrNull;
+      final result = compareGitTagWithRemote(tag, remote);
+      if (cancellation.isCancelled ||
+          !ref.mounted ||
+          generation != _repositoryGeneration ||
+          state.repository?.id != repository.id) {
+        throw const GitCancelledException();
+      }
+      state = state.copyWith(
+        tagRemoteStatuses: {...state.tagRemoteStatuses, tag.name: result},
+        tagRemoteNames: {...state.tagRemoteNames, tag.name: normalizedRemote},
+        clearMessage: true,
+      );
+      return result;
+    } finally {
+      if (identical(_tagInspectionCancellation, cancellation)) {
+        _tagInspectionCancellation = null;
+        if (ref.mounted) {
+          state = state.copyWith(isTagInspectionRunning: false);
+        }
+      }
+    }
+  }
+
+  /// Reads the current tag names advertised by one configured remote.
+  ///
+  /// 中文：读取指定远端当前公开的标签名称，供远端标签写操作在选择与执行前
+  /// 重新校验；不更新本地跟踪引用，也不修改会话中的本地标签集合。
+  Future<List<String>> readRemoteTagNames({required String remoteName}) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackRequiredGitTask(
+        () => readRemoteTagNames(remoteName: remoteName),
+      );
+    }
+    final repository = state.repository;
+    final normalizedRemote = remoteName.trim();
+    if (repository == null ||
+        !state.remoteNames.contains(normalizedRemote) ||
+        state.phase != RepositorySessionPhase.ready) {
+      throw StateError('当前没有可读取标签的远端。');
+    }
+    _tagInspectionCancellation?.cancel();
+    final cancellation = GitCancellationToken();
+    _tagInspectionCancellation = cancellation;
+    state = state.copyWith(isTagInspectionRunning: true, clearMessage: true);
+    final generation = _repositoryGeneration;
+    try {
+      final tags = await _reader.readRemoteTags(
+        repository,
+        remoteName: normalizedRemote,
+        cancellationToken: cancellation,
+      );
+      if (cancellation.isCancelled ||
+          !ref.mounted ||
+          generation != _repositoryGeneration ||
+          state.repository?.id != repository.id) {
+        throw const GitCancelledException();
+      }
+      return List<String>.unmodifiable(tags.map((tag) => tag.name));
+    } finally {
+      if (identical(_tagInspectionCancellation, cancellation)) {
+        _tagInspectionCancellation = null;
+        if (ref.mounted) {
+          state = state.copyWith(isTagInspectionRunning: false);
+        }
+      }
+    }
+  }
+
+  /// Compares every loaded local tag with one configured remote in one read.
+  ///
+  /// 中文：通过一次只读 `ls-remote` 检查全部本地标签与指定远端的状态，不执行
+  /// Fetch，也不修改远端跟踪引用。
+  Future<Map<String, GitTagRemoteStatus>> readAllRemoteTagStatuses({
+    required String remoteName,
+  }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackRequiredGitTask(
+        () => readAllRemoteTagStatuses(remoteName: remoteName),
+      );
+    }
+    final repository = state.repository;
+    final normalizedRemote = remoteName.trim();
+    if (repository == null ||
+        !state.remoteNames.contains(normalizedRemote) ||
+        state.phase != RepositorySessionPhase.ready) {
+      throw StateError('当前没有可检查的标签或远端。');
+    }
+    _tagInspectionCancellation?.cancel();
+    final cancellation = GitCancellationToken();
+    _tagInspectionCancellation = cancellation;
+    state = state.copyWith(isTagInspectionRunning: true, clearMessage: true);
+    final generation = _repositoryGeneration;
+    try {
+      final remoteTags = await _reader.readRemoteTags(
+        repository,
+        remoteName: normalizedRemote,
+        cancellationToken: cancellation,
+      );
+      final byName = <String, GitRemoteTag>{
+        for (final tag in remoteTags) tag.name: tag,
+      };
+      final results = <String, GitTagRemoteStatus>{};
+      for (final tag in state.tags) {
+        results[tag.name] = compareGitTagWithRemote(tag, byName[tag.name]);
+      }
+      if (cancellation.isCancelled ||
+          !ref.mounted ||
+          generation != _repositoryGeneration ||
+          state.repository?.id != repository.id) {
+        throw const GitCancelledException();
+      }
+      state = state.copyWith(
+        tagRemoteStatuses: {...state.tagRemoteStatuses, ...results},
+        tagRemoteNames: {
+          ...state.tagRemoteNames,
+          for (final name in results.keys) name: normalizedRemote,
+        },
+        clearMessage: true,
+      );
+      return Map<String, GitTagRemoteStatus>.unmodifiable(results);
+    } finally {
+      if (identical(_tagInspectionCancellation, cancellation)) {
+        _tagInspectionCancellation = null;
+        if (ref.mounted) {
+          state = state.copyWith(isTagInspectionRunning: false);
+        }
+      }
+    }
+  }
+
+  /// Cancels an in-flight tag signature or remote-status read.
+  /// 中文：取消正在进行的标签签名或远端状态读取。
+  void cancelTagInspection() => _tagInspectionCancellation?.cancel();
+
   /// Reads the changed-file summary for one entry in a focused file history.
   ///
   /// 中文：读取聚焦文件历史中某个提交的改动文件和行统计；仅执行只读 Git 查询，
@@ -3120,13 +3665,108 @@ final class RepositorySessionController
     return diff;
   }
 
-  /// 中文：更新提交历史的筛选查询，不触发新的 Git 读取。
+  /// 中文：更新提交历史查询。普通文本继续筛选已加载提交；作者、提交者、路径或
+  /// 时间字段会取消旧查询，并从固定引用快照重新执行真实 Git 分页读取。
   ///
-  /// English: Updates the commit-history filter query without starting another
-  /// Git read.
+  /// English: Updates the commit-history query. Plain text keeps filtering the
+  /// loaded commits locally; author, committer, path, or date fields cancel an
+  /// older query and restart Git-backed pagination from the fixed ref snapshot.
   void setSearchQuery(String query) {
     if (query == state.searchQuery) return;
-    state = state.copyWith(searchQuery: query);
+    var previousWasStructured = false;
+    try {
+      previousWasStructured =
+          GitHistoryQuery.tryParse(state.searchQuery)?.isStructured == true;
+    } on GitException {
+      previousWasStructured = true;
+    }
+    state = state.copyWith(searchQuery: query, clearHistoryLoadError: true);
+    GitHistoryQuery? parsed;
+    try {
+      parsed = GitHistoryQuery.tryParse(query);
+    } on GitException catch (error) {
+      _historyQueryCancellation?.cancel();
+      _historyGeneration++;
+      state = state.copyWith(
+        isHistoryLoading: false,
+        historyLoadError: error.message,
+      );
+      return;
+    }
+    if (parsed?.isStructured != true && !previousWasStructured) return;
+    unawaited(_trackVoidGitTask(() => _reloadHistoryForQuery(parsed)));
+  }
+
+  /// 中文：从当前固定引用快照重新读取查询首屏；旧查询、仓库切换和 Engine 关闭
+  /// 都会取消底层 Git 进程并阻止过期结果写回。
+  ///
+  /// English: Reloads the first query page from the current fixed revision
+  /// snapshot. Superseding queries, repository switches, and Engine shutdown
+  /// cancel Git and prevent stale results from being published.
+  Future<void> _reloadHistoryForQuery(GitHistoryQuery? query) async {
+    final repository = state.repository;
+    if (repository == null || state.phase != RepositorySessionPhase.ready) {
+      return;
+    }
+    _historyQueryCancellation?.cancel();
+    final cancellation = GitCancellationToken();
+    _historyQueryCancellation = cancellation;
+    final generation = ++_historyGeneration;
+    final revisionSnapshot = state.historyRevisionSnapshot;
+    state = state.copyWith(
+      commits: const [],
+      historyCommits: const [],
+      historyOffset: 0,
+      hasMoreHistory: false,
+      isHistoryLoading: true,
+      clearHistoryLoadError: true,
+      clearSelectedCommit: true,
+      clearSelectedCommitFile: true,
+      clearCommitDiff: true,
+    );
+    try {
+      final loadedHistory = await _reader.readRecentHistory(
+        repository,
+        limit: _historyPageReadLimit,
+        revisionSnapshot: revisionSnapshot,
+        query: query?.isStructured == true ? query : null,
+        cancellationToken: cancellation,
+      );
+      if (!ref.mounted ||
+          cancellation.isCancelled ||
+          generation != _historyGeneration ||
+          state.repository?.id != repository.id) {
+        return;
+      }
+      final commits = List<GitCommit>.unmodifiable(
+        loadedHistory.take(_historyPageSize),
+      );
+      state = state.copyWith(
+        commits: commits,
+        historyCommits: commits,
+        historyOffset: commits.length,
+        hasMoreHistory: loadedHistory.length > _historyPageSize,
+        isHistoryLoading: false,
+        clearHistoryLoadError: true,
+      );
+      if (commits.isNotEmpty) await selectCommit(commits.first.objectId);
+    } on GitCancelledException {
+      // A newer query or shutdown owns the visible state.
+    } on Object catch (error) {
+      if (!ref.mounted ||
+          cancellation.isCancelled ||
+          generation != _historyGeneration) {
+        return;
+      }
+      state = state.copyWith(
+        isHistoryLoading: false,
+        historyLoadError: _friendlyError(error),
+      );
+    } finally {
+      if (identical(_historyQueryCancellation, cancellation)) {
+        _historyQueryCancellation = null;
+      }
+    }
   }
 
   /// 中文：返回已加载提交的第一父提交 ID；根提交或未加载提交返回 `null`。
@@ -3155,14 +3795,21 @@ final class RepositorySessionController
 
   /// 中文：更新当前选择。
   /// English: Updates the current selection.
-  Future<void> selectChange(RepositoryChangeViewData? change) async {
+  Future<void> selectChange(
+    RepositoryChangeViewData? change, {
+    GitDiffWhitespaceMode? whitespaceMode,
+  }) async {
     if (!_isInsideTrackedGitTask) {
-      return _trackVoidGitTask(() => selectChange(change));
+      return _trackVoidGitTask(
+        () => selectChange(change, whitespaceMode: whitespaceMode),
+      );
     }
+    final selectedWhitespaceMode = whitespaceMode ?? state.diffWhitespaceMode;
     if (change == null) {
       _diffGeneration++;
       state = state.copyWith(
         isDiffLoading: false,
+        diffWhitespaceMode: selectedWhitespaceMode,
         clearSelectedChange: true,
         clearDiff: true,
       );
@@ -3196,6 +3843,7 @@ final class RepositorySessionController
     final generation = ++_diffGeneration;
     state = state.copyWith(
       selectedChange: selected,
+      diffWhitespaceMode: selectedWhitespaceMode,
       isDiffLoading: true,
       clearDiff: true,
       clearMessage: true,
@@ -3211,11 +3859,13 @@ final class RepositorySessionController
           ? await _reader.readUntrackedFileDiff(
               repository,
               path: entry.path.display,
+              whitespaceMode: selectedWhitespaceMode,
             )
           : await _reader.readUnifiedDiff(
               repository,
               path: entry.path.display,
               source: selected.source,
+              whitespaceMode: selectedWhitespaceMode,
             );
       if (generation != _diffGeneration) {
         return;
@@ -3231,6 +3881,36 @@ final class RepositorySessionController
         technicalDetails: _technicalDetails(error, stackTrace),
       );
     }
+  }
+
+  /// Reloads the active main or committed Diff using a new whitespace policy.
+  ///
+  /// 中文：使用新的空白策略重新读取当前主 Diff 或提交 Diff；非默认模式只
+  /// 改变只读展示，应用层会同时移除区块写操作，避免把过滤后的上下文用于补丁。
+  Future<void> setDiffWhitespaceMode(GitDiffWhitespaceMode mode) async {
+    if (state.selectedCommitId != null && state.selectedCommitFile != null) {
+      final selected = state.selectedCommitFile!;
+      return selectCommitFileByPath(
+        selected.file.path.display,
+        whitespaceMode: mode,
+      );
+    }
+    final selected = state.selectedChange;
+    if (selected != null) {
+      return selectChange(
+        RepositoryChangeViewData(
+          path: selected.entry.path.display,
+          previousPath: selected.entry.originalPath?.display,
+          kind: selected.kind,
+          isStaged: selected.isStaged,
+        ),
+        whitespaceMode: mode,
+      );
+    }
+    state = state.copyWith(
+      diffWhitespaceMode: mode,
+      commitDiffWhitespaceMode: mode,
+    );
   }
 
   /// Finishes a working-tree mutation with an atomic Git status refresh.
@@ -4491,6 +5171,7 @@ final class RepositorySessionController
         diff.source != selected.source ||
         diff.isTruncated ||
         diff.changesFileMode ||
+        diff.whitespaceMode != GitDiffWhitespaceMode.preserve ||
         hunkIndex < 0) {
       return false;
     }
@@ -4561,6 +5242,7 @@ final class RepositorySessionController
         diff.source != selected.source ||
         diff.isTruncated ||
         diff.changesFileMode ||
+        diff.whitespaceMode != GitDiffWhitespaceMode.preserve ||
         hunkIndex < 0) {
       return false;
     }
@@ -4648,6 +5330,7 @@ final class RepositorySessionController
         diff.source != GitDiffSource.commit ||
         diff.isTruncated ||
         diff.changesFileMode ||
+        diff.whitespaceMode != GitDiffWhitespaceMode.preserve ||
         hunkIndex < 0) {
       return false;
     }
@@ -5605,6 +6288,7 @@ final class RepositorySessionController
         objectId.isEmpty ||
         !state.commits.any((commit) => commit.objectId == objectId) ||
         state.tags.any((tag) => tag.name == name) ||
+        (options.sign && !options.isAnnotated) ||
         (pushRemote != null &&
             (pushRemote.isEmpty || !state.remoteNames.contains(pushRemote)))) {
       return false;
@@ -5625,6 +6309,7 @@ final class RepositorySessionController
         objectId: objectId,
         annotation: options.annotation,
         annotated: options.isAnnotated,
+        sign: options.sign,
       );
       localTagCreated = true;
       if (pushRemote != null) {
@@ -5757,6 +6442,551 @@ final class RepositorySessionController
     }
   }
 
+  /// Deletes several loaded local tags sequentially and refreshes once.
+  ///
+  /// 中文：逐项重新校验并删除已加载的本地标签，最后只刷新一次；不会删除远端
+  /// 标签。标签在执行前已消失或单项 Git 失败都会保留在结果中，调用方可展示部分成功。
+  Future<RepositoryTagDeletionResult?> deleteTags(List<String> names) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackGitTask<RepositoryTagDeletionResult?>(
+        () => deleteTags(names),
+      );
+    }
+    final repository = state.repository;
+    final status = state.status;
+    if (repository == null ||
+        status == null ||
+        state.phase == RepositorySessionPhase.loading ||
+        state.operationState != GitRepositoryOperationState.none) {
+      return null;
+    }
+    final requested = <String>{
+      for (final name in names)
+        if (name.trim().isNotEmpty) name.trim(),
+    }.toList(growable: false);
+    if (requested.isEmpty) return null;
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    final operation = _startOperation(RepositoryOperationKind.ref);
+    _tagMutationCancellation?.cancel();
+    final cancellation = GitCancellationToken();
+    _tagMutationCancellation = cancellation;
+    state = state.copyWith(isTagMutationRunning: true);
+    final deleted = <String>[];
+    final missing = <String>[];
+    final failed = <String, String>{};
+    try {
+      for (final name in requested) {
+        if (cancellation.isCancelled || _isShuttingDown) {
+          throw const GitCancelledException();
+        }
+        final currentTags = await _reader.readTags(
+          repository,
+          cancellationToken: cancellation,
+        );
+        if (cancellation.isCancelled || _isShuttingDown) {
+          throw const GitCancelledException();
+        }
+        if (!currentTags.any((tag) => tag.name == name)) {
+          missing.add(name);
+          continue;
+        }
+        try {
+          await _writer.deleteTag(
+            repository,
+            name: name,
+            cancellationToken: cancellation,
+          );
+          deleted.add(name);
+        } on GitCancelledException {
+          rethrow;
+        } on GitCommandException catch (error) {
+          if (cancellation.isCancelled ||
+              _isShuttingDown ||
+              _operationOutcomeForError(error) ==
+                  RepositoryOperationOutcome.cancelled) {
+            rethrow;
+          }
+          failed[name] = _friendlyError(error);
+        } on Object catch (error) {
+          if (cancellation.isCancelled || _isShuttingDown) rethrow;
+          failed[name] = _friendlyError(error);
+        }
+      }
+      await refresh();
+      final result = RepositoryTagDeletionResult(
+        deletedNames: deleted,
+        missingNames: missing,
+        failedNames: failed,
+      );
+      final outcome = result.hasFailures
+          ? deleted.isEmpty
+                ? RepositoryOperationOutcome.failed
+                : RepositoryOperationOutcome.partiallySucceeded
+          : state.phase == RepositorySessionPhase.ready
+          ? RepositoryOperationOutcome.succeeded
+          : RepositoryOperationOutcome.uncertain;
+      final message = result.hasFailures
+          ? '已删除 ${deleted.length} 个标签；${missing.length + failed.length} 个标签未删除。'
+          : '已删除 ${deleted.length} 个本地标签。';
+      _completeOperation(operation, outcome: outcome, message: message);
+      return result;
+    } on GitCancelledException {
+      if (!_isShuttingDown) {
+        await refresh();
+      }
+      _completeOperation(
+        operation,
+        outcome: RepositoryOperationOutcome.cancelled,
+        message: '本地标签删除已取消；已完成项保持不变。',
+      );
+      return RepositoryTagDeletionResult(
+        deletedNames: deleted,
+        missingNames: missing,
+        failedNames: failed,
+      );
+    } on Object catch (error, stackTrace) {
+      if (_operationOutcomeForError(error) ==
+          RepositoryOperationOutcome.cancelled) {
+        if (!_isShuttingDown) {
+          await refresh();
+        }
+        _completeOperation(
+          operation,
+          outcome: RepositoryOperationOutcome.cancelled,
+          message: '本地标签删除已取消；已完成项保持不变。',
+        );
+        return RepositoryTagDeletionResult(
+          deletedNames: deleted,
+          missingNames: missing,
+          failedNames: failed,
+        );
+      }
+      if (!_isShuttingDown) {
+        await refresh();
+      }
+      final message = _friendlyError(error);
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: message,
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: deleted.isEmpty
+            ? _operationOutcomeForError(error)
+            : RepositoryOperationOutcome.partiallySucceeded,
+        message: message,
+      );
+      return RepositoryTagDeletionResult(
+        deletedNames: deleted,
+        missingNames: missing,
+        failedNames: {
+          ...failed,
+          for (final name in requested)
+            if (!deleted.contains(name) &&
+                !missing.contains(name) &&
+                !failed.containsKey(name))
+              name: message,
+        },
+      );
+    } finally {
+      if (identical(_tagMutationCancellation, cancellation)) {
+        _tagMutationCancellation = null;
+        state = state.copyWith(isTagMutationRunning: false);
+      }
+    }
+  }
+
+  /// Pushes several loaded local tags sequentially to one configured remote.
+  ///
+  /// 中文：逐项重新校验并将已加载的本地标签推送到一个明确选择的远端，最后只刷新
+  /// 一次；不会使用 force，远端拒绝、执行前已不存在和部分成功都会保留逐项结果。
+  Future<RepositoryTagPushResult?> pushTags(
+    List<String> names, {
+    required String remoteName,
+  }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackGitTask<RepositoryTagPushResult?>(
+        () => pushTags(names, remoteName: remoteName),
+      );
+    }
+    final repository = state.repository;
+    final status = state.status;
+    final normalizedRemote = remoteName.trim();
+    if (repository == null ||
+        status == null ||
+        normalizedRemote.isEmpty ||
+        !state.remoteNames.contains(normalizedRemote) ||
+        state.phase == RepositorySessionPhase.loading ||
+        state.operationState != GitRepositoryOperationState.none) {
+      return null;
+    }
+    final requested = <String>{
+      for (final name in names)
+        if (name.trim().isNotEmpty) name.trim(),
+    }.toList(growable: false);
+    if (requested.isEmpty) return null;
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    final operation = _startOperation(RepositoryOperationKind.ref);
+    _tagMutationCancellation?.cancel();
+    final cancellation = GitCancellationToken();
+    _tagMutationCancellation = cancellation;
+    state = state.copyWith(isTagMutationRunning: true);
+    final pushed = <String>[];
+    final missing = <String>[];
+    final failed = <String, String>{};
+    try {
+      for (final name in requested) {
+        if (cancellation.isCancelled || _isShuttingDown) {
+          throw const GitCancelledException();
+        }
+        final currentTags = await _reader.readTags(
+          repository,
+          cancellationToken: cancellation,
+        );
+        if (cancellation.isCancelled || _isShuttingDown) {
+          throw const GitCancelledException();
+        }
+        if (!currentTags.any((tag) => tag.name == name)) {
+          missing.add(name);
+          continue;
+        }
+        try {
+          await _writer.pushTag(
+            repository,
+            remoteName: normalizedRemote,
+            tagName: name,
+            cancellationToken: cancellation,
+          );
+          pushed.add(name);
+        } on GitCancelledException {
+          rethrow;
+        } on GitCommandException catch (error) {
+          if (cancellation.isCancelled ||
+              _isShuttingDown ||
+              _operationOutcomeForError(error) ==
+                  RepositoryOperationOutcome.cancelled) {
+            rethrow;
+          }
+          failed[name] = _friendlyError(error);
+        } on Object catch (error) {
+          if (cancellation.isCancelled || _isShuttingDown) rethrow;
+          failed[name] = _friendlyError(error);
+        }
+      }
+      await refresh();
+      final result = RepositoryTagPushResult(
+        remoteName: normalizedRemote,
+        pushedNames: pushed,
+        missingNames: missing,
+        failedNames: failed,
+      );
+      final outcome = result.hasFailures
+          ? pushed.isEmpty
+                ? RepositoryOperationOutcome.failed
+                : RepositoryOperationOutcome.partiallySucceeded
+          : state.phase == RepositorySessionPhase.ready
+          ? RepositoryOperationOutcome.succeeded
+          : RepositoryOperationOutcome.uncertain;
+      final message = result.hasFailures
+          ? '已推送 ${pushed.length} 个标签到 $normalizedRemote；${missing.length + failed.length} 个标签未推送。'
+          : '已推送 ${pushed.length} 个标签到 $normalizedRemote。';
+      _completeOperation(operation, outcome: outcome, message: message);
+      return result;
+    } on GitCancelledException {
+      if (!_isShuttingDown) {
+        await refresh();
+      }
+      _completeOperation(
+        operation,
+        outcome: RepositoryOperationOutcome.cancelled,
+        message: '标签推送已取消；已完成项保持不变。',
+      );
+      return RepositoryTagPushResult(
+        remoteName: normalizedRemote,
+        pushedNames: pushed,
+        missingNames: missing,
+        failedNames: failed,
+      );
+    } on Object catch (error, stackTrace) {
+      if (_operationOutcomeForError(error) ==
+          RepositoryOperationOutcome.cancelled) {
+        if (!_isShuttingDown) {
+          await refresh();
+        }
+        _completeOperation(
+          operation,
+          outcome: RepositoryOperationOutcome.cancelled,
+          message: '标签推送已取消；已完成项保持不变。',
+        );
+        return RepositoryTagPushResult(
+          remoteName: normalizedRemote,
+          pushedNames: pushed,
+          missingNames: missing,
+          failedNames: failed,
+        );
+      }
+      if (!_isShuttingDown) {
+        await refresh();
+      }
+      final message = _friendlyError(error);
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: message,
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: pushed.isEmpty
+            ? _operationOutcomeForError(error)
+            : RepositoryOperationOutcome.partiallySucceeded,
+        message: message,
+      );
+      return RepositoryTagPushResult(
+        remoteName: normalizedRemote,
+        pushedNames: pushed,
+        missingNames: missing,
+        failedNames: {
+          ...failed,
+          for (final name in requested)
+            if (!pushed.contains(name) &&
+                !missing.contains(name) &&
+                !failed.containsKey(name))
+              name: message,
+        },
+      );
+    } finally {
+      if (identical(_tagMutationCancellation, cancellation)) {
+        _tagMutationCancellation = null;
+        state = state.copyWith(isTagMutationRunning: false);
+      }
+    }
+  }
+
+  /// Deletes selected tag refs sequentially from one configured remote.
+  ///
+  /// 中文：逐项重新读取指定远端并删除所选标签引用，最后只刷新一次；本地同名
+  /// 标签保持不变，不使用 force，执行前已不存在和部分成功都会保留逐项结果。
+  Future<RepositoryRemoteTagDeletionResult?> deleteRemoteTags(
+    List<String> names, {
+    required String remoteName,
+  }) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackGitTask<RepositoryRemoteTagDeletionResult?>(
+        () => deleteRemoteTags(names, remoteName: remoteName),
+      );
+    }
+    final repository = state.repository;
+    final status = state.status;
+    final normalizedRemote = remoteName.trim();
+    if (repository == null ||
+        status == null ||
+        normalizedRemote.isEmpty ||
+        !state.remoteNames.contains(normalizedRemote) ||
+        state.phase == RepositorySessionPhase.loading ||
+        state.operationState != GitRepositoryOperationState.none) {
+      return null;
+    }
+    final requested = <String>{
+      for (final name in names)
+        if (name.trim().isNotEmpty) name.trim(),
+    }.toList(growable: false);
+    if (requested.isEmpty) return null;
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    final operation = _startOperation(RepositoryOperationKind.ref);
+    _remoteTagDeletionCancellation?.cancel();
+    final cancellation = GitCancellationToken();
+    _remoteTagDeletionCancellation = cancellation;
+    state = state.copyWith(isTagMutationRunning: true);
+    final deleted = <String>[];
+    final missing = <String>[];
+    final failed = <String, String>{};
+    try {
+      for (final name in requested) {
+        if (cancellation.isCancelled || _isShuttingDown) {
+          throw const GitCancelledException();
+        }
+        final currentRemoteTags = await _reader.readRemoteTags(
+          repository,
+          remoteName: normalizedRemote,
+          cancellationToken: cancellation,
+        );
+        if (cancellation.isCancelled || _isShuttingDown) {
+          throw const GitCancelledException();
+        }
+        if (!currentRemoteTags.any((tag) => tag.name == name)) {
+          missing.add(name);
+          continue;
+        }
+        try {
+          await _writer.deleteRemoteTag(
+            repository,
+            remoteName: normalizedRemote,
+            tagName: name,
+            cancellationToken: cancellation,
+          );
+          deleted.add(name);
+        } on GitCancelledException {
+          rethrow;
+        } on GitCommandException catch (error) {
+          if (_isShuttingDown ||
+              cancellation.isCancelled ||
+              _operationOutcomeForError(error) ==
+                  RepositoryOperationOutcome.cancelled) {
+            throw const GitCancelledException();
+          }
+          failed[name] = _friendlyError(error);
+        } on Object catch (error) {
+          if (_isShuttingDown ||
+              cancellation.isCancelled ||
+              _operationOutcomeForError(error) ==
+                  RepositoryOperationOutcome.cancelled) {
+            throw const GitCancelledException();
+          }
+          failed[name] = _friendlyError(error);
+        }
+      }
+      await refresh();
+      if (state.repository?.id == repository.id) {
+        state = state.copyWith(
+          tagRemoteStatuses: {
+            ...state.tagRemoteStatuses,
+            for (final name in [...deleted, ...missing])
+              name: GitTagRemoteStatus.missing,
+          },
+          tagRemoteNames: {
+            ...state.tagRemoteNames,
+            for (final name in [...deleted, ...missing]) name: normalizedRemote,
+          },
+        );
+      }
+      final result = RepositoryRemoteTagDeletionResult(
+        remoteName: normalizedRemote,
+        deletedNames: deleted,
+        missingNames: missing,
+        failedNames: failed,
+      );
+      final outcome = result.hasFailures
+          ? deleted.isEmpty
+                ? RepositoryOperationOutcome.failed
+                : RepositoryOperationOutcome.partiallySucceeded
+          : state.phase == RepositorySessionPhase.ready
+          ? RepositoryOperationOutcome.succeeded
+          : RepositoryOperationOutcome.uncertain;
+      final message = result.hasFailures
+          ? '已从 $normalizedRemote 删除 ${deleted.length} 个标签；${missing.length + failed.length} 个标签未删除。'
+          : '已从 $normalizedRemote 删除 ${deleted.length} 个标签。';
+      _completeOperation(operation, outcome: outcome, message: message);
+      return result;
+    } on GitCancelledException {
+      if (!_isShuttingDown) {
+        await refresh();
+      }
+      _completeOperation(
+        operation,
+        outcome: RepositoryOperationOutcome.cancelled,
+        message: '远端标签删除已取消；已完成项保持不变。',
+      );
+      return RepositoryRemoteTagDeletionResult(
+        remoteName: normalizedRemote,
+        deletedNames: deleted,
+        missingNames: missing,
+        failedNames: failed,
+      );
+    } on Object catch (error, stackTrace) {
+      if (_operationOutcomeForError(error) ==
+          RepositoryOperationOutcome.cancelled) {
+        if (!_isShuttingDown) {
+          await refresh();
+        }
+        _completeOperation(
+          operation,
+          outcome: RepositoryOperationOutcome.cancelled,
+          message: '远端标签删除已取消；已完成项保持不变。',
+        );
+        return RepositoryRemoteTagDeletionResult(
+          remoteName: normalizedRemote,
+          deletedNames: deleted,
+          missingNames: missing,
+          failedNames: failed,
+        );
+      }
+      if (!_isShuttingDown) {
+        await refresh();
+      }
+      final message = _friendlyError(error);
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: message,
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      _completeOperation(
+        operation,
+        outcome: deleted.isEmpty
+            ? _operationOutcomeForError(error)
+            : RepositoryOperationOutcome.partiallySucceeded,
+        message: message,
+      );
+      return RepositoryRemoteTagDeletionResult(
+        remoteName: normalizedRemote,
+        deletedNames: deleted,
+        missingNames: missing,
+        failedNames: {
+          ...failed,
+          for (final name in requested)
+            if (!deleted.contains(name) &&
+                !missing.contains(name) &&
+                !failed.containsKey(name))
+              name: message,
+        },
+      );
+    } finally {
+      if (identical(_remoteTagDeletionCancellation, cancellation)) {
+        _remoteTagDeletionCancellation = null;
+        state = state.copyWith(isTagMutationRunning: false);
+      }
+    }
+  }
+
+  /// Cancels an in-flight remote tag deletion between individual tag refs.
+  ///
+  /// 中文：取消正在进行的远端标签批量删除；已完成的删除不会回滚，尚未开始的
+  /// 标签不会继续执行。
+  void cancelRemoteTagDeletion() {
+    _remoteTagDeletionCancellation?.cancel();
+  }
+
+  /// Cancels an in-flight batch tag mutation without rolling back completed refs.
+  /// 中文：取消正在进行的批量标签写操作；已完成的引用不会回滚。
+  void cancelTagMutation() {
+    _tagMutationCancellation?.cancel();
+    _remoteTagDeletionCancellation?.cancel();
+  }
+
   /// 中文：以已加载的本地分支为起点创建另一个本地分支，不切换当前工作区。
   ///
   /// English: Creates a local branch from an already loaded local branch
@@ -5825,6 +7055,240 @@ final class RepositorySessionController
       return false;
     }
   }
+
+  /// Executes one validated Git-flow Start by creating and checking out the
+  /// planned local branch without pushing or deleting any reference.
+  /// 中文：执行一个已校验的 Git-flow Start；创建并检出本地分支，不推送或删除任何引用。
+  /// The method keeps both Git writes inside one Engine task. If creation
+  /// succeeds but checkout fails, the returned result preserves that partial
+  /// success and the created branch remains visible after refresh.
+  Future<GitFlowStartExecutionResult?> startGitFlowBranch(
+    GitFlowStartPlan plan,
+  ) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackGitTask<GitFlowStartExecutionResult?>(
+        () => startGitFlowBranch(plan),
+      );
+    }
+    if (state.phase == RepositorySessionPhase.loading) return null;
+
+    await refresh();
+    final repository = state.repository;
+    final status = state.status;
+    if (state.phase != RepositorySessionPhase.ready ||
+        repository == null ||
+        status == null ||
+        status.branch.isDetached ||
+        status.branch.isUnborn ||
+        !status.isClean ||
+        state.operationState != GitRepositoryOperationState.none ||
+        !state.localBranches.any((branch) => branch.name == plan.baseBranch) ||
+        state.localBranches.any((branch) => branch.name == plan.branchName)) {
+      return null;
+    }
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    final operation = _startOperation(RepositoryOperationKind.ref);
+    final cancellation = GitCancellationToken();
+    _gitFlowStartCancellation = cancellation;
+    var branchCreated = false;
+    var checkedOut = false;
+    try {
+      await _writer.createLocalBranchFromLocalBranch(
+        repository,
+        name: plan.branchName,
+        sourceName: plan.baseBranch,
+        cancellationToken: cancellation,
+      );
+      branchCreated = true;
+      await _writer.switchToLocalBranch(
+        repository,
+        name: plan.branchName,
+        cancellationToken: cancellation,
+      );
+      checkedOut = true;
+      await refresh();
+      final succeeded =
+          state.phase == RepositorySessionPhase.ready &&
+          state.status?.branch.head == plan.branchName;
+      final result = GitFlowStartExecutionResult(
+        branchCreated: branchCreated,
+        checkedOut: checkedOut && succeeded,
+        message: succeeded
+            ? '已创建并切换到 Git-flow 分支 ${plan.branchName}。'
+            : 'Git-flow 分支可能已创建并切换，但刷新结果不确定；请刷新确认当前分支。',
+      );
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: result.message,
+      );
+      return result;
+    } on Object catch (error, stackTrace) {
+      await refresh();
+      final message = branchCreated
+          ? '已创建 Git-flow 分支 ${plan.branchName}，但检出失败：${_friendlyError(error)}'
+          : _friendlyError(error);
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: message,
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      final result = GitFlowStartExecutionResult(
+        branchCreated: branchCreated,
+        checkedOut: checkedOut,
+        message: message,
+      );
+      _completeOperation(
+        operation,
+        outcome: branchCreated
+            ? RepositoryOperationOutcome.partiallySucceeded
+            : _operationOutcomeForError(error),
+        message: message,
+      );
+      return result;
+    } finally {
+      if (identical(_gitFlowStartCancellation, cancellation)) {
+        _gitFlowStartCancellation = null;
+      }
+    }
+  }
+
+  /// Cancels an in-flight Git-flow Start without attempting to undo a branch
+  /// that Git may already have created.
+  /// 中文：取消正在进行的 Git-flow Start；不会尝试回滚 Git 可能已经创建的分支。
+  void cancelGitFlowStart() => _gitFlowStartCancellation?.cancel();
+
+  /// Executes one validated Git-flow Finish by checking out the explicit
+  /// target branch and merging the current feature/release/hotfix branch into
+  /// it. No push, source deletion, or upstream change is attempted.
+  /// 中文：执行一个已校验的 Git-flow Finish：检出明确目标分支，再将当前
+  /// feature/release/hotfix 分支合并进去；不会推送、删除来源或修改 upstream。
+  /// If checkout succeeds but merge fails, the target branch and Git's actual
+  /// conflict state are preserved for recovery through Continue/Abort.
+  Future<GitFlowFinishExecutionResult?> finishGitFlowBranch(
+    GitFlowFinishPlan plan,
+  ) async {
+    if (!_isInsideTrackedGitTask) {
+      return _trackGitTask<GitFlowFinishExecutionResult?>(
+        () => finishGitFlowBranch(plan),
+      );
+    }
+    if (state.phase == RepositorySessionPhase.loading) return null;
+
+    await refresh();
+    final repository = state.repository;
+    final status = state.status;
+    final currentBranch = status?.branch.head;
+    final currentKind = currentBranch == null
+        ? null
+        : gitFlowBranchKindForName(currentBranch);
+    if (state.phase != RepositorySessionPhase.ready ||
+        repository == null ||
+        status == null ||
+        currentBranch == null ||
+        currentKind != plan.kind ||
+        currentBranch != plan.sourceBranch ||
+        status.branch.isDetached ||
+        status.branch.isUnborn ||
+        !status.isClean ||
+        state.operationState != GitRepositoryOperationState.none ||
+        !state.localBranches.any(
+          (branch) => branch.name == plan.sourceBranch,
+        ) ||
+        !state.localBranches.any(
+          (branch) => branch.name == plan.targetBranch,
+        ) ||
+        plan.sourceBranch == plan.targetBranch) {
+      return null;
+    }
+
+    state = state.copyWith(
+      phase: RepositorySessionPhase.loading,
+      isDiffLoading: false,
+      clearDiff: true,
+      clearSelectedChange: true,
+      clearMessage: true,
+    );
+    final operation = _startOperation(RepositoryOperationKind.history);
+    final cancellation = GitCancellationToken();
+    _gitFlowFinishCancellation = cancellation;
+    var checkedOutTarget = false;
+    try {
+      await _writer.switchToLocalBranch(
+        repository,
+        name: plan.targetBranch,
+        cancellationToken: cancellation,
+      );
+      checkedOutTarget = true;
+      await _writer.mergeLocalBranch(
+        repository,
+        sourceName: plan.sourceBranch,
+        cancellationToken: cancellation,
+      );
+      await refresh();
+      final succeeded =
+          state.phase == RepositorySessionPhase.ready &&
+          state.status?.branch.head == plan.targetBranch &&
+          state.status?.conflictedEntries.isEmpty == true;
+      final result = GitFlowFinishExecutionResult(
+        merged: succeeded,
+        message: succeeded
+            ? '已将 ${plan.sourceBranch} 合并到 ${plan.targetBranch}；未推送或删除来源分支。'
+            : 'Git-flow Finish 可能已完成，但刷新结果不确定；请刷新确认 ${plan.targetBranch} 的状态。',
+      );
+      _completeOperation(
+        operation,
+        outcome: succeeded
+            ? RepositoryOperationOutcome.succeeded
+            : RepositoryOperationOutcome.uncertain,
+        message: result.message,
+      );
+      return result;
+    } on Object catch (error, stackTrace) {
+      await refresh();
+      final hasConflicts = state.status?.conflictedEntries.isNotEmpty ?? false;
+      final message =
+          hasConflicts ||
+              (error is GitCommandException &&
+                  error.kind == GitErrorKind.conflicts)
+          ? 'Git-flow Finish 在 ${plan.targetBranch} 上遇到冲突。请处理并暂存冲突后，从“动作”菜单继续或中止合并。'
+          : checkedOutTarget
+          ? '已切换到 ${plan.targetBranch}，但合并 ${plan.sourceBranch} 失败：${_friendlyError(error)}'
+          : _friendlyError(error);
+      state = state.copyWith(
+        phase: RepositorySessionPhase.error,
+        isDiffLoading: false,
+        message: message,
+        technicalDetails: _technicalDetails(error, stackTrace),
+      );
+      final outcome = hasConflicts
+          ? _operationOutcomeForError(error)
+          : checkedOutTarget
+          ? RepositoryOperationOutcome.partiallySucceeded
+          : _operationOutcomeForError(error);
+      _completeOperation(operation, outcome: outcome, message: message);
+      return GitFlowFinishExecutionResult(merged: false, message: message);
+    } finally {
+      if (identical(_gitFlowFinishCancellation, cancellation)) {
+        _gitFlowFinishCancellation = null;
+      }
+    }
+  }
+
+  /// Cancels an in-flight Git-flow Finish without attempting to switch back or
+  /// undo a merge that Git may already have started.
+  /// 中文：取消正在进行的 Git-flow Finish；不会自动切回来源分支或回滚 Git 已开始的合并。
+  void cancelGitFlowFinish() => _gitFlowFinishCancellation?.cancel();
 
   /// Switches to a local branch while preserving safe working-tree changes.
   /// 中文：切换到本地分支；保留可安全携带的工作区改动，并拒绝冲突状态。
@@ -6328,7 +7792,7 @@ final class RepositorySessionController
       objectId: objectId,
       requireCleanWorkTree: true,
       successMessage: '已完成变基。',
-      conflictMessage: '变基遇到冲突。请解决冲突并暂存后继续，或选择放弃变基。',
+      conflictMessage: '变基遇到冲突。请解决冲突并暂存后继续、跳过当前提交，或选择放弃变基。',
       run: (repository, cancellation) => _writer.rebaseOnto(
         repository,
         objectId: objectId,
@@ -6349,7 +7813,7 @@ final class RepositorySessionController
       objectId: objectId,
       requireCleanWorkTree: true,
       successMessage: '已完成交互式变基。',
-      conflictMessage: '交互式变基遇到冲突。请解决冲突并暂存后继续，或选择放弃变基。',
+      conflictMessage: '交互式变基遇到冲突。请解决冲突并暂存后继续、跳过当前提交，或选择放弃变基。',
       run: (repository, cancellation) => _writer.interactiveRebaseOnto(
         repository,
         objectId: objectId,

@@ -193,6 +193,146 @@ void main() {
     },
   );
 
+  test('cancels and recovers a real authenticated HTTP Git request', () async {
+    final temporaryDirectory = await Directory.systemTemp.createTemp(
+      'git_desktop_askpass_http_',
+    );
+    addTearDown(() async {
+      if (temporaryDirectory.existsSync()) {
+        await temporaryDirectory.delete(recursive: true);
+      }
+    });
+
+    final macosDirectory = Directory(
+      '${temporaryDirectory.path}/Git Desktop.app/Contents/MacOS',
+    );
+    await macosDirectory.create(recursive: true);
+    final helper = File('${macosDirectory.path}/git-desktop-askpass');
+    final compilation = await Process.run('/usr/bin/clang', <String>[
+      '-std=c11',
+      '-O2',
+      '-Wall',
+      '-Wextra',
+      '-Werror',
+      '${Directory.current.path}/macos/AskPassHelper/main.c',
+      '-o',
+      helper.path,
+    ]);
+    expect(compilation.exitCode, 0, reason: compilation.stderr);
+    final broker = File('${macosDirectory.path}/git-desktop-askpass-broker');
+    final brokerCompilation = await Process.run('/usr/bin/clang', <String>[
+      '-std=c11',
+      '-O2',
+      '-Wall',
+      '-Wextra',
+      '-Werror',
+      '${Directory.current.path}/macos/AskPassBroker/main.c',
+      '-o',
+      broker.path,
+    ]);
+    expect(brokerCompilation.exitCode, 0, reason: brokerCompilation.stderr);
+
+    final server = await HttpServer.bind(InternetAddress.loopbackIPv4, 0);
+    addTearDown(server.close);
+    const expectedAuthorization = 'Basic Z2l0dXNlcjpnaXRwYXNz';
+    const advertisedObject = '0123456789012345678901234567890123456789';
+    var authenticatedRequestCount = 0;
+    final serverSubscription = server.listen((request) async {
+      final authorization = request.headers.value(
+        HttpHeaders.authorizationHeader,
+      );
+      if (authorization != expectedAuthorization) {
+        request.response
+          ..statusCode = HttpStatus.unauthorized
+          ..headers.set(
+            HttpHeaders.wwwAuthenticateHeader,
+            'Basic realm="git-desktop-test"',
+          )
+          ..close();
+        return;
+      }
+
+      authenticatedRequestCount += 1;
+      final body = <int>[
+        ...utf8.encode(_gitPktLine('# service=git-upload-pack\n')),
+        ...utf8.encode('0000'),
+        ...utf8.encode(
+          _gitPktLine(
+            '$advertisedObject HEAD\u0000symref=HEAD:refs/heads/main\n',
+          ),
+        ),
+        ...utf8.encode('0000'),
+      ];
+      request.response
+        ..statusCode = HttpStatus.ok
+        ..headers.contentType = ContentType(
+          'application',
+          'x-git-upload-pack-advertisement',
+        )
+        ..contentLength = body.length
+        ..add(body);
+      await request.response.close();
+    });
+    addTearDown(serverSubscription.cancel);
+
+    final home = await Directory('${temporaryDirectory.path}/home').create();
+    Future<GitResult> runWithSession(GitAskPassSession session) {
+      return GitRunner().run(
+        GitInvocation(
+          arguments: <String>[
+            'ls-remote',
+            'http://127.0.0.1:${server.port}/repo.git',
+          ],
+          environment: <String, String>{
+            ...session.environmentForBundledHelper(),
+            'HOME': home.path,
+            'GIT_CONFIG_NOSYSTEM': '1',
+            'GIT_CONFIG_GLOBAL': '/dev/null',
+            'GIT_CONFIG_SYSTEM': '/dev/null',
+          },
+        ),
+      );
+    }
+
+    final cancelledSession = await GitAskPassSession.startForTesting(
+      appExecutablePath: '${macosDirectory.path}/Git Desktop',
+      onPrompt: (_) async => null,
+      timeout: const Duration(seconds: 5),
+      useNativeBroker: true,
+    );
+    final cancelledResult = await runWithSession(cancelledSession);
+    expect(cancelledResult.isSuccess, isFalse);
+    await cancelledSession.closed;
+    expect(cancelledSession.status, GitAskPassSessionStatus.rejected);
+
+    final promptKinds = <GitAskPassPromptKind>[];
+    final session = await GitAskPassSession.startForTesting(
+      appExecutablePath: '${macosDirectory.path}/Git Desktop',
+      onPrompt: (request) async {
+        promptKinds.add(request.kind);
+        return request.kind == GitAskPassPromptKind.username
+            ? 'gituser'
+            : 'gitpass';
+      },
+      timeout: const Duration(seconds: 5),
+      useNativeBroker: true,
+    );
+    addTearDown(session.close);
+
+    final result = await runWithSession(session);
+
+    expect(result.isSuccess, isTrue, reason: result.stderrText);
+    expect(
+      result.stdoutText,
+      matches(RegExp(r'^[0-9a-f]{40}\tHEAD\n', multiLine: true)),
+    );
+    expect(promptKinds, contains(GitAskPassPromptKind.username));
+    expect(promptKinds, contains(GitAskPassPromptKind.password));
+    expect(authenticatedRequestCount, greaterThanOrEqualTo(1));
+    await session.close();
+    await session.closed;
+  }, skip: !Platform.isMacOS);
+
   test(
     'the native helper exchanges sequential secrets through the session socket',
     () async {
@@ -372,6 +512,13 @@ Future<Socket> _connect(String path) {
     InternetAddress(path, type: InternetAddressType.unix),
     0,
   );
+}
+
+String _gitPktLine(String payload) {
+  final length = (utf8.encode(payload).length + 4)
+      .toRadixString(16)
+      .padLeft(4, '0');
+  return '$length$payload';
 }
 
 Future<String> _request(

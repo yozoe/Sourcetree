@@ -32,6 +32,8 @@ typedef RepositoryChangeGroupStageCallback =
     FutureOr<void> Function(List<RepositoryChangeViewData> changes, bool stage);
 typedef RepositoryDiffHunkActionCallback =
     FutureOr<void> Function(RepositoryDiffHunkAction action, int hunkIndex);
+typedef RepositoryDiffWhitespaceModeCallback =
+    FutureOr<void> Function(DiffWhitespaceMode mode);
 typedef RepositoryConflictActionCallback =
     void Function(
       RepositoryChangeViewData change,
@@ -74,6 +76,7 @@ final class RepositoryOverviewCallbacks {
     this.onChangeOpenTerminal,
     this.onChangeQuickLook,
     this.onChangeViewFileHistory,
+    this.onChangeBlame,
     this.onChangeReview,
     this.onChangeIgnore,
     this.onChangeExternalDiff,
@@ -83,9 +86,17 @@ final class RepositoryOverviewCallbacks {
     this.onChangeStopTracking,
     this.onChangeReset,
     this.onDiffHunkAction,
+    this.onDiffWhitespaceModeChanged,
     this.onCommitFileSelected,
     this.onCommitFileContextAction,
     this.onLayoutChanged,
+    this.onVerifyAllTagSignatures,
+    this.onCheckAllTagRemoteStatuses,
+    this.onCancelTagInspection,
+    this.onCancelTagMutation,
+    this.onDeleteTags,
+    this.onDeleteRemoteTags,
+    this.onPushTags,
   });
 
   final RepositoryActionCallback? onAction;
@@ -107,6 +118,7 @@ final class RepositoryOverviewCallbacks {
   final RepositoryChangeFilesCallback? onChangeOpenTerminal;
   final RepositoryChangeFilesCallback? onChangeQuickLook;
   final RepositoryChangeFilesCallback? onChangeViewFileHistory;
+  final RepositoryChangeFilesCallback? onChangeBlame;
   final RepositoryChangeFilesCallback? onChangeReview;
   final RepositoryChangeFilesCallback? onChangeIgnore;
   final RepositoryChangeFilesCallback? onChangeExternalDiff;
@@ -116,9 +128,35 @@ final class RepositoryOverviewCallbacks {
   final RepositoryChangeFilesCallback? onChangeStopTracking;
   final RepositoryChangeFilesCallback? onChangeReset;
   final RepositoryDiffHunkActionCallback? onDiffHunkAction;
+  final RepositoryDiffWhitespaceModeCallback? onDiffWhitespaceModeChanged;
   final RepositoryCommitFileCallback? onCommitFileSelected;
   final RepositoryCommitFileContextActionCallback? onCommitFileContextAction;
   final ValueChanged<RepositoryOverviewLayout>? onLayoutChanged;
+
+  /// Verifies every loaded tag through one cancellable read-only task.
+  /// 中文：请求验证全部已加载标签的签名。
+  final VoidCallback? onVerifyAllTagSignatures;
+
+  /// Opens the configured-remote selector for a batch tag comparison.
+  /// 中文：请求选择远端并批量检查标签状态。
+  final VoidCallback? onCheckAllTagRemoteStatuses;
+
+  /// Cancels a running batch tag read.
+  /// 中文：取消正在进行的标签批量读取。
+  final VoidCallback? onCancelTagInspection;
+  final VoidCallback? onCancelTagMutation;
+
+  /// Opens the explicit multi-select flow for deleting local tags.
+  /// 中文：打开批量删除本地标签的多选与确认流程。
+  final VoidCallback? onDeleteTags;
+
+  /// Opens the explicit multi-select flow for deleting tags from one remote.
+  /// 中文：打开选择远端并批量删除远端标签的确认流程。
+  final VoidCallback? onDeleteRemoteTags;
+
+  /// Opens the explicit multi-select flow for pushing local tags.
+  /// 中文：打开批量推送本地标签的远端选择与多选流程。
+  final VoidCallback? onPushTags;
 }
 
 /// High-density, responsive desktop repository workspace.
@@ -206,7 +244,14 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
       return;
     }
     if (_selectedRefId == reference.id) return;
-    setState(() => _selectedRefId = reference.id);
+    setState(() {
+      _selectedRefId = reference.id;
+      if (reference.kind == RepositoryRefKind.workspace) {
+        _compactPane = reference.id == 'workspace'
+            ? _CompactPane.changes
+            : _CompactPane.history;
+      }
+    });
     widget.callbacks.onRefSelected?.call(reference);
   }
 
@@ -250,6 +295,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         repository: repository,
         onSelected: widget.callbacks.onCommitFileSelected,
         onContextAction: widget.callbacks.onCommitFileContextAction,
+        onDiffWhitespaceModeChanged:
+            widget.callbacks.onDiffWhitespaceModeChanged,
         title: '贮藏改动',
       );
 
@@ -268,6 +315,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         onOpenTerminal: widget.callbacks.onChangeOpenTerminal,
         onQuickLook: widget.callbacks.onChangeQuickLook,
         onViewFileHistory: widget.callbacks.onChangeViewFileHistory,
+        onBlame: widget.callbacks.onChangeBlame,
         onReview: widget.callbacks.onChangeReview,
         onIgnore: widget.callbacks.onChangeIgnore,
         onExternalDiff: widget.callbacks.onChangeExternalDiff,
@@ -277,6 +325,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         onStopTracking: widget.callbacks.onChangeStopTracking,
         onReset: widget.callbacks.onChangeReset,
         onHunkAction: widget.callbacks.onDiffHunkAction,
+        onDiffWhitespaceModeChanged:
+            widget.callbacks.onDiffWhitespaceModeChanged,
         onCommit: widget.callbacks.onAction == null
             ? null
             : () => widget.callbacks.onAction!(RepositoryAction.commit),
@@ -396,6 +446,14 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
             onSelected: _selectReference,
             onActivated: _activateReference,
             onContextAction: widget.callbacks.onRefContextAction,
+            onVerifyAllTagSignatures: widget.callbacks.onVerifyAllTagSignatures,
+            onCheckAllTagRemoteStatuses:
+                widget.callbacks.onCheckAllTagRemoteStatuses,
+            onCancelTagInspection: widget.callbacks.onCancelTagInspection,
+            onCancelTagMutation: widget.callbacks.onCancelTagMutation,
+            onDeleteTags: widget.callbacks.onDeleteTags,
+            onDeleteRemoteTags: widget.callbacks.onDeleteRemoteTags,
+            onPushTags: widget.callbacks.onPushTags,
           ),
         ),
         _ResizeDivider(
@@ -454,6 +512,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                               onQuickLook: widget.callbacks.onChangeQuickLook,
                               onViewFileHistory:
                                   widget.callbacks.onChangeViewFileHistory,
+                              onBlame: widget.callbacks.onChangeBlame,
                               onReview: widget.callbacks.onChangeReview,
                               onIgnore: widget.callbacks.onChangeIgnore,
                               onExternalDiff:
@@ -465,6 +524,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                                   widget.callbacks.onChangeStopTracking,
                               onReset: widget.callbacks.onChangeReset,
                               onHunkAction: widget.callbacks.onDiffHunkAction,
+                              onDiffWhitespaceModeChanged:
+                                  widget.callbacks.onDiffWhitespaceModeChanged,
                               onCommitFileSelected:
                                   widget.callbacks.onCommitFileSelected,
                               onCommitFileContextAction:
@@ -524,6 +585,14 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
             onSelected: _selectReference,
             onActivated: _activateReference,
             onContextAction: widget.callbacks.onRefContextAction,
+            onVerifyAllTagSignatures: widget.callbacks.onVerifyAllTagSignatures,
+            onCheckAllTagRemoteStatuses:
+                widget.callbacks.onCheckAllTagRemoteStatuses,
+            onCancelTagInspection: widget.callbacks.onCancelTagInspection,
+            onCancelTagMutation: widget.callbacks.onCancelTagMutation,
+            onDeleteTags: widget.callbacks.onDeleteTags,
+            onDeleteRemoteTags: widget.callbacks.onDeleteRemoteTags,
+            onPushTags: widget.callbacks.onPushTags,
           ),
         ),
         _ResizeDivider(
@@ -580,6 +649,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                         onQuickLook: widget.callbacks.onChangeQuickLook,
                         onViewFileHistory:
                             widget.callbacks.onChangeViewFileHistory,
+                        onBlame: widget.callbacks.onChangeBlame,
                         onReview: widget.callbacks.onChangeReview,
                         onIgnore: widget.callbacks.onChangeIgnore,
                         onExternalDiff: widget.callbacks.onChangeExternalDiff,
@@ -589,6 +659,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                         onStopTracking: widget.callbacks.onChangeStopTracking,
                         onReset: widget.callbacks.onChangeReset,
                         onHunkAction: widget.callbacks.onDiffHunkAction,
+                        onDiffWhitespaceModeChanged:
+                            widget.callbacks.onDiffWhitespaceModeChanged,
                         onCommitFileSelected:
                             widget.callbacks.onCommitFileSelected,
                         onCommitFileContextAction:
@@ -617,6 +689,14 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         onSelected: _selectReference,
         onActivated: _activateReference,
         onContextAction: widget.callbacks.onRefContextAction,
+        onVerifyAllTagSignatures: widget.callbacks.onVerifyAllTagSignatures,
+        onCheckAllTagRemoteStatuses:
+            widget.callbacks.onCheckAllTagRemoteStatuses,
+        onCancelTagInspection: widget.callbacks.onCancelTagInspection,
+        onCancelTagMutation: widget.callbacks.onCancelTagMutation,
+        onDeleteTags: widget.callbacks.onDeleteTags,
+        onDeleteRemoteTags: widget.callbacks.onDeleteRemoteTags,
+        onPushTags: widget.callbacks.onPushTags,
       ),
       _CompactPane.history => _HistoryPane(
         repository: repository,
@@ -639,6 +719,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         onOpenTerminal: widget.callbacks.onChangeOpenTerminal,
         onQuickLook: widget.callbacks.onChangeQuickLook,
         onViewFileHistory: widget.callbacks.onChangeViewFileHistory,
+        onBlame: widget.callbacks.onChangeBlame,
         onReview: widget.callbacks.onChangeReview,
         onIgnore: widget.callbacks.onChangeIgnore,
         onExternalDiff: widget.callbacks.onChangeExternalDiff,
@@ -648,6 +729,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         onStopTracking: widget.callbacks.onChangeStopTracking,
         onReset: widget.callbacks.onChangeReset,
         onHunkAction: widget.callbacks.onDiffHunkAction,
+        onDiffWhitespaceModeChanged:
+            widget.callbacks.onDiffWhitespaceModeChanged,
         onCommitFileSelected: widget.callbacks.onCommitFileSelected,
         onCommitFileContextAction: widget.callbacks.onCommitFileContextAction,
       ),
@@ -785,6 +868,13 @@ class _RepositoryToolbar extends StatelessWidget {
                           onAction: callbacks.onAction,
                         ),
                         _ToolbarAction(
+                          action: RepositoryAction.skipRebase,
+                          icon: Icons.skip_next_outlined,
+                          label: '跳过变基提交',
+                          repository: repository,
+                          onAction: callbacks.onAction,
+                        ),
+                        _ToolbarAction(
                           action: RepositoryAction.abortRebase,
                           icon: Icons.stop_circle_outlined,
                           label: '中止变基',
@@ -800,6 +890,15 @@ class _RepositoryToolbar extends StatelessWidget {
                           label: repository.isCherryPickInProgress
                               ? '继续遴选'
                               : '继续回滚',
+                          repository: repository,
+                          onAction: callbacks.onAction,
+                        ),
+                        _ToolbarAction(
+                          action: RepositoryAction.skipSequencer,
+                          icon: Icons.skip_next_outlined,
+                          label: repository.isCherryPickInProgress
+                              ? '跳过遴选'
+                              : '跳过回滚',
                           repository: repository,
                           onAction: callbacks.onAction,
                         ),
@@ -1118,7 +1217,7 @@ class _HistorySearchFieldState extends State<_HistorySearchField> {
         enabled: widget.onChanged != null,
         style: Theme.of(context).textTheme.bodySmall,
         decoration: const InputDecoration(
-          hintText: '搜索提交',
+          hintText: '搜索提交或条件',
           prefixIcon: Icon(Icons.search, size: 17),
           prefixIconConstraints: BoxConstraints(minWidth: 34, minHeight: 32),
           isDense: true,
@@ -1163,6 +1262,13 @@ class _RefsNavigation extends StatelessWidget {
     required this.onSelected,
     required this.onActivated,
     required this.onContextAction,
+    this.onVerifyAllTagSignatures,
+    this.onCheckAllTagRemoteStatuses,
+    this.onCancelTagInspection,
+    this.onCancelTagMutation,
+    this.onDeleteTags,
+    this.onDeleteRemoteTags,
+    this.onPushTags,
   });
 
   final RepositoryViewData repository;
@@ -1170,6 +1276,13 @@ class _RefsNavigation extends StatelessWidget {
   final RepositoryRefCallback? onSelected;
   final RepositoryRefCallback? onActivated;
   final RepositoryRefContextActionCallback? onContextAction;
+  final VoidCallback? onVerifyAllTagSignatures;
+  final VoidCallback? onCheckAllTagRemoteStatuses;
+  final VoidCallback? onCancelTagInspection;
+  final VoidCallback? onCancelTagMutation;
+  final VoidCallback? onDeleteTags;
+  final VoidCallback? onDeleteRemoteTags;
+  final VoidCallback? onPushTags;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -1211,6 +1324,83 @@ class _RefsNavigation extends StatelessWidget {
                 child: _SectionHeader(
                   title: _refKindLabel(kind),
                   count: sections[kind]!.length,
+                  actions: kind == RepositoryRefKind.tag
+                      ? repository.isTagInspectionRunning ||
+                                repository.isTagMutationRunning
+                            ? [
+                                if (onCancelTagInspection != null)
+                                  IconButton(
+                                    tooltip: '取消标签检查',
+                                    icon: const Icon(Icons.close),
+                                    onPressed: onCancelTagInspection,
+                                  ),
+                                if (repository.isTagMutationRunning &&
+                                    onCancelTagMutation != null)
+                                  IconButton(
+                                    tooltip: '取消标签操作',
+                                    icon: const Icon(
+                                      Icons.stop_circle_outlined,
+                                    ),
+                                    onPressed: onCancelTagMutation,
+                                  ),
+                              ]
+                            : [
+                                if (onVerifyAllTagSignatures != null ||
+                                    onCheckAllTagRemoteStatuses != null ||
+                                    onDeleteTags != null ||
+                                    onDeleteRemoteTags != null ||
+                                    onPushTags != null)
+                                  PopupMenuButton<String>(
+                                    tooltip: '批量标签操作',
+                                    icon: const Icon(Icons.more_horiz),
+                                    onSelected: (value) {
+                                      switch (value) {
+                                        case 'verify':
+                                          onVerifyAllTagSignatures?.call();
+                                        case 'check':
+                                          onCheckAllTagRemoteStatuses?.call();
+                                        case 'deleteLocal':
+                                          onDeleteTags?.call();
+                                        case 'deleteRemote':
+                                          onDeleteRemoteTags?.call();
+                                        case 'push':
+                                          onPushTags?.call();
+                                      }
+                                    },
+                                    itemBuilder: (context) => [
+                                      if (onVerifyAllTagSignatures != null)
+                                        const PopupMenuItem(
+                                          value: 'verify',
+                                          child: Text('验证全部标签签名'),
+                                        ),
+                                      if (onCheckAllTagRemoteStatuses != null)
+                                        const PopupMenuItem(
+                                          value: 'check',
+                                          child: Text('检查全部远端标签状态'),
+                                        ),
+                                      if (onDeleteTags != null)
+                                        const PopupMenuItem(
+                                          value: 'deleteLocal',
+                                          child: Text('批量删除本地标签'),
+                                        ),
+                                      if (onDeleteRemoteTags != null &&
+                                          sections[RepositoryRefKind.remote]!
+                                              .isNotEmpty)
+                                        const PopupMenuItem(
+                                          value: 'deleteRemote',
+                                          child: Text('批量删除远端标签'),
+                                        ),
+                                      if (onPushTags != null &&
+                                          sections[RepositoryRefKind.remote]!
+                                              .isNotEmpty)
+                                        const PopupMenuItem(
+                                          value: 'push',
+                                          child: Text('批量推送本地标签'),
+                                        ),
+                                    ],
+                                  ),
+                              ]
+                      : const [],
                 ),
               ),
               SliverList.builder(
@@ -1459,6 +1649,13 @@ class _RefsNavigation extends StatelessWidget {
       ],
       RepositoryRefKind.localBranch when ref.isCurrent => [
         _RefContextMenuItem(
+          action: RepositoryRefContextAction.viewReflog,
+          label: '查看引用日志',
+          icon: Icons.history,
+          enabled: true,
+        ),
+        const _RefContextMenuItem.divider(),
+        _RefContextMenuItem(
           action: RepositoryRefContextAction.fetchOrigin,
           label: '获取 origin',
           icon: Icons.sync,
@@ -1498,6 +1695,13 @@ class _RefsNavigation extends StatelessWidget {
         ),
       ],
       RepositoryRefKind.localBranch => [
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.viewReflog,
+          label: '查看引用日志',
+          icon: Icons.history,
+          enabled: true,
+        ),
+        const _RefContextMenuItem.divider(),
         _RefContextMenuItem(
           action: RepositoryRefContextAction.createBranchFromReference,
           label: '从此分支创建新分支',
@@ -1584,13 +1788,24 @@ class _RefsNavigation extends StatelessWidget {
           enabled: canManageRemote,
         ),
       ],
-      RepositoryRefKind.stash => [
+      RepositoryRefKind.tag => [
         _RefContextMenuItem(
-          action: RepositoryRefContextAction.manageStashes,
-          label: '管理贮藏',
-          icon: Icons.inventory_2_outlined,
-          enabled: !disabledActions.contains(RepositoryAction.refresh),
+          action: RepositoryRefContextAction.verifyTagSignature,
+          label: '验证标签签名',
+          icon: Icons.verified_outlined,
+          enabled: !isBusy,
         ),
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.checkTagRemoteStatus,
+          label: '检查远端标签状态',
+          icon: Icons.compare_arrows,
+          enabled:
+              !isBusy &&
+              repository.refs.any(
+                (candidate) => candidate.kind == RepositoryRefKind.remote,
+              ),
+        ),
+        const _RefContextMenuItem.divider(),
         _RefContextMenuItem(
           action: RepositoryRefContextAction.refresh,
           label: '刷新仓库',
@@ -1598,7 +1813,13 @@ class _RefsNavigation extends StatelessWidget {
           enabled: !disabledActions.contains(RepositoryAction.refresh),
         ),
       ],
-      _ => [
+      RepositoryRefKind.stash => [
+        _RefContextMenuItem(
+          action: RepositoryRefContextAction.manageStashes,
+          label: '管理贮藏',
+          icon: Icons.inventory_2_outlined,
+          enabled: !disabledActions.contains(RepositoryAction.refresh),
+        ),
         _RefContextMenuItem(
           action: RepositoryRefContextAction.refresh,
           label: '刷新仓库',
@@ -2531,6 +2752,7 @@ class _HistoryPaneState extends State<_HistoryPane> {
                                     return false;
                                   },
                                   child: ListView.builder(
+                                    key: const ValueKey<String>('history-list'),
                                     controller: _scrollController,
                                     itemExtent: historyRowHeight,
                                     itemCount: historyListItemCount,
@@ -3982,6 +4204,7 @@ class _SelectedChangesPane extends StatelessWidget {
     required this.onOpenTerminal,
     required this.onQuickLook,
     required this.onViewFileHistory,
+    required this.onBlame,
     required this.onReview,
     required this.onIgnore,
     required this.onExternalDiff,
@@ -3991,6 +4214,7 @@ class _SelectedChangesPane extends StatelessWidget {
     required this.onStopTracking,
     required this.onReset,
     required this.onHunkAction,
+    this.onDiffWhitespaceModeChanged,
     required this.onCommitFileSelected,
     required this.onCommitFileContextAction,
   });
@@ -4005,6 +4229,7 @@ class _SelectedChangesPane extends StatelessWidget {
   final RepositoryChangeFilesCallback? onOpenTerminal;
   final RepositoryChangeFilesCallback? onQuickLook;
   final RepositoryChangeFilesCallback? onViewFileHistory;
+  final RepositoryChangeFilesCallback? onBlame;
   final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onIgnore;
   final RepositoryChangeFilesCallback? onExternalDiff;
@@ -4014,6 +4239,7 @@ class _SelectedChangesPane extends StatelessWidget {
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
   final RepositoryDiffHunkActionCallback? onHunkAction;
+  final RepositoryDiffWhitespaceModeCallback? onDiffWhitespaceModeChanged;
   final RepositoryCommitFileCallback? onCommitFileSelected;
   final RepositoryCommitFileContextActionCallback? onCommitFileContextAction;
 
@@ -4027,6 +4253,7 @@ class _SelectedChangesPane extends StatelessWidget {
         onSelected: onCommitFileSelected,
         onContextAction: onCommitFileContextAction,
         onHunkAction: onHunkAction,
+        onDiffWhitespaceModeChanged: onDiffWhitespaceModeChanged,
       );
     }
     return _ChangesPane(
@@ -4040,6 +4267,7 @@ class _SelectedChangesPane extends StatelessWidget {
       onOpenTerminal: onOpenTerminal,
       onQuickLook: onQuickLook,
       onViewFileHistory: onViewFileHistory,
+      onBlame: onBlame,
       onReview: onReview,
       onIgnore: onIgnore,
       onExternalDiff: onExternalDiff,
@@ -4049,6 +4277,7 @@ class _SelectedChangesPane extends StatelessWidget {
       onStopTracking: onStopTracking,
       onReset: onReset,
       onHunkAction: onHunkAction,
+      onDiffWhitespaceModeChanged: onDiffWhitespaceModeChanged,
     );
   }
 }
@@ -4065,6 +4294,7 @@ class RepositoryCommitChangesPane extends StatelessWidget {
     required this.onSelected,
     this.onContextAction,
     this.onHunkAction,
+    this.onDiffWhitespaceModeChanged,
     this.title = '提交改动',
   });
 
@@ -4072,6 +4302,7 @@ class RepositoryCommitChangesPane extends StatelessWidget {
   final RepositoryCommitFileCallback? onSelected;
   final RepositoryCommitFileContextActionCallback? onContextAction;
   final RepositoryDiffHunkActionCallback? onHunkAction;
+  final RepositoryDiffWhitespaceModeCallback? onDiffWhitespaceModeChanged;
   final String title;
 
   @override
@@ -4080,6 +4311,7 @@ class RepositoryCommitChangesPane extends StatelessWidget {
     onSelected: onSelected,
     onContextAction: onContextAction,
     onHunkAction: onHunkAction,
+    onDiffWhitespaceModeChanged: onDiffWhitespaceModeChanged,
     title: title,
   );
 }
@@ -4090,6 +4322,7 @@ class _CommitChangesPane extends StatefulWidget {
     required this.onSelected,
     this.onContextAction,
     this.onHunkAction,
+    this.onDiffWhitespaceModeChanged,
     this.title = '提交改动',
   });
 
@@ -4097,6 +4330,7 @@ class _CommitChangesPane extends StatefulWidget {
   final RepositoryCommitFileCallback? onSelected;
   final RepositoryCommitFileContextActionCallback? onContextAction;
   final RepositoryDiffHunkActionCallback? onHunkAction;
+  final RepositoryDiffWhitespaceModeCallback? onDiffWhitespaceModeChanged;
   final String title;
 
   @override
@@ -4140,6 +4374,8 @@ class _CommitChangesPaneState extends State<_CommitChangesPane> {
                             : _DiffPreview(
                                 diff: repository.commitDiff,
                                 onHunkAction: widget.onHunkAction,
+                                onDiffWhitespaceModeChanged:
+                                    widget.onDiffWhitespaceModeChanged,
                                 onBack: widget.onSelected == null
                                     ? null
                                     : () => widget.onSelected!(null),
@@ -4170,6 +4406,8 @@ class _CommitChangesPaneState extends State<_CommitChangesPane> {
                             child: _DiffPreview(
                               diff: repository.commitDiff,
                               onHunkAction: widget.onHunkAction,
+                              onDiffWhitespaceModeChanged:
+                                  widget.onDiffWhitespaceModeChanged,
                             ),
                           ),
                         ],
@@ -4274,6 +4512,15 @@ class _CommitFileTile extends StatelessWidget {
           RepositoryCommitFileContextAction.viewSelectedFileLog,
           invoke,
           enabled: file.isPathValidUtf8,
+        ),
+        _commitFileContextMenuItem(
+          file.isPathValidUtf8 && file.kind != RepositoryChangeKind.deleted
+              ? 'Blame'
+              : 'Blame（待实现）',
+          RepositoryCommitFileContextAction.blame,
+          invoke,
+          enabled:
+              file.isPathValidUtf8 && file.kind != RepositoryChangeKind.deleted,
         ),
         _commitFileContextMenuItem(
           file.isPathValidUtf8 ? '审查选定的项目' : '审查选定的项目（待实现）',
@@ -4441,6 +4688,7 @@ class _ChangesPane extends StatefulWidget {
     required this.onOpenTerminal,
     required this.onQuickLook,
     required this.onViewFileHistory,
+    required this.onBlame,
     required this.onReview,
     required this.onIgnore,
     required this.onExternalDiff,
@@ -4450,6 +4698,7 @@ class _ChangesPane extends StatefulWidget {
     required this.onStopTracking,
     required this.onReset,
     required this.onHunkAction,
+    this.onDiffWhitespaceModeChanged,
   });
 
   final RepositoryViewData repository;
@@ -4462,6 +4711,7 @@ class _ChangesPane extends StatefulWidget {
   final RepositoryChangeFilesCallback? onOpenTerminal;
   final RepositoryChangeFilesCallback? onQuickLook;
   final RepositoryChangeFilesCallback? onViewFileHistory;
+  final RepositoryChangeFilesCallback? onBlame;
   final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onIgnore;
   final RepositoryChangeFilesCallback? onExternalDiff;
@@ -4471,6 +4721,7 @@ class _ChangesPane extends StatefulWidget {
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
   final RepositoryDiffHunkActionCallback? onHunkAction;
+  final RepositoryDiffWhitespaceModeCallback? onDiffWhitespaceModeChanged;
 
   @override
   State<_ChangesPane> createState() => _ChangesPaneState();
@@ -4516,6 +4767,7 @@ class _ChangesPaneState extends State<_ChangesPane> {
                           onOpenTerminal: widget.onOpenTerminal,
                           onQuickLook: widget.onQuickLook,
                           onViewFileHistory: widget.onViewFileHistory,
+                          onBlame: widget.onBlame,
                           onReview: widget.onReview,
                           onIgnore: widget.onIgnore,
                           onExternalDiff: widget.onExternalDiff,
@@ -4527,6 +4779,8 @@ class _ChangesPaneState extends State<_ChangesPane> {
                         )
                       : _DiffPreview(
                           diff: repository.diff,
+                          onDiffWhitespaceModeChanged:
+                              widget.onDiffWhitespaceModeChanged,
                           onHunkAction: repository.blocksRepositoryMutations
                               ? null
                               : widget.onHunkAction,
@@ -4566,6 +4820,7 @@ class _ChangesPaneState extends State<_ChangesPane> {
                         onOpenTerminal: widget.onOpenTerminal,
                         onQuickLook: widget.onQuickLook,
                         onViewFileHistory: widget.onViewFileHistory,
+                        onBlame: widget.onBlame,
                         onReview: widget.onReview,
                         onIgnore: widget.onIgnore,
                         onExternalDiff: widget.onExternalDiff,
@@ -4586,6 +4841,8 @@ class _ChangesPaneState extends State<_ChangesPane> {
                     Expanded(
                       child: _DiffPreview(
                         diff: repository.diff,
+                        onDiffWhitespaceModeChanged:
+                            widget.onDiffWhitespaceModeChanged,
                         onHunkAction: repository.blocksRepositoryMutations
                             ? null
                             : widget.onHunkAction,
@@ -4618,6 +4875,7 @@ class _WorkspaceChangesView extends StatelessWidget {
     required this.onOpenTerminal,
     required this.onQuickLook,
     required this.onViewFileHistory,
+    required this.onBlame,
     required this.onReview,
     required this.onIgnore,
     required this.onExternalDiff,
@@ -4627,6 +4885,7 @@ class _WorkspaceChangesView extends StatelessWidget {
     required this.onStopTracking,
     required this.onReset,
     required this.onHunkAction,
+    this.onDiffWhitespaceModeChanged,
     required this.onCommit,
   });
 
@@ -4640,6 +4899,7 @@ class _WorkspaceChangesView extends StatelessWidget {
   final RepositoryChangeFilesCallback? onOpenTerminal;
   final RepositoryChangeFilesCallback? onQuickLook;
   final RepositoryChangeFilesCallback? onViewFileHistory;
+  final RepositoryChangeFilesCallback? onBlame;
   final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onIgnore;
   final RepositoryChangeFilesCallback? onExternalDiff;
@@ -4649,6 +4909,7 @@ class _WorkspaceChangesView extends StatelessWidget {
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
   final RepositoryDiffHunkActionCallback? onHunkAction;
+  final RepositoryDiffWhitespaceModeCallback? onDiffWhitespaceModeChanged;
   final VoidCallback? onCommit;
 
   /// 中文：构建工作区文件、Diff 和提交信息入口。
@@ -4673,6 +4934,7 @@ class _WorkspaceChangesView extends StatelessWidget {
             onOpenTerminal: onOpenTerminal,
             onQuickLook: onQuickLook,
             onViewFileHistory: onViewFileHistory,
+            onBlame: onBlame,
             onReview: onReview,
             onIgnore: onIgnore,
             onExternalDiff: onExternalDiff,
@@ -4682,6 +4944,7 @@ class _WorkspaceChangesView extends StatelessWidget {
             onStopTracking: onStopTracking,
             onReset: onReset,
             onHunkAction: onHunkAction,
+            onDiffWhitespaceModeChanged: onDiffWhitespaceModeChanged,
           ),
         ),
         Material(
@@ -4730,6 +4993,7 @@ class _ChangeList extends StatefulWidget {
     required this.onOpenTerminal,
     required this.onQuickLook,
     required this.onViewFileHistory,
+    required this.onBlame,
     required this.onReview,
     required this.onIgnore,
     required this.onExternalDiff,
@@ -4753,6 +5017,7 @@ class _ChangeList extends StatefulWidget {
   final RepositoryChangeFilesCallback? onOpenTerminal;
   final RepositoryChangeFilesCallback? onQuickLook;
   final RepositoryChangeFilesCallback? onViewFileHistory;
+  final RepositoryChangeFilesCallback? onBlame;
   final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onIgnore;
   final RepositoryChangeFilesCallback? onExternalDiff;
@@ -4896,6 +5161,7 @@ class _ChangeListState extends State<_ChangeList> {
       onOpenTerminal: widget.onOpenTerminal,
       onQuickLook: widget.onQuickLook,
       onViewFileHistory: widget.onViewFileHistory,
+      onBlame: widget.onBlame,
       onReview: widget.onReview,
       onIgnore: widget.onIgnore,
       onExternalDiff: widget.onExternalDiff,
@@ -4997,6 +5263,7 @@ class _ChangeGroup extends StatelessWidget {
     required this.onOpenTerminal,
     required this.onQuickLook,
     required this.onViewFileHistory,
+    required this.onBlame,
     required this.onReview,
     required this.onIgnore,
     required this.onExternalDiff,
@@ -5025,6 +5292,7 @@ class _ChangeGroup extends StatelessWidget {
   final RepositoryChangeFilesCallback? onOpenTerminal;
   final RepositoryChangeFilesCallback? onQuickLook;
   final RepositoryChangeFilesCallback? onViewFileHistory;
+  final RepositoryChangeFilesCallback? onBlame;
   final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onIgnore;
   final RepositoryChangeFilesCallback? onExternalDiff;
@@ -5123,6 +5391,7 @@ class _ChangeGroup extends StatelessWidget {
               onOpenTerminal: onOpenTerminal,
               onQuickLook: onQuickLook,
               onViewFileHistory: onViewFileHistory,
+              onBlame: onBlame,
               onReview: onReview,
               onIgnore: onIgnore,
               onExternalDiff: onExternalDiff,
@@ -5158,6 +5427,7 @@ class _ChangeTile extends StatelessWidget {
     required this.onOpenTerminal,
     required this.onQuickLook,
     required this.onViewFileHistory,
+    required this.onBlame,
     required this.onReview,
     required this.onIgnore,
     required this.onExternalDiff,
@@ -5182,6 +5452,7 @@ class _ChangeTile extends StatelessWidget {
   final RepositoryChangeFilesCallback? onOpenTerminal;
   final RepositoryChangeFilesCallback? onQuickLook;
   final RepositoryChangeFilesCallback? onViewFileHistory;
+  final RepositoryChangeFilesCallback? onBlame;
   final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onIgnore;
   final RepositoryChangeFilesCallback? onExternalDiff;
@@ -5235,6 +5506,13 @@ class _ChangeTile extends StatelessWidget {
         selectedChanges().length == 1 &&
         canUseReadOnlyFileActions() &&
         selectedChanges().single.kind != RepositoryChangeKind.untracked;
+    bool canBlame() =>
+        onBlame != null &&
+        selectedChanges().length == 1 &&
+        canUseReadOnlyFileActions() &&
+        selectedChanges().single.kind != RepositoryChangeKind.untracked &&
+        selectedChanges().single.kind != RepositoryChangeKind.deleted &&
+        selectedChanges().single.kind != RepositoryChangeKind.conflicted;
     void invokeFileAction(RepositoryChangeFilesCallback callback) {
       final result = callback(selectedChanges());
       if (result is Future<void>) unawaited(result);
@@ -5255,7 +5533,8 @@ class _ChangeTile extends StatelessWidget {
       button: true,
       selected: isSelected,
       label:
-          '${change.isStaged ? "已暂存" : "未暂存"}，${_changeKindLabel(change.kind)}，${change.path}',
+          '${change.isStaged ? "已暂存" : "未暂存"}，${_changeKindLabel(change.kind)}，${change.path}'
+          '${change.submoduleStatus == null ? '' : '，子模块：${change.submoduleStatus}'}',
       child: Tooltip(
         message: change.path,
         waitDuration: const Duration(milliseconds: 650),
@@ -5326,6 +5605,24 @@ class _ChangeTile extends StatelessWidget {
                               color: isSelected
                                   ? colors.onPrimary.withValues(alpha: .82)
                                   : colors.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                      ],
+                      if (change.submoduleStatus case final status?) ...[
+                        const SizedBox(width: 6),
+                        Flexible(
+                          child: Tooltip(
+                            message: '子模块：$status',
+                            child: Text(
+                              '子模块 · $status',
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: theme.textTheme.labelSmall?.copyWith(
+                                color: isSelected
+                                    ? colors.onPrimary.withValues(alpha: .82)
+                                    : colors.tertiary,
+                              ),
                             ),
                           ),
                         ),
@@ -5545,6 +5842,11 @@ class _ChangeTile extends StatelessWidget {
                 : '查看选中的修改日志…（待实现）',
           ),
         ),
+        if (onBlame != null)
+          MenuItemButton(
+            onPressed: canBlame() ? () => invokeFileAction(onBlame!) : null,
+            child: Text(canBlame() ? 'Blame' : 'Blame（待实现）'),
+          ),
         MenuItemButton(
           onPressed: onReview != null && canUseReadOnlyFileActions()
               ? () => invokeFileAction(onReview!)
@@ -5670,34 +5972,156 @@ class _ChangeStatusBadge extends StatelessWidget {
   }
 }
 
-class _DiffPreview extends StatelessWidget {
-  const _DiffPreview({required this.diff, this.onBack, this.onHunkAction});
+class _DiffPreview extends StatefulWidget {
+  const _DiffPreview({
+    required this.diff,
+    this.onBack,
+    this.onHunkAction,
+    this.onDiffWhitespaceModeChanged,
+  });
 
   final DiffViewData diff;
   final VoidCallback? onBack;
   final RepositoryDiffHunkActionCallback? onHunkAction;
+  final RepositoryDiffWhitespaceModeCallback? onDiffWhitespaceModeChanged;
+
+  @override
+  State<_DiffPreview> createState() => _DiffPreviewState();
+}
+
+class _DiffPreviewState extends State<_DiffPreview> {
+  late final ScrollController _scrollController;
+  late final FocusNode _focusNode;
+  bool _showOnlyChanges = false;
+  bool _showSideBySide = false;
+  int? _activeChangedIndex;
+
+  @override
+  void initState() {
+    super.initState();
+    _scrollController = ScrollController();
+    _focusNode = FocusNode(debugLabel: 'Diff change navigator');
+  }
+
+  @override
+  void dispose() {
+    _scrollController.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  /// 中文：当 Diff 内容替换时清除不再适用的活动差异索引。
+  /// English: Clears the active change index when the preview content changes.
+  @override
+  void didUpdateWidget(covariant _DiffPreview oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (!identical(oldWidget.diff, widget.diff)) {
+      _activeChangedIndex = null;
+    }
+  }
+
+  /// 中文：循环定位到下一条新增/删除行并滚动到可见位置。
+  /// English: Cycles to the next or previous changed line and reveals it.
+  void _jumpToChangedLine({
+    required List<int> changedIndices,
+    required List<DiffLineViewData> visibleLines,
+    required BuildContext context,
+    required bool forward,
+  }) {
+    if (changedIndices.isEmpty) return;
+    final currentPosition = _activeChangedIndex == null
+        ? -1
+        : changedIndices.indexOf(_activeChangedIndex!);
+    final nextPosition = forward
+        ? (currentPosition + 1) % changedIndices.length
+        : (currentPosition <= 0
+              ? changedIndices.length - 1
+              : currentPosition - 1);
+    final targetIndex = changedIndices[nextPosition];
+    final visiblePosition = visibleLines.indexWhere(
+      (line) => identical(line, widget.diff.lines[targetIndex]),
+    );
+    if (visiblePosition < 0) return;
+    setState(() => _activeChangedIndex = targetIndex);
+    if (!_scrollController.hasClients) return;
+    var offset = 0.0;
+    for (var index = 0; index < visiblePosition; index++) {
+      offset += _scaledDenseHeight(
+        context,
+        visibleLines[index].kind == DiffLineKind.hunkHeader ? 26 : 20,
+      );
+    }
+    _scrollController.animateTo(
+      offset.clamp(0.0, _scrollController.position.maxScrollExtent),
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOut,
+    );
+  }
+
+  /// 中文：将当前 Diff 的完整文本复制到系统剪贴板，不受显示筛选影响。
+  /// English: Copies the complete Diff text to the system clipboard, ignoring
+  /// the display-only context filter.
+  Future<void> _copyDiff(BuildContext context) async {
+    final text = widget.diff.lines.map((line) => line.text).join('\n');
+    try {
+      await Clipboard.setData(ClipboardData(text: text));
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('已复制 Diff。')));
+    } catch (_) {
+      if (!context.mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('无法复制 Diff 到剪贴板。')));
+    }
+  }
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
   @override
   Widget build(BuildContext context) {
     final ColorScheme colors = Theme.of(context).colorScheme;
-    if (diff.path == null) {
+    if (widget.diff.path == null) {
       return const _PaneEmptyState(
         icon: Icons.article_outlined,
         title: '选择文件以查看差异',
         message: '差异内容将在此处显示。',
       );
     }
-    if (diff.isBinary || diff.isTooLarge) {
+    if (widget.diff.isBinary || widget.diff.isTooLarge) {
       return _PaneEmptyState(
-        icon: diff.isBinary ? Icons.data_object : Icons.warning_amber,
-        title: diff.isBinary ? '二进制文件' : '文件过大',
+        icon: widget.diff.isBinary ? Icons.data_object : Icons.warning_amber,
+        title: widget.diff.isBinary ? '二进制文件' : '文件过大',
         message:
-            diff.notice ??
-            (diff.isBinary ? '此文件无法显示文本差异。' : '为保持界面响应，已跳过差异预览。'),
+            widget.diff.notice ??
+            (widget.diff.isBinary ? '此文件无法显示文本差异。' : '为保持界面响应，已跳过差异预览。'),
       );
     }
+
+    final changedLineCount = widget.diff.lines.where((line) {
+      return line.kind == DiffLineKind.addition ||
+          line.kind == DiffLineKind.deletion;
+    }).length;
+    final visibleLines = _showOnlyChanges
+        ? widget.diff.lines
+              .where((line) => line.kind != DiffLineKind.context)
+              .toList(growable: false)
+        : widget.diff.lines;
+    final changedIndices = <int>[
+      for (var index = 0; index < widget.diff.lines.length; index++)
+        if (widget.diff.lines[index].kind == DiffLineKind.addition ||
+            widget.diff.lines[index].kind == DiffLineKind.deletion)
+          index,
+    ];
+    final activeChangedIndex =
+        _activeChangedIndex != null &&
+            changedIndices.contains(_activeChangedIndex!)
+        ? _activeChangedIndex
+        : null;
+    final sideBySideRows = _showSideBySide
+        ? _buildSideBySideRows(visibleLines)
+        : const <_SideBySideDiffRow>[];
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -5712,11 +6136,11 @@ class _DiffPreview extends StatelessWidget {
           ),
           child: Row(
             children: [
-              if (onBack != null) ...[
+              if (widget.onBack != null) ...[
                 Tooltip(
                   message: '返回文件列表',
                   child: InkWell(
-                    onTap: onBack,
+                    onTap: widget.onBack,
                     borderRadius: BorderRadius.circular(4),
                     child: const Padding(
                       padding: EdgeInsets.symmetric(horizontal: 3),
@@ -5728,7 +6152,7 @@ class _DiffPreview extends StatelessWidget {
               ],
               Expanded(
                 child: Text(
-                  diff.path!,
+                  widget.diff.path!,
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: Theme.of(
@@ -5736,11 +6160,111 @@ class _DiffPreview extends StatelessWidget {
                   ).textTheme.labelSmall?.copyWith(fontFamily: 'monospace'),
                 ),
               ),
+              if (changedLineCount > 0 ||
+                  widget.onDiffWhitespaceModeChanged != null)
+                SizedBox(
+                  width: _scaledDenseHeight(
+                    context,
+                    widget.onDiffWhitespaceModeChanged == null ? 216 : 270,
+                  ),
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.end,
+                    children: [
+                      Text(
+                        '$changedLineCount 行变更',
+                        semanticsLabel: '$changedLineCount 行变更',
+                        style: Theme.of(context).textTheme.labelSmall,
+                      ),
+                      Tooltip(
+                        message: '复制完整 Diff',
+                        child: IconButton(
+                          key: const ValueKey('copy-diff'),
+                          onPressed: () => _copyDiff(context),
+                          padding: EdgeInsets.zero,
+                          iconSize: _scaledDenseHeight(context, 16),
+                          tooltip: '复制完整 Diff',
+                          icon: const Icon(Icons.copy_outlined),
+                        ),
+                      ),
+                      Tooltip(
+                        message: _showOnlyChanges ? '显示全部 Diff' : '仅显示改动',
+                        child: IconButton(
+                          key: const ValueKey('toggle-diff-changes'),
+                          onPressed: () {
+                            setState(() {
+                              _showOnlyChanges = !_showOnlyChanges;
+                            });
+                          },
+                          padding: EdgeInsets.zero,
+                          iconSize: _scaledDenseHeight(context, 16),
+                          tooltip: _showOnlyChanges ? '显示全部 Diff' : '仅显示改动',
+                          icon: Icon(
+                            _showOnlyChanges
+                                ? Icons.filter_alt_off_outlined
+                                : Icons.filter_alt_outlined,
+                          ),
+                        ),
+                      ),
+                      Tooltip(
+                        message: _showSideBySide ? '显示统一 Diff' : '左右对比',
+                        child: IconButton(
+                          key: const ValueKey('toggle-diff-layout'),
+                          onPressed: () {
+                            setState(() {
+                              _showSideBySide = !_showSideBySide;
+                            });
+                          },
+                          padding: EdgeInsets.zero,
+                          iconSize: _scaledDenseHeight(context, 16),
+                          tooltip: _showSideBySide ? '显示统一 Diff' : '左右对比',
+                          icon: Icon(
+                            _showSideBySide
+                                ? Icons.view_agenda_outlined
+                                : Icons.view_column_outlined,
+                          ),
+                        ),
+                      ),
+                      if (widget.onDiffWhitespaceModeChanged != null)
+                        PopupMenuButton<DiffWhitespaceMode>(
+                          key: const ValueKey('diff-whitespace-mode'),
+                          tooltip:
+                              '空白比较：${_diffWhitespaceModeLabel(widget.diff.whitespaceMode)}',
+                          initialValue: widget.diff.whitespaceMode,
+                          onSelected: (mode) {
+                            final result = widget.onDiffWhitespaceModeChanged!(
+                              mode,
+                            );
+                            if (result is Future<void>) unawaited(result);
+                          },
+                          padding: EdgeInsets.zero,
+                          iconSize: _scaledDenseHeight(context, 16),
+                          icon: const Icon(Icons.space_bar),
+                          itemBuilder: (context) => [
+                            for (final mode in DiffWhitespaceMode.values)
+                              PopupMenuItem(
+                                value: mode,
+                                child: Row(
+                                  children: [
+                                    SizedBox(
+                                      width: 22,
+                                      child: mode == widget.diff.whitespaceMode
+                                          ? const Icon(Icons.check, size: 16)
+                                          : null,
+                                    ),
+                                    Text(_diffWhitespaceModeLabel(mode)),
+                                  ],
+                                ),
+                              ),
+                          ],
+                        ),
+                    ],
+                  ),
+                ),
             ],
           ),
         ),
         Expanded(
-          child: diff.lines.isEmpty
+          child: widget.diff.lines.isEmpty
               ? const _PaneEmptyState(
                   icon: Icons.horizontal_rule,
                   title: '没有文本差异',
@@ -5748,7 +6272,7 @@ class _DiffPreview extends StatelessWidget {
                 )
               : LayoutBuilder(
                   builder: (context, constraints) {
-                    final longestLine = diff.lines.fold<int>(
+                    final longestLine = visibleLines.fold<int>(
                       0,
                       (longest, line) => math.max(longest, line.text.length),
                     );
@@ -5758,37 +6282,128 @@ class _DiffPreview extends StatelessWidget {
                     );
                     final contentWidth = math.max(
                       constraints.maxWidth,
-                      math.min(32768.0, 118 + longestLine * 7.2 * textScale),
+                      math.min(
+                        32768.0,
+                        _showSideBySide
+                            ? 240 + longestLine * 7.2 * textScale * 2
+                            : 118 + longestLine * 7.2 * textScale,
+                      ),
                     );
-                    return SingleChildScrollView(
-                      key: const ValueKey('diff-horizontal-scroll'),
-                      scrollDirection: Axis.horizontal,
-                      child: SizedBox(
-                        width: contentWidth,
-                        height: constraints.maxHeight,
-                        child: ListView.builder(
-                          itemCount: diff.lines.length,
-                          itemBuilder: (BuildContext context, int index) {
-                            final line = diff.lines[index];
-                            final canAct =
-                                line.kind == DiffLineKind.hunkHeader &&
-                                line.hunkIndex != null &&
-                                diff.hunkActions.isNotEmpty &&
-                                onHunkAction != null;
-                            return SizedBox(
-                              height: _scaledDenseHeight(
-                                context,
-                                line.kind == DiffLineKind.hunkHeader ? 26 : 20,
+                    return Focus(
+                      focusNode: _focusNode,
+                      onKeyEvent: (node, event) {
+                        if (event is! KeyDownEvent) {
+                          return KeyEventResult.ignored;
+                        }
+                        if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+                          _jumpToChangedLine(
+                            changedIndices: changedIndices,
+                            visibleLines: visibleLines,
+                            context: context,
+                            forward: true,
+                          );
+                          return KeyEventResult.handled;
+                        }
+                        if (event.logicalKey == LogicalKeyboardKey.arrowUp) {
+                          _jumpToChangedLine(
+                            changedIndices: changedIndices,
+                            visibleLines: visibleLines,
+                            context: context,
+                            forward: false,
+                          );
+                          return KeyEventResult.handled;
+                        }
+                        return KeyEventResult.ignored;
+                      },
+                      child: GestureDetector(
+                        behavior: HitTestBehavior.opaque,
+                        onTap: _focusNode.requestFocus,
+                        child: Semantics(
+                          container: true,
+                          label: changedLineCount == 0
+                              ? 'Diff 对比，无改动行'
+                              : 'Diff 对比，共 $changedLineCount 行改动；可用上下方向键定位',
+                          child: SingleChildScrollView(
+                            key: const ValueKey('diff-horizontal-scroll'),
+                            scrollDirection: Axis.horizontal,
+                            child: SizedBox(
+                              width: contentWidth,
+                              height: constraints.maxHeight,
+                              child: ListView.builder(
+                                controller: _scrollController,
+                                itemCount: _showSideBySide
+                                    ? sideBySideRows.length
+                                    : visibleLines.length,
+                                itemBuilder: (BuildContext context, int index) {
+                                  if (_showSideBySide) {
+                                    final row = sideBySideRows[index];
+                                    return SizedBox(
+                                      height: _scaledDenseHeight(
+                                        context,
+                                        row.fullLine?.kind ==
+                                                DiffLineKind.hunkHeader
+                                            ? 26
+                                            : 20,
+                                      ),
+                                      child: _SideBySideDiffRowWidget(
+                                        row: row,
+                                        path: widget.diff.path!,
+                                        activeLine: activeChangedIndex == null
+                                            ? null
+                                            : widget
+                                                  .diff
+                                                  .lines[activeChangedIndex],
+                                        hunkActions: widget.diff.hunkActions,
+                                        onHunkAction: widget.onHunkAction,
+                                      ),
+                                    );
+                                  }
+                                  final line = visibleLines[index];
+                                  final canAct =
+                                      line.kind == DiffLineKind.hunkHeader &&
+                                      line.hunkIndex != null &&
+                                      widget.diff.hunkActions.isNotEmpty &&
+                                      widget.onHunkAction != null;
+                                  return SizedBox(
+                                    height: _scaledDenseHeight(
+                                      context,
+                                      line.kind == DiffLineKind.hunkHeader
+                                          ? 26
+                                          : 20,
+                                    ),
+                                    child: _DiffLine(
+                                      key:
+                                          activeChangedIndex != null &&
+                                              identical(
+                                                line,
+                                                widget
+                                                    .diff
+                                                    .lines[activeChangedIndex],
+                                              )
+                                          ? const ValueKey('diff-active-line')
+                                          : null,
+                                      line: line,
+                                      path: widget.diff.path!,
+                                      isActive:
+                                          activeChangedIndex != null &&
+                                          identical(
+                                            line,
+                                            widget
+                                                .diff
+                                                .lines[activeChangedIndex],
+                                          ),
+                                      hunkActions: canAct
+                                          ? widget.diff.hunkActions
+                                          : const [],
+                                      onHunkAction: canAct
+                                          ? widget.onHunkAction
+                                          : null,
+                                    ),
+                                  );
+                                },
                               ),
-                              child: _DiffLine(
-                                line: line,
-                                hunkActions: canAct
-                                    ? diff.hunkActions
-                                    : const [],
-                                onHunkAction: canAct ? onHunkAction : null,
-                              ),
-                            );
-                          },
+                            ),
+                          ),
                         ),
                       ),
                     );
@@ -5800,14 +6415,235 @@ class _DiffPreview extends StatelessWidget {
   }
 }
 
+/// Returns the user-facing label for one whitespace comparison mode.
+/// 中文：返回空白比较模式的用户可见标签。
+String _diffWhitespaceModeLabel(DiffWhitespaceMode mode) {
+  return switch (mode) {
+    DiffWhitespaceMode.preserve => '保留空白差异',
+    DiffWhitespaceMode.ignoreAll => '忽略所有空白',
+    DiffWhitespaceMode.ignoreChanges => '忽略空白数量变化',
+    DiffWhitespaceMode.ignoreBlankLines => '忽略空白行',
+  };
+}
+
+/// A display row used by the optional side-by-side Diff presentation.
+/// 中文：左右对比视图使用的展示行；删除和新增行会在同一行对齐。
+final class _SideBySideDiffRow {
+  const _SideBySideDiffRow({this.fullLine, this.left, this.right});
+
+  final DiffLineViewData? fullLine;
+  final DiffLineViewData? left;
+  final DiffLineViewData? right;
+}
+
+/// Converts unified Diff lines into aligned left/right display rows.
+/// 中文：将 Unified Diff 行转换为左右对齐的展示行，不改变原始补丁内容。
+List<_SideBySideDiffRow> _buildSideBySideRows(List<DiffLineViewData> lines) {
+  final rows = <_SideBySideDiffRow>[];
+  var index = 0;
+  while (index < lines.length) {
+    final line = lines[index];
+    if (line.kind == DiffLineKind.deletion) {
+      final deletions = <DiffLineViewData>[];
+      while (index < lines.length &&
+          lines[index].kind == DiffLineKind.deletion) {
+        deletions.add(lines[index++]);
+      }
+      final additions = <DiffLineViewData>[];
+      while (index < lines.length &&
+          lines[index].kind == DiffLineKind.addition) {
+        additions.add(lines[index++]);
+      }
+      final count = math.max(deletions.length, additions.length);
+      for (var offset = 0; offset < count; offset++) {
+        rows.add(
+          _SideBySideDiffRow(
+            left: offset < deletions.length ? deletions[offset] : null,
+            right: offset < additions.length ? additions[offset] : null,
+          ),
+        );
+      }
+      continue;
+    }
+    if (line.kind == DiffLineKind.addition) {
+      rows.add(_SideBySideDiffRow(right: line));
+    } else {
+      rows.add(_SideBySideDiffRow(fullLine: line));
+    }
+    index++;
+  }
+  return rows;
+}
+
+class _SideBySideDiffRowWidget extends StatelessWidget {
+  const _SideBySideDiffRowWidget({
+    required this.row,
+    required this.path,
+    required this.activeLine,
+    required this.hunkActions,
+    required this.onHunkAction,
+  });
+
+  final _SideBySideDiffRow row;
+  final String path;
+  final DiffLineViewData? activeLine;
+  final List<RepositoryDiffHunkAction> hunkActions;
+  final RepositoryDiffHunkActionCallback? onHunkAction;
+
+  @override
+  Widget build(BuildContext context) {
+    final fullLine = row.fullLine;
+    if (fullLine != null) {
+      final canAct =
+          fullLine.kind == DiffLineKind.hunkHeader &&
+          fullLine.hunkIndex != null &&
+          hunkActions.isNotEmpty &&
+          onHunkAction != null;
+      return _DiffLine(
+        key: identical(fullLine, activeLine)
+            ? const ValueKey('diff-active-line')
+            : null,
+        line: fullLine,
+        path: path,
+        isActive: identical(fullLine, activeLine),
+        hunkActions: canAct ? hunkActions : const [],
+        onHunkAction: canAct ? onHunkAction : null,
+      );
+    }
+    return Row(
+      children: [
+        Expanded(
+          child: _DiffSideCell(
+            line: row.left,
+            path: path,
+            isActive: identical(row.left, activeLine),
+            showOldLineNumber: true,
+            hunkActions: const [],
+            onHunkAction: null,
+          ),
+        ),
+        SizedBox(
+          width: 1,
+          child: ColoredBox(color: Theme.of(context).dividerColor),
+        ),
+        Expanded(
+          child: _DiffSideCell(
+            line: row.right,
+            path: path,
+            isActive: identical(row.right, activeLine),
+            showOldLineNumber: false,
+            hunkActions: const [],
+            onHunkAction: null,
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _DiffSideCell extends StatelessWidget {
+  const _DiffSideCell({
+    required this.line,
+    required this.path,
+    required this.isActive,
+    required this.showOldLineNumber,
+    required this.hunkActions,
+    required this.onHunkAction,
+  });
+
+  final DiffLineViewData? line;
+  final String path;
+  final bool isActive;
+  final bool showOldLineNumber;
+  final List<RepositoryDiffHunkAction> hunkActions;
+  final RepositoryDiffHunkActionCallback? onHunkAction;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    if (line == null) {
+      return const SizedBox.expand();
+    }
+    final current = line!;
+    final background = current.kind == DiffLineKind.deletion
+        ? colors.errorContainer.withValues(alpha: .46)
+        : current.kind == DiffLineKind.addition
+        ? colors.tertiaryContainer.withValues(alpha: .46)
+        : null;
+    final foreground = current.kind == DiffLineKind.deletion
+        ? colors.onErrorContainer
+        : current.kind == DiffLineKind.addition
+        ? colors.onTertiaryContainer
+        : colors.onSurface;
+    final text =
+        current.text.isNotEmpty &&
+            (current.kind == DiffLineKind.deletion ||
+                current.kind == DiffLineKind.addition)
+        ? current.text.substring(1)
+        : current.text;
+    return Container(
+      key: isActive ? const ValueKey('diff-active-line') : null,
+      color: isActive ? colors.primaryContainer : background,
+      child: Row(
+        children: [
+          _LineNumber(
+            value: showOldLineNumber
+                ? current.oldLineNumber
+                : current.newLineNumber,
+          ),
+          Expanded(
+            child: _buildDiffTextWidget(
+              text: text,
+              path: path,
+              colors: colors,
+              baseStyle: Theme.of(context).textTheme.labelSmall?.copyWith(
+                color: foreground,
+                fontFamily: 'monospace',
+                fontSize: 11,
+                height: 1.45,
+              ),
+            ),
+          ),
+          if (onHunkAction != null && current.hunkIndex != null)
+            for (final action in hunkActions)
+              TextButton(
+                onPressed: () {
+                  final result = onHunkAction!(action, current.hunkIndex!);
+                  if (result is Future<void>) unawaited(result);
+                },
+                style: TextButton.styleFrom(
+                  minimumSize: const Size(0, 20),
+                  padding: const EdgeInsets.symmetric(horizontal: 6),
+                  tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                  visualDensity: VisualDensity.compact,
+                  textStyle: Theme.of(context).textTheme.labelSmall,
+                ),
+                child: Text(switch (action) {
+                  RepositoryDiffHunkAction.stage => '暂存区块',
+                  RepositoryDiffHunkAction.discard => '放弃区块',
+                  RepositoryDiffHunkAction.unstage => '取消暂存区块',
+                  RepositoryDiffHunkAction.revertCommitted => '回滚区块',
+                }),
+              ),
+        ],
+      ),
+    );
+  }
+}
+
 class _DiffLine extends StatelessWidget {
   const _DiffLine({
+    super.key,
     required this.line,
+    required this.path,
+    this.isActive = false,
     this.hunkActions = const [],
     this.onHunkAction,
   });
 
   final DiffLineViewData line;
+  final String path;
+  final bool isActive;
   final List<RepositoryDiffHunkAction> hunkActions;
   final RepositoryDiffHunkActionCallback? onHunkAction;
 
@@ -5831,18 +6667,17 @@ class _DiffLine extends StatelessWidget {
     };
 
     return Container(
-      color: background,
+      color: isActive ? colors.primaryContainer : background,
       child: Row(
         children: [
           _LineNumber(value: line.oldLineNumber),
           _LineNumber(value: line.newLineNumber),
           Expanded(
-            child: Text(
-              line.text,
-              maxLines: 1,
-              overflow: TextOverflow.clip,
-              softWrap: false,
-              style: Theme.of(context).textTheme.labelSmall?.copyWith(
+            child: _buildUnifiedDiffTextWidget(
+              line: line,
+              path: path,
+              colors: colors,
+              baseStyle: Theme.of(context).textTheme.labelSmall?.copyWith(
                 color: foreground,
                 fontFamily: 'monospace',
                 fontSize: 11,
@@ -5914,6 +6749,232 @@ class _LineNumber extends StatelessWidget {
       ),
     );
   }
+}
+
+/// Builds a syntax-aware span for one line of source text.
+/// 中文：按文件扩展名为单行源码生成轻量语法高亮；无法识别的文件保持原始文本。
+TextSpan _buildDiffTextSpan({
+  required String text,
+  required String path,
+  required ColorScheme colors,
+  required TextStyle? baseStyle,
+}) {
+  final syntax = _diffSyntaxForPath(path);
+  if (syntax == _DiffSyntax.none || text.isEmpty) {
+    return TextSpan(text: text, style: baseStyle);
+  }
+  final syntaxColors = _diffSyntaxColors(colors);
+  final tokenPattern = RegExp(switch (syntax) {
+    _DiffSyntax.json =>
+      r'"(?:\\.|[^"\\])*"|\b(?:true|false|null)\b|\b\d+(?:\.\d+)?\b',
+    _ =>
+      r'''//.*|#.*|/\*.*?\*/|"(?:\\.|[^"\\])*"|'(?:\\.|[^'\\])*'|\b\d+(?:\.\d+)?\b|\b(?:as|async|await|break|case|catch|class|const|continue|def|else|enum|extends|final|finally|for|from|func|function|if|implements|import|in|interface|let|library|map|new|null|override|private|protected|public|return|static|switch|this|throw|try|typedef|var|void|while|with|yield)\b''',
+  }, multiLine: true);
+  final spans = <TextSpan>[];
+  var cursor = 0;
+  for (final match in tokenPattern.allMatches(text)) {
+    if (match.start > cursor) {
+      spans.add(TextSpan(text: text.substring(cursor, match.start)));
+    }
+    final token = match.group(0)!;
+    final color = _diffTokenColor(token, syntaxColors, syntax);
+    spans.add(
+      TextSpan(
+        text: token,
+        style: baseStyle?.copyWith(color: color),
+      ),
+    );
+    cursor = match.end;
+  }
+  if (cursor < text.length) {
+    spans.add(TextSpan(text: text.substring(cursor)));
+  }
+  return TextSpan(style: baseStyle, children: spans);
+}
+
+/// Uses a plain Text widget when highlighting is unavailable so Flutter's
+/// text finder and accessibility tree preserve the exact source line.
+/// 中文：无法高亮时保留普通 Text，确保测试查找器和辅助功能仍看到完整源码行。
+Widget _buildDiffTextWidget({
+  required String text,
+  required String path,
+  required ColorScheme colors,
+  required TextStyle? baseStyle,
+}) {
+  if (_diffSyntaxForPath(path) == _DiffSyntax.none || text.isEmpty) {
+    return Text(
+      text,
+      maxLines: 1,
+      overflow: TextOverflow.clip,
+      softWrap: false,
+      style: baseStyle,
+    );
+  }
+  return Text.rich(
+    _buildDiffTextSpan(
+      text: text,
+      path: path,
+      colors: colors,
+      baseStyle: baseStyle,
+    ),
+    maxLines: 1,
+    overflow: TextOverflow.clip,
+    softWrap: false,
+  );
+}
+
+/// Keeps the unified Diff marker outside the syntax lexer.
+/// 中文：统一 Diff 的前缀字符保持状态颜色，源码正文才进入语法高亮。
+TextSpan _buildUnifiedDiffTextSpan({
+  required DiffLineViewData line,
+  required String path,
+  required ColorScheme colors,
+  required TextStyle? baseStyle,
+}) {
+  if (line.kind != DiffLineKind.context &&
+      line.kind != DiffLineKind.addition &&
+      line.kind != DiffLineKind.deletion) {
+    return TextSpan(text: line.text, style: baseStyle);
+  }
+  if (line.text.isEmpty) {
+    return TextSpan(text: line.text, style: baseStyle);
+  }
+  final marker = line.text.substring(0, 1);
+  final source = line.text.substring(1);
+  return TextSpan(
+    style: baseStyle,
+    children: [
+      TextSpan(text: marker),
+      _buildDiffTextSpan(
+        text: source,
+        path: path,
+        colors: colors,
+        baseStyle: baseStyle,
+      ),
+    ],
+  );
+}
+
+/// Preserves plain Text for headers and unknown files while highlighting source
+/// content for recognized paths.
+/// 中文：文件头、区块头和未知文件保持普通 Text，其余源码行使用轻量高亮。
+Widget _buildUnifiedDiffTextWidget({
+  required DiffLineViewData line,
+  required String path,
+  required ColorScheme colors,
+  required TextStyle? baseStyle,
+}) {
+  final canHighlight =
+      _diffSyntaxForPath(path) != _DiffSyntax.none &&
+      (line.kind == DiffLineKind.context ||
+          line.kind == DiffLineKind.addition ||
+          line.kind == DiffLineKind.deletion) &&
+      line.text.length > 1;
+  if (!canHighlight) {
+    return Text(
+      line.text,
+      maxLines: 1,
+      overflow: TextOverflow.clip,
+      softWrap: false,
+      style: baseStyle,
+    );
+  }
+  return Text.rich(
+    _buildUnifiedDiffTextSpan(
+      line: line,
+      path: path,
+      colors: colors,
+      baseStyle: baseStyle,
+    ),
+    maxLines: 1,
+    overflow: TextOverflow.clip,
+    softWrap: false,
+  );
+}
+
+enum _DiffSyntax { none, dart, json, generic }
+
+/// Selects the lightweight lexer from a repository-relative file path.
+/// 中文：根据仓库相对路径选择轻量词法器；未知扩展名返回无高亮模式。
+_DiffSyntax _diffSyntaxForPath(String path) {
+  final lower = path.toLowerCase();
+  if (lower.endsWith('.json') || lower.endsWith('.jsonc')) {
+    return _DiffSyntax.json;
+  }
+  const sourceExtensions = <String>{
+    '.c',
+    '.cc',
+    '.cpp',
+    '.cs',
+    '.css',
+    '.dart',
+    '.go',
+    '.h',
+    '.hpp',
+    '.html',
+    '.java',
+    '.js',
+    '.jsx',
+    '.kt',
+    '.kts',
+    '.m',
+    '.mm',
+    '.php',
+    '.py',
+    '.rb',
+    '.rs',
+    '.scss',
+    '.sh',
+    '.sql',
+    '.swift',
+    '.ts',
+    '.tsx',
+    '.xml',
+    '.yaml',
+    '.yml',
+  };
+  if (sourceExtensions.any(lower.endsWith)) {
+    return lower.endsWith('.dart') ? _DiffSyntax.dart : _DiffSyntax.generic;
+  }
+  return _DiffSyntax.none;
+}
+
+/// Derives syntax colors from the active Material color scheme.
+/// 中文：从当前 Material 主题派生语法颜色，确保浅色和深色模式都可读。
+({Color comment, Color keyword, Color number, Color string}) _diffSyntaxColors(
+  ColorScheme colors,
+) {
+  return (
+    comment: colors.onSurfaceVariant,
+    keyword: colors.primary,
+    number: colors.secondary,
+    string: colors.tertiary,
+  );
+}
+
+/// Classifies one lexer token without changing its source text.
+/// 中文：分类单个词法 token，只改变显示颜色，不修改源码内容。
+Color _diffTokenColor(
+  String token,
+  ({Color comment, Color keyword, Color number, Color string}) colors,
+  _DiffSyntax syntax,
+) {
+  if (token.startsWith('//') ||
+      token.startsWith('#') ||
+      token.startsWith('/*')) {
+    return colors.comment;
+  }
+  if (token.startsWith('"') || token.startsWith("'")) {
+    return colors.string;
+  }
+  if (RegExp(r'^\d').hasMatch(token)) {
+    return colors.number;
+  }
+  if (syntax == _DiffSyntax.json &&
+      (token == 'true' || token == 'false' || token == 'null')) {
+    return colors.keyword;
+  }
+  return colors.keyword;
 }
 
 /// Reuses the workspace's selected-commit metadata pane.
@@ -6171,6 +7232,7 @@ class _TabbedInspector extends StatelessWidget {
     required this.onOpenTerminal,
     required this.onQuickLook,
     required this.onViewFileHistory,
+    required this.onBlame,
     required this.onReview,
     required this.onIgnore,
     required this.onExternalDiff,
@@ -6180,6 +7242,7 @@ class _TabbedInspector extends StatelessWidget {
     required this.onStopTracking,
     required this.onReset,
     required this.onHunkAction,
+    this.onDiffWhitespaceModeChanged,
     required this.onCommitFileSelected,
     required this.onCommitFileContextAction,
   });
@@ -6196,6 +7259,7 @@ class _TabbedInspector extends StatelessWidget {
   final RepositoryChangeFilesCallback? onOpenTerminal;
   final RepositoryChangeFilesCallback? onQuickLook;
   final RepositoryChangeFilesCallback? onViewFileHistory;
+  final RepositoryChangeFilesCallback? onBlame;
   final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onIgnore;
   final RepositoryChangeFilesCallback? onExternalDiff;
@@ -6205,6 +7269,7 @@ class _TabbedInspector extends StatelessWidget {
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
   final RepositoryDiffHunkActionCallback? onHunkAction;
+  final RepositoryDiffWhitespaceModeCallback? onDiffWhitespaceModeChanged;
   final RepositoryCommitFileCallback? onCommitFileSelected;
   final RepositoryCommitFileContextActionCallback? onCommitFileContextAction;
 
@@ -6235,6 +7300,7 @@ class _TabbedInspector extends StatelessWidget {
               onOpenTerminal: onOpenTerminal,
               onQuickLook: onQuickLook,
               onViewFileHistory: onViewFileHistory,
+              onBlame: onBlame,
               onReview: onReview,
               onIgnore: onIgnore,
               onExternalDiff: onExternalDiff,
@@ -6244,6 +7310,7 @@ class _TabbedInspector extends StatelessWidget {
               onStopTracking: onStopTracking,
               onReset: onReset,
               onHunkAction: onHunkAction,
+              onDiffWhitespaceModeChanged: onDiffWhitespaceModeChanged,
               onCommitFileSelected: onCommitFileSelected,
               onCommitFileContextAction: onCommitFileContextAction,
             ),
@@ -6427,10 +7494,15 @@ class _PaneHeader extends StatelessWidget {
 }
 
 class _SectionHeader extends StatelessWidget {
-  const _SectionHeader({required this.title, required this.count});
+  const _SectionHeader({
+    required this.title,
+    required this.count,
+    this.actions = const [],
+  });
 
   final String title;
   final int count;
+  final List<Widget> actions;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -6452,6 +7524,7 @@ class _SectionHeader extends StatelessWidget {
               ),
             ),
           ),
+          ...actions,
           Text(
             '$count',
             style: theme.textTheme.labelSmall?.copyWith(

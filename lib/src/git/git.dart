@@ -5,6 +5,7 @@ export 'git_askpass_protocol.dart';
 export 'git_askpass_session.dart';
 export 'git_errors.dart';
 export 'git_history_parser.dart';
+export 'git_history_query.dart';
 export 'git_models.dart';
 export 'git_repository.dart';
 export 'git_repository_writer.dart';

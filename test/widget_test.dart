@@ -63,6 +63,31 @@ final class _FailingAfterRestoreSessionStore implements RepositorySessionStore {
 }
 
 void main() {
+  test('filters reflog entries by selector object id and message', () {
+    final entries = [
+      GitReflogEntry(
+        objectId: List.filled(40, 'a').join(),
+        reference: 'refs/heads/main@{0}',
+        selector: 'main@{0}',
+        message: 'commit: Add history filter',
+        createdAt: DateTime.utc(2026, 10, 2),
+      ),
+      GitReflogEntry(
+        objectId: List.filled(40, 'b').join(),
+        reference: 'refs/heads/main@{1}',
+        selector: 'main@{1}',
+        message: 'reset: moving to HEAD~1',
+        createdAt: DateTime.utc(2026, 10, 1),
+      ),
+    ];
+
+    expect(filterReflogEntries(entries, ''), hasLength(2));
+    expect(filterReflogEntries(entries, 'MAIN@{1}').single, entries[1]);
+    expect(filterReflogEntries(entries, 'aaaa').single, entries[0]);
+    expect(filterReflogEntries(entries, 'history').single, entries[0]);
+    expect(filterReflogEntries(entries, 'missing'), isEmpty);
+  });
+
   testWidgets('reports recoverable failures from ordinary library saves', (
     tester,
   ) async {
@@ -244,6 +269,9 @@ void main() {
       find.byKey(const ValueKey('repository-action-continueSequencer')),
     );
     await tester.tap(
+      find.byKey(const ValueKey('repository-action-skipSequencer')),
+    );
+    await tester.tap(
       find.byKey(const ValueKey('repository-action-abortSequencer')),
     );
 
@@ -251,9 +279,37 @@ void main() {
       actions,
       containsAll([
         RepositoryAction.continueSequencer,
+        RepositoryAction.skipSequencer,
         RepositoryAction.abortSequencer,
       ]),
     );
+  });
+
+  testWidgets('keeps rebase skip recovery action available in the toolbar', (
+    tester,
+  ) async {
+    final actions = <RepositoryAction>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            const RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'feature/rebase',
+              isRebaseInProgress: true,
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(onAction: actions.add),
+        ),
+      ),
+    );
+
+    await tester.tap(
+      find.byKey(const ValueKey('repository-action-skipRebase')),
+    );
+
+    expect(actions, contains(RepositoryAction.skipRebase));
   });
 
   testWidgets(
@@ -570,6 +626,88 @@ void main() {
     expect(find.byTooltip('当前分支 feature/library-status'), findsOneWidget);
   });
 
+  testWidgets('toggles a repository favorite from its library row', (
+    tester,
+  ) async {
+    String? favoritePath;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryLibraryPage(
+          repositories: const [
+            RepositoryLibraryItem(path: '/work/alpha/sample', label: 'sample'),
+          ],
+          activePath: null,
+          onRepositorySelected: (path) async {},
+          onFavoriteToggled: (path) => favoritePath = path,
+        ),
+      ),
+    );
+
+    final favoriteButton = find.byKey(
+      const ValueKey<String>('repository-library-favorite:/work/alpha/sample'),
+    );
+    expect(favoriteButton, findsOneWidget);
+    expect(tester.widget<IconButton>(favoriteButton).onPressed, isNotNull);
+    expect(find.byTooltip('收藏仓库'), findsOneWidget);
+    await tester.ensureVisible(favoriteButton);
+    await tester.tap(favoriteButton);
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(favoritePath, '/work/alpha/sample');
+  });
+
+  testWidgets('assigns a repository to a named workspace group', (
+    tester,
+  ) async {
+    String? assignedPath;
+    String? assignedGroup;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryLibraryPage(
+          repositories: const [
+            RepositoryLibraryItem(path: '/work/alpha/sample', label: 'sample'),
+          ],
+          activePath: null,
+          workspaceGroups: const ['Clients'],
+          repositoryGroups: const {},
+          onRepositorySelected: (path) async {},
+          onRepositoryGroupChanged: (path, group) {
+            assignedPath = path;
+            assignedGroup = group;
+          },
+        ),
+      ),
+    );
+
+    final groupButton = find.byKey(
+      const ValueKey<String>('repository-library-group:/work/alpha/sample'),
+    );
+    expect(groupButton, findsOneWidget);
+    final groupMenu = tester.widget<PopupMenuButton<String>>(groupButton);
+    groupMenu.onSelected?.call('Clients');
+    await tester.pump();
+    expect(assignedPath, '/work/alpha/sample');
+    expect(assignedGroup, 'Clients');
+  });
+
+  testWidgets('shows an empty named workspace group without repositories', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryLibraryPage(
+          repositories: const [],
+          activePath: null,
+          workspaceGroups: const ['Clients'],
+          repositoryGroups: const {},
+          onRepositorySelected: (path) async {},
+        ),
+      ),
+    );
+
+    expect(find.text('Clients'), findsOneWidget);
+    expect(find.text('0'), findsOneWidget);
+  });
+
   testWidgets('routes sequential AskPass requests through the controlled UI', (
     tester,
   ) async {
@@ -671,6 +809,43 @@ void main() {
       expect(find.byKey(const ValueKey('repository-tab-strip')), findsNothing);
     },
   );
+
+  testWidgets('shows a read-only submodule status on changed-file rows', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              refs: const [
+                RepositoryRefViewData(
+                  id: 'workspace',
+                  label: '文件状态',
+                  kind: RepositoryRefKind.workspace,
+                  isSelected: true,
+                ),
+              ],
+              changes: const [
+                RepositoryChangeViewData(
+                  path: 'vendor/library',
+                  kind: RepositoryChangeKind.modified,
+                  submoduleStatus: '提交已变化，有未跟踪内容',
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('子模块 · 提交已变化'), findsOneWidget);
+    expect(find.textContaining('更新子模块'), findsNothing);
+  });
 
   testWidgets('history search keeps focus while its query updates', (
     tester,
@@ -907,6 +1082,7 @@ void main() {
     expect(find.text('切换到此分支'), findsOneWidget);
     expect(find.text('合并到当前分支'), findsOneWidget);
     expect(find.text('从此分支创建新分支'), findsOneWidget);
+    expect(find.text('查看引用日志'), findsOneWidget);
     expect(find.text('重命名分支'), findsOneWidget);
     expect(find.text('删除分支'), findsOneWidget);
     expect(
@@ -948,6 +1124,188 @@ void main() {
 
     expect(selectedReference, featureBranch);
     expect(selectedAction, RepositoryRefContextAction.mergeIntoCurrent);
+  });
+
+  testWidgets('tag context menu exposes signature and remote checks', (
+    tester,
+  ) async {
+    RepositoryRefContextAction? selectedAction;
+    const tag = RepositoryRefViewData(
+      id: 'refs/tags/v1.0.0',
+      label: 'v1.0.0',
+      kind: RepositoryRefKind.tag,
+      secondaryLabel: '附注标签',
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            const RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              refs: [
+                RepositoryRefViewData(
+                  id: 'remote:origin',
+                  label: 'origin',
+                  kind: RepositoryRefKind.remote,
+                ),
+                tag,
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onRefContextAction: (_, action) => selectedAction = action,
+          ),
+        ),
+      ),
+    );
+
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('v1.0.0')),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(find.text('验证标签签名'), findsOneWidget);
+    expect(find.text('检查远端标签状态'), findsOneWidget);
+    await tester.tap(find.text('验证标签签名'));
+    expect(selectedAction, RepositoryRefContextAction.verifyTagSignature);
+  });
+
+  testWidgets('tag section exposes batch inspection actions', (tester) async {
+    await tester.binding.setSurfaceSize(const Size(1200, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    var verifyCalls = 0;
+    var remoteCalls = 0;
+    var deleteCalls = 0;
+    var remoteDeleteCalls = 0;
+    var pushCalls = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              refs: [
+                RepositoryRefViewData(
+                  id: 'refs/tags/v1.0.0',
+                  label: 'v1.0.0',
+                  kind: RepositoryRefKind.tag,
+                ),
+                RepositoryRefViewData(
+                  id: 'remote:origin',
+                  label: 'origin',
+                  kind: RepositoryRefKind.remote,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onVerifyAllTagSignatures: () => verifyCalls++,
+            onCheckAllTagRemoteStatuses: () => remoteCalls++,
+            onDeleteTags: () => deleteCalls++,
+            onDeleteRemoteTags: () => remoteDeleteCalls++,
+            onPushTags: () => pushCalls++,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byTooltip('批量标签操作'), findsOneWidget);
+    Future<void> choose(String label) async {
+      await tester.tap(find.byTooltip('批量标签操作'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(label));
+      await tester.pumpAndSettle();
+    }
+
+    await choose('验证全部标签签名');
+    await choose('检查全部远端标签状态');
+    await choose('批量删除本地标签');
+    await choose('批量删除远端标签');
+    await choose('批量推送本地标签');
+    expect(verifyCalls, 1);
+    expect(remoteCalls, 1);
+    expect(deleteCalls, 1);
+    expect(remoteDeleteCalls, 1);
+    expect(pushCalls, 1);
+  });
+
+  testWidgets('tag section replaces batch actions with cancellation', (
+    tester,
+  ) async {
+    var cancelCalls = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              isTagInspectionRunning: true,
+              refs: [
+                RepositoryRefViewData(
+                  id: 'refs/tags/v1.0.0',
+                  label: 'v1.0.0',
+                  kind: RepositoryRefKind.tag,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onVerifyAllTagSignatures: () {},
+            onCheckAllTagRemoteStatuses: () {},
+            onCancelTagInspection: () => cancelCalls++,
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byTooltip('取消标签检查'), findsOneWidget);
+    expect(find.byTooltip('验证全部标签签名'), findsNothing);
+    await tester.tap(find.byTooltip('取消标签检查'));
+    expect(cancelCalls, 1);
+  });
+
+  testWidgets('tag section exposes mutation cancellation', (tester) async {
+    var cancelCalls = 0;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              isTagMutationRunning: true,
+              refs: [
+                RepositoryRefViewData(
+                  id: 'refs/tags/v1.0.0',
+                  label: 'v1.0.0',
+                  kind: RepositoryRefKind.tag,
+                ),
+              ],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onCancelTagMutation: () => cancelCalls++,
+            onDeleteTags: () {},
+            onPushTags: () {},
+          ),
+        ),
+      ),
+    );
+
+    expect(find.byTooltip('取消标签操作'), findsOneWidget);
+    expect(find.byTooltip('批量标签操作'), findsNothing);
+    await tester.tap(find.byTooltip('取消标签操作'));
+    expect(cancelCalls, 1);
   });
 
   testWidgets('rename branch dialog selects the current branch name', (
@@ -2677,6 +3035,10 @@ void main() {
                 path: 'lib/example.dart',
                 lines: [
                   DiffLineViewData(
+                    kind: DiffLineKind.context,
+                    text: ' unchanged context line',
+                  ),
+                  DiffLineViewData(
                     kind: DiffLineKind.addition,
                     text: longDiffLine,
                   ),
@@ -2696,6 +3058,114 @@ void main() {
     expect(find.text('lib/example.dart'), findsOneWidget);
     final horizontal = find.byKey(const ValueKey('diff-horizontal-scroll'));
     expect(horizontal, findsOneWidget);
+    expect(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is RichText &&
+            widget.text.toPlainText().contains('final value ='),
+      ),
+      findsOneWidget,
+    );
+    expect(find.text(' unchanged context line'), findsOneWidget);
+    await tester.tap(horizontal);
+    await tester.sendKeyEvent(LogicalKeyboardKey.arrowDown);
+    await tester.pumpAndSettle();
+    expect(find.byKey(const ValueKey('diff-active-line')), findsOneWidget);
+
+    // Replacing the preview with a shorter Diff must discard the old active
+    // line instead of indexing into the new list with a stale position.
+    await tester.pumpWidget(
+      const MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              refs: [
+                RepositoryRefViewData(
+                  id: 'workspace',
+                  label: '文件状态',
+                  kind: RepositoryRefKind.workspace,
+                  isSelected: true,
+                ),
+              ],
+              changes: [change],
+              selectedChange: change,
+              diff: DiffViewData(
+                path: 'lib/short.dart',
+                lines: [
+                  DiffLineViewData(kind: DiffLineKind.addition, text: '+short'),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    expect(find.byKey(const ValueKey('diff-active-line')), findsNothing);
+
+    // Restore the original preview so the remaining interaction assertions
+    // continue to exercise filtering and horizontal scrolling.
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              refs: const [
+                RepositoryRefViewData(
+                  id: 'workspace',
+                  label: '文件状态',
+                  kind: RepositoryRefKind.workspace,
+                  isSelected: true,
+                ),
+              ],
+              changes: const [change],
+              selectedChange: change,
+              diff: DiffViewData(
+                path: 'lib/example.dart',
+                lines: [
+                  DiffLineViewData(
+                    kind: DiffLineKind.context,
+                    text: ' unchanged context line',
+                  ),
+                  DiffLineViewData(
+                    kind: DiffLineKind.addition,
+                    text: longDiffLine,
+                  ),
+                ],
+              ),
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onAction: (next) => action = next,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final sideBySide = find.byTooltip('左右对比');
+    expect(sideBySide, findsNWidgets(2));
+    await tester.tap(sideBySide.last);
+    await tester.pump();
+    expect(find.byTooltip('显示统一 Diff'), findsNWidgets(2));
+    expect(find.text(longDiffLine.substring(1)), findsOneWidget);
+    await tester.tap(find.byTooltip('显示统一 Diff').last);
+    await tester.pump();
+    await tester.tap(find.byKey(const ValueKey('copy-diff')).first);
+    await tester.pumpAndSettle();
+    expect(tester.takeException(), isNull);
+    final diffFilter = find.byTooltip('仅显示改动');
+    expect(diffFilter, findsNWidgets(2));
+    await tester.tap(diffFilter.last);
+    await tester.pump();
+    expect(find.text(' unchanged context line'), findsNothing);
+    expect(find.byTooltip('显示全部 Diff'), findsNWidgets(2));
     final scrollable = find.descendant(
       of: horizontal,
       matching: find.byWidgetPredicate(
@@ -2719,5 +3189,111 @@ void main() {
 
     await tester.tap(find.byType(TextField));
     expect(action, RepositoryAction.commit);
+  });
+
+  testWidgets('Diff whitespace menu forwards the selected mode', (
+    tester,
+  ) async {
+    final modes = <DiffWhitespaceMode>[];
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              refs: const [
+                RepositoryRefViewData(
+                  id: 'workspace',
+                  label: '文件状态',
+                  kind: RepositoryRefKind.workspace,
+                  isSelected: true,
+                ),
+              ],
+              changes: const [
+                RepositoryChangeViewData(
+                  path: 'lib/example.dart',
+                  kind: RepositoryChangeKind.modified,
+                ),
+              ],
+              selectedChange: const RepositoryChangeViewData(
+                path: 'lib/example.dart',
+                kind: RepositoryChangeKind.modified,
+              ),
+              diff: const DiffViewData(
+                path: 'lib/example.dart',
+                lines: [
+                  DiffLineViewData(
+                    kind: DiffLineKind.addition,
+                    text: '+final value = 1;',
+                  ),
+                ],
+              ),
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onDiffWhitespaceModeChanged: modes.add,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    await tester.tap(find.byKey(const ValueKey('diff-whitespace-mode')));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('忽略所有空白'));
+    expect(modes, [DiffWhitespaceMode.ignoreAll]);
+  });
+
+  testWidgets('compact file-status navigation opens the workspace pane', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(640, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+
+    const change = RepositoryChangeViewData(
+      path: 'lib/example.dart',
+      kind: RepositoryChangeKind.modified,
+      isStaged: false,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              refs: const [
+                RepositoryRefViewData(
+                  id: 'workspace',
+                  label: '文件状态',
+                  kind: RepositoryRefKind.workspace,
+                ),
+                RepositoryRefViewData(
+                  id: 'history',
+                  label: '历史',
+                  kind: RepositoryRefKind.workspace,
+                  isSelected: true,
+                ),
+              ],
+              changes: const [change],
+            ),
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('引用'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text('文件状态'));
+    await tester.pumpAndSettle();
+
+    expect(find.text('未暂存文件'), findsOneWidget);
+    expect(
+      find.byKey(const ValueKey<String>('unstaged-files-header')),
+      findsOneWidget,
+    );
   });
 }

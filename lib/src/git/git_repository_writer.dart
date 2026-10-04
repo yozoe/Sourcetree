@@ -1247,11 +1247,15 @@ final class GitRepositoryWriter {
     required String objectId,
     String? annotation,
     bool? annotated,
+    bool sign = false,
   }) async {
     final normalizedName = name.trim();
     final normalizedObjectId = objectId.trim();
     final normalizedAnnotation = annotation?.trim();
     final makeAnnotated = annotated ?? normalizedAnnotation != null;
+    if (sign && !makeAnnotated) {
+      throw ArgumentError.value(sign, 'sign', 'Signed tags must be annotated.');
+    }
     if (!_isSafeTagName(normalizedName)) {
       throw ArgumentError.value(name, 'name', 'A valid tag name is required.');
     }
@@ -1268,6 +1272,7 @@ final class GitRepositoryWriter {
           '--no-pager',
           'tag',
           if (makeAnnotated) ...[
+            if (sign) '--sign',
             '--annotate',
             '--message',
             normalizedAnnotation ?? '',
@@ -1289,10 +1294,14 @@ final class GitRepositoryWriter {
   /// 推送一个已经存在的本地标签；refspec 精确限定为用户刚创建的标签。
   ///
   /// English: Pushes exactly one existing local tag using an explicit refspec.
+  /// [cancellationToken] terminates an in-flight push when its owning window
+  /// is closing.
+  /// 中文：[cancellationToken] 会在所属窗口关闭时终止正在进行的推送。
   Future<void> pushTag(
     GitRepository repository, {
     required String remoteName,
     required String tagName,
+    GitCancellationToken? cancellationToken,
   }) async {
     final remote = remoteName.trim();
     final tag = tagName.trim();
@@ -1312,6 +1321,7 @@ final class GitRepositoryWriter {
           'refs/tags/$tag:refs/tags/$tag',
         ],
         workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
         outputLimit: const GitOutputLimit(
           stdoutBytes: 1024 * 1024,
           stderrBytes: 1024 * 1024,
@@ -1325,9 +1335,13 @@ final class GitRepositoryWriter {
   ///
   /// English: Deletes one local tag. The caller must obtain explicit UI
   /// confirmation before invoking this irreversible local ref mutation.
+  /// [cancellationToken] terminates an in-flight deletion when its owning
+  /// window is closing.
+  /// 中文：[cancellationToken] 会在所属窗口关闭时终止正在进行的删除。
   Future<void> deleteTag(
     GitRepository repository, {
     required String name,
+    GitCancellationToken? cancellationToken,
   }) async {
     final normalizedName = name.trim();
     if (!_isSafeTagName(normalizedName)) {
@@ -1337,6 +1351,7 @@ final class GitRepositoryWriter {
       GitInvocation(
         arguments: ['--no-pager', 'tag', '--delete', '--', normalizedName],
         workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
         outputLimit: const GitOutputLimit(
           stdoutBytes: 256 * 1024,
           stderrBytes: 512 * 1024,
@@ -1354,6 +1369,7 @@ final class GitRepositoryWriter {
     GitRepository repository, {
     required String remoteName,
     required String tagName,
+    GitCancellationToken? cancellationToken,
   }) async {
     final remote = remoteName.trim();
     final tag = tagName.trim();
@@ -1373,6 +1389,7 @@ final class GitRepositoryWriter {
           ':refs/tags/$tag',
         ],
         workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
         outputLimit: const GitOutputLimit(
           stdoutBytes: 1024 * 1024,
           stderrBytes: 1024 * 1024,
@@ -1388,6 +1405,7 @@ final class GitRepositoryWriter {
   Future<void> switchToLocalBranch(
     GitRepository repository, {
     required String name,
+    GitCancellationToken? cancellationToken,
   }) async {
     if (name.trim().isEmpty) {
       throw ArgumentError.value(name, 'name', 'Branch name is empty.');
@@ -1396,6 +1414,7 @@ final class GitRepositoryWriter {
       GitInvocation(
         arguments: ['--no-pager', 'switch', '--', name],
         workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
         outputLimit: const GitOutputLimit(
           stdoutBytes: 256 * 1024,
           stderrBytes: 512 * 1024,
@@ -1484,6 +1503,7 @@ final class GitRepositoryWriter {
     GitRepository repository, {
     required String name,
     required String sourceName,
+    GitCancellationToken? cancellationToken,
   }) async {
     final normalizedName = name.trim();
     final normalizedSource = sourceName.trim();
@@ -1500,6 +1520,7 @@ final class GitRepositoryWriter {
           'refs/heads/$normalizedSource',
         ],
         workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
         outputLimit: const GitOutputLimit(
           stdoutBytes: 256 * 1024,
           stderrBytes: 512 * 1024,
@@ -1694,6 +1715,7 @@ final class GitRepositoryWriter {
   Future<void> mergeLocalBranch(
     GitRepository repository, {
     required String sourceName,
+    GitCancellationToken? cancellationToken,
   }) async {
     final normalizedName = sourceName.trim();
     if (normalizedName.isEmpty) {
@@ -1717,6 +1739,7 @@ final class GitRepositoryWriter {
           stdoutBytes: 512 * 1024,
           stderrBytes: 512 * 1024,
         ),
+        cancellationToken: cancellationToken,
       ),
     );
     result.throwIfFailed(operation: 'Merging local branch');
@@ -2065,6 +2088,22 @@ final class GitRepositoryWriter {
     );
   }
 
+  /// Skips the current commit in a paused rebase sequence.
+  /// 中文：跳过暂停变基序列中的当前提交。
+  Future<void> skipRebase(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+    Map<String, String> environment = const {},
+  }) async {
+    await _runRebaseCommand(
+      repository,
+      const ['--skip'],
+      operation: 'Skipping rebase commit',
+      cancellationToken: cancellationToken,
+      environment: environment,
+    );
+  }
+
   /// Aborts the paused rebase and restores the pre-rebase branch state.
   /// 中文：中止暂停的变基并恢复变基前的分支状态。
   Future<void> abortRebase(
@@ -2300,6 +2339,19 @@ final class GitRepositoryWriter {
     cancellationToken: cancellationToken,
   );
 
+  /// Skips the current commit in a paused cherry-pick sequence.
+  /// 中文：跳过暂停中的当前遴选提交，并让 Git 继续处理序列。
+  Future<void> skipCherryPick(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+  }) => _runSequencerCommand(
+    repository,
+    command: 'cherry-pick',
+    argument: '--skip',
+    operation: 'Skipping cherry-pick commit',
+    cancellationToken: cancellationToken,
+  );
+
   /// Continues a paused revert after conflict resolutions are staged.
   /// 中文：在暂存冲突解决结果后继续暂停的回滚。
   Future<void> continueRevert(
@@ -2323,6 +2375,19 @@ final class GitRepositoryWriter {
     command: 'revert',
     argument: '--abort',
     operation: 'Aborting revert',
+    cancellationToken: cancellationToken,
+  );
+
+  /// Skips the current commit in a paused revert sequence.
+  /// 中文：跳过暂停中的当前回滚提交，并让 Git 继续处理序列。
+  Future<void> skipRevert(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+  }) => _runSequencerCommand(
+    repository,
+    command: 'revert',
+    argument: '--skip',
+    operation: 'Skipping revert commit',
     cancellationToken: cancellationToken,
   );
 

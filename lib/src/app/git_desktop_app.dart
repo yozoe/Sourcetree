@@ -11,6 +11,12 @@ import 'package:path/path.dart' as path_utils;
 import '../git/git.dart';
 import '../presentation/presentation.dart';
 import 'desktop_window_bridge.dart';
+import 'external_tool_configuration.dart';
+import 'external_tool_configuration_store.dart';
+import 'external_tool_runner.dart';
+import 'git_flow_start_dialog.dart';
+import 'git_flow_finish_dialog.dart';
+import 'git_flow_semantics.dart';
 import 'git_desktop_theme.dart';
 import 'git_askpass_prompt_coordinator.dart';
 import 'repository_library_controller.dart';
@@ -25,6 +31,23 @@ import 'theme_preferences.dart';
 /// 中文：为可见工作区选择生成稳定标识，用于刷新后重新解析选中项。
 String _nativeChangeSelectionKey(RepositoryChangeViewData change) =>
     '${change.isStaged ? 'staged' : 'unstaged'}\u0000${change.path}';
+
+/// Filters reflog entries by selector, object ID, or human-readable message.
+/// 中文：按选择器、对象 ID 或 Git 提供的消息过滤引用日志；匹配不区分大小写。
+List<GitReflogEntry> filterReflogEntries(
+  Iterable<GitReflogEntry> entries,
+  String query,
+) {
+  final normalizedQuery = query.trim().toLowerCase();
+  if (normalizedQuery.isEmpty) return List.unmodifiable(entries);
+  return List.unmodifiable(
+    entries.where((entry) {
+      return entry.selector.toLowerCase().contains(normalizedQuery) ||
+          entry.objectId.toLowerCase().contains(normalizedQuery) ||
+          entry.message.toLowerCase().contains(normalizedQuery);
+    }),
+  );
+}
 
 /// Returns whether [candidateId] is an ancestor of [headId] within the latest
 /// loaded Git history snapshot.
@@ -85,8 +108,10 @@ bool _isLoadedAncestorOfHead({
   bool canCommitAll,
   bool canCommitSelected,
   bool canCreateBranch,
+  bool canStartGitFlow,
   bool canCommit,
   bool canContinueOperation,
+  bool canExternalDiffSelected,
   bool canCopySelected,
   bool canMoveSelected,
   bool canUseConflictStage2,
@@ -102,6 +127,7 @@ bool _isLoadedAncestorOfHead({
   bool canResetRepository,
   bool canResetSelected,
   bool canResetToSelectedCommit,
+  bool canSkipOperation,
   bool canStageSelected,
   bool canStash,
   bool canStopTracking,
@@ -221,6 +247,21 @@ nativeWorkspaceMenuAvailability(
                 menuSelection.every(
                   (change) => change.isActionEnabled && change.isPathValidUtf8,
                 ));
+  final canExternalDiffSelected =
+      session.phase == RepositorySessionPhase.ready &&
+      repository != null &&
+      !session.isWorkingTreeBusy &&
+      (repository.selectedCommit != null
+          ? selectedCommitFile?.objectId == session.selectedCommitId &&
+                selectedCommitFile?.file.path.isValidUtf8 == true &&
+                selectedCommitFile?.file.kind != GitCommitChangeKind.deleted
+          : menuSelection.length == 1 &&
+                menuSelection.single.isActionEnabled &&
+                menuSelection.single.isPathValidUtf8 &&
+                menuSelection.single.kind != RepositoryChangeKind.untracked &&
+                menuSelection.single.kind != RepositoryChangeKind.deleted &&
+                menuSelection.single.kind != RepositoryChangeKind.conflicted &&
+                menuSelection.single.canExternalDiff);
   final canResetRepository =
       canApplyPatch &&
       !repository.isDetachedHead &&
@@ -232,6 +273,15 @@ nativeWorkspaceMenuAvailability(
       repository.commits.any(
         (commit) => commit.oid == repository.selectedCommit!.oid,
       );
+  final canStartGitFlow =
+      session.phase == RepositorySessionPhase.ready &&
+      repository != null &&
+      !repository.blocksRepositoryMutations &&
+      !repository.isDetachedHead &&
+      repository.headOid != null &&
+      repository.isWorkingTreeClean &&
+      session.operationState == GitRepositoryOperationState.none &&
+      localBranchNames.isNotEmpty;
   return (
     canAddRemote: canApplyPatch,
     canApplyPatch: canApplyPatch,
@@ -244,6 +294,10 @@ nativeWorkspaceMenuAvailability(
         hasRecoverableOperation &&
         session.status != null &&
         session.status!.conflictedEntries.isEmpty,
+    canExternalDiffSelected: canExternalDiffSelected,
+    canSkipOperation:
+        hasRecoverableOperation &&
+        session.operationState != GitRepositoryOperationState.merge,
     canCopySelected: canTransferSelected,
     canMoveSelected: canTransferSelected,
     canUseConflictStage2:
@@ -327,6 +381,7 @@ nativeWorkspaceMenuAvailability(
         repository != null &&
         !repository.blocksRepositoryMutations &&
         !repository.disabledActions.contains(RepositoryAction.createBranch),
+    canStartGitFlow: canStartGitFlow,
     canStash:
         session.phase == RepositorySessionPhase.ready &&
         repository != null &&
@@ -671,6 +726,12 @@ class _RepositoryLibraryWindowState
     final repositories = ref.watch(
       repositoryLibraryProvider.select((state) => state.repositories),
     );
+    final workspaceGroups = ref.watch(
+      repositoryLibraryProvider.select((state) => state.workspaceGroups),
+    );
+    final repositoryGroups = ref.watch(
+      repositoryLibraryProvider.select((state) => state.repositoryGroups),
+    );
     return Scaffold(
       body: RepositoryLibraryPage(
         repositories: repositories
@@ -683,6 +744,8 @@ class _RepositoryLibraryWindowState
                 isDetached: tab.isDetached,
                 isUnborn: tab.isUnborn,
                 hasStatus: tab.hasStatus,
+                isFavorite: tab.isFavorite,
+                workspaceGroup: tab.workspaceGroup,
               ),
             )
             .toList(growable: false),
@@ -700,6 +763,37 @@ class _RepositoryLibraryWindowState
         onRepositoriesReordered: ref
             .read(repositoryLibraryProvider.notifier)
             .reorder,
+        onFavoriteToggled: ref
+            .read(repositoryLibraryProvider.notifier)
+            .toggleFavorite,
+        workspaceGroups: workspaceGroups,
+        repositoryGroups: repositoryGroups,
+        onWorkspaceGroupCreated: (name) {
+          final created = ref
+              .read(repositoryLibraryProvider.notifier)
+              .createWorkspaceGroup(name);
+          if (!created && mounted) {
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text('工作区分组名称为空或已存在。')));
+          }
+        },
+        onWorkspaceGroupRenamed: (oldName, newName) {
+          final renamed = ref
+              .read(repositoryLibraryProvider.notifier)
+              .renameWorkspaceGroup(oldName, newName);
+          if (!renamed && mounted) {
+            ScaffoldMessenger.of(
+              context,
+            ).showSnackBar(const SnackBar(content: Text('工作区分组名称为空或已存在。')));
+          }
+        },
+        onWorkspaceGroupDeleted: ref
+            .read(repositoryLibraryProvider.notifier)
+            .deleteWorkspaceGroup,
+        onRepositoryGroupChanged: ref
+            .read(repositoryLibraryProvider.notifier)
+            .assignRepositoryToWorkspaceGroup,
         isDirectoryDropActive: _isDirectoryDropActive,
         trailing: widget.themeControl,
       ),
@@ -715,7 +809,7 @@ RepositoryAction? _repositoryActionFromName(String? name) => switch (name) {
   _ => null,
 };
 
-enum _RebasePromptAction { continueRebase, abort, cancel }
+enum _RebasePromptAction { continueRebase, skip, abort, cancel }
 
 enum _RepositoryCheckoutTargetKind { localBranch, remoteBranch, commit }
 
@@ -774,6 +868,8 @@ class _RepositoryWorkspaceScreenState
   bool? _lastNativeCommitSelectedAvailability;
   bool? _lastNativeCommitAvailability;
   bool? _lastNativeContinueOperationAvailability;
+  bool? _lastNativeExternalDiffSelectedAvailability;
+  bool? _lastNativeSkipOperationAvailability;
   bool? _lastNativeCopySelectedAvailability;
   bool? _lastNativeMoveSelectedAvailability;
   bool? _lastNativeUseConflictStage2Availability;
@@ -791,6 +887,7 @@ class _RepositoryWorkspaceScreenState
   bool? _lastNativeResetToSelectedCommitAvailability;
   bool? _lastNativeStageSelectedAvailability;
   bool? _lastNativeCreateBranchAvailability;
+  bool? _lastNativeStartGitFlowAvailability;
   bool? _lastNativeStashAvailability;
   bool? _lastNativeTagAvailability;
   bool? _lastNativeUnstageSelectedAvailability;
@@ -909,6 +1006,8 @@ class _RepositoryWorkspaceScreenState
         ).showSnackBar(const SnackBar(content: Text('请选择至少一个可提交的工作区文件。')));
       case 'continueOperation':
         await _continueActiveRepositoryOperation();
+      case 'skipOperation':
+        await _skipActiveRepositoryOperation();
       case 'abortOperation':
         await _confirmAbortActiveRepositoryOperation();
       case 'useConflictStage2':
@@ -925,6 +1024,8 @@ class _RepositoryWorkspaceScreenState
         );
       case 'viewSelectedFileHistory':
         await _showNativeSelectedFileHistory();
+      case 'externalDiffSelected':
+        await _showNativeSelectedExternalDiff();
       case 'ignoreSelected':
         await _showIgnoreSelectedDialog();
       case 'copySelected':
@@ -1043,6 +1144,24 @@ class _RepositoryWorkspaceScreenState
             false) {
           _showBranchManagerDialog();
         }
+      case 'startGitFlow':
+        final session = ref.read(repositorySessionProvider);
+        final overview = mapRepositoryOverview(session);
+        final availability = nativeWorkspaceMenuAvailability(
+          session,
+          overview,
+          selectedChanges: _nativeSelectedChanges(overview),
+        );
+        if (availability.canStartGitFlow) {
+          await _showGitFlowChooser();
+          return;
+        }
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Git-flow Start 需要附着 HEAD、干净工作区且没有其他 Git 操作。'),
+          ),
+        );
       case 'stash':
         final overview = mapRepositoryOverview(
           ref.read(repositorySessionProvider),
@@ -1156,6 +1275,8 @@ class _RepositoryWorkspaceScreenState
     final canCommitSelected = availability.canCommitSelected;
     final canCommit = availability.canCommit;
     final canContinueOperation = availability.canContinueOperation;
+    final canExternalDiffSelected = availability.canExternalDiffSelected;
+    final canSkipOperation = availability.canSkipOperation;
     final canCopySelected = availability.canCopySelected;
     final canMoveSelected = availability.canMoveSelected;
     final canUseConflictStage2 = availability.canUseConflictStage2;
@@ -1173,6 +1294,7 @@ class _RepositoryWorkspaceScreenState
     final canResetToSelectedCommit = availability.canResetToSelectedCommit;
     final canStageSelected = availability.canStageSelected;
     final canCreateBranch = availability.canCreateBranch;
+    final canStartGitFlow = availability.canStartGitFlow;
     final canStash = availability.canStash;
     final canStopTracking = availability.canStopTracking;
     final canTag = availability.canTag;
@@ -1207,6 +1329,9 @@ class _RepositoryWorkspaceScreenState
         _lastNativeCommitSelectedAvailability == canCommitSelected &&
         _lastNativeCommitAvailability == canCommit &&
         _lastNativeContinueOperationAvailability == canContinueOperation &&
+        _lastNativeExternalDiffSelectedAvailability ==
+            canExternalDiffSelected &&
+        _lastNativeSkipOperationAvailability == canSkipOperation &&
         _lastNativeCopySelectedAvailability == canCopySelected &&
         _lastNativeMoveSelectedAvailability == canMoveSelected &&
         _lastNativeUseConflictStage2Availability == canUseConflictStage2 &&
@@ -1225,6 +1350,7 @@ class _RepositoryWorkspaceScreenState
             canResetToSelectedCommit &&
         _lastNativeStageSelectedAvailability == canStageSelected &&
         _lastNativeCreateBranchAvailability == canCreateBranch &&
+        _lastNativeStartGitFlowAvailability == canStartGitFlow &&
         _lastNativeStashAvailability == canStash &&
         _lastNativeUnstageSelectedAvailability == canUnstageSelected &&
         _lastNativeViewSelectedFileHistoryAvailability ==
@@ -1246,6 +1372,8 @@ class _RepositoryWorkspaceScreenState
     _lastNativeCommitSelectedAvailability = canCommitSelected;
     _lastNativeCommitAvailability = canCommit;
     _lastNativeContinueOperationAvailability = canContinueOperation;
+    _lastNativeExternalDiffSelectedAvailability = canExternalDiffSelected;
+    _lastNativeSkipOperationAvailability = canSkipOperation;
     _lastNativeCopySelectedAvailability = canCopySelected;
     _lastNativeMoveSelectedAvailability = canMoveSelected;
     _lastNativeUseConflictStage2Availability = canUseConflictStage2;
@@ -1263,6 +1391,7 @@ class _RepositoryWorkspaceScreenState
     _lastNativeResetToSelectedCommitAvailability = canResetToSelectedCommit;
     _lastNativeStageSelectedAvailability = canStageSelected;
     _lastNativeCreateBranchAvailability = canCreateBranch;
+    _lastNativeStartGitFlowAvailability = canStartGitFlow;
     _lastNativeStashAvailability = canStash;
     _lastNativeUnstageSelectedAvailability = canUnstageSelected;
     _lastNativeViewSelectedFileHistoryAvailability = canViewSelectedFileHistory;
@@ -1285,6 +1414,8 @@ class _RepositoryWorkspaceScreenState
         canCommitSelected: canCommitSelected,
         canCommit: canCommit,
         canContinueOperation: canContinueOperation,
+        canExternalDiffSelected: canExternalDiffSelected,
+        canSkipOperation: canSkipOperation,
         canCopySelected: canCopySelected,
         canMoveSelected: canMoveSelected,
         canUseConflictStage2: canUseConflictStage2,
@@ -1302,6 +1433,7 @@ class _RepositoryWorkspaceScreenState
         canResetToSelectedCommit: canResetToSelectedCommit,
         canStageSelected: canStageSelected,
         canCreateBranch: canCreateBranch,
+        canStartGitFlow: canStartGitFlow,
         canStash: canStash,
         canTag: canTag,
         canUnstageSelected: canUnstageSelected,
@@ -1531,7 +1663,7 @@ class _RepositoryWorkspaceScreenState
       builder: (BuildContext context) => AlertDialog(
         title: const Text('变基进行中'),
         content: const Text(
-          '出现此种情况是因为你在变基的过程中被 Git 中止，可能是因为冲突。请解决冲突后继续变基，或放弃当前变基。',
+          'Git 在变基过程中暂停了当前提交，通常是因为冲突。请解决冲突并暂存后继续变基，也可以跳过当前提交或放弃整个变基。跳过只放弃本次提交的应用，不会删除已有历史。',
         ),
         actions: [
           TextButton(
@@ -1543,6 +1675,11 @@ class _RepositoryWorkspaceScreenState
             onPressed: () =>
                 Navigator.of(context).pop(_RebasePromptAction.abort),
             child: const Text('放弃变基'),
+          ),
+          OutlinedButton(
+            onPressed: () =>
+                Navigator.of(context).pop(_RebasePromptAction.skip),
+            child: const Text('跳过当前变基提交'),
           ),
           FilledButton(
             onPressed: () =>
@@ -1558,6 +1695,8 @@ class _RepositoryWorkspaceScreenState
     }
     if (action == _RebasePromptAction.continueRebase) {
       await _continueRebase();
+    } else if (action == _RebasePromptAction.skip) {
+      await _skipRebase();
     } else {
       await _abortRebase();
     }
@@ -1575,7 +1714,7 @@ class _RepositoryWorkspaceScreenState
       builder: (context) => AlertDialog(
         title: Text('$operationName进行中'),
         content: Text(
-          'Git 因冲突暂停了$operationName。请解决冲突并暂存后继续，或放弃本次$operationName。',
+          'Git 因冲突暂停了$operationName。请解决并暂存冲突后继续，或跳过当前提交。跳过只放弃本次序列对该提交的应用，不会删除已有历史；也可以放弃本次$operationName。',
         ),
         actions: [
           TextButton(
@@ -1587,6 +1726,11 @@ class _RepositoryWorkspaceScreenState
             onPressed: () =>
                 Navigator.of(context).pop(_RebasePromptAction.abort),
             child: Text('放弃$operationName'),
+          ),
+          OutlinedButton(
+            onPressed: () =>
+                Navigator.of(context).pop(_RebasePromptAction.skip),
+            child: Text('跳过当前$operationName提交'),
           ),
           FilledButton(
             onPressed: () =>
@@ -1604,9 +1748,11 @@ class _RepositoryWorkspaceScreenState
     final completed = switch ((isCherryPick, action)) {
       (true, _RebasePromptAction.continueRebase) =>
         await controller.continueCherryPick(),
+      (true, _RebasePromptAction.skip) => await controller.skipCherryPick(),
       (true, _) => await controller.abortCherryPick(),
       (false, _RebasePromptAction.continueRebase) =>
         await controller.continueRevert(),
+      (false, _RebasePromptAction.skip) => await controller.skipRevert(),
       (false, _) => await controller.abortRevert(),
     };
     if (!mounted) return;
@@ -1614,9 +1760,12 @@ class _RepositoryWorkspaceScreenState
       SnackBar(
         content: Text(
           completed
-              ? action == _RebasePromptAction.continueRebase
-                    ? '已继续$operationName。'
-                    : '已中止$operationName。'
+              ? switch (action) {
+                  _RebasePromptAction.continueRebase => '已继续$operationName。',
+                  _RebasePromptAction.skip => '已跳过当前$operationName提交。',
+                  _RebasePromptAction.abort => '已中止$operationName。',
+                  _ => '已完成$operationName。',
+                }
               : '$operationName未完成，请查看仓库状态。',
         ),
       ),
@@ -1725,10 +1874,14 @@ class _RepositoryWorkspaceScreenState
         ref.read(repositorySessionProvider.notifier).cancelStash();
       case RepositoryAction.continueRebase:
         unawaited(_continueRebase());
+      case RepositoryAction.skipRebase:
+        unawaited(_skipRebase());
       case RepositoryAction.abortRebase:
         unawaited(_confirmAbortRebase());
       case RepositoryAction.continueSequencer:
         unawaited(_continueSequencer());
+      case RepositoryAction.skipSequencer:
+        unawaited(_skipSequencer());
       case RepositoryAction.abortSequencer:
         unawaited(_confirmAbortSequencer());
       case RepositoryAction.push:
@@ -2037,6 +2190,52 @@ class _RepositoryWorkspaceScreenState
     }
   }
 
+  /// Routes the native Skip command to rebase, cherry-pick, or revert only.
+  /// 中文：将原生“跳过”命令路由到变基、遴选或回滚的当前提交恢复流程。
+  Future<void> _skipActiveRepositoryOperation() async {
+    final controller = ref.read(repositorySessionProvider.notifier);
+    await controller.refresh();
+    if (!mounted) return;
+    final session = ref.read(repositorySessionProvider);
+    final overview = mapRepositoryOverview(session);
+    final availability = nativeWorkspaceMenuAvailability(
+      session,
+      overview,
+      selectedChanges: _nativeSelectedChanges(overview),
+    );
+    if (session.phase != RepositorySessionPhase.ready ||
+        !availability.canSkipOperation) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('当前没有可跳过的 Git 操作。')));
+      return;
+    }
+    final skipped = switch (session.operationState) {
+      GitRepositoryOperationState.rebase => await controller.skipRebase(),
+      GitRepositoryOperationState.cherryPick =>
+        await controller.skipCherryPick(),
+      GitRepositoryOperationState.revert => await controller.skipRevert(),
+      GitRepositoryOperationState.merge ||
+      GitRepositoryOperationState.none => false,
+    };
+    if (!mounted) return;
+    final operationName = switch (session.operationState) {
+      GitRepositoryOperationState.rebase => '变基',
+      GitRepositoryOperationState.cherryPick => '遴选',
+      GitRepositoryOperationState.revert => '回滚',
+      GitRepositoryOperationState.merge ||
+      GitRepositoryOperationState.none => '操作',
+    };
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          skipped ? '已跳过当前$operationName提交。' : '$operationName尚未完成，请查看仓库状态。',
+        ),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
   /// Routes the native Abort command to the confirmation appropriate for the
   /// currently active Git recovery workflow.
   ///
@@ -2191,6 +2390,21 @@ class _RepositoryWorkspaceScreenState
     );
   }
 
+  /// Skips the current paused rebase commit and reports the refreshed result.
+  /// 中文：跳过当前暂停的变基提交，并显示 Git 刷新后的结果。
+  Future<void> _skipRebase() async {
+    final skipped = await ref
+        .read(repositorySessionProvider.notifier)
+        .skipRebase();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(skipped ? '已跳过当前变基提交。' : '变基尚未完成，请处理冲突后重试。'),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
   Future<void> _confirmAbortRebase() async {
     final approved = await showDialog<bool>(
       context: context,
@@ -2247,6 +2461,31 @@ class _RepositoryWorkspaceScreenState
       SnackBar(
         content: Text(
           completed ? '已继续$operationName。' : '$operationName尚未完成，请处理冲突后重试。',
+        ),
+        duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  /// Skips the current paused cherry-pick or revert commit after rechecking
+  /// the active Git operation.
+  /// 中文：复核当前暂停的遴选或回滚状态后跳过当前提交，并显示刷新后的结果。
+  Future<void> _skipSequencer() async {
+    final operationState = ref.read(repositorySessionProvider).operationState;
+    final isCherryPick =
+        operationState == GitRepositoryOperationState.cherryPick;
+    if (!isCherryPick && operationState != GitRepositoryOperationState.revert) {
+      return;
+    }
+    final skipped = isCherryPick
+        ? await ref.read(repositorySessionProvider.notifier).skipCherryPick()
+        : await ref.read(repositorySessionProvider.notifier).skipRevert();
+    if (!mounted) return;
+    final operationName = isCherryPick ? '遴选' : '回滚';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(
+          skipped ? '已跳过当前$operationName提交。' : '$operationName尚未完成，请处理冲突后重试。',
         ),
         duration: const Duration(seconds: 3),
       ),
@@ -2605,6 +2844,101 @@ class _RepositoryWorkspaceScreenState
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message), duration: const Duration(seconds: 3)),
+    );
+  }
+
+  /// Shows the frozen Git-flow v1 Start form and executes only its local
+  /// create-and-checkout slice after the user confirms the preview.
+  /// 中文：显示已冻结的 Git-flow v1 Start 表单；用户确认预览后只执行本地创建并检出。
+  Future<void> _showGitFlowStartDialog() async {
+    final session = ref.read(repositorySessionProvider);
+    final plan = await showDialog<GitFlowStartPlan>(
+      context: context,
+      builder: (context) => GitFlowStartDialog(
+        localBranchNames: [
+          for (final branch in session.localBranches) branch.name,
+        ],
+        currentBranch: session.status?.branch.head,
+        isAttachedHead: session.status?.branch.isDetached == false,
+        isWorkingTreeClean: session.status?.isClean == true,
+        hasActiveOperation:
+            session.operationState != GitRepositoryOperationState.none,
+      ),
+    );
+    if (plan == null || !mounted) return;
+
+    final result = await ref
+        .read(repositorySessionProvider.notifier)
+        .startGitFlowBranch(plan);
+    if (!mounted) return;
+    final message =
+        result?.message ??
+        ref.read(repositorySessionProvider).message ??
+        'Git-flow Start 未执行；请刷新仓库状态后重试。';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 4)),
+    );
+  }
+
+  /// Chooses between the delivered Git-flow Start and single-target Finish
+  /// flows while keeping the native menu's capability gate shared.
+  /// 中文：在同一原生能力门禁下选择已交付的 Git-flow Start 或单目标 Finish。
+  Future<void> _showGitFlowChooser() async {
+    final action = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('Git Flow'),
+        content: const Text('请选择要执行的本地 Git-flow 操作。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop('finish'),
+            child: const Text('完成分支…'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(context).pop('start'),
+            child: const Text('开始分支…'),
+          ),
+        ],
+      ),
+    );
+    if (!mounted) return;
+    if (action == 'start') {
+      await _showGitFlowStartDialog();
+    } else if (action == 'finish') {
+      await _showGitFlowFinishDialog();
+    }
+  }
+
+  /// Shows the frozen single-target Git-flow Finish form and executes only a
+  /// local checkout plus merge; push and source deletion remain out of scope.
+  /// 中文：显示已冻结的单目标 Git-flow Finish 表单；只执行本地检出和合并，
+  /// 不推送也不删除来源分支。
+  Future<void> _showGitFlowFinishDialog() async {
+    final session = ref.read(repositorySessionProvider);
+    final plan = await showDialog<GitFlowFinishPlan>(
+      context: context,
+      builder: (context) => GitFlowFinishDialog(
+        localBranchNames: [
+          for (final branch in session.localBranches) branch.name,
+        ],
+        currentBranch: session.status?.branch.head,
+        isAttachedHead: session.status?.branch.isDetached == false,
+        isWorkingTreeClean: session.status?.isClean == true,
+        hasActiveOperation:
+            session.operationState != GitRepositoryOperationState.none,
+      ),
+    );
+    if (plan == null || !mounted) return;
+    final result = await ref
+        .read(repositorySessionProvider.notifier)
+        .finishGitFlowBranch(plan);
+    if (!mounted) return;
+    final message =
+        result?.message ??
+        ref.read(repositorySessionProvider).message ??
+        'Git-flow Finish 未执行；请刷新仓库状态后重试。';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 4)),
     );
   }
 
@@ -3476,6 +3810,10 @@ class _RepositoryWorkspaceScreenState
     RepositoryRefContextAction action,
   ) {
     switch (action) {
+      case RepositoryRefContextAction.viewReflog:
+        if (reference.kind == RepositoryRefKind.localBranch) {
+          unawaited(_showReferenceReflog(reference.label));
+        }
       case RepositoryRefContextAction.fetchOrigin:
         final remoteName = _remoteNameForReference(reference);
         if (remoteName != null) {
@@ -3537,7 +3875,610 @@ class _RepositoryWorkspaceScreenState
         unawaited(_showCreateStashDialog());
       case RepositoryRefContextAction.manageStashes:
         unawaited(_showStashManager());
+      case RepositoryRefContextAction.verifyTagSignature:
+        if (reference.kind == RepositoryRefKind.tag) {
+          unawaited(_verifyTagSignature(reference.label));
+        }
+      case RepositoryRefContextAction.checkTagRemoteStatus:
+        if (reference.kind == RepositoryRefKind.tag) {
+          unawaited(_chooseTagRemoteStatus(reference.label));
+        }
     }
+  }
+
+  /// Verifies a tag through Git and reports the actual signature result.
+  /// 中文：通过 Git 验证标签签名，并展示真实验证结果。
+  Future<void> _verifyTagSignature(String tagName) async {
+    try {
+      final status = await ref
+          .read(repositorySessionProvider.notifier)
+          .verifyTagSignature(tagName);
+      if (!mounted) return;
+      final message = switch (status) {
+        GitTagSignatureStatus.notAnnotated => '标签 $tagName 是轻量标签，不包含可验证签名。',
+        GitTagSignatureStatus.valid => '标签 $tagName 的签名有效。',
+        GitTagSignatureStatus.unsigned => '标签 $tagName 未包含签名。',
+        GitTagSignatureStatus.invalid => '标签 $tagName 的签名无效。',
+        GitTagSignatureStatus.unavailable => '无法使用当前 Git 签名验证器验证标签 $tagName。',
+      };
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    } on Object {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: const Text('标签签名验证失败，请查看仓库状态和错误信息。')));
+    }
+  }
+
+  /// Compares a tag with a configured remote without fetching.
+  /// 中文：不执行 Fetch，仅比较标签与指定远端的引用状态。
+  Future<void> _checkTagRemoteStatus(String tagName, String remoteName) async {
+    try {
+      final status = await ref
+          .read(repositorySessionProvider.notifier)
+          .readRemoteTagStatus(tagName, remoteName: remoteName);
+      if (!mounted) return;
+      final message = switch (status) {
+        GitTagRemoteStatus.notChecked => '尚未检查标签 $tagName。',
+        GitTagRemoteStatus.matching => '标签 $tagName 与 $remoteName 一致。',
+        GitTagRemoteStatus.missing => '远端 $remoteName 不存在标签 $tagName。',
+        GitTagRemoteStatus.different => '标签 $tagName 与 $remoteName 不同。',
+      };
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text(message)));
+    } on Object {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: const Text('远端标签检查失败，请查看仓库状态和错误信息。')));
+    }
+  }
+
+  /// Lets the user choose the configured remote before a read-only tag check.
+  /// 中文：在只读检查标签前让用户明确选择目标远端。
+  Future<void> _chooseTagRemoteStatus(String tagName) async {
+    final remote = await _selectTagRemote(tagName);
+    if (remote != null && mounted) {
+      await _checkTagRemoteStatus(tagName, remote);
+    }
+  }
+
+  /// Opens the shared remote selector used by single and batch tag checks.
+  /// 中文：打开单标签与批量标签检查共用的远端选择器。
+  Future<String?> _selectTagRemote(String tagName) async {
+    final session = ref.read(repositorySessionProvider);
+    final remotes = session.remoteNames;
+    if (remotes.isEmpty || !mounted) return null;
+    final initial = session.tagRemoteNames[tagName];
+    final remote = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        var selected = initial != null && remotes.contains(initial)
+            ? initial
+            : remotes.first;
+        return StatefulBuilder(
+          builder: (context, setState) => AlertDialog(
+            title: const Text('检查远端标签状态'),
+            content: DropdownButtonFormField<String>(
+              initialValue: selected,
+              decoration: const InputDecoration(labelText: '目标远端'),
+              items: [
+                for (final remote in remotes)
+                  DropdownMenuItem<String>(value: remote, child: Text(remote)),
+              ],
+              onChanged: (value) {
+                if (value != null) setState(() => selected = value);
+              },
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(dialogContext).pop(selected),
+                child: const Text('检查'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    return remote;
+  }
+
+  /// Verifies all loaded tags and reports a compact result summary.
+  /// 中文：验证全部已加载标签并展示结果汇总。
+  Future<void> _verifyAllTagSignatures() async {
+    try {
+      final results = await ref
+          .read(repositorySessionProvider.notifier)
+          .verifyAllTagSignatures();
+      if (!mounted) return;
+      final valid = results.values
+          .where((status) => status == GitTagSignatureStatus.valid)
+          .length;
+      final unsigned = results.values
+          .where((status) => status == GitTagSignatureStatus.unsigned)
+          .length;
+      final invalid = results.values
+          .where((status) => status == GitTagSignatureStatus.invalid)
+          .length;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '已验证 ${results.length} 个标签：有效 $valid，未签名 $unsigned，无效 $invalid。',
+          ),
+        ),
+      );
+    } on Object {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('批量标签签名验证失败，请查看仓库状态和错误信息。')));
+    }
+  }
+
+  /// Checks all loaded tags against a selected remote.
+  /// 中文：将全部已加载标签与选定远端比较并展示结果汇总。
+  Future<void> _checkAllTagRemoteStatuses() async {
+    final remote = await _selectTagRemote('');
+    if (remote == null || !mounted) return;
+    try {
+      final results = await ref
+          .read(repositorySessionProvider.notifier)
+          .readAllRemoteTagStatuses(remoteName: remote);
+      if (!mounted) return;
+      final matching = results.values
+          .where((status) => status == GitTagRemoteStatus.matching)
+          .length;
+      final missing = results.values
+          .where((status) => status == GitTagRemoteStatus.missing)
+          .length;
+      final different = results.values
+          .where((status) => status == GitTagRemoteStatus.different)
+          .length;
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(
+          content: Text(
+            '已检查 ${results.length} 个标签（$remote）：一致 $matching，缺失 $missing，不同 $different。',
+          ),
+        ),
+      );
+    } on Object {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('批量远端标签检查失败，请查看仓库状态和错误信息。')));
+    }
+  }
+
+  /// Selects and deletes multiple local tags after an explicit destructive confirmation.
+  /// 中文：在明确说明不可逆影响后多选并删除本地标签，远端标签不会被触碰。
+  Future<void> _deleteSelectedTags() async {
+    final session = ref.read(repositorySessionProvider);
+    final tags = session.tags.map((tag) => tag.name).toList(growable: false);
+    if (tags.isEmpty || !mounted) return;
+    final selected = await showDialog<List<String>>(
+      context: context,
+      builder: (dialogContext) {
+        final checked = <String>{};
+        return StatefulBuilder(
+          builder: (context, setState) => AlertDialog(
+            title: const Text('批量删除本地标签'),
+            content: SizedBox(
+              width: 420,
+              height: 360,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  Text(
+                    '删除不可通过界面恢复，且不会删除远端同名标签。请选择要删除的本地标签。',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: ListView.builder(
+                      itemCount: tags.length,
+                      itemBuilder: (context, index) {
+                        final name = tags[index];
+                        return CheckboxListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          value: checked.contains(name),
+                          title: Text(name, overflow: TextOverflow.ellipsis),
+                          onChanged: (value) => setState(() {
+                            if (value == true) {
+                              checked.add(name);
+                            } else {
+                              checked.remove(name);
+                            }
+                          }),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('取消'),
+              ),
+              FilledButton.icon(
+                onPressed: checked.isEmpty
+                    ? null
+                    : () => Navigator.of(
+                        dialogContext,
+                      ).pop(checked.toList(growable: false)),
+                style: FilledButton.styleFrom(
+                  backgroundColor: Theme.of(context).colorScheme.error,
+                  foregroundColor: Theme.of(context).colorScheme.onError,
+                ),
+                icon: const Icon(Icons.delete_outline),
+                label: const Text('删除所选标签'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (selected == null || selected.isEmpty || !mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('确认批量删除标签'),
+        content: Text(
+          '将不可逆地删除 ${selected.length} 个本地标签：${selected.join('、')}。\n\n'
+          '远端同名标签不会被删除。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            icon: const Icon(Icons.delete_outline),
+            label: const Text('确认删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final result = await ref
+        .read(repositorySessionProvider.notifier)
+        .deleteTags(selected);
+    if (!mounted || result == null) return;
+    final failedCount = result.missingNames.length + result.failedNames.length;
+    final detail = result.failedNames.entries
+        .map((entry) => '${entry.key}：${entry.value}')
+        .join('；');
+    final missing = result.missingNames.isEmpty
+        ? ''
+        : ' 已不存在：${result.missingNames.join('、')}。';
+    final message = failedCount == 0
+        ? '已删除 ${result.deletedNames.length} 个本地标签。'
+        : '已删除 ${result.deletedNames.length} 个；$failedCount 个未删除。$missing${detail.isEmpty ? '' : ' $detail'}';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 4)),
+    );
+  }
+
+  /// Selects one configured remote and pushes multiple local tags without force.
+  /// 中文：明确选择远端后批量推送本地标签，不使用 force，并展示逐项结果。
+  Future<void> _pushSelectedTags() async {
+    final session = ref.read(repositorySessionProvider);
+    final tags = session.tags.map((tag) => tag.name).toList(growable: false);
+    final remotes = session.remoteNames;
+    if (tags.isEmpty || remotes.isEmpty || !mounted) return;
+    final selectedRemote = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        var remote = remotes.contains('origin') ? 'origin' : remotes.first;
+        return StatefulBuilder(
+          builder: (context, setState) => AlertDialog(
+            title: const Text('选择标签推送远端'),
+            content: DropdownButtonFormField<String>(
+              initialValue: remote,
+              decoration: const InputDecoration(labelText: '目标远端'),
+              items: [
+                for (final name in remotes)
+                  DropdownMenuItem(value: name, child: Text(name)),
+              ],
+              onChanged: (value) {
+                if (value != null) setState(() => remote = value);
+              },
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(dialogContext).pop(remote),
+                child: const Text('下一步'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (selectedRemote == null || !mounted) return;
+    final selected = await showDialog<List<String>>(
+      context: context,
+      builder: (dialogContext) {
+        final checked = <String>{};
+        return StatefulBuilder(
+          builder: (context, setState) => AlertDialog(
+            title: Text('推送标签到 $selectedRemote'),
+            content: SizedBox(
+              width: 420,
+              height: 360,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text('只推送选中的本地标签，不会使用 force。'),
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: ListView.builder(
+                      itemCount: tags.length,
+                      itemBuilder: (context, index) {
+                        final name = tags[index];
+                        return CheckboxListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          value: checked.contains(name),
+                          title: Text(name, overflow: TextOverflow.ellipsis),
+                          onChanged: (value) => setState(() {
+                            if (value == true) {
+                              checked.add(name);
+                            } else {
+                              checked.remove(name);
+                            }
+                          }),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: checked.isEmpty
+                    ? null
+                    : () => Navigator.of(
+                        dialogContext,
+                      ).pop(checked.toList(growable: false)),
+                child: const Text('下一步'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (selected == null || selected.isEmpty || !mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('确认推送标签'),
+        content: Text(
+          '将把 ${selected.length} 个标签推送到 $selectedRemote：${selected.join('、')}。\n\n'
+          'Git 会拒绝不安全的远端更新，应用不会使用 force。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('确认推送'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final result = await ref
+        .read(repositorySessionProvider.notifier)
+        .pushTags(selected, remoteName: selectedRemote);
+    if (!mounted || result == null) return;
+    final failedCount = result.missingNames.length + result.failedNames.length;
+    final detail = result.failedNames.entries
+        .map((entry) => '${entry.key}：${entry.value}')
+        .join('；');
+    final missing = result.missingNames.isEmpty
+        ? ''
+        : ' 已不存在：${result.missingNames.join('、')}。';
+    final message = failedCount == 0
+        ? '已推送 ${result.pushedNames.length} 个标签到 $selectedRemote。'
+        : '已推送 ${result.pushedNames.length} 个；$failedCount 个未推送。$missing${detail.isEmpty ? '' : ' $detail'}';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 4)),
+    );
+  }
+
+  /// Selects one configured remote and deletes multiple remote tag refs.
+  /// 中文：明确选择远端后批量删除远端标签；本地同名标签保持不变，并展示逐项结果。
+  Future<void> _deleteSelectedRemoteTags() async {
+    final session = ref.read(repositorySessionProvider);
+    final tags = session.tags.map((tag) => tag.name).toList(growable: false);
+    final remotes = session.remoteNames;
+    if (tags.isEmpty || remotes.isEmpty || !mounted) return;
+    final selectedRemote = await showDialog<String>(
+      context: context,
+      builder: (dialogContext) {
+        var remote = remotes.contains('origin') ? 'origin' : remotes.first;
+        return StatefulBuilder(
+          builder: (context, setState) => AlertDialog(
+            title: const Text('选择远端标签删除目标'),
+            content: DropdownButtonFormField<String>(
+              initialValue: remote,
+              decoration: const InputDecoration(labelText: '目标远端'),
+              items: [
+                for (final name in remotes)
+                  DropdownMenuItem(value: name, child: Text(name)),
+              ],
+              onChanged: (value) {
+                if (value != null) setState(() => remote = value);
+              },
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(dialogContext).pop(remote),
+                child: const Text('下一步'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (selectedRemote == null || !mounted) return;
+    List<String> remoteTags;
+    try {
+      remoteTags = await ref
+          .read(repositorySessionProvider.notifier)
+          .readRemoteTagNames(remoteName: selectedRemote);
+    } on GitCancelledException {
+      return;
+    } on Object {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('读取远端标签失败，请刷新后重试。')));
+      return;
+    }
+    if (!mounted || remoteTags.isEmpty) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('该远端当前没有可删除的标签。')));
+      }
+      return;
+    }
+    final selected = await showDialog<List<String>>(
+      context: context,
+      builder: (dialogContext) {
+        final checked = <String>{};
+        return StatefulBuilder(
+          builder: (context, setState) => AlertDialog(
+            title: Text('删除 $selectedRemote 的标签'),
+            content: SizedBox(
+              width: 420,
+              height: 360,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const Text('仅删除远端标签，不会删除本地同名标签；执行前会重新检查远端状态。'),
+                  const SizedBox(height: 8),
+                  Expanded(
+                    child: ListView.builder(
+                      itemCount: remoteTags.length,
+                      itemBuilder: (context, index) {
+                        final name = remoteTags[index];
+                        return CheckboxListTile(
+                          dense: true,
+                          contentPadding: EdgeInsets.zero,
+                          value: checked.contains(name),
+                          title: Text(name, overflow: TextOverflow.ellipsis),
+                          onChanged: (value) => setState(() {
+                            if (value == true) {
+                              checked.add(name);
+                            } else {
+                              checked.remove(name);
+                            }
+                          }),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(dialogContext).pop(),
+                child: const Text('取消'),
+              ),
+              FilledButton.icon(
+                onPressed: checked.isEmpty
+                    ? null
+                    : () => Navigator.of(
+                        dialogContext,
+                      ).pop(checked.toList(growable: false)),
+                style: FilledButton.styleFrom(
+                  backgroundColor: Theme.of(context).colorScheme.error,
+                  foregroundColor: Theme.of(context).colorScheme.onError,
+                ),
+                icon: const Icon(Icons.cloud_off_outlined),
+                label: const Text('下一步'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
+    if (selected == null || selected.isEmpty || !mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('确认删除远端标签'),
+        content: Text(
+          '将不可逆地从 $selectedRemote 删除 ${selected.length} 个标签：${selected.join('、')}。\n\n'
+          '本地同名标签不会被删除；远端已不存在的标签会单独记录。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton.icon(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            style: FilledButton.styleFrom(
+              backgroundColor: Theme.of(context).colorScheme.error,
+              foregroundColor: Theme.of(context).colorScheme.onError,
+            ),
+            icon: const Icon(Icons.cloud_off_outlined),
+            label: const Text('确认删除'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final result = await ref
+        .read(repositorySessionProvider.notifier)
+        .deleteRemoteTags(selected, remoteName: selectedRemote);
+    if (!mounted || result == null) return;
+    final failedCount = result.missingNames.length + result.failedNames.length;
+    final detail = result.failedNames.entries
+        .map((entry) => '${entry.key}：${entry.value}')
+        .join('；');
+    final missing = result.missingNames.isEmpty
+        ? ''
+        : ' 已不存在：${result.missingNames.join('、')}。';
+    final message = failedCount == 0
+        ? '已从 $selectedRemote 删除 ${result.deletedNames.length} 个远端标签，本地标签保持不变。'
+        : '已从 $selectedRemote 删除 ${result.deletedNames.length} 个；$failedCount 个未删除。$missing${detail.isEmpty ? '' : ' $detail'}';
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message), duration: const Duration(seconds: 4)),
+    );
   }
 
   /// 中文：将提交右键操作路由到标签面板；标签始终以右键选中的提交为默认目标。
@@ -4029,6 +4970,8 @@ class _RepositoryWorkspaceScreenState
       builder: (context) => InternalConflictResolverDialog(
         path: versions.path.display,
         currentBranch: branch ?? '当前分支',
+        baseText: versions.baseText,
+        hasBaseVersion: versions.hasBaseVersion,
         oursText: versions.oursText,
         theirsText: versions.theirsText,
         workingText: versions.workingText,
@@ -4169,6 +5112,14 @@ class _RepositoryWorkspaceScreenState
           .read(repositorySessionProvider.notifier)
           .readWorkingTreeFileComparison(change);
       if (!mounted) return;
+      final configured = await _openConfiguredExternalDiff(
+        repositoryRoot: root,
+        repositoryRelativePath: change.path,
+        suggestedFileName: path_utils.basename(change.path),
+        beforeBytes: comparison.beforeBytes,
+        afterBytes: comparison.afterBytes,
+      );
+      if (!mounted || configured) return;
       await DesktopWindowBridge.openHistoricalDiff(
         repositoryRootPath: root,
         suggestedFileName: path_utils.basename(change.path),
@@ -4200,6 +5151,26 @@ class _RepositoryWorkspaceScreenState
       return;
     }
     await _showFileHistory(path: changes.single.path);
+  }
+
+  /// Opens a read-only Blame view for one current tracked work-tree file.
+  /// 中文：为一个当前已跟踪工作区文件打开只读 Blame；执行前重新校验选择，避免
+  /// 菜单打开后文件状态变化导致读取错误路径。
+  Future<void> _showWorkingTreeBlame(
+    List<RepositoryChangeViewData> requested,
+  ) async {
+    final changes = _resolveWorkingTreeMenuSelection(requested);
+    if (changes?.length != 1 ||
+        changes!.single.kind == RepositoryChangeKind.untracked ||
+        changes.single.kind == RepositoryChangeKind.deleted ||
+        changes.single.kind == RepositoryChangeKind.conflicted) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请选择一个当前仍存在且已跟踪的文件。')));
+      return;
+    }
+    await _showBlameForPath(changes.single.path);
   }
 
   /// Opens the built-in read-only review for the latest explicit selection.
@@ -5012,6 +5983,10 @@ class _RepositoryWorkspaceScreenState
       unawaited(_showSelectedFileHistory(file));
       return;
     }
+    if (action == RepositoryCommitFileContextAction.blame) {
+      unawaited(_showBlameForPath(file.path));
+      return;
+    }
     if (action == RepositoryCommitFileContextAction.reviewSelectedItem) {
       unawaited(_showCommitFileReview(file));
       return;
@@ -5145,6 +6120,14 @@ class _RepositoryWorkspaceScreenState
           .read(repositorySessionProvider.notifier)
           .readSelectedCommitFileComparison();
       if (!mounted) return;
+      final configured = await _openConfiguredExternalDiff(
+        repositoryRoot: root,
+        repositoryRelativePath: file.path,
+        suggestedFileName: path_utils.basename(file.path),
+        beforeBytes: comparison.beforeBytes,
+        afterBytes: comparison.afterBytes,
+      );
+      if (!mounted || configured) return;
       await DesktopWindowBridge.openHistoricalDiff(
         repositoryRootPath: root,
         suggestedFileName: path_utils.basename(file.path),
@@ -5157,6 +6140,57 @@ class _RepositoryWorkspaceScreenState
         const SnackBar(content: Text('无法启动外部差异比对；请确认已安装 Apple FileMerge。')),
       );
     }
+  }
+
+  /// Starts the explicitly enabled application-owned Diff tool when one is
+  /// configured; returns false when the built-in FileMerge fallback should be
+  /// used instead.
+  ///
+  /// 中文：配置了且明确启用应用自有 Diff 工具时启动该工具；没有可用配置时返回
+  /// false，让调用方继续使用内置 FileMerge。配置工具启动失败时显示可恢复错误，
+  /// 不静默降级到另一工具，避免用户误以为启用了自定义工具却实际执行了别的程序。
+  Future<bool> _openConfiguredExternalDiff({
+    required String repositoryRoot,
+    required String repositoryRelativePath,
+    required String suggestedFileName,
+    required List<int> beforeBytes,
+    required List<int> afterBytes,
+  }) async {
+    final configuration = ref
+        .read(externalToolConfigurationProvider)
+        .configuration;
+    final trustStatus = ref.read(repositoryTrustProvider).status;
+    if (configuration == null ||
+        !canActivateExternalTool(
+          trustStatus: trustStatus,
+          configuration: configuration,
+        )) {
+      return false;
+    }
+    try {
+      await ref
+          .read(externalToolRunnerProvider)
+          .startReadOnlyDiff(
+            configuration: configuration,
+            trustStatus: trustStatus,
+            repositoryRoot: repositoryRoot,
+            repositoryRelativePath: repositoryRelativePath,
+            beforeBytes: beforeBytes,
+            afterBytes: afterBytes,
+          );
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('已启动外部 Diff：${configuration.displayName}。')),
+        );
+      }
+    } on Object {
+      if (mounted) {
+        ScaffoldMessenger.of(context).showSnackBar(
+          SnackBar(content: Text('无法启动外部 Diff：$suggestedFileName。请检查工具路径和配置。')),
+        );
+      }
+    }
+    return true;
   }
 
   /// Opens, reveals, or previews the current work-tree counterpart of a
@@ -5400,10 +6434,10 @@ class _RepositoryWorkspaceScreenState
       ).showSnackBar(const SnackBar(content: Text('请选择一个可读取修改日志的已跟踪文件。')));
       return;
     }
-    final commitFile = session.selectedCommitFile?.file;
+    final commitFile = overview.repository?.selectedCommitFile;
     if (overview.repository?.selectedCommit != null && commitFile != null) {
       await _showFileHistory(
-        path: commitFile.path.display,
+        path: commitFile.path,
         sourceCommitId: session.selectedCommitId,
       );
       return;
@@ -5411,6 +6445,33 @@ class _RepositoryWorkspaceScreenState
     if (selected.length == 1) {
       await _showFileHistory(path: selected.single.path);
     }
+  }
+
+  /// Opens the selected file through the configured external Diff or FileMerge.
+  /// 中文：将原生“外部差异比对”菜单路由到当前单文件选择，并复用配置工具或
+  /// Apple FileMerge 的安全复核；多选、未跟踪、冲突和删除文件保持禁用。
+  Future<void> _showNativeSelectedExternalDiff() async {
+    final session = ref.read(repositorySessionProvider);
+    final overview = mapRepositoryOverview(session);
+    final selected = _nativeSelectedChanges(overview);
+    final availability = nativeWorkspaceMenuAvailability(
+      session,
+      overview,
+      selectedChanges: selected,
+    );
+    if (!availability.canExternalDiffSelected) {
+      if (!mounted) return;
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('请选择一个可比较的已跟踪文件。')));
+      return;
+    }
+    final commitFile = overview.repository?.selectedCommitFile;
+    if (overview.repository?.selectedCommit != null && commitFile != null) {
+      await _openSelectedCommitFileExternalDiff(commitFile);
+      return;
+    }
+    await _openWorkingTreeExternalDiff(selected);
   }
 
   /// Opens the shared read-only history dialog for one validated Git path.
@@ -5443,6 +6504,44 @@ class _RepositoryWorkspaceScreenState
               path: path,
               cancellationToken: cancellationToken,
             ),
+        loadBlame: (cancellationToken) => ref
+            .read(repositorySessionProvider.notifier)
+            .readBlame(path, cancellationToken: cancellationToken),
+      ),
+    );
+  }
+
+  /// Opens a cancellable read-only Blame view for one validated work-tree path.
+  /// 中文：为一个已校验的工作区路径打开可取消的只读 Blame 视图。
+  Future<void> _showBlameForPath(String path) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => _BlameDialog(
+        path: path,
+        loadBlame: (cancellationToken) => ref
+            .read(repositorySessionProvider.notifier)
+            .readBlame(path, cancellationToken: cancellationToken),
+      ),
+    );
+  }
+
+  /// Opens a read-only reflog dialog for one local branch.
+  /// 中文：打开指定本地分支的只读引用日志窗口；记录由 Git 实际读取，不执行写操作。
+  Future<void> _showReferenceReflog(String branchName) async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) => _ReflogDialog(
+        branchName: branchName,
+        loadEntries: (cancellationToken) => ref
+            .read(repositorySessionProvider.notifier)
+            .readReflog(cancellationToken: cancellationToken),
+        onEntrySelected: (entry) {
+          unawaited(
+            ref
+                .read(repositorySessionProvider.notifier)
+                .selectCommit(entry.objectId),
+          );
+        },
       ),
     );
   }
@@ -5521,6 +6620,8 @@ class _RepositoryWorkspaceScreenState
                   unawaited(_quickLookChanges(changes)),
               onChangeViewFileHistory: (changes) =>
                   unawaited(_showWorkingTreeFileHistory(changes)),
+              onChangeBlame: (changes) =>
+                  unawaited(_showWorkingTreeBlame(changes)),
               onChangeReview: (changes) =>
                   unawaited(_showWorkingTreeReview(changes)),
               onChangeIgnore: (changes) =>
@@ -5537,6 +6638,30 @@ class _RepositoryWorkspaceScreenState
                   unawaited(_resetChangesToHead(changes)),
               onDiffHunkAction: (action, hunkIndex) =>
                   unawaited(_handleDiffHunkAction(action, hunkIndex)),
+              onDiffWhitespaceModeChanged: (mode) => unawaited(
+                controller.setDiffWhitespaceMode(switch (mode) {
+                  DiffWhitespaceMode.preserve => GitDiffWhitespaceMode.preserve,
+                  DiffWhitespaceMode.ignoreAll =>
+                    GitDiffWhitespaceMode.ignoreAll,
+                  DiffWhitespaceMode.ignoreChanges =>
+                    GitDiffWhitespaceMode.ignoreChanges,
+                  DiffWhitespaceMode.ignoreBlankLines =>
+                    GitDiffWhitespaceMode.ignoreBlankLines,
+                }),
+              ),
+              onVerifyAllTagSignatures: () =>
+                  unawaited(_verifyAllTagSignatures()),
+              onCheckAllTagRemoteStatuses: () =>
+                  unawaited(_checkAllTagRemoteStatuses()),
+              onDeleteTags: () => unawaited(_deleteSelectedTags()),
+              onDeleteRemoteTags: () => unawaited(_deleteSelectedRemoteTags()),
+              onPushTags: () => unawaited(_pushSelectedTags()),
+              onCancelTagInspection: session.isTagInspectionRunning
+                  ? controller.cancelTagInspection
+                  : null,
+              onCancelTagMutation: session.isTagMutationRunning
+                  ? controller.cancelTagMutation
+                  : null,
             ),
           ),
           if (overview.repository == null && widget.themeControl != null)
@@ -6038,12 +7163,370 @@ final class _RepositoryReviewDialogState
   }
 }
 
+final class _ReflogDialog extends StatefulWidget {
+  const _ReflogDialog({
+    required this.branchName,
+    required this.loadEntries,
+    required this.onEntrySelected,
+  });
+
+  final String branchName;
+  final Future<List<GitReflogEntry>> Function(
+    GitCancellationToken cancellationToken,
+  )
+  loadEntries;
+  final ValueChanged<GitReflogEntry> onEntrySelected;
+
+  @override
+  State<_ReflogDialog> createState() => _ReflogDialogState();
+}
+
+final class _ReflogDialogState extends State<_ReflogDialog> {
+  final _cancellationToken = GitCancellationToken();
+  final _searchController = TextEditingController();
+  List<GitReflogEntry>? _entries;
+  Object? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    _searchController.addListener(_handleSearchChanged);
+    unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    _cancellationToken.cancel();
+    _searchController
+      ..removeListener(_handleSearchChanged)
+      ..dispose();
+    super.dispose();
+  }
+
+  /// Rebuilds the visible result list when the local search query changes.
+  /// 中文：本地搜索条件变化时重建可见结果；不会重新启动 Git 子进程。
+  void _handleSearchChanged() {
+    if (mounted) setState(() {});
+  }
+
+  Future<void> _load() async {
+    try {
+      final entries = await widget.loadEntries(_cancellationToken);
+      if (!mounted || _cancellationToken.isCancelled) return;
+      final branchPrefix = 'refs/heads/${widget.branchName}@';
+      final selectorPrefix = '${widget.branchName}@';
+      setState(() {
+        _entries = entries
+            .where(
+              (entry) =>
+                  entry.reference.startsWith(branchPrefix) ||
+                  entry.selector.startsWith(selectorPrefix),
+            )
+            .toList(growable: false);
+      });
+    } on GitCancelledException {
+      // Closing the dialog is the expected cancellation path.
+    } on Object catch (error) {
+      if (!mounted || _cancellationToken.isCancelled) return;
+      setState(() => _error = error);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final entries = _entries;
+    final filteredEntries = entries == null
+        ? null
+        : filterReflogEntries(entries, _searchController.text);
+    return AlertDialog(
+      title: Text('引用日志：${widget.branchName}'),
+      content: SizedBox(
+        width: 860,
+        height: 520,
+        child: Column(
+          children: [
+            TextField(
+              key: const ValueKey<String>('reflog-search'),
+              controller: _searchController,
+              decoration: const InputDecoration(
+                prefixIcon: Icon(Icons.search),
+                hintText: '筛选选择器、提交、消息',
+                isDense: true,
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 10),
+            Expanded(
+              child: _error != null
+                  ? Center(
+                      child: Text(
+                        '无法读取引用日志：$_error',
+                        style: theme.textTheme.bodyMedium,
+                      ),
+                    )
+                  : filteredEntries == null
+                  ? const Center(child: CircularProgressIndicator.adaptive())
+                  : filteredEntries.isEmpty
+                  ? Center(
+                      child: Text(
+                        entries!.isEmpty ? '该分支没有可显示的引用日志。' : '没有匹配的引用日志。',
+                      ),
+                    )
+                  : ListView.separated(
+                      key: const ValueKey<String>('reflog-list'),
+                      itemCount: filteredEntries.length,
+                      separatorBuilder: (context, index) =>
+                          const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final entry = filteredEntries[index];
+                        return ListTile(
+                          dense: true,
+                          title: Text(
+                            entry.message,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text(
+                            '${entry.selector} · ${entry.objectId.substring(0, math.min(12, entry.objectId.length))} · '
+                            '${entry.createdAt.toLocal()}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          trailing: const Icon(Icons.chevron_right, size: 18),
+                          onTap: () {
+                            Navigator.of(context).pop();
+                            widget.onEntrySelected(entry);
+                          },
+                        );
+                      },
+                    ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('关闭'),
+        ),
+      ],
+    );
+  }
+}
+
+final class _BlameDialog extends StatefulWidget {
+  const _BlameDialog({required this.path, required this.loadBlame});
+
+  final String path;
+  final Future<List<GitBlameLine>> Function(
+    GitCancellationToken cancellationToken,
+  )
+  loadBlame;
+
+  @override
+  State<_BlameDialog> createState() => _BlameDialogState();
+}
+
+final class _BlameDialogState extends State<_BlameDialog> {
+  final _cancellationToken = GitCancellationToken();
+  List<GitBlameLine>? _lines;
+  Object? _error;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_load());
+  }
+
+  @override
+  void dispose() {
+    _cancellationToken.cancel();
+    super.dispose();
+  }
+
+  Future<void> _load() async {
+    try {
+      final lines = await widget.loadBlame(_cancellationToken);
+      if (!mounted || _cancellationToken.isCancelled) return;
+      setState(() => _lines = lines);
+    } on GitCancelledException {
+      // Closing the dialog is the expected cancellation path.
+    } on Object catch (error) {
+      if (!mounted || _cancellationToken.isCancelled) return;
+      setState(() => _error = error);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final lines = _lines;
+    return Dialog(
+      insetPadding: const EdgeInsets.all(24),
+      child: ConstrainedBox(
+        constraints: const BoxConstraints(maxWidth: 1180, maxHeight: 760),
+        child: SizedBox(
+          width: 1080,
+          height: 680,
+          child: Column(
+            children: [
+              Container(
+                height: 42,
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                color: colors.surfaceContainerHigh,
+                child: Row(
+                  children: [
+                    const Icon(Icons.person_search_outlined, size: 19),
+                    const SizedBox(width: 8),
+                    Expanded(
+                      child: Text(
+                        'Blame：${widget.path}',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: Theme.of(context).textTheme.titleSmall,
+                      ),
+                    ),
+                    IconButton(
+                      tooltip: '关闭',
+                      icon: const Icon(Icons.close, size: 19),
+                      onPressed: () => Navigator.of(context).pop(),
+                    ),
+                  ],
+                ),
+              ),
+              Divider(height: 1, color: colors.outlineVariant),
+              Expanded(
+                child: _error != null
+                    ? Center(child: Text('无法读取 Blame：$_error'))
+                    : lines == null
+                    ? const Center(child: CircularProgressIndicator.adaptive())
+                    : lines.isEmpty
+                    ? const Center(child: Text('文件没有可显示的行。'))
+                    : ListView.builder(
+                        key: const ValueKey<String>('blame-list'),
+                        itemCount: lines.length,
+                        itemExtent: 32,
+                        itemBuilder: (context, index) {
+                          final line = lines[index];
+                          final shortObjectId = line.objectId.length > 12
+                              ? line.objectId.substring(0, 12)
+                              : line.objectId;
+                          return Container(
+                            color: line.isBoundary
+                                ? colors.surfaceContainerHighest
+                                : null,
+                            padding: const EdgeInsets.symmetric(horizontal: 10),
+                            child: Row(
+                              children: [
+                                SizedBox(
+                                  width: 48,
+                                  child: Text(
+                                    '${line.lineNumber}',
+                                    textAlign: TextAlign.right,
+                                    style: Theme.of(context).textTheme.bodySmall
+                                        ?.copyWith(
+                                          color: colors.onSurfaceVariant,
+                                          fontFeatures: const [
+                                            FontFeature.tabularFigures(),
+                                          ],
+                                        ),
+                                  ),
+                                ),
+                                const SizedBox(width: 12),
+                                SizedBox(
+                                  width: 118,
+                                  child: Text(
+                                    line.author,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.bodySmall,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                SizedBox(
+                                  width: 92,
+                                  child: Text(
+                                    shortObjectId,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelSmall
+                                        ?.copyWith(
+                                          color: colors.onSurfaceVariant,
+                                        ),
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                Expanded(
+                                  child: Text(
+                                    line.text,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: Theme.of(
+                                      context,
+                                    ).textTheme.bodySmall,
+                                  ),
+                                ),
+                                const SizedBox(width: 8),
+                                SizedBox(
+                                  width: 240,
+                                  child: Text(
+                                    line.summary,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    textAlign: TextAlign.right,
+                                    style: Theme.of(context)
+                                        .textTheme
+                                        .labelSmall
+                                        ?.copyWith(
+                                          color: colors.onSurfaceVariant,
+                                        ),
+                                  ),
+                                ),
+                              ],
+                            ),
+                          );
+                        },
+                      ),
+              ),
+              Divider(height: 1, color: colors.outlineVariant),
+              Container(
+                height: 46,
+                padding: const EdgeInsets.symmetric(horizontal: 14),
+                color: colors.surfaceContainerLow,
+                child: Row(
+                  children: [
+                    Text(
+                      lines == null ? '正在读取 Blame…' : '${lines.length} 行',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                    const Spacer(),
+                    TextButton(
+                      onPressed: () => Navigator.of(context).pop(),
+                      child: const Text('关闭'),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 final class _FileHistoryDialog extends StatefulWidget {
   const _FileHistoryDialog({
     required this.path,
     required this.loadHistory,
     required this.loadCommitChanges,
     required this.loadCommitDiff,
+    required this.loadBlame,
   });
 
   final String path;
@@ -6063,6 +7546,10 @@ final class _FileHistoryDialog extends StatefulWidget {
     GitCancellationToken cancellationToken,
   )
   loadCommitDiff;
+  final Future<List<GitBlameLine>> Function(
+    GitCancellationToken cancellationToken,
+  )
+  loadBlame;
 
   @override
   State<_FileHistoryDialog> createState() => _FileHistoryDialogState();
@@ -6193,6 +7680,16 @@ final class _FileHistoryDialogState extends State<_FileHistoryDialog> {
     }
   }
 
+  /// Opens the current work-tree Blame view without changing file history state.
+  /// 中文：打开当前工作树文件的 Blame 视图，不改变当前文件历史选择。
+  Future<void> _showBlame() async {
+    await showDialog<void>(
+      context: context,
+      builder: (context) =>
+          _BlameDialog(path: widget.path, loadBlame: widget.loadBlame),
+    );
+  }
+
   /// Builds the bounded three-pane history dialog from dialog-local state.
   ///
   /// 中文：根据弹窗局部状态构建带尺寸约束的文件历史三栏界面。
@@ -6254,6 +7751,13 @@ final class _FileHistoryDialogState extends State<_FileHistoryDialog> {
                       style: Theme.of(context).textTheme.bodySmall,
                     ),
                     const Spacer(),
+                    OutlinedButton.icon(
+                      key: const ValueKey<String>('open-blame'),
+                      onPressed: _showBlame,
+                      icon: const Icon(Icons.person_search_outlined, size: 17),
+                      label: const Text('Blame'),
+                    ),
+                    const SizedBox(width: 8),
                     TextButton(
                       onPressed: () => Navigator.of(context).pop(),
                       child: const Text('关闭'),
@@ -6951,6 +8455,8 @@ final class _RepositoryDetailsDialogState
                     ),
                   ),
                   const SizedBox(height: 16),
+                  _ExternalToolConfigurationPanel(trustStatus: trust.status),
+                  const SizedBox(height: 16),
                   _RepositoryDetailsFacts(details: details),
                   const SizedBox(height: 16),
                   _RepositoryAuthorTable(
@@ -7027,6 +8533,236 @@ String _repositoryTrustStatusLabel(RepositoryTrustStatus status) =>
       RepositoryTrustStatus.trusted => '信任',
       RepositoryTrustStatus.restricted => '受限',
     };
+
+/// Edits the application-owned read-only external Diff template.
+///
+/// 中文：编辑应用自有的只读外部 Diff 模板；保存前执行完整安全校验，Merge 写回
+/// 和仓库配置中的 external diff/textconv 不在此面板开放。
+final class _ExternalToolConfigurationPanel extends ConsumerStatefulWidget {
+  const _ExternalToolConfigurationPanel({required this.trustStatus});
+
+  final RepositoryTrustStatus trustStatus;
+
+  @override
+  ConsumerState<_ExternalToolConfigurationPanel> createState() =>
+      _ExternalToolConfigurationPanelState();
+}
+
+final class _ExternalToolConfigurationPanelState
+    extends ConsumerState<_ExternalToolConfigurationPanel> {
+  final _displayNameController = TextEditingController();
+  final _executableController = TextEditingController();
+  final _argumentsController = TextEditingController();
+  var _enabled = false;
+  var _didHydrate = false;
+  String? _message;
+  bool _messageIsError = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      unawaited(ref.read(externalToolConfigurationProvider.notifier).load());
+    });
+  }
+
+  @override
+  void dispose() {
+    _displayNameController.dispose();
+    _executableController.dispose();
+    _argumentsController.dispose();
+    super.dispose();
+  }
+
+  void _hydrate(ExternalToolConfiguration? configuration) {
+    if (_didHydrate) return;
+    _didHydrate = true;
+    if (configuration == null) {
+      _argumentsController.text = '{before}\n{after}\n{path}';
+      return;
+    }
+    _displayNameController.text = configuration.displayName;
+    _executableController.text = configuration.executablePath;
+    _argumentsController.text = configuration.arguments.join('\n');
+    _enabled = configuration.enabled;
+  }
+
+  Future<void> _save() async {
+    final arguments = _argumentsController.text
+        .split('\n')
+        .map((argument) => argument.trimRight())
+        .where((argument) => argument.isNotEmpty)
+        .toList(growable: false);
+    final configuration = ExternalToolConfiguration(
+      displayName: _displayNameController.text,
+      executablePath: _executableController.text,
+      arguments: arguments,
+      enabled: _enabled,
+    );
+    final issues = configuration.validate();
+    if (issues.isNotEmpty) {
+      setState(() {
+        _message = _externalToolIssueMessage(issues.first);
+        _messageIsError = true;
+      });
+      return;
+    }
+    final saved = await ref
+        .read(externalToolConfigurationProvider.notifier)
+        .save(configuration);
+    if (!mounted) return;
+    setState(() {
+      _message = saved ? '配置已保存；实际执行仍需仓库信任和单独启用。' : '配置保存失败，当前配置未启用。';
+      _messageIsError = !saved;
+    });
+  }
+
+  Future<void> _clear() async {
+    final cleared = await ref
+        .read(externalToolConfigurationProvider.notifier)
+        .save(null);
+    if (!mounted) return;
+    setState(() {
+      _displayNameController.clear();
+      _executableController.clear();
+      _argumentsController.text = '{before}\n{after}\n{path}';
+      _enabled = false;
+      _message = cleared ? '外部 Diff 配置已清除。' : '配置清除失败。';
+      _messageIsError = !cleared;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = ref.watch(externalToolConfigurationProvider);
+    _hydrate(state.configuration);
+    final colors = Theme.of(context).colorScheme;
+    final usable =
+        state.configuration != null &&
+        canActivateExternalTool(
+          trustStatus: widget.trustStatus,
+          configuration: state.configuration!,
+        );
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerLow,
+        border: Border.all(color: colors.outlineVariant),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.compare_arrows, size: 18, color: colors.primary),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    '外部 Diff（只读）',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ),
+                Text(
+                  usable ? '可用' : '受安全门槛限制',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: usable ? colors.primary : colors.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '使用应用级 argv 模板比较私有快照；不会调用仓库 external diff/textconv，也不会写回工作区。',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 10),
+            if (state.isLoading)
+              const LinearProgressIndicator(minHeight: 2)
+            else ...[
+              TextField(
+                controller: _displayNameController,
+                decoration: const InputDecoration(
+                  labelText: '工具名称',
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _executableController,
+                decoration: const InputDecoration(
+                  labelText: '绝对可执行路径',
+                  hintText: '/Applications/Tool.app/Contents/MacOS/Tool',
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _argumentsController,
+                minLines: 3,
+                maxLines: 5,
+                decoration: const InputDecoration(
+                  labelText: '参数（每行一个）',
+                  helperText: '必须包含 {before} 和 {after}；可选 {repository}、{path}。',
+                  isDense: true,
+                ),
+              ),
+              CheckboxListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                value: _enabled,
+                onChanged: (value) => setState(() => _enabled = value ?? false),
+                title: const Text('启用此只读工具'),
+                subtitle: Text(
+                  widget.trustStatus == RepositoryTrustStatus.trusted
+                      ? '当前仓库已信任；仍需保存后才会允许调用。'
+                      : '当前仓库未信任；保存不会绕过信任限制。',
+                ),
+                controlAffinity: ListTileControlAffinity.leading,
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(onPressed: _clear, child: const Text('清除')),
+                  const SizedBox(width: 8),
+                  FilledButton.tonal(
+                    onPressed: _save,
+                    child: const Text('保存配置'),
+                  ),
+                ],
+              ),
+              if (_message != null) ...[
+                const SizedBox(height: 4),
+                Text(
+                  _message!,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: _messageIsError ? colors.error : colors.primary,
+                  ),
+                ),
+              ],
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _externalToolIssueMessage(
+  ExternalToolConfigurationIssue issue,
+) => switch (issue) {
+  ExternalToolConfigurationIssue.emptyDisplayName => '请填写工具名称。',
+  ExternalToolConfigurationIssue.executableMustBeAbsolute => '可执行路径必须是绝对路径。',
+  ExternalToolConfigurationIssue.invalidExecutable => '可执行路径包含无效字符。',
+  ExternalToolConfigurationIssue.tooManyArguments => '参数数量超过安全上限。',
+  ExternalToolConfigurationIssue.invalidArgument => '参数包含无效字符或过长。',
+  ExternalToolConfigurationIssue.unknownPlaceholder => '参数包含未知占位符。',
+  ExternalToolConfigurationIssue.missingBeforePlaceholder => '参数必须包含 {before}。',
+  ExternalToolConfigurationIssue.missingAfterPlaceholder => '参数必须包含 {after}。',
+  ExternalToolConfigurationIssue.mergeWriteBackUnsupported => 'Merge 写回尚未支持。',
+};
 
 final class _RepositoryDetailsFacts extends StatelessWidget {
   const _RepositoryDetailsFacts({required this.details});
@@ -8876,6 +10612,7 @@ class _TagDialogState extends State<_TagDialog> {
   bool _pushTag = false;
   bool _showAdvanced = false;
   bool _annotated = false;
+  bool _signTag = false;
   String? _remoteName;
   String? _deleteTagName;
   bool _deleteRemote = false;
@@ -8939,6 +10676,7 @@ class _TagDialogState extends State<_TagDialog> {
           objectId: _targetCommitId,
           annotation: _annotated ? _annotationController.text : null,
           isAnnotated: _annotated,
+          sign: _signTag,
           pushRemoteName: _pushTag ? _remoteName : null,
         ),
       ),
@@ -9127,7 +10865,10 @@ class _TagDialogState extends State<_TagDialog> {
           if (_showAdvanced) ...[
             CheckboxListTile(
               value: _annotated,
-              onChanged: (value) => setState(() => _annotated = value ?? false),
+              onChanged: (value) => setState(() {
+                _annotated = value ?? false;
+                if (!_annotated) _signTag = false;
+              }),
               dense: true,
               contentPadding: EdgeInsets.zero,
               controlAffinity: ListTileControlAffinity.leading,
@@ -9144,6 +10885,16 @@ class _TagDialogState extends State<_TagDialog> {
                   border: OutlineInputBorder(),
                   isDense: true,
                 ),
+              ),
+            if (_annotated)
+              CheckboxListTile(
+                value: _signTag,
+                onChanged: (value) => setState(() => _signTag = value ?? false),
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                controlAffinity: ListTileControlAffinity.leading,
+                title: const Text('使用 Git 配置签名'),
+                subtitle: const Text('需要本机已配置可用的签名密钥和验证器。'),
               ),
           ],
           const SizedBox(height: 12),
@@ -9698,6 +11449,7 @@ class _PushDialogState extends State<_PushDialog> {
         _selectedBranches.length == widget.localBranches.length;
     final canSubmit = _selectedBranches.isNotEmpty || _pushTags;
     return Dialog(
+      key: const ValueKey<String>('push-dialog'),
       insetPadding: const EdgeInsets.symmetric(horizontal: 20, vertical: 24),
       shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(14)),
       child: ConstrainedBox(

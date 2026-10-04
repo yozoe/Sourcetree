@@ -7,6 +7,7 @@ import 'package:path/path.dart' as path_utils;
 import 'git_errors.dart';
 import 'git_cancellation.dart';
 import 'git_history_parser.dart';
+import 'git_history_query.dart';
 import 'git_models.dart';
 import 'git_runner.dart';
 import 'git_status_parser.dart';
@@ -391,6 +392,10 @@ final class GitRepositoryReader {
     return total;
   }
 
+  /// Reads LFS filter configuration and local `git-lfs` availability without
+  /// downloading, migrating, or modifying repository content.
+  ///
+  /// 中文：只读检查 LFS 过滤器配置和本机 `git-lfs` 可用性；不会下载、迁移或修改仓库内容。
   Future<String> _readLfsStatus(
     GitRepository repository,
     GitCancellationToken? cancellationToken,
@@ -404,7 +409,44 @@ final class GitRepositoryReader {
       final attributes = File(path_utils.join(root, '.gitattributes'));
       if (!await attributes.exists()) return '未使用 LFS';
       final content = await attributes.readAsString();
-      return content.contains('filter=lfs') ? '已配置 LFS' : '未使用 LFS';
+      if (!content.contains('filter=lfs')) return '未使用 LFS';
+
+      final lfsVersion = await runner.run(
+        GitInvocation(
+          arguments: const ['lfs', 'version'],
+          workingDirectory: repository.commandDirectory,
+          cancellationToken: cancellationToken,
+          outputLimit: const GitOutputLimit(
+            stdoutBytes: 64 * 1024,
+            stderrBytes: 64 * 1024,
+          ),
+        ),
+      );
+      if (lfsVersion.wasCancelled) {
+        throw const GitException('Reading repository details was cancelled.');
+      }
+      if (!lfsVersion.isSuccess) return '已配置 LFS（工具不可用）';
+
+      final trackedFiles = await runner.run(
+        GitInvocation(
+          arguments: const ['lfs', 'ls-files', '--name-only'],
+          workingDirectory: repository.commandDirectory,
+          cancellationToken: cancellationToken,
+          outputLimit: const GitOutputLimit(
+            stdoutBytes: 1024 * 1024,
+            stderrBytes: 64 * 1024,
+          ),
+        ),
+      );
+      if (trackedFiles.wasCancelled) {
+        throw const GitException('Reading repository details was cancelled.');
+      }
+      if (!trackedFiles.isSuccess) return '已配置 LFS（工具不可用）';
+      if (trackedFiles.stdoutTruncated) return '已配置 LFS（指针文件过多）';
+      final pointerCount = _outputLines(
+        trackedFiles.stdoutBytes,
+      ).where((line) => line.isNotEmpty).length;
+      return pointerCount == 0 ? '已配置 LFS' : '已配置 LFS（指针文件 $pointerCount 个）';
     } on FileSystemException {
       return '状态不可用';
     }
@@ -453,6 +495,9 @@ final class GitRepositoryReader {
     return GitConflictFileVersions(
       path: entry.path,
       baseText: base.text,
+      hasBaseVersion:
+          entry.stage1ObjectId != null &&
+          !RegExp(r'^0+$').hasMatch(entry.stage1ObjectId!),
       oursText: ours.text,
       theirsText: theirs.text,
       workingText: working.text,
@@ -689,6 +734,8 @@ final class GitRepositoryReader {
     int limit = 100,
     int offset = 0,
     List<String>? revisionSnapshot,
+    GitHistoryQuery? query,
+    GitCancellationToken? cancellationToken,
   }) async {
     if (limit <= 0 || limit > 10000) {
       throw RangeError.range(limit, 1, 10000, 'limit');
@@ -711,20 +758,24 @@ final class GitRepositoryReader {
       GitInvocation(
         arguments: [
           '--no-pager',
+          if (query?.path != null) '--literal-pathspecs',
           '-c',
           'color.ui=false',
           'log',
           '--topo-order',
           '-z',
           '--encoding=UTF-8',
+          ...?query?.gitLogArguments,
           '--max-count=$limit',
           '--skip=$offset',
           '--format=$gitHistoryFormat',
           ...?revisions,
           if (revisions == null) ...['--branches', 'HEAD'],
           '--',
+          if (query?.path != null) query!.path!,
         ],
         workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
         outputLimit: const GitOutputLimit(
           stdoutBytes: 32 * 1024 * 1024,
           stderrBytes: 512 * 1024,
@@ -813,6 +864,48 @@ final class GitRepositoryReader {
       );
     }
     return historyParser.parseFileHistory(result.stdoutBytes).entries;
+  }
+
+  /// Reads line ownership for one repository-relative working-tree file.
+  ///
+  /// 中文：使用 `git blame --line-porcelain` 读取当前工作树文件的逐行责任归属；
+  /// 路径始终位于 `--` 后并启用 literal pathspec，不解析本地化的人类输出。
+  Future<List<GitBlameLine>> readBlame(
+    GitRepository repository, {
+    required String path,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    if (path.isEmpty || path.contains('\u0000')) {
+      throw ArgumentError.value(path, 'path', 'Expected a non-empty Git path.');
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          '--no-optional-locks',
+          '--literal-pathspecs',
+          '-c',
+          'color.ui=false',
+          'blame',
+          '--line-porcelain',
+          '--',
+          path,
+        ],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 32 * 1024 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Reading file blame');
+    if (result.stdoutTruncated) {
+      throw const GitParseException(
+        'File blame exceeded the configured output limit.',
+      );
+    }
+    return _parseBlameLines(result.stdoutBytes);
   }
 
   /// Reads the current branch commits that an interactive rebase will replay
@@ -958,6 +1051,79 @@ final class GitRepositoryReader {
       );
     }
     return List<GitStashEntry>.unmodifiable(stashes);
+  }
+
+  /// Reads all available branch and HEAD reflog entries using NUL-delimited
+  /// fields, without relying on localized human-oriented output.
+  ///
+  /// 中文：读取当前仓库可用的分支与 HEAD reflog，使用 NUL 字段分隔并保留
+  /// Git 原始引用、选择器、对象 ID 和时间，不解析本地化的人类列表格式。
+  Future<List<GitReflogEntry>> readReflog(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final result = await runner.run(
+      GitInvocation(
+        arguments: const [
+          '--no-pager',
+          '--no-optional-locks',
+          '-c',
+          'color.ui=false',
+          'reflog',
+          'show',
+          '--all',
+          '-z',
+          '--format=%H%x00%gD%x00%gd%x00%gs%x00%ct',
+        ],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 8 * 1024 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Reading reflog');
+    if (result.stdoutTruncated) {
+      throw const GitParseException(
+        'Reflog exceeded the configured output limit.',
+      );
+    }
+
+    final fields = _nullSeparatedBytes(result.stdoutBytes)
+        .map((field) => utf8.decode(field, allowMalformed: true))
+        .toList(growable: false);
+    if (fields.isEmpty) return const [];
+    if (fields.length % 5 != 0) {
+      throw const GitParseException('Unexpected reflog field count.');
+    }
+    final entries = <GitReflogEntry>[];
+    for (var index = 0; index < fields.length; index += 5) {
+      final objectId = fields[index];
+      final reference = fields[index + 1];
+      final selector = fields[index + 2];
+      final message = fields[index + 3];
+      final timestamp = int.tryParse(fields[index + 4]);
+      if (!RegExp(r'^[0-9a-fA-F]{7,128}$').hasMatch(objectId) ||
+          reference.isEmpty ||
+          selector.isEmpty ||
+          timestamp == null) {
+        throw GitParseException('Unexpected reflog record near field $index.');
+      }
+      entries.add(
+        GitReflogEntry(
+          objectId: objectId,
+          reference: reference,
+          selector: selector,
+          message: message,
+          createdAt: DateTime.fromMillisecondsSinceEpoch(
+            timestamp * Duration.millisecondsPerSecond,
+            isUtc: true,
+          ),
+        ),
+      );
+    }
+    return List<GitReflogEntry>.unmodifiable(entries);
   }
 
   /// 中文：按对象 ID 读取单个提交，供分支尖端不在当前历史窗口时补充定位。
@@ -1120,8 +1286,13 @@ final class GitRepositoryReader {
   ///
   /// English: Reads every local tag and peels annotated tags to their actual
   /// target object, so callers can associate commit tags without parsing
-  /// human-oriented decoration output.
-  Future<List<GitTag>> readTags(GitRepository repository) async {
+  /// human-oriented decoration output. [cancellationToken] stops the read
+  /// when its owning window is closing.
+  /// 中文：[cancellationToken] 会在所属窗口关闭时终止读取。
+  Future<List<GitTag>> readTags(
+    GitRepository repository, {
+    GitCancellationToken? cancellationToken,
+  }) async {
     final result = await runner.run(
       GitInvocation(
         arguments: const [
@@ -1134,6 +1305,7 @@ final class GitRepositoryReader {
           'refs/tags',
         ],
         workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
         outputLimit: const GitOutputLimit(
           stdoutBytes: 4 * 1024 * 1024,
           stderrBytes: 512 * 1024,
@@ -1165,6 +1337,7 @@ final class GitRepositoryReader {
       tags.add(
         GitTag(
           name: fields[0],
+          refObjectId: fields[2],
           targetObjectId: targetObjectId,
           targetObjectType: targetObjectType,
           isAnnotated: isAnnotated,
@@ -1172,6 +1345,111 @@ final class GitRepositoryReader {
       );
     }
     return List<GitTag>.unmodifiable(tags);
+  }
+
+  /// Reads tag refs advertised by one configured remote without updating local
+  /// tracking refs.
+  ///
+  /// 中文：使用 `ls-remote` 读取指定远端公开的标签引用，不修改本地远端跟踪引用；
+  /// 返回的对象 ID 保留远端 `refs/tags/*` 的直接对象，便于区分附注标签的引用对象。
+  Future<List<GitRemoteTag>> readRemoteTags(
+    GitRepository repository, {
+    required String remoteName,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    final normalizedName = remoteName.trim();
+    if (normalizedName.isEmpty ||
+        normalizedName.contains(RegExp(r'[\x00\s]'))) {
+      throw ArgumentError.value(
+        remoteName,
+        'remoteName',
+        'A remote name is required.',
+      );
+    }
+    final result = await runner.run(
+      GitInvocation(
+        arguments: [
+          '--no-pager',
+          'ls-remote',
+          '--refs',
+          '--tags',
+          '--',
+          normalizedName,
+        ],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 4 * 1024 * 1024,
+          stderrBytes: 512 * 1024,
+        ),
+      ),
+    );
+    result.throwIfFailed(operation: 'Reading remote tags');
+    if (result.stdoutTruncated) {
+      throw const GitParseException(
+        'Remote tag list exceeded the configured output limit.',
+      );
+    }
+    final tags = <GitRemoteTag>[];
+    final output = utf8.decode(result.stdoutBytes, allowMalformed: true);
+    for (final line in output.split('\n')) {
+      if (line.isEmpty) continue;
+      final separator = line.indexOf('\t');
+      if (separator <= 0 || separator == line.length - 1) {
+        throw GitParseException('Unexpected remote tag record: $line');
+      }
+      final objectId = line.substring(0, separator);
+      final refName = line.substring(separator + 1);
+      const prefix = 'refs/tags/';
+      if (!refName.startsWith(prefix) || refName.length == prefix.length) {
+        throw GitParseException('Unexpected remote tag ref: $refName');
+      }
+      tags.add(
+        GitRemoteTag(
+          remoteName: normalizedName,
+          name: refName.substring(prefix.length),
+          objectId: objectId,
+        ),
+      );
+    }
+    return List<GitRemoteTag>.unmodifiable(tags);
+  }
+
+  /// Verifies one annotated tag with Git's configured signature verifier.
+  ///
+  /// 中文：使用 Git 当前配置的签名验证器检查一个附注标签；轻量标签返回
+  /// [GitTagSignatureStatus.notAnnotated]，不会把“没有标签对象”误报为失败。
+  Future<GitTagSignatureStatus> readTagSignature(
+    GitRepository repository,
+    GitTag tag, {
+    GitCancellationToken? cancellationToken,
+  }) async {
+    if (!tag.isAnnotated) return GitTagSignatureStatus.notAnnotated;
+    final result = await runner.run(
+      GitInvocation(
+        // The tag name follows `--` so it cannot be parsed as an option even
+        // when a caller supplies an unusual but valid ref name.
+        arguments: ['--no-pager', 'verify-tag', '--raw', '--', tag.name],
+        workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
+        outputLimit: const GitOutputLimit(
+          stdoutBytes: 256 * 1024,
+          stderrBytes: 256 * 1024,
+        ),
+      ),
+    );
+    if (result.isSuccess) return GitTagSignatureStatus.valid;
+    final error = result.stderrText.toLowerCase();
+    if (error.contains('no signature')) {
+      return GitTagSignatureStatus.unsigned;
+    }
+    if (error.contains('cannot run') ||
+        error.contains('not found') ||
+        error.contains('unknown') ||
+        error.contains('no public key')) {
+      return GitTagSignatureStatus.unavailable;
+    }
+    return GitTagSignatureStatus.invalid;
   }
 
   /// Returns whether the conventional `origin` remote is configured.
@@ -1376,6 +1654,7 @@ final class GitRepositoryReader {
     String? parentObjectId,
     int contextLines = 3,
     int maxOutputBytes = 4 * 1024 * 1024,
+    GitDiffWhitespaceMode whitespaceMode = GitDiffWhitespaceMode.preserve,
     GitCancellationToken? cancellationToken,
   }) async {
     _validateObjectId(objectId);
@@ -1406,6 +1685,7 @@ final class GitRepositoryReader {
           '--no-color',
           '--no-ext-diff',
           '--no-textconv',
+          ..._diffWhitespaceArguments(whitespaceMode),
           '--find-renames',
           '--unified=$contextLines',
           ?parentObjectId,
@@ -1432,6 +1712,7 @@ final class GitRepositoryReader {
       bytes: result.stdoutBytes,
       text: text,
       isTruncated: result.stdoutTruncated,
+      whitespaceMode: whitespaceMode,
     );
   }
 
@@ -1450,6 +1731,7 @@ final class GitRepositoryReader {
     GitDiffSource source = GitDiffSource.workingTree,
     int contextLines = 3,
     int maxOutputBytes = 4 * 1024 * 1024,
+    GitDiffWhitespaceMode whitespaceMode = GitDiffWhitespaceMode.preserve,
     GitCancellationToken? cancellationToken,
   }) async {
     if (path.contains('\u0000')) {
@@ -1478,6 +1760,7 @@ final class GitRepositoryReader {
           '--no-color',
           '--no-ext-diff',
           '--no-textconv',
+          ..._diffWhitespaceArguments(whitespaceMode),
           '--unified=$contextLines',
           if (source == GitDiffSource.staged) '--cached',
           '--',
@@ -1502,6 +1785,7 @@ final class GitRepositoryReader {
       bytes: result.stdoutBytes,
       text: text,
       isTruncated: result.stdoutTruncated,
+      whitespaceMode: whitespaceMode,
     );
   }
 
@@ -1519,6 +1803,7 @@ final class GitRepositoryReader {
     required String path,
     int contextLines = 3,
     int maxOutputBytes = 4 * 1024 * 1024,
+    GitDiffWhitespaceMode whitespaceMode = GitDiffWhitespaceMode.preserve,
     GitCancellationToken? cancellationToken,
   }) async {
     if (path.contains('\u0000')) {
@@ -1548,6 +1833,7 @@ final class GitRepositoryReader {
           '--no-color',
           '--no-ext-diff',
           '--no-textconv',
+          ..._diffWhitespaceArguments(whitespaceMode),
           '--unified=$contextLines',
           '--',
           '/dev/null',
@@ -1577,8 +1863,24 @@ final class GitRepositoryReader {
       bytes: result.stdoutBytes,
       text: text,
       isTruncated: result.stdoutTruncated,
+      whitespaceMode: whitespaceMode,
     );
   }
+}
+
+/// 中文：验证输入或状态。
+/// English: Validates the input or state.
+List<String> _diffWhitespaceArguments(GitDiffWhitespaceMode mode) {
+  return switch (mode) {
+    GitDiffWhitespaceMode.preserve => const <String>[],
+    GitDiffWhitespaceMode.ignoreAll => const <String>['--ignore-all-space'],
+    GitDiffWhitespaceMode.ignoreChanges => const <String>[
+      '--ignore-space-change',
+    ],
+    GitDiffWhitespaceMode.ignoreBlankLines => const <String>[
+      '--ignore-blank-lines',
+    ],
+  };
 }
 
 /// 中文：验证输入或状态。
@@ -1811,6 +2113,84 @@ List<GitRepositoryAuthorSummary> _parseAuthorSummaries(List<int> bytes) {
     );
   }
   return List<GitRepositoryAuthorSummary>.unmodifiable(summaries);
+}
+
+/// Parses the stable header/metadata/content records emitted by Git blame.
+/// 中文：解析 Git blame 的提交头、元数据和制表符开头的内容行。
+List<GitBlameLine> _parseBlameLines(List<int> bytes) {
+  final lines = utf8.decode(bytes, allowMalformed: true).split('\n');
+  final result = <GitBlameLine>[];
+  var index = 0;
+  while (index < lines.length) {
+    if (lines[index].isEmpty) {
+      index++;
+      continue;
+    }
+    final header = RegExp(
+      r'^(\^?)([0-9a-fA-F]{7,128})\s+(\d+)\s+(\d+)(?:\s+(\d+))?$',
+    ).firstMatch(lines[index]);
+    if (header == null) {
+      throw GitParseException('Unexpected blame header: ${lines[index]}');
+    }
+    final isBoundary = header.group(1)!.isNotEmpty;
+    final objectId = header.group(2)!;
+    final sourceLineNumber = int.tryParse(header.group(3)!);
+    final lineNumber = int.tryParse(header.group(4)!);
+    if (sourceLineNumber == null || lineNumber == null) {
+      throw GitParseException('Unexpected blame line numbers: ${lines[index]}');
+    }
+    index++;
+    String? author;
+    String? authorEmail;
+    int? authorTime;
+    String? summary;
+    var metadataBoundary = false;
+    while (index < lines.length && !lines[index].startsWith('\t')) {
+      final metadata = lines[index++];
+      final separator = metadata.indexOf(' ');
+      final key = separator < 0 ? metadata : metadata.substring(0, separator);
+      final value = separator < 0 ? '' : metadata.substring(separator + 1);
+      switch (key) {
+        case 'author':
+          author = value;
+        case 'author-mail':
+          authorEmail = value.startsWith('<') && value.endsWith('>')
+              ? value.substring(1, value.length - 1)
+              : value;
+        case 'author-time':
+          authorTime = int.tryParse(value);
+        case 'summary':
+          summary = value;
+        case 'boundary':
+          metadataBoundary = true;
+      }
+    }
+    if (index >= lines.length || !lines[index].startsWith('\t')) {
+      throw GitParseException('Blame record has no content line.');
+    }
+    if (author == null || authorEmail == null || authorTime == null) {
+      throw GitParseException('Blame record is missing author metadata.');
+    }
+    final text = lines[index].substring(1);
+    index++;
+    result.add(
+      GitBlameLine(
+        lineNumber: lineNumber,
+        sourceLineNumber: sourceLineNumber,
+        objectId: objectId,
+        author: author,
+        authorEmail: authorEmail,
+        authoredAt: DateTime.fromMillisecondsSinceEpoch(
+          authorTime * Duration.millisecondsPerSecond,
+          isUtc: true,
+        ),
+        summary: summary ?? '',
+        text: text,
+        isBoundary: isBoundary || metadataBoundary,
+      ),
+    );
+  }
+  return List<GitBlameLine>.unmodifiable(result);
 }
 
 /// 中文：识别由 Git stash reflog 输出的受限引用选择器。

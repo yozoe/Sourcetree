@@ -240,8 +240,10 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     RepositoryAction.cloneRepository,
     RepositoryAction.initializeRepository,
     RepositoryAction.continueRebase,
+    RepositoryAction.skipRebase,
     RepositoryAction.abortRebase,
     RepositoryAction.continueSequencer,
+    RepositoryAction.skipSequencer,
     RepositoryAction.abortSequencer,
   };
   final hasRunningTask =
@@ -292,12 +294,14 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
   if (canRecoverOperation && isRebaseInProgress) {
     disabledActions.removeAll(const [
       RepositoryAction.continueRebase,
+      RepositoryAction.skipRebase,
       RepositoryAction.abortRebase,
     ]);
   } else if (canRecoverOperation &&
       (isCherryPickInProgress || isRevertInProgress)) {
     disabledActions.removeAll(const [
       RepositoryAction.continueSequencer,
+      RepositoryAction.skipSequencer,
       RepositoryAction.abortSequencer,
     ]);
   }
@@ -360,6 +364,8 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     isPulling: state.isPullRunning,
     isPushing: state.isPushRunning,
     isStashing: state.isStashRunning,
+    isTagInspectionRunning: state.isTagInspectionRunning,
+    isTagMutationRunning: state.isTagMutationRunning,
     isMergeInProgress: isMergeInProgress,
     isRebaseInProgress: isRebaseInProgress,
     isCherryPickInProgress: isCherryPickInProgress,
@@ -432,8 +438,14 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
           label: tag.name,
           kind: RepositoryRefKind.tag,
           secondaryLabel: tag.hasCommitTarget
-              ? (tag.isAnnotated ? '附注标签' : null)
-              : '${tag.isAnnotated ? '附注标签' : '轻量标签'} · ${tag.targetObjectType}',
+              ? _tagSecondaryLabel(state, tag)
+              : '${_tagKindLabel(tag)} · ${tag.targetObjectType}${_tagStatusSuffix(state, tag)}',
+          tagSignatureStatusLabel: _tagSignatureLabel(tag.signatureStatus),
+          tagRemoteStatusLabel: _tagRemoteStatusLabel(
+            state.tagRemoteStatuses[tag.name],
+            state.tagRemoteNames[tag.name],
+            hasConfiguredRemote: state.remoteNames.isNotEmpty,
+          ),
           isSelected: state.selectedRefId == 'refs/tags/${tag.name}',
         ),
       // Keep the Stashes entry present even before the first saved snapshot.
@@ -517,6 +529,49 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     disabledActions: disabledActions,
     searchQuery: state.searchQuery,
   );
+}
+
+String _tagKindLabel(GitTag tag) => tag.isAnnotated ? '附注标签' : '轻量标签';
+
+String? _tagSecondaryLabel(RepositorySessionState state, GitTag tag) {
+  final suffix = _tagStatusSuffix(state, tag);
+  return '${_tagKindLabel(tag)}$suffix';
+}
+
+String _tagStatusSuffix(RepositorySessionState state, GitTag tag) {
+  final signature = _tagSignatureLabel(tag.signatureStatus);
+  final remote = _tagRemoteStatusLabel(
+    state.tagRemoteStatuses[tag.name],
+    state.tagRemoteNames[tag.name],
+    hasConfiguredRemote: state.remoteNames.isNotEmpty,
+  );
+  final details = [?signature, ?remote];
+  return details.isEmpty ? '' : ' · ${details.join(' · ')}';
+}
+
+String? _tagSignatureLabel(GitTagSignatureStatus status) => switch (status) {
+  GitTagSignatureStatus.notAnnotated => null,
+  GitTagSignatureStatus.valid => '签名有效',
+  GitTagSignatureStatus.unsigned => '未签名',
+  GitTagSignatureStatus.invalid => '签名无效',
+  GitTagSignatureStatus.unavailable => '签名验证不可用',
+};
+
+String? _tagRemoteStatusLabel(
+  GitTagRemoteStatus? status,
+  String? remoteName, {
+  required bool hasConfiguredRemote,
+}) {
+  if (status == null || status == GitTagRemoteStatus.notChecked) {
+    return hasConfiguredRemote ? '远端状态未检查' : null;
+  }
+  final label = switch (status) {
+    GitTagRemoteStatus.matching => '远端一致',
+    GitTagRemoteStatus.missing => '远端缺失',
+    GitTagRemoteStatus.different => '远端不同',
+    GitTagRemoteStatus.notChecked => '',
+  };
+  return remoteName == null ? label : '$label · $remoteName';
 }
 
 /// 中文：将数据映射为目标表示。
@@ -606,7 +661,17 @@ List<CommitViewData> _mapCommits(
   GitBranchStatus branch,
   _CommitReferenceIndex references,
 ) {
-  final query = state.searchQuery.trim().toLowerCase();
+  var query = state.searchQuery.trim().toLowerCase();
+  try {
+    final parsed = GitHistoryQuery.tryParse(state.searchQuery);
+    if (parsed?.isStructured == true) {
+      query = parsed!.text.toLowerCase();
+    }
+  } on GitException {
+    // Keep the last Git-backed result visible while the session reports the
+    // query syntax error in its history footer.
+    query = '';
+  }
   final graph = _commitGraphCache.resolve(
     commits: state.commits,
     headId: branch.objectId,
@@ -729,7 +794,9 @@ List<String> _tagRefsForCommit(RepositorySessionState state, String objectId) =>
 bool _matches(GitCommit commit, String query) {
   return query.isEmpty ||
       commit.subject.toLowerCase().contains(query) ||
+      commit.body.toLowerCase().contains(query) ||
       commit.author.name.toLowerCase().contains(query) ||
+      commit.author.email.toLowerCase().contains(query) ||
       commit.objectId.toLowerCase().startsWith(query);
 }
 
@@ -795,6 +862,7 @@ RepositoryChangeViewData _changeData(
     isPathValidUtf8: entry.path.isValidUtf8,
     isActionEnabled: !state.isWorkingTreeBusy,
     canExternalDiff: entry.submodule?.isSubmodule != true,
+    submoduleStatus: entry.submodule?.displayLabel,
     isSelected:
         selected?.entry.path == entry.path && selected?.source == source,
   );
@@ -856,6 +924,7 @@ DiffViewData _mapDiff(RepositorySessionState state) {
       state.operationState == GitRepositoryOperationState.none &&
       !binary &&
       !diff.isTruncated &&
+      diff.whitespaceMode == GitDiffWhitespaceMode.preserve &&
       !diff.changesFileMode &&
       selected.kind == RepositoryChangeKind.modified &&
       !selected.entry.isConflicted;
@@ -864,6 +933,7 @@ DiffViewData _mapDiff(RepositorySessionState state) {
     previousPath: selected.entry.originalPath?.display,
     isBinary: binary,
     isTooLarge: diff.isTruncated,
+    whitespaceMode: _mapDiffWhitespaceMode(diff.whitespaceMode),
     hunkActions: !supportsHunkActions
         ? const []
         : selected.isStaged
@@ -913,6 +983,7 @@ DiffViewData _mapCommitDiff(RepositorySessionState state) {
       !state.selectedRefId.startsWith('refs/stash/') &&
       !binary &&
       !diff.isTruncated &&
+      diff.whitespaceMode == GitDiffWhitespaceMode.preserve &&
       !diff.changesFileMode &&
       switch (selected.file.kind) {
         GitCommitChangeKind.added ||
@@ -925,12 +996,25 @@ DiffViewData _mapCommitDiff(RepositorySessionState state) {
     previousPath: selected.file.previousPath?.display,
     isBinary: binary,
     isTooLarge: diff.isTruncated,
+    whitespaceMode: _mapDiffWhitespaceMode(diff.whitespaceMode),
     hunkActions: supportsCommittedHunkRevert
         ? const [RepositoryDiffHunkAction.revertCommitted]
         : const [],
     notice: diff.isTruncated ? 'Diff 超过安全显示上限，内容已截断。' : null,
     lines: binary ? const [] : _diffLines(diff.text),
   );
+}
+
+/// Maps the Git-layer whitespace policy to immutable presentation data.
+/// 中文：将 Git 层空白策略映射为界面层不可变数据。
+DiffWhitespaceMode _mapDiffWhitespaceMode(GitDiffWhitespaceMode mode) {
+  return switch (mode) {
+    GitDiffWhitespaceMode.preserve => DiffWhitespaceMode.preserve,
+    GitDiffWhitespaceMode.ignoreAll => DiffWhitespaceMode.ignoreAll,
+    GitDiffWhitespaceMode.ignoreChanges => DiffWhitespaceMode.ignoreChanges,
+    GitDiffWhitespaceMode.ignoreBlankLines =>
+      DiffWhitespaceMode.ignoreBlankLines,
+  };
 }
 
 /// 中文：解析统一 Diff，标记文件头、hunk、增删和上下文行，并维护旧/新行号。

@@ -190,7 +190,7 @@ final class GitRunner {
         command,
         invocation.arguments,
         workingDirectory: invocation.workingDirectory,
-        environment: {...baseEnvironment, ...invocation.environment},
+        environment: _environmentForInvocation(invocation),
         includeParentEnvironment:
             invocation.environmentPolicy == GitEnvironmentPolicy.inherit,
         runInShell: false,
@@ -294,6 +294,20 @@ final class GitRunner {
       wasCancelled: terminationRequested,
       error: error,
     );
+  }
+
+  /// 中文：合并调用环境，同时强制 Git 不回退到终端认证。
+  ///
+  /// English: Merges the invocation environment while forcing Git to keep
+  /// terminal prompting disabled.
+  Map<String, String> _environmentForInvocation(GitInvocation invocation) {
+    return <String, String>{
+      ...baseEnvironment,
+      ...invocation.environment,
+      // Explicit AskPass sessions may override their own helper variables,
+      // but no caller may turn hidden terminal prompting back on.
+      'GIT_TERMINAL_PROMPT': '0',
+    };
   }
 
   /// 中文：复用同一进程的终止任务，并在可用时携带已提前采集的进程树身份。

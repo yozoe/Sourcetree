@@ -122,6 +122,23 @@ void main() {
     expect(result.stdoutText, contains('GIT_ASKPASS_REQUIRE=force'));
   });
 
+  test(
+    'does not allow an invocation to re-enable terminal prompting',
+    () async {
+      final runner = GitRunner(executable: '/usr/bin/env');
+      final result = await runner.run(
+        GitInvocation(
+          arguments: const [],
+          environment: const {'GIT_TERMINAL_PROMPT': '1'},
+        ),
+      );
+
+      expect(result.isSuccess, isTrue);
+      expect(result.stdoutText, contains('GIT_TERMINAL_PROMPT=0'));
+      expect(result.stdoutText, isNot(contains('GIT_TERMINAL_PROMPT=1')));
+    },
+  );
+
   test('classifies a non-repository failure', () async {
     final outside = await Directory.systemTemp.createTemp(
       'git_runner_outside_',

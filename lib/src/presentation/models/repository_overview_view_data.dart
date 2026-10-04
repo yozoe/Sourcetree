@@ -16,8 +16,10 @@ enum RepositoryAction {
   cancelPull,
   cancelStash,
   continueRebase,
+  skipRebase,
   abortRebase,
   continueSequencer,
+  skipSequencer,
   abortSequencer,
   cancelPush,
   initializeRepository,
@@ -44,6 +46,7 @@ enum RepositoryRefKind {
 
 /// Actions available from the context menu of one repository reference.
 enum RepositoryRefContextAction {
+  viewReflog,
   fetchOrigin,
   pullCurrentBranch,
   pushCurrentBranch,
@@ -56,6 +59,8 @@ enum RepositoryRefContextAction {
   deleteLocalBranch,
   createStash,
   manageStashes,
+  verifyTagSignature,
+  checkTagRemoteStatus,
 }
 
 /// Actions exposed from the context menu of one historical commit.
@@ -81,6 +86,7 @@ enum RepositoryCommitContextAction {
 /// “（待实现）”。
 enum RepositoryCommitFileContextAction {
   viewSelectedFileLog,
+  blame,
   reviewSelectedItem,
   resetToCommit,
   openCurrentVersion,
@@ -112,6 +118,10 @@ enum RepositoryConflictAction {
 }
 
 enum DiffLineKind { fileHeader, hunkHeader, context, addition, deletion, note }
+
+/// Whitespace comparison options exposed by the read-only Diff toolbar.
+/// 中文：只读 Diff 工具栏提供的空白比较选项。
+enum DiffWhitespaceMode { preserve, ignoreAll, ignoreChanges, ignoreBlankLines }
 
 final class RepositoryOverviewViewData {
   const RepositoryOverviewViewData._({
@@ -185,6 +195,8 @@ final class RepositoryViewData {
     this.isPulling = false,
     this.isPushing = false,
     this.isStashing = false,
+    this.isTagInspectionRunning = false,
+    this.isTagMutationRunning = false,
     this.isMergeInProgress = false,
     this.isRebaseInProgress = false,
     this.isCherryPickInProgress = false,
@@ -227,6 +239,14 @@ final class RepositoryViewData {
   final bool isPulling;
   final bool isPushing;
   final bool isStashing;
+
+  /// Whether a read-only batch tag inspection is currently running.
+  /// 中文：标签批量只读检查是否正在进行。
+  final bool isTagInspectionRunning;
+
+  /// Whether a batch tag mutation is currently running.
+  /// 中文：批量标签写操作是否正在运行。
+  final bool isTagMutationRunning;
   final bool isMergeInProgress;
   final bool isRebaseInProgress;
   final bool isCherryPickInProgress;
@@ -298,6 +318,8 @@ final class RepositoryRefViewData {
     this.childCount,
     this.stashReference,
     this.isSymbolicRemote = false,
+    this.tagSignatureStatusLabel,
+    this.tagRemoteStatusLabel,
   });
 
   final String id;
@@ -317,6 +339,14 @@ final class RepositoryRefViewData {
   /// Whether this is a symbolic remote-tracking ref such as `origin/HEAD`.
   /// 中文：是否为 `origin/HEAD` 这类远端符号引用。
   final bool isSymbolicRemote;
+
+  /// Human-readable tag verification state, when a tag has been checked.
+  /// 中文：标签签名验证状态的展示文案。
+  final String? tagSignatureStatusLabel;
+
+  /// Human-readable local/remote comparison state, when checked.
+  /// 中文：本地标签与远端标签比较状态的展示文案。
+  final String? tagRemoteStatusLabel;
 }
 
 /// A small topology input used to calculate graph lanes for a history view.
@@ -743,6 +773,7 @@ final class RepositoryChangeViewData {
     this.isPathValidUtf8 = true,
     this.isActionEnabled = true,
     this.canExternalDiff = true,
+    this.submoduleStatus,
     this.additions,
     this.deletions,
   });
@@ -757,6 +788,10 @@ final class RepositoryChangeViewData {
   final bool isPathValidUtf8;
   final bool isActionEnabled;
   final bool canExternalDiff;
+
+  /// Read-only status text for a changed Git submodule, when applicable.
+  /// 中文：变更条目对应 Git 子模块时显示的只读状态；该字段不提供递归更新或写操作。
+  final String? submoduleStatus;
   final int? additions;
   final int? deletions;
 
@@ -823,6 +858,7 @@ final class DiffViewData {
     this.isBinary = false,
     this.isTooLarge = false,
     this.hunkActions = const [],
+    this.whitespaceMode = DiffWhitespaceMode.preserve,
     this.notice,
   });
 
@@ -833,6 +869,7 @@ final class DiffViewData {
       isBinary = false,
       isTooLarge = false,
       hunkActions = const [],
+      whitespaceMode = DiffWhitespaceMode.preserve,
       notice = null;
 
   final String? path;
@@ -841,6 +878,7 @@ final class DiffViewData {
   final bool isBinary;
   final bool isTooLarge;
   final List<RepositoryDiffHunkAction> hunkActions;
+  final DiffWhitespaceMode whitespaceMode;
   final String? notice;
 }
 

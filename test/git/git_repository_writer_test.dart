@@ -1565,6 +1565,54 @@ while true; do sleep 1; done
     },
   );
 
+  test('creates a signed annotated tag through Git', () async {
+    await fixture.writeFile('fake-gpg.sh', r'''#!/bin/sh
+verify=0
+for arg in "$@"; do
+  if [ "$arg" = "--verify" ]; then verify=1; fi
+done
+if [ "$verify" -eq 1 ]; then
+  printf '[GNUPG:] GOODSIG 01234567 Git Desktop Test\n'
+  printf '[GNUPG:] VALIDSIG 0123456789abcdef0123456789abcdef01234567 2026-01-01 0 4 0 1 10 00 01234567\n'
+  printf '[GNUPG:] GOODSIG 01234567 Git Desktop Test\n' >&2
+  printf '[GNUPG:] VALIDSIG 0123456789abcdef0123456789abcdef01234567 2026-01-01 0 4 0 1 10 00 01234567\n' >&2
+  exit 0
+fi
+cat >/dev/null
+printf '[GNUPG:] SIG_CREATED D 1 10 00 1767225600 0123456789abcdef0123456789abcdef01234567\n' >&2
+printf '%s\n' '-----BEGIN PGP SIGNATURE-----' 'Version: git-desktop-test' '' 'ZmFrZQ==' '-----END PGP SIGNATURE-----'
+''');
+    final gpg = File('${fixture.workingDirectory.path}/fake-gpg.sh');
+    final chmod = await Process.run('/bin/chmod', ['+x', gpg.path]);
+    expect(chmod.exitCode, 0, reason: chmod.stderr.toString());
+    await fixture.runGit(['config', '--local', 'gpg.program', gpg.path]);
+    await fixture.writeFile('README.md', '# Signed tags\n');
+    final commit = await fixture.commit('Initial commit');
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await writer.createTag(
+      repository,
+      name: 'v1.0.3',
+      objectId: commit,
+      annotation: 'Signed release',
+      annotated: true,
+      sign: true,
+    );
+
+    final tag = (await reader.readTags(
+      repository,
+    )).singleWhere((candidate) => candidate.name == 'v1.0.3');
+    expect(tag.isAnnotated, isTrue);
+    final contents = (await fixture.runGit([
+      'cat-file',
+      '-p',
+      tag.refObjectId,
+    ])).stdout.toString();
+    expect(contents, contains('-----BEGIN PGP SIGNATURE-----'));
+  });
+
   test('rejects unsafe tag names before running Git', () async {
     final repository = (await inspector.inspect(
       fixture.workingDirectory.path,
@@ -1575,6 +1623,22 @@ while true; do sleep 1; done
         repository,
         name: '--invalid',
         objectId: '0123456789abcdef',
+      ),
+      throwsA(isA<ArgumentError>()),
+    );
+  });
+
+  test('rejects signed lightweight tags before running Git', () async {
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await expectLater(
+      writer.createTag(
+        repository,
+        name: 'v1.0.2',
+        objectId: '0123456789abcdef',
+        sign: true,
       ),
       throwsA(isA<ArgumentError>()),
     );
@@ -2785,6 +2849,78 @@ while true; do sleep 1; done
       (await reader.readRecentHistory(repository)).first.subject,
       'Feature cherry',
     );
+  });
+
+  test('skips paused cherry-pick and revert sequences', () async {
+    await fixture.writeFile('README.md', 'base\n');
+    await fixture.commit('Base');
+    await fixture.runGit(['switch', '-c', 'feature/skip']);
+    await fixture.writeFile('README.md', 'feature\n');
+    final cherryCommit = await fixture.commit('Feature change');
+    await fixture.runGit(['switch', 'main']);
+    await fixture.writeFile('README.md', 'main\n');
+    await fixture.commit('Main change');
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await expectLater(
+      writer.cherryPickCommit(repository, objectId: cherryCommit),
+      throwsA(isA<GitCommandException>()),
+    );
+    await writer.skipCherryPick(repository);
+    expect(
+      (await fixture.runGit([
+        'log',
+        '-1',
+        '--format=%s',
+      ])).stdout.toString().trim(),
+      'Main change',
+    );
+
+    await fixture.writeFile('README.md', 'target\n');
+    final revertSource = await fixture.commit('Revert source');
+    await fixture.writeFile('README.md', 'conflicting feature\n');
+    await fixture.commit('Conflicting feature');
+    await expectLater(
+      writer.revertCommit(repository, objectId: revertSource),
+      throwsA(isA<GitCommandException>()),
+    );
+    await writer.skipRevert(repository);
+    expect(
+      (await fixture.runGit([
+        'log',
+        '-1',
+        '--format=%s',
+      ])).stdout.toString().trim(),
+      'Conflicting feature',
+    );
+  });
+
+  test('skips the current commit in a paused rebase', () async {
+    await fixture.writeFile('README.md', 'base\n');
+    await fixture.commit('Base');
+    await fixture.runGit(['switch', '-c', 'feature/rebase-skip']);
+    await fixture.writeFile('README.md', 'feature\n');
+    await fixture.commit('Feature change');
+    await fixture.runGit(['switch', 'main']);
+    await fixture.writeFile('README.md', 'main\n');
+    final mainCommit = await fixture.commit('Main change');
+    await fixture.runGit(['switch', 'feature/rebase-skip']);
+    final repository = (await inspector.inspect(
+      fixture.workingDirectory.path,
+    ))!;
+
+    await expectLater(
+      writer.rebaseOnto(repository, objectId: mainCommit),
+      throwsA(isA<GitCommandException>()),
+    );
+    await writer.skipRebase(repository);
+
+    final head = await fixture.runGit(['rev-parse', 'HEAD']);
+    expect(head.stdout.toString().trim(), mainCommit);
+    final status = await fixture.runGit(['status', '--porcelain']);
+    expect(status.stdout.toString().trim(), isEmpty);
   });
 
   test('exports a selected commit as a binary-safe patch', () async {

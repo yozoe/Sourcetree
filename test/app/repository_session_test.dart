@@ -5,6 +5,7 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:git_desktop/src/app/repository_change_monitor.dart';
+import 'package:git_desktop/src/app/git_flow_semantics.dart';
 import 'package:git_desktop/src/app/repository_session.dart';
 import 'package:git_desktop/src/app/repository_library_controller.dart';
 import 'package:git_desktop/src/app/repository_session_store.dart';
@@ -921,6 +922,41 @@ void main() {
       hasLength(102),
     );
   }, timeout: const Timeout(Duration(minutes: 2)));
+
+  test(
+    'runs structured history queries through Git and resets pagination',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      await repository.commit('base');
+      await repository.writeFile('lib/query.dart', 'query\n');
+      await repository.commit('query change');
+      await repository.writeFile('docs/other.md', 'other\n');
+      await repository.commit('other change');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+
+      controller.setSearchQuery(
+        'path:lib/query.dart after:2026-01-01 before:2027-01-01',
+      );
+      await Future<void>.delayed(const Duration(milliseconds: 20));
+      await _waitUntil(
+        () => !container.read(repositorySessionProvider).isHistoryLoading,
+        diagnostic: () =>
+            container.read(repositorySessionProvider).historyLoadError ?? '',
+      );
+
+      final state = container.read(repositorySessionProvider);
+      expect(state.historyCommits, hasLength(1));
+      expect(state.historyCommits.single.subject, 'query change');
+      expect(state.historyOffset, 1);
+      expect(state.hasMoreHistory, isFalse);
+    },
+  );
 
   test('always shows the stashes navigation entry below remote refs', () async {
     final repository = await GitTestRepository.create();
@@ -2141,6 +2177,49 @@ void main() {
     );
   });
 
+  test(
+    'reloads a selected Diff with whitespace filtering and hides hunk writes',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('spacing.dart', 'final value = 1;\n');
+      await repository.commit('Base');
+      await repository.writeFile('spacing.dart', 'final   value   =   1;\n');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      controller.selectUncommittedChanges();
+      var overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      await controller.selectChange(overview.changes.single);
+
+      overview = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      expect(overview.diff.hunkActions, isNotEmpty);
+      expect(overview.diff.whitespaceMode, DiffWhitespaceMode.preserve);
+
+      await controller.setDiffWhitespaceMode(GitDiffWhitespaceMode.ignoreAll);
+      final filteredState = container.read(repositorySessionProvider);
+      overview = mapRepositoryOverview(filteredState).repository!;
+      expect(
+        filteredState.diff?.whitespaceMode,
+        GitDiffWhitespaceMode.ignoreAll,
+      );
+      expect(overview.diff.whitespaceMode, DiffWhitespaceMode.ignoreAll);
+      expect(overview.diff.hunkActions, isEmpty);
+      expect(
+        overview.diff.lines.where(
+          (line) => line.kind == DiffLineKind.hunkHeader,
+        ),
+        isEmpty,
+      );
+    },
+  );
+
   test('marks staged diff hunk uncertain when refresh fails', () async {
     final repository = await GitTestRepository.create();
     addTearDown(repository.dispose);
@@ -3099,6 +3178,134 @@ void main() {
     expect(state.repositories.map((tab) => tab.label).toList(), initialLabels);
   });
 
+  test('toggles and restores a favorite repository', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    final store = _MemoryRepositorySessionStore();
+    final container = ProviderContainer(
+      overrides: [repositorySessionStoreProvider.overrideWithValue(store)],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositoryLibraryProvider.notifier);
+
+    await controller.add(repository.workingDirectory.path);
+    final path = container
+        .read(repositoryLibraryProvider)
+        .repositories
+        .single
+        .path;
+    controller.toggleFavorite(path);
+    expect(
+      container.read(repositoryLibraryProvider).repositories.single.isFavorite,
+      isTrue,
+    );
+    await controller.flushPendingWrites();
+    expect(store.snapshot.favoriteRepositoryPaths, [path]);
+
+    final restoredContainer = ProviderContainer(
+      overrides: [repositorySessionStoreProvider.overrideWithValue(store)],
+    );
+    addTearDown(restoredContainer.dispose);
+    await restoredContainer.read(repositoryLibraryProvider.notifier).restore();
+    expect(
+      restoredContainer
+          .read(repositoryLibraryProvider)
+          .repositories
+          .single
+          .isFavorite,
+      isTrue,
+    );
+  });
+
+  test(
+    'creates, assigns, renames, deletes, and restores workspace groups',
+    () async {
+      final firstRepository = await GitTestRepository.create();
+      addTearDown(firstRepository.dispose);
+      final secondRepository = await GitTestRepository.create();
+      addTearDown(secondRepository.dispose);
+      final store = _MemoryRepositorySessionStore();
+      final container = ProviderContainer(
+        overrides: [repositorySessionStoreProvider.overrideWithValue(store)],
+      );
+      addTearDown(container.dispose);
+      final controller = container.read(repositoryLibraryProvider.notifier);
+      await controller.restore();
+      await controller.add(firstRepository.workingDirectory.path);
+      await controller.add(secondRepository.workingDirectory.path);
+
+      expect(controller.createWorkspaceGroup('Clients'), isTrue);
+      expect(controller.createWorkspaceGroup('Clients'), isFalse);
+      final firstPath = container
+          .read(repositoryLibraryProvider)
+          .repositories
+          .first
+          .path;
+      final secondPath = container
+          .read(repositoryLibraryProvider)
+          .repositories
+          .last
+          .path;
+      expect(
+        controller.assignRepositoryToWorkspaceGroup(firstPath, 'Clients'),
+        isTrue,
+      );
+      expect(
+        container
+            .read(repositoryLibraryProvider)
+            .repositories
+            .firstWhere((tab) => tab.path == firstPath)
+            .workspaceGroup,
+        'Clients',
+      );
+      expect(controller.renameWorkspaceGroup('Clients', 'Customer'), isTrue);
+      expect(
+        container
+            .read(repositoryLibraryProvider)
+            .repositories
+            .firstWhere((tab) => tab.path == firstPath)
+            .workspaceGroup,
+        'Customer',
+      );
+      await controller.flushPendingWrites();
+
+      final restoredContainer = ProviderContainer(
+        overrides: [repositorySessionStoreProvider.overrideWithValue(store)],
+      );
+      addTearDown(restoredContainer.dispose);
+      await restoredContainer
+          .read(repositoryLibraryProvider.notifier)
+          .restore();
+      final restored = restoredContainer.read(repositoryLibraryProvider);
+      expect(restored.workspaceGroups, ['Customer']);
+      expect(
+        restored.repositories
+            .firstWhere((tab) => tab.path == firstPath)
+            .workspaceGroup,
+        'Customer',
+      );
+
+      final restoredController = restoredContainer.read(
+        repositoryLibraryProvider.notifier,
+      );
+      expect(
+        restoredController.assignRepositoryToWorkspaceGroup(
+          secondPath,
+          'Customer',
+        ),
+        isTrue,
+      );
+      expect(restoredController.deleteWorkspaceGroup('Customer'), isTrue);
+      expect(
+        restoredContainer
+            .read(repositoryLibraryProvider)
+            .repositories
+            .every((tab) => tab.workspaceGroup == null),
+        isTrue,
+      );
+    },
+  );
+
   test('maps sibling branches to persistent graph lanes', () async {
     final repository = await GitTestRepository.create();
     addTearDown(repository.dispose);
@@ -3506,6 +3713,365 @@ void main() {
       'refs/heads/feature/workflow',
     ]);
   });
+
+  test(
+    'starts Git-flow feature by creating and checking out a local branch',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', '# Git Desktop\n');
+      await repository.commit('Initial commit');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+
+      final result = validateGitFlowStart(
+        kind: GitFlowBranchKind.feature,
+        name: 'billing/invoice',
+        baseBranch: 'main',
+        existingBranches: container
+            .read(repositorySessionProvider)
+            .localBranches
+            .map((branch) => branch.name),
+        isAttachedHead: true,
+        isWorkingTreeClean: true,
+        hasActiveOperation: false,
+      );
+      final plan = result.plan;
+      expect(result.error, isNull);
+      expect(plan, isNotNull);
+
+      final execution = await controller.startGitFlowBranch(plan!);
+      expect(execution?.succeeded, isTrue);
+      expect(
+        (await repository.runGit([
+          'branch',
+          '--show-current',
+        ])).stdout.toString().trim(),
+        'feature/billing/invoice',
+      );
+      expect(
+        container.read(repositorySessionProvider).operations.first.outcome,
+        RepositoryOperationOutcome.succeeded,
+      );
+    },
+  );
+
+  test('refuses Git-flow Start for dirty or detached workspaces', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', '# Git Desktop\n');
+    await repository.commit('Initial commit');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    await repository.writeFile('README.md', 'dirty\n');
+    await controller.refresh();
+
+    final dirtyPlan = GitFlowStartPlan(
+      kind: GitFlowBranchKind.feature,
+      name: 'dirty',
+      branchName: 'feature/dirty',
+      baseBranch: 'main',
+      version: null,
+    );
+    expect(await controller.startGitFlowBranch(dirtyPlan), isNull);
+    expect(
+      (await repository.runGit([
+        'branch',
+        '--show-current',
+      ])).stdout.toString().trim(),
+      'main',
+    );
+
+    await repository.runGit(['restore', '--', 'README.md']);
+    await repository.runGit(['switch', '--detach', 'HEAD']);
+    await controller.refresh();
+    expect(await controller.startGitFlowBranch(dirtyPlan), isNull);
+    expect(
+      (await repository.runGit([
+        'branch',
+        '--show-current',
+      ])).stdout.toString().trim(),
+      isEmpty,
+    );
+  });
+
+  test(
+    'finishes a Git-flow feature into an explicit target without cleanup',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      await repository.commit('base');
+      await repository.runGit(['switch', '-c', 'feature/invoice']);
+      await repository.writeFile('invoice.txt', 'feature\n');
+      await repository.commit('feature change');
+      await repository.runGit(['switch', 'main']);
+      await repository.writeFile('main.txt', 'main\n');
+      await repository.commit('main change');
+      await repository.runGit(['switch', 'feature/invoice']);
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      final state = container.read(repositorySessionProvider);
+      final validation = validateGitFlowFinish(
+        sourceBranch: 'feature/invoice',
+        targetBranch: 'main',
+        existingBranches: state.localBranches.map((branch) => branch.name),
+        isAttachedHead: true,
+        isWorkingTreeClean: true,
+        hasActiveOperation: false,
+      );
+      expect(validation.error, isNull);
+
+      final execution = await controller.finishGitFlowBranch(validation.plan!);
+      expect(execution?.merged, isTrue);
+      expect(
+        (await repository.runGit([
+          'branch',
+          '--show-current',
+        ])).stdout.toString().trim(),
+        'main',
+      );
+      expect(
+        (await repository.runGit([
+          'show-ref',
+          '--verify',
+          '--quiet',
+          'refs/heads/feature/invoice',
+        ], throwOnError: false)).exitCode,
+        0,
+      );
+      expect(
+        (await repository.runGit([
+          'log',
+          '-1',
+          '--format=%s',
+        ])).stdout.toString().trim(),
+        'Merge branch \'refs/heads/feature/invoice\'',
+      );
+      expect(
+        container.read(repositorySessionProvider).operations.first.outcome,
+        RepositoryOperationOutcome.succeeded,
+      );
+    },
+  );
+
+  test('finishes valid release and hotfix branches into main', () async {
+    for (final source in const ['release/1.2.3', 'hotfix/2.0.0']) {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      await repository.commit('base');
+      await repository.runGit(['switch', '-c', source]);
+      await repository.writeFile('CHANGELOG.md', '$source\n');
+      await repository.commit(source);
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      final plan = validateGitFlowFinish(
+        sourceBranch: source,
+        targetBranch: 'main',
+        existingBranches: container
+            .read(repositorySessionProvider)
+            .localBranches
+            .map((branch) => branch.name),
+        isAttachedHead: true,
+        isWorkingTreeClean: true,
+        hasActiveOperation: false,
+      ).plan!;
+      final result = await controller.finishGitFlowBranch(plan);
+      expect(result?.merged, isTrue, reason: source);
+      expect(
+        (await repository.runGit([
+          'branch',
+          '--show-current',
+        ])).stdout.toString().trim(),
+        'main',
+      );
+    }
+  });
+
+  test(
+    'marks Git-flow Finish uncertain when the post-merge refresh fails',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      await repository.commit('base');
+      await repository.runGit(['switch', '-c', 'feature/refresh-failure']);
+      await repository.writeFile('feature.txt', 'feature\n');
+      await repository.commit('feature');
+      await repository.runGit(['switch', 'main']);
+      await repository.runGit(['switch', 'feature/refresh-failure']);
+
+      var refreshCalls = 0;
+      final container = ProviderContainer(
+        overrides: [
+          repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+            refreshCalls++;
+            if (refreshCalls == 2) {
+              throw StateError('injected Git-flow Finish refresh failure');
+            }
+          }),
+        ],
+      );
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      final plan = validateGitFlowFinish(
+        sourceBranch: 'feature/refresh-failure',
+        targetBranch: 'main',
+        existingBranches: container
+            .read(repositorySessionProvider)
+            .localBranches
+            .map((branch) => branch.name),
+        isAttachedHead: true,
+        isWorkingTreeClean: true,
+        hasActiveOperation: false,
+      ).plan!;
+
+      final result = await controller.finishGitFlowBranch(plan);
+      expect(result?.merged, isFalse);
+      final state = container.read(repositorySessionProvider);
+      expect(state.message, contains('写入已完成'));
+      expect(
+        state.operations.first.outcome,
+        RepositoryOperationOutcome.uncertain,
+      );
+      expect(
+        (await repository.runGit([
+          'branch',
+          '--show-current',
+        ])).stdout.toString().trim(),
+        'main',
+      );
+    },
+  );
+
+  test('keeps Git conflict state when Git-flow Finish cannot merge', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('base');
+    await repository.runGit(['switch', '-c', 'feature/conflict']);
+    await repository.writeFile('README.md', 'feature\n');
+    await repository.commit('feature conflict');
+    await repository.runGit(['switch', 'main']);
+    await repository.writeFile('README.md', 'main\n');
+    await repository.commit('main conflict');
+    await repository.runGit(['switch', 'feature/conflict']);
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final plan = validateGitFlowFinish(
+      sourceBranch: 'feature/conflict',
+      targetBranch: 'main',
+      existingBranches: container
+          .read(repositorySessionProvider)
+          .localBranches
+          .map((branch) => branch.name),
+      isAttachedHead: true,
+      isWorkingTreeClean: true,
+      hasActiveOperation: false,
+    ).plan!;
+
+    final result = await controller.finishGitFlowBranch(plan);
+    expect(result?.merged, isFalse);
+    expect(result?.message, contains('冲突'));
+    expect(
+      (await repository.runGit([
+        'branch',
+        '--show-current',
+      ])).stdout.toString().trim(),
+      'main',
+    );
+    final status = await repository.runGit(['status', '--porcelain=v1']);
+    expect(status.stdout.toString(), contains('UU README.md'));
+  });
+
+  test(
+    'cancels Git-flow Finish during the merge and does not delete source',
+    () async {
+      if (Platform.isWindows) return;
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      await repository.commit('base');
+      await repository.runGit(['switch', '-c', 'feature/delayed']);
+      await repository.writeFile('feature.txt', 'feature\n');
+      await repository.commit('feature');
+      await repository.runGit(['switch', 'main']);
+
+      final marker = File('${repository.rootDirectory.path}/merge-started');
+      final hook = File(
+        '${repository.workingDirectory.path}/.git/hooks/pre-merge-commit',
+      );
+      await hook.writeAsString('''#!/bin/sh
+printf started > "${marker.path}"
+sleep 10
+exit 0
+''');
+      final chmod = await Process.run('chmod', ['+x', hook.path]);
+      expect(chmod.exitCode, 0);
+      await repository.runGit(['switch', 'feature/delayed']);
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      final plan = validateGitFlowFinish(
+        sourceBranch: 'feature/delayed',
+        targetBranch: 'main',
+        existingBranches: container
+            .read(repositorySessionProvider)
+            .localBranches
+            .map((branch) => branch.name),
+        isAttachedHead: true,
+        isWorkingTreeClean: true,
+        hasActiveOperation: false,
+      ).plan!;
+      final task = controller.finishGitFlowBranch(plan);
+      for (
+        var attempt = 0;
+        attempt < 200 && !await marker.exists();
+        attempt++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      expect(await marker.exists(), isTrue);
+      controller.cancelGitFlowFinish();
+      final result = await task;
+      expect(result?.merged, isFalse);
+      expect(
+        (await repository.runGit([
+          'show-ref',
+          '--verify',
+          '--quiet',
+          'refs/heads/feature/delayed',
+        ], throwOnError: false)).exitCode,
+        0,
+      );
+      expect(
+        (await repository.runGit([
+          'branch',
+          '--show-current',
+        ])).stdout.toString().trim(),
+        'main',
+      );
+    },
+  );
 
   test('manages loaded local branches without forcing deletion', () async {
     final repository = await GitTestRepository.create();
@@ -4394,6 +4960,76 @@ while true; do sleep 1; done
     expect(state.message, contains('写入已完成'));
   });
 
+  test('skips a paused cherry-pick and refreshes the session', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.runGit(['switch', '-c', 'feature/cherry-skip']);
+    await repository.writeFile('README.md', 'feature\n');
+    final sourceCommit = await repository.commit('Feature change');
+    await repository.runGit(['switch', 'main']);
+    await repository.writeFile('README.md', 'main\n');
+    await repository.commit('Main change');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    expect(await controller.cherryPickCommit(sourceCommit), isFalse);
+    expect(
+      container.read(repositorySessionProvider).operationState,
+      GitRepositoryOperationState.cherryPick,
+    );
+
+    expect(await controller.skipCherryPick(), isTrue);
+    final state = container.read(repositorySessionProvider);
+    expect(state.phase, RepositorySessionPhase.ready);
+    expect(state.operationState, GitRepositoryOperationState.none);
+    expect(
+      (await repository.runGit([
+        'log',
+        '-1',
+        '--format=%s',
+      ])).stdout.toString().trim(),
+      'Main change',
+    );
+  });
+
+  test('skips a paused revert and refreshes the session', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.writeFile('README.md', 'target\n');
+    final sourceCommit = await repository.commit('Revert source');
+    await repository.writeFile('README.md', 'conflicting feature\n');
+    await repository.commit('Conflicting feature');
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    expect(await controller.revertCommit(sourceCommit), isFalse);
+    expect(
+      container.read(repositorySessionProvider).operationState,
+      GitRepositoryOperationState.revert,
+    );
+
+    expect(await controller.skipRevert(), isTrue);
+    final state = container.read(repositorySessionProvider);
+    expect(state.phase, RepositorySessionPhase.ready);
+    expect(state.operationState, GitRepositoryOperationState.none);
+    expect(
+      (await repository.runGit([
+        'log',
+        '-1',
+        '--format=%s',
+      ])).stdout.toString().trim(),
+      'Conflicting feature',
+    );
+  });
+
   test('marks a completed file reset uncertain when refresh fails', () async {
     final repository = await GitTestRepository.create();
     addTearDown(repository.dispose);
@@ -4673,6 +5309,84 @@ while true; do sleep 1; done
     expect(state.message, contains('写入已完成'));
   });
 
+  test('marks skipped rebase uncertain when refresh fails', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('Initial commit');
+    await repository.runGit(['switch', '-c', 'feature/rebase-skip-uncertain']);
+    await repository.writeFile('README.md', 'feature\n');
+    await repository.commit('Feature change');
+    await repository.runGit(['switch', 'main']);
+    await repository.writeFile('README.md', 'main\n');
+    final mainCommit = await repository.commit('Main change');
+    await repository.runGit(['switch', 'feature/rebase-skip-uncertain']);
+
+    var failNextRefresh = false;
+    final container = ProviderContainer(
+      overrides: [
+        repositoryRefreshHookForTestingProvider.overrideWithValue(() async {
+          if (failNextRefresh) {
+            failNextRefresh = false;
+            throw StateError('injected skip rebase refresh failure');
+          }
+        }),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    expect(await controller.rebaseOntoCommit(mainCommit), isFalse);
+    failNextRefresh = true;
+
+    expect(await controller.skipRebase(), isFalse);
+    final state = container.read(repositorySessionProvider);
+    final operation = state.operations.firstWhere(
+      (entry) => entry.kind == RepositoryOperationKind.pull,
+    );
+    expect(operation.outcome, RepositoryOperationOutcome.uncertain);
+    expect(state.message, contains('写入已完成'));
+  });
+
+  test(
+    'skips the current commit in a paused rebase and refreshes the session',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      await repository.commit('Initial commit');
+      await repository.runGit(['switch', '-c', 'feature/rebase-skip']);
+      await repository.writeFile('README.md', 'feature\n');
+      await repository.commit('Feature change');
+      await repository.runGit(['switch', 'main']);
+      await repository.writeFile('README.md', 'main\n');
+      final mainCommit = await repository.commit('Main change');
+      await repository.runGit(['switch', 'feature/rebase-skip']);
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+
+      expect(await controller.rebaseOntoCommit(mainCommit), isFalse);
+      expect(
+        container.read(repositorySessionProvider).operationState,
+        GitRepositoryOperationState.rebase,
+      );
+      expect(await controller.skipRebase(), isTrue);
+      final state = container.read(repositorySessionProvider);
+      expect(state.operationState, GitRepositoryOperationState.none);
+      expect(state.phase, RepositorySessionPhase.ready);
+      expect(
+        (await repository.runGit([
+          'rev-parse',
+          'HEAD',
+        ])).stdout.toString().trim(),
+        mainCommit,
+      );
+    },
+  );
+
   test(
     'checks out an existing remote-tracking branch into a local branch',
     () async {
@@ -4848,6 +5562,229 @@ while true; do sleep 1; done
     );
   });
 
+  test('verifies tag signatures and compares tags with a remote', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    final commit = await repository.commit('Initial commit');
+    await repository.createBareOrigin();
+    await repository.runGit(['tag', '-a', 'v1.0.0', '-m', 'release', commit]);
+    await repository.runGit(['push', 'origin', 'refs/tags/v1.0.0']);
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    expect(
+      await controller.verifyTagSignature('v1.0.0'),
+      GitTagSignatureStatus.unsigned,
+    );
+    expect(
+      await controller.readRemoteTagStatus('v1.0.0', remoteName: 'origin'),
+      GitTagRemoteStatus.matching,
+    );
+
+    final state = container.read(repositorySessionProvider);
+    final tag = state.tags.singleWhere((item) => item.name == 'v1.0.0');
+    expect(tag.signatureStatus, GitTagSignatureStatus.unsigned);
+    expect(state.tagRemoteStatuses['v1.0.0'], GitTagRemoteStatus.matching);
+    expect(state.tagRemoteNames['v1.0.0'], 'origin');
+    final ref = mapRepositoryOverview(
+      state,
+    ).repository!.refs.singleWhere((item) => item.label == 'v1.0.0');
+    expect(ref.secondaryLabel, contains('未签名'));
+    expect(ref.secondaryLabel, contains('远端一致'));
+  });
+
+  test('batch-verifies tags and compares all tags with a remote', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    final commit = await repository.commit('Initial commit');
+    await repository.createBareOrigin();
+    await repository.runGit(['tag', 'v1.0.0', commit]);
+    await repository.runGit(['tag', '-a', 'v2.0.0', '-m', 'release', commit]);
+    await repository.runGit(['push', 'origin', 'refs/tags/v1.0.0']);
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    final signatures = await controller.verifyAllTagSignatures();
+    expect(
+      container.read(repositorySessionProvider).isTagInspectionRunning,
+      isFalse,
+    );
+    expect(signatures['v1.0.0'], GitTagSignatureStatus.notAnnotated);
+    expect(signatures['v2.0.0'], GitTagSignatureStatus.unsigned);
+    final remote = await controller.readAllRemoteTagStatuses(
+      remoteName: 'origin',
+    );
+    expect(
+      container.read(repositorySessionProvider).isTagInspectionRunning,
+      isFalse,
+    );
+    expect(remote['v1.0.0'], GitTagRemoteStatus.matching);
+    expect(remote['v2.0.0'], GitTagRemoteStatus.missing);
+  });
+
+  test(
+    'deletes selected local tags with per-item results and one refresh',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      final commit = await repository.commit('Initial commit');
+      await repository.runGit(['tag', 'v1.0.0', commit]);
+      await repository.runGit(['tag', 'v2.0.0', commit]);
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+
+      final result = await controller.deleteTags(['v1.0.0', 'v2.0.0']);
+      expect(result, isNotNull);
+      expect(result!.deletedNames, containsAll(['v1.0.0', 'v2.0.0']));
+      expect(result.missingNames, isEmpty);
+      expect(result.failedNames, isEmpty);
+      expect(container.read(repositorySessionProvider).tags, isEmpty);
+      expect(
+        container.read(repositorySessionProvider).operations.first.outcome,
+        RepositoryOperationOutcome.succeeded,
+      );
+      expect(
+        (await repository.runGit(['tag'])).stdout.toString().trim(),
+        isEmpty,
+      );
+    },
+  );
+
+  test(
+    'pushes selected local tags to one remote with per-item results',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      final commit = await repository.commit('Initial commit');
+      await repository.createBareOrigin();
+      await repository.runGit(['tag', 'v1.0.0', commit]);
+      await repository.runGit(['tag', 'v2.0.0', commit]);
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+
+      final result = await controller.pushTags([
+        'v1.0.0',
+        'v2.0.0',
+      ], remoteName: 'origin');
+      expect(result, isNotNull);
+      expect(result!.pushedNames, containsAll(['v1.0.0', 'v2.0.0']));
+      expect(result.missingNames, isEmpty);
+      expect(result.failedNames, isEmpty);
+      expect(
+        container.read(repositorySessionProvider).operations.first.outcome,
+        RepositoryOperationOutcome.succeeded,
+      );
+      final remoteTags = (await repository.runGit([
+        '--git-dir',
+        '${repository.rootDirectory.path}/remotes/origin.git',
+        'tag',
+      ])).stdout.toString();
+      expect(remoteTags, contains('v1.0.0'));
+      expect(remoteTags, contains('v2.0.0'));
+    },
+  );
+
+  test('deletes selected remote tags without deleting local tags', () async {
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    final commit = await repository.commit('Initial commit');
+    await repository.createBareOrigin();
+    await repository.runGit(['tag', 'v1.0.0', commit]);
+    await repository.runGit(['tag', 'v2.0.0', commit]);
+    await repository.runGit(['push', 'origin', 'refs/tags/v1.0.0']);
+
+    final container = ProviderContainer();
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+
+    final remoteNames = await controller.readRemoteTagNames(
+      remoteName: 'origin',
+    );
+    expect(remoteNames, contains('v1.0.0'));
+    expect(remoteNames, isNot(contains('v2.0.0')));
+    final result = await controller.deleteRemoteTags([
+      'v1.0.0',
+      'v2.0.0',
+    ], remoteName: 'origin');
+
+    expect(result, isNotNull);
+    expect(result!.remoteName, 'origin');
+    expect(result.deletedNames, ['v1.0.0']);
+    expect(result.missingNames, ['v2.0.0']);
+    expect(result.failedNames, isEmpty);
+    expect(
+      container.read(repositorySessionProvider).tags.map((tag) => tag.name),
+      containsAll(['v1.0.0', 'v2.0.0']),
+    );
+    expect(
+      container.read(repositorySessionProvider).operations.first.outcome,
+      RepositoryOperationOutcome.partiallySucceeded,
+    );
+    final remoteTags = (await repository.runGit([
+      '--git-dir',
+      '${repository.rootDirectory.path}/remotes/origin.git',
+      'tag',
+    ])).stdout.toString();
+    expect(remoteTags.trim(), isEmpty);
+  });
+
+  test(
+    'revalidates remote tags after confirmation when one was deleted externally',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      final commit = await repository.commit('Initial commit');
+      final origin = await repository.createBareOrigin();
+      await repository.runGit(['tag', 'v1.0.0', commit]);
+      await repository.runGit(['push', 'origin', 'refs/tags/v1.0.0']);
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      expect(
+        await controller.readRemoteTagNames(remoteName: 'origin'),
+        contains('v1.0.0'),
+      );
+      await repository.runGit([
+        'update-ref',
+        '-d',
+        'refs/tags/v1.0.0',
+      ], workingDirectory: origin);
+
+      final result = await controller.deleteRemoteTags([
+        'v1.0.0',
+      ], remoteName: 'origin');
+      expect(result, isNotNull);
+      expect(result!.deletedNames, isEmpty);
+      expect(result.missingNames, ['v1.0.0']);
+      expect(result.failedNames, isEmpty);
+      expect(
+        (await repository.runGit(['tag'])).stdout.toString().trim(),
+        'v1.0.0',
+      );
+    },
+  );
+
   test(
     'reports an invalid tag name without disguising it as a read error',
     () async {
@@ -4873,6 +5810,119 @@ while true; do sleep 1; done
       expect(state.tags, isEmpty);
     },
   );
+
+  test(
+    'keeps earlier remote tag deletions when a later remote deletion fails',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      final commit = await repository.commit('Initial commit');
+      final origin = await repository.createBareOrigin();
+      await repository.runGit(['tag', 'v1.0.0', commit]);
+      await repository.runGit(['tag', 'v2.0.0', commit]);
+      await repository.runGit([
+        'push',
+        'origin',
+        'refs/tags/v1.0.0',
+        'refs/tags/v2.0.0',
+      ]);
+      final hook = File('${origin.path}/hooks/pre-receive');
+      await hook.writeAsString('''#!/bin/sh
+while read old new ref; do
+  case "\$ref" in
+    refs/tags/v2.0.0) echo "protected tag" >&2; exit 1 ;;
+  esac
+done
+exit 0
+''');
+      final chmod = await Process.run('chmod', ['+x', hook.path]);
+      expect(chmod.exitCode, 0);
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      final result = await controller.deleteRemoteTags([
+        'v1.0.0',
+        'v2.0.0',
+      ], remoteName: 'origin');
+
+      expect(result, isNotNull);
+      expect(result!.deletedNames, ['v1.0.0']);
+      expect(result.missingNames, isEmpty);
+      expect(result.failedNames.keys, ['v2.0.0']);
+      expect(
+        container.read(repositorySessionProvider).operations.first.outcome,
+        RepositoryOperationOutcome.partiallySucceeded,
+      );
+      final remoteTags = (await repository.runGit([
+        '--git-dir',
+        origin.path,
+        'tag',
+      ])).stdout.toString();
+      expect(remoteTags, contains('v2.0.0'));
+      expect(remoteTags, isNot(contains('v1.0.0')));
+    },
+  );
+
+  test('cancels remote tag deletion without starting later refs', () async {
+    if (Platform.isWindows) return;
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    final commit = await repository.commit('Initial commit');
+    await repository.createBareOrigin();
+    await repository.runGit(['tag', 'v1.0.0', commit]);
+    await repository.runGit(['tag', 'v2.0.0', commit]);
+    await repository.runGit([
+      'push',
+      'origin',
+      'refs/tags/v1.0.0',
+      'refs/tags/v2.0.0',
+    ]);
+    final marker = File('${repository.rootDirectory.path}/remote-tag-cancel');
+    final helper = File('${repository.rootDirectory.path}/delayed-git');
+    await helper.writeAsString('''#!/bin/sh
+for argument in "\$@"; do
+  if [ "\$argument" = "ls-remote" ]; then
+    printf started > "${marker.path}"
+    sleep 10
+    break
+  fi
+done
+exec git "\$@"
+''');
+    final chmod = await Process.run('chmod', ['+x', helper.path]);
+    expect(chmod.exitCode, 0);
+    final container = ProviderContainer(
+      overrides: [
+        gitRunnerProvider.overrideWithValue(GitRunner(executable: helper.path)),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final deletion = controller.deleteRemoteTags([
+      'v1.0.0',
+      'v2.0.0',
+    ], remoteName: 'origin');
+    for (var attempt = 0; attempt < 200 && !await marker.exists(); attempt++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(await marker.exists(), isTrue);
+    controller.cancelRemoteTagDeletion();
+
+    final result = await deletion;
+    expect(result, isNotNull);
+    expect(result!.deletedNames, isEmpty);
+    expect(result.missingNames, isEmpty);
+    expect(result.failedNames, isEmpty);
+    expect(
+      container.read(repositorySessionProvider).operations.first.outcome,
+      RepositoryOperationOutcome.cancelled,
+    );
+  });
 
   test('does not mark tag creation failure as partial push success', () async {
     final repository = await GitTestRepository.create();
@@ -4980,7 +6030,8 @@ while true; do sleep 1; done
     );
     final versions = await controller.readConflictVersions(conflict);
     expect(versions, isNotNull);
-    expect(versions!.baseText, 'base\n');
+    expect(versions!.hasBaseVersion, isTrue);
+    expect(versions.baseText, 'base\n');
     expect(versions.oursText, 'main\n');
     expect(versions.theirsText, 'feature\n');
     expect(versions.workingText, contains('<<<<<<<'));

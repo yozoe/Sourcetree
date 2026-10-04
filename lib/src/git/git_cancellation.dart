@@ -256,10 +256,13 @@ final class _TrackedProcessTree {
     while (true) {
       await refresh();
       final records = await _readProcessTable();
-      if (records.isEmpty) {
-        await Future<void>.delayed(const Duration(milliseconds: 25));
-        continue;
-      }
+      // An empty snapshot means that the process table could not be read (or
+      // that the platform has no readable process table).  We deliberately
+      // refuse to signal unverified PIDs; likewise, do not spin forever while
+      // waiting for descendants that cannot be observed.  The caller still
+      // waits on the directly-owned Process.exitCode, which is the only
+      // lifecycle boundary we can verify in this situation.
+      if (records.isEmpty) return;
       final hasLivingDescendant = _identities.entries.any(
         (entry) =>
             entry.key != rootPid && records[entry.key]?.identity == entry.value,

@@ -3,6 +3,7 @@ import 'dart:io';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
+import 'package:git_desktop/src/app/git_flow_semantics.dart';
 import 'package:git_desktop/src/app/repository_session.dart';
 import 'package:git_desktop/src/app/repository_view_mapper.dart';
 import 'package:git_desktop/src/git/git.dart';
@@ -109,6 +110,110 @@ void main() {
     expect(await destination.list().isEmpty, isTrue);
   });
 
+  test('shutdown cancels an in-flight remote tag deletion', () async {
+    if (Platform.isWindows) return;
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    final commit = await repository.commit('Initial commit');
+    await repository.createBareOrigin();
+    await repository.runGit(['tag', 'v1.0.0', commit]);
+    await repository.runGit(['push', 'origin', 'refs/tags/v1.0.0']);
+    final marker = File(
+      '${repository.rootDirectory.path}/remote-tag-delete-started',
+    );
+    final helper = File('${repository.rootDirectory.path}/delayed-git');
+    await helper.writeAsString('''#!/bin/sh
+for argument in "\$@"; do
+  if [ "\$argument" = "ls-remote" ]; then
+    printf started > "${marker.path}"
+    sleep 10
+    break
+  fi
+done
+exec git "\$@"
+''');
+    final chmod = await Process.run('chmod', ['+x', helper.path]);
+    expect(chmod.exitCode, 0);
+
+    final container = ProviderContainer(
+      overrides: [
+        gitRunnerProvider.overrideWithValue(GitRunner(executable: helper.path)),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final deletion = controller.deleteRemoteTags([
+      'v1.0.0',
+    ], remoteName: 'origin');
+    for (var attempt = 0; attempt < 200 && !await marker.exists(); attempt++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(await marker.exists(), isTrue);
+    await controller.prepareForShutdown(timeout: const Duration(seconds: 2));
+
+    final result = await deletion;
+    expect(result, isNotNull);
+    expect(result!.deletedNames, isEmpty);
+    expect(result.missingNames, isEmpty);
+    expect(result.failedNames, isEmpty);
+    expect(
+      container.read(repositorySessionProvider).operations.first.outcome,
+      RepositoryOperationOutcome.cancelled,
+    );
+  });
+
+  test('shutdown cancels an in-flight local tag deletion', () async {
+    if (Platform.isWindows) return;
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    final commit = await repository.commit('Initial commit');
+    await repository.runGit(['tag', 'v1.0.0', commit]);
+    final marker = File(
+      '${repository.rootDirectory.path}/local-tag-delete-started',
+    );
+    final helper = File('${repository.rootDirectory.path}/delayed-git');
+    await helper.writeAsString('''#!/bin/sh
+for argument in "\$@"; do
+  if [ "\$argument" = "for-each-ref" ]; then
+    printf started > "${marker.path}"
+    sleep 10
+    break
+  fi
+done
+exec git "\$@"
+''');
+    final chmod = await Process.run('chmod', ['+x', helper.path]);
+    expect(chmod.exitCode, 0);
+
+    final container = ProviderContainer(
+      overrides: [
+        gitRunnerProvider.overrideWithValue(GitRunner(executable: helper.path)),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final deletion = controller.deleteTags(['v1.0.0']);
+    for (var attempt = 0; attempt < 200 && !await marker.exists(); attempt++) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(await marker.exists(), isTrue);
+    await controller.prepareForShutdown(timeout: const Duration(seconds: 2));
+
+    final result = await deletion;
+    expect(result, isNotNull);
+    expect(result!.deletedNames, isEmpty);
+    expect(result.missingNames, isEmpty);
+    expect(result.failedNames, isEmpty);
+    expect(
+      container.read(repositorySessionProvider).operations.first.outcome,
+      RepositoryOperationOutcome.cancelled,
+    );
+  });
+
   test(
     'shutdown cancels and joins an in-flight checkout without a token',
     () async {
@@ -160,6 +265,149 @@ exec git "\$@"
       );
 
       expect(await checkout, isFalse);
+    },
+  );
+
+  test('shutdown cancels Git-flow Start before its checkout phase', () async {
+    if (Platform.isWindows) return;
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('base');
+
+    final branchMarker = File(
+      '${repository.rootDirectory.path}/flow-branch-started',
+    );
+    final switchMarker = File(
+      '${repository.rootDirectory.path}/flow-switch-started',
+    );
+    final helper = File('${repository.rootDirectory.path}/delayed-git');
+    await helper.writeAsString('''#!/bin/sh
+for argument in "\$@"; do
+  if [ "\$argument" = "branch" ]; then
+    printf started > "${branchMarker.path}"
+    sleep 10
+    break
+  fi
+  if [ "\$argument" = "switch" ]; then
+    printf started > "${switchMarker.path}"
+  fi
+done
+exec git "\$@"
+''');
+    final chmod = await Process.run('chmod', ['+x', helper.path]);
+    expect(chmod.exitCode, 0);
+
+    final container = ProviderContainer(
+      overrides: [
+        gitRunnerProvider.overrideWithValue(GitRunner(executable: helper.path)),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final plan = validateGitFlowStart(
+      kind: GitFlowBranchKind.feature,
+      name: 'delayed',
+      baseBranch: 'main',
+      existingBranches: container
+          .read(repositorySessionProvider)
+          .localBranches
+          .map((branch) => branch.name),
+      isAttachedHead: true,
+      isWorkingTreeClean: true,
+      hasActiveOperation: false,
+    ).plan!;
+
+    final start = controller.startGitFlowBranch(plan);
+    for (
+      var attempt = 0;
+      attempt < 200 && !await branchMarker.exists();
+      attempt++
+    ) {
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+    }
+    expect(await branchMarker.exists(), isTrue);
+    await controller.prepareForShutdown(timeout: const Duration(seconds: 2));
+
+    final result = await start;
+    expect(result, isNotNull);
+    expect(result!.checkedOut, isFalse);
+    expect(await switchMarker.exists(), isFalse);
+  });
+
+  test(
+    'shutdown cancels Git-flow Finish during merge and preserves refs',
+    () async {
+      if (Platform.isWindows) return;
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      await repository.commit('base');
+      await repository.runGit(['switch', '-c', 'feature/shutdown']);
+      await repository.writeFile('feature.txt', 'feature\n');
+      await repository.commit('feature');
+      await repository.runGit(['switch', 'main']);
+      await repository.runGit(['switch', 'feature/shutdown']);
+
+      final marker = File('${repository.rootDirectory.path}/flow-finish-merge');
+      final helper = File('${repository.rootDirectory.path}/delayed-git');
+      await helper.writeAsString('''#!/bin/sh
+for argument in "\$@"; do
+  if [ "\$argument" = "merge" ]; then
+    printf started > "${marker.path}"
+    sleep 10
+    break
+  fi
+done
+exec git "\$@"
+''');
+      final chmod = await Process.run('chmod', ['+x', helper.path]);
+      expect(chmod.exitCode, 0);
+
+      final container = ProviderContainer(
+        overrides: [
+          gitRunnerProvider.overrideWithValue(
+            GitRunner(executable: helper.path),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      final plan = validateGitFlowFinish(
+        sourceBranch: 'feature/shutdown',
+        targetBranch: 'main',
+        existingBranches: container
+            .read(repositorySessionProvider)
+            .localBranches
+            .map((branch) => branch.name),
+        isAttachedHead: true,
+        isWorkingTreeClean: true,
+        hasActiveOperation: false,
+      ).plan!;
+
+      final finish = controller.finishGitFlowBranch(plan);
+      for (
+        var attempt = 0;
+        attempt < 200 && !await marker.exists();
+        attempt++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      expect(await marker.exists(), isTrue);
+      await controller.prepareForShutdown(timeout: const Duration(seconds: 2));
+      final result = await finish;
+      expect(result?.merged, isFalse);
+      expect(
+        (await repository.runGit([
+          'show-ref',
+          '--verify',
+          '--quiet',
+          'refs/heads/feature/shutdown',
+        ], throwOnError: false)).exitCode,
+        0,
+      );
     },
   );
 

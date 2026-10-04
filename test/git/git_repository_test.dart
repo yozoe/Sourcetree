@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:git_desktop/src/git/git_cancellation.dart';
 import 'package:git_desktop/src/git/git_errors.dart';
+import 'package:git_desktop/src/git/git_history_query.dart';
 import 'package:git_desktop/src/git/git_models.dart';
 import 'package:git_desktop/src/git/git_repository.dart';
 import 'package:git_desktop/src/git/git_runner.dart';
@@ -185,6 +186,42 @@ void main() {
     );
   });
 
+  test('reads line ownership from blame line porcelain output', () async {
+    final file = File(
+      '${temporaryDirectory.path}${Platform.pathSeparator}blame.txt',
+    );
+    await file.writeAsString('one\ntwo\n');
+    await _git(temporaryDirectory.path, ['add', '--', 'blame.txt']);
+    await _git(temporaryDirectory.path, ['commit', '--quiet', '-m', 'first']);
+    await file.writeAsString('one\nchanged\nthree\n');
+    await _git(temporaryDirectory.path, ['commit', '--quiet', '-am', 'second']);
+
+    final repository = (await inspector.inspect(temporaryDirectory.path))!;
+    final blame = await reader.readBlame(repository, path: 'blame.txt');
+
+    expect(blame, hasLength(3));
+    expect(blame.map((line) => line.text), ['one', 'changed', 'three']);
+    expect(blame.map((line) => line.lineNumber), [1, 2, 3]);
+    expect(blame[0].summary, 'first');
+    expect(blame[1].summary, 'second');
+    expect(blame[2].authorEmail, 'git-desktop@example.invalid');
+    expect(blame.every((line) => line.authoredAt.isUtc), isTrue);
+  });
+
+  test('honors blame cancellation before starting Git', () async {
+    final repository = (await inspector.inspect(temporaryDirectory.path))!;
+    final cancellation = GitCancellationToken()..cancel();
+
+    await expectLater(
+      reader.readBlame(
+        repository,
+        path: 'missing.txt',
+        cancellationToken: cancellation,
+      ),
+      throwsA(isA<GitCancelledException>()),
+    );
+  });
+
   test('reads a file history from every loaded local branch', () async {
     await File(
       '${temporaryDirectory.path}${Platform.pathSeparator}base.md',
@@ -277,6 +314,74 @@ void main() {
       );
     },
   );
+
+  test(
+    'reports LFS filter configuration as a read-only repository detail',
+    () async {
+      await File(
+        '${temporaryDirectory.path}${Platform.pathSeparator}.gitattributes',
+      ).writeAsString('*.bin filter=lfs diff=lfs merge=lfs -text\n');
+      await File(
+        '${temporaryDirectory.path}${Platform.pathSeparator}asset.bin',
+      ).writeAsString('version https://git-lfs.github.com/spec/v1\n');
+      await _git(temporaryDirectory.path, ['add', '--all']);
+      await _git(temporaryDirectory.path, [
+        'commit',
+        '--quiet',
+        '-m',
+        'configure LFS',
+      ]);
+
+      final repository = (await inspector.inspect(temporaryDirectory.path))!;
+      final details = await reader.readRepositoryDetails(repository);
+
+      expect(details.lfsStatus, startsWith('已配置 LFS'));
+    },
+  );
+
+  test('reports LFS tracked-file count without downloading content', () async {
+    if (Platform.isWindows) return;
+    await File(
+      '${temporaryDirectory.path}${Platform.pathSeparator}.gitattributes',
+    ).writeAsString('*.bin filter=lfs diff=lfs merge=lfs -text\n');
+    await File(
+      '${temporaryDirectory.path}${Platform.pathSeparator}asset.bin',
+    ).writeAsString('version https://git-lfs.github.com/spec/v1\n');
+    await _git(temporaryDirectory.path, ['add', '--all']);
+    await _git(temporaryDirectory.path, [
+      'commit',
+      '--quiet',
+      '-m',
+      'configure LFS',
+    ]);
+
+    final wrapper = File(
+      '${temporaryDirectory.path}${Platform.pathSeparator}git-wrapper',
+    );
+    await wrapper.writeAsString('''#!/bin/sh
+if [ "\$1" = "lfs" ] && [ "\$2" = "version" ]; then
+  printf 'git-lfs/3.5.0\n'
+  exit 0
+fi
+if [ "\$1" = "lfs" ] && [ "\$2" = "ls-files" ]; then
+  printf 'asset.bin\n'
+  exit 0
+fi
+exec git "\$@"
+''');
+    final chmod = await Process.run('chmod', ['+x', wrapper.path]);
+    expect(chmod.exitCode, 0);
+    final wrappedRunner = GitRunner(executable: wrapper.path);
+    final wrappedInspector = GitRepositoryInspector(wrappedRunner);
+    final wrappedReader = GitRepositoryReader(wrappedRunner);
+    final repository = (await wrappedInspector.inspect(
+      temporaryDirectory.path,
+    ))!;
+
+    final details = await wrappedReader.readRepositoryDetails(repository);
+
+    expect(details.lfsStatus, '已配置 LFS（指针文件 1 个）');
+  });
 
   test('detects Git operation markers for merge and rebase recovery', () async {
     final repository = (await inspector.inspect(temporaryDirectory.path))!;
@@ -392,6 +497,175 @@ void main() {
     );
     expect(stagedDiff.text, contains('+second'));
   });
+
+  test(
+    'does not execute repository external diff or textconv for safe reads',
+    () async {
+      if (Platform.isWindows) return;
+      final attributes = File(
+        '${temporaryDirectory.path}${Platform.pathSeparator}.gitattributes',
+      );
+      await attributes.writeAsString('*.txt diff=unsafe-read\n');
+      final file = File(
+        '${temporaryDirectory.path}${Platform.pathSeparator}sample.txt',
+      );
+      await file.writeAsString('before\n');
+      await _git(temporaryDirectory.path, ['add', '--all']);
+      await _git(temporaryDirectory.path, ['commit', '--quiet', '-m', 'base']);
+      await file.writeAsString('after\n');
+
+      final marker = File(
+        '${temporaryDirectory.path}${Platform.pathSeparator}external-invoked',
+      );
+      final helper = File(
+        '${temporaryDirectory.path}${Platform.pathSeparator}external-diff',
+      );
+      await helper.writeAsString('''#!/bin/sh
+printf invoked > "${marker.path}"
+exit 99
+''');
+      final chmod = await Process.run('chmod', ['+x', helper.path]);
+      expect(chmod.exitCode, 0);
+      await _git(temporaryDirectory.path, [
+        'config',
+        'diff.external',
+        helper.path,
+      ]);
+      await _git(temporaryDirectory.path, [
+        'config',
+        'diff.unsafe-read.textconv',
+        helper.path,
+      ]);
+
+      final repository = (await inspector.inspect(temporaryDirectory.path))!;
+      final workingDiff = await reader.readUnifiedDiff(
+        repository,
+        path: 'sample.txt',
+      );
+      expect(workingDiff.text, contains('+after'));
+      expect(await marker.exists(), isFalse);
+
+      final history = await reader.readRecentHistory(repository);
+      final commitDiff = await reader.readCommitUnifiedDiff(
+        repository,
+        objectId: history.single.objectId,
+        path: 'sample.txt',
+      );
+      expect(commitDiff.text, contains('+before'));
+      expect(await marker.exists(), isFalse);
+    },
+  );
+
+  test('reads author date and path history conditions from Git', () async {
+    final file = File('${temporaryDirectory.path}/lib/example.dart')
+      ..createSync(recursive: true);
+    await file.writeAsString('one\n');
+    await _git(temporaryDirectory.path, ['add', '--', 'lib/example.dart']);
+    await _git(
+      temporaryDirectory.path,
+      [
+        '-c',
+        'user.name=Alice Example',
+        '-c',
+        'user.email=alice@example.invalid',
+        'commit',
+        '--quiet',
+        '-m',
+        'release note',
+        '--date=2026-02-03T00:00:00Z',
+      ],
+      environment: {
+        ...Platform.environment,
+        'GIT_COMMITTER_DATE': '2026-02-03T00:00:00Z',
+      },
+    );
+    await file.writeAsString('two\n');
+    await _git(temporaryDirectory.path, ['add', '--', 'lib/example.dart']);
+    await _git(
+      temporaryDirectory.path,
+      [
+        '-c',
+        'user.name=Bob Example',
+        '-c',
+        'user.email=bob@example.invalid',
+        'commit',
+        '--quiet',
+        '-m',
+        'other change',
+        '--date=2026-05-03T00:00:00Z',
+      ],
+      environment: {
+        ...Platform.environment,
+        'GIT_COMMITTER_DATE': '2026-05-03T00:00:00Z',
+      },
+    );
+
+    final repository = (await inspector.inspect(temporaryDirectory.path))!;
+    final snapshot = await reader.readHistoryRevisionSnapshot(repository);
+    final history = await reader.readRecentHistory(
+      repository,
+      revisionSnapshot: snapshot,
+      query: GitHistoryQuery.parse(
+        'author:"Alice Example" path:lib/example.dart '
+        'after:2026-01-01 before:2026-03-01',
+      ),
+    );
+
+    expect(history, hasLength(1));
+    expect(history.single.author.name, 'Alice Example');
+    expect(history.single.subject, 'release note');
+  });
+
+  test(
+    'honors cancellation before a structured history query starts',
+    () async {
+      await File(
+        '${temporaryDirectory.path}/query.txt',
+      ).writeAsString('query\n');
+      await _git(temporaryDirectory.path, ['add', '--', 'query.txt']);
+      await _git(temporaryDirectory.path, ['commit', '--quiet', '-m', 'query']);
+      final repository = (await inspector.inspect(temporaryDirectory.path))!;
+      final cancellation = GitCancellationToken()..cancel();
+      await expectLater(
+        reader.readRecentHistory(
+          repository,
+          query: GitHistoryQuery.parse('path:lib/'),
+          cancellationToken: cancellation,
+        ),
+        throwsA(isA<GitCancelledException>()),
+      );
+    },
+  );
+
+  test(
+    'passes whitespace comparison modes through to Git Diff reads',
+    () async {
+      await File(
+        '${temporaryDirectory.path}/whitespace.txt',
+      ).writeAsString('value = 1;\n');
+      await _git(temporaryDirectory.path, ['add', '--', 'whitespace.txt']);
+      await _git(temporaryDirectory.path, ['commit', '--quiet', '-m', 'base']);
+      await File(
+        '${temporaryDirectory.path}/whitespace.txt',
+      ).writeAsString('value    =    1;\n');
+
+      final repository = (await inspector.inspect(temporaryDirectory.path))!;
+      final defaultDiff = await reader.readUnifiedDiff(
+        repository,
+        path: 'whitespace.txt',
+      );
+      final ignoredDiff = await reader.readUnifiedDiff(
+        repository,
+        path: 'whitespace.txt',
+        whitespaceMode: GitDiffWhitespaceMode.ignoreAll,
+      );
+
+      expect(defaultDiff.text, contains('value    =    1;'));
+      expect(defaultDiff.whitespaceMode, GitDiffWhitespaceMode.preserve);
+      expect(ignoredDiff.whitespaceMode, GitDiffWhitespaceMode.ignoreAll);
+      expect(ignoredDiff.text, isNot(contains('@@')));
+    },
+  );
 
   test('reads an untracked file as a full-file addition', () async {
     const fileName = 'draft ü.txt';
@@ -535,6 +809,52 @@ void main() {
   });
 
   test(
+    'reads branch and HEAD reflog entries with stable Git selectors',
+    () async {
+      await File(
+        '${temporaryDirectory.path}${Platform.pathSeparator}reflog.txt',
+      ).writeAsString('one\n');
+      await _git(temporaryDirectory.path, ['add', '--all']);
+      await _git(temporaryDirectory.path, ['commit', '--quiet', '-m', 'first']);
+      await File(
+        '${temporaryDirectory.path}${Platform.pathSeparator}reflog.txt',
+      ).writeAsString('two\n');
+      await _git(temporaryDirectory.path, [
+        'commit',
+        '--quiet',
+        '-am',
+        'second',
+      ]);
+
+      final repository = (await inspector.inspect(temporaryDirectory.path))!;
+      final entries = await reader.readReflog(repository);
+
+      expect(entries, isNotEmpty);
+      expect(entries.every((entry) => entry.objectId.isNotEmpty), isTrue);
+      expect(
+        entries.any((entry) => entry.selector.startsWith('HEAD@{')),
+        isTrue,
+      );
+      expect(
+        entries.any((entry) => entry.reference.startsWith('refs/heads/')),
+        isTrue,
+      );
+      expect(entries.any((entry) => entry.message.contains('second')), isTrue);
+      expect(entries.every((entry) => entry.createdAt.isUtc), isTrue);
+    },
+  );
+
+  test('honors reflog cancellation before starting Git', () async {
+    final repository = (await inspector.inspect(temporaryDirectory.path))!;
+    final cancellation = GitCancellationToken()..cancel();
+
+    await expectLater(
+      reader.readReflog(repository, cancellationToken: cancellation),
+      throwsA(isA<GitCancelledException>()),
+    );
+  });
+
+  test(
     'reads lightweight and annotated tags with their commit targets',
     () async {
       const fileName = 'README.md';
@@ -575,7 +895,11 @@ void main() {
       expect(
         tags.singleWhere((tag) => tag.name == 'v1.0.0'),
         predicate<GitTag>(
-          (tag) => !tag.isAnnotated && tag.targetObjectId == head,
+          (tag) =>
+              !tag.isAnnotated &&
+              tag.refObjectId == head &&
+              tag.targetObjectId == head &&
+              tag.signatureStatus == GitTagSignatureStatus.notAnnotated,
         ),
       );
       expect(
@@ -583,6 +907,7 @@ void main() {
         predicate<GitTag>(
           (tag) =>
               tag.isAnnotated &&
+              tag.refObjectId.isNotEmpty &&
               tag.targetObjectId == head &&
               tag.targetObjectType == 'commit',
         ),
@@ -598,6 +923,101 @@ void main() {
       );
     },
   );
+
+  test('verifies unsigned annotated tags and reads remote tag refs', () async {
+    const fileName = 'README.md';
+    await File(
+      '${temporaryDirectory.path}${Platform.pathSeparator}$fileName',
+    ).writeAsString('# Remote tags\n');
+    await _git(temporaryDirectory.path, ['add', '--', fileName]);
+    await _git(temporaryDirectory.path, ['commit', '--quiet', '-m', 'initial']);
+    final head = (await _git(temporaryDirectory.path, [
+      'rev-parse',
+      'HEAD',
+    ])).stdout.toString().trim();
+    await _git(temporaryDirectory.path, [
+      'tag',
+      '--annotate',
+      '--message',
+      'Unsigned release',
+      'v2.0.0',
+    ]);
+    await _git(temporaryDirectory.path, ['tag', 'v2.0.0-lightweight']);
+
+    final remoteDirectory = Directory(
+      '${temporaryDirectory.path}${Platform.pathSeparator}remote.git',
+    );
+    await _git(temporaryDirectory.path, [
+      'init',
+      '--bare',
+      '--quiet',
+      remoteDirectory.path,
+    ]);
+    await _git(temporaryDirectory.path, [
+      'remote',
+      'add',
+      'origin',
+      remoteDirectory.path,
+    ]);
+    await _git(temporaryDirectory.path, [
+      'push',
+      '--quiet',
+      'origin',
+      'refs/tags/v2.0.0',
+      'refs/tags/v2.0.0-lightweight',
+    ]);
+
+    final repository = (await inspector.inspect(temporaryDirectory.path))!;
+    final tags = await reader.readTags(repository);
+    final annotated = tags.singleWhere((tag) => tag.name == 'v2.0.0');
+    expect(annotated.refObjectId, isNot(head));
+    expect(
+      await reader.readTagSignature(repository, annotated),
+      GitTagSignatureStatus.unsigned,
+    );
+    expect(
+      await reader.readTagSignature(
+        repository,
+        tags.singleWhere((tag) => tag.name == 'v2.0.0-lightweight'),
+      ),
+      GitTagSignatureStatus.notAnnotated,
+    );
+
+    final remoteTags = await reader.readRemoteTags(
+      repository,
+      remoteName: 'origin',
+    );
+    expect(
+      remoteTags.map((tag) => tag.name),
+      containsAll(['v2.0.0', 'v2.0.0-lightweight']),
+    );
+    expect(
+      remoteTags.singleWhere((tag) => tag.name == 'v2.0.0').objectId,
+      annotated.refObjectId,
+    );
+    expect(
+      compareGitTagWithRemote(
+        annotated,
+        remoteTags.singleWhere((tag) => tag.name == 'v2.0.0'),
+      ),
+      GitTagRemoteStatus.matching,
+    );
+    expect(
+      compareGitTagWithRemote(
+        annotated,
+        const GitRemoteTag(
+          remoteName: 'origin',
+          name: 'v2.0.0',
+          objectId: 'different-object',
+        ),
+      ),
+      GitTagRemoteStatus.different,
+    );
+    expect(
+      compareGitTagWithRemote(annotated, null),
+      GitTagRemoteStatus.missing,
+    );
+  });
 
   test(
     'reads remote-tracking branches and retains symbolic remote heads',
@@ -675,13 +1095,15 @@ void main() {
 
 Future<ProcessResult> _git(
   String workingDirectory,
-  List<String> arguments,
-) async {
+  List<String> arguments, {
+  Map<String, String>? environment,
+}) async {
   final result = await Process.run(
     'git',
     arguments,
     workingDirectory: workingDirectory,
     runInShell: false,
+    environment: environment,
   );
   if (result.exitCode != 0) {
     throw StateError('git ${arguments.join(' ')} failed: ${result.stderr}');
