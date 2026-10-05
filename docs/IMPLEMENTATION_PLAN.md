@@ -739,3 +739,9 @@ LFS 不在后续功能评估范围内；仅维护仓库详情中的只读摘要�
 5. Git-flow v1 Start/单目标 Finish 已交付；后续只评估批量 Finish、自动化发布等明确新增契约，
    不回退当前的本地、无自动推送和来源分支保留边界；同时继续评估可配置外部 Diff/Merge、托管平台
    和自定义操作。
+6. [x] 完成第一阶段行为保持型核心模块拆分：`RepositorySessionController` 仍作为唯一
+   facade，模型/状态类型和自动刷新/文件监控分别移入同库 `part` 文件；历史 Graph/列表与
+   Changes/Diff Widget 分区移入独立同库文件；macOS 原生支持类型、工作区 Engine controller、
+   `WindowCoordinator` 和 `AppDelegate` 分离为独立 Swift 源文件。公开回调、Riverpod 状态所有权、
+   generation/取消语义、MethodChannel 和 Git 行为保持不变。后续只在相同约束下继续拆分剩余
+   Controller 写操作与 AppDelegate 菜单路由，不能借重构引入新行为。

@@ -146,6 +146,10 @@ lib/src/git/write/
 第一阶段已将 Engine 关闭屏障、任务追踪和取消令牌的实际所有权抽到
 `repository_session_tasks.dart`；它通过 Dart `part` 保持 controller 的私有 library 边界，
 `RepositorySessionController` 仍是唯一 facade，公开接口与 generation 语义不变。
+在后续拆分阶段，模型/状态类型与自动刷新/文件监控已继续移入同库 `part` 文件；历史/Graph、
+Changes/Diff UI 已分离为同库 Widget 文件；macOS 的支持类型、工作区 Engine controller 和
+`WindowCoordinator` 已从 `AppDelegate.swift` 分离，并通过 Xcode target 重新登记。上述拆分
+均保持现有回调、MethodChannel、取消和写后刷新契约不变。
 
 ## 6. 优化二：建立持续集成质量门禁
 
