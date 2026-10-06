@@ -29,7 +29,8 @@ flutter test integration_test/macos_performance_test.dart -d macos
 flutter drive --profile --no-dds -d macos --target=integration_test/macos_performance_test.dart
 ```
 
-测试使用 120 条提交的临时本地仓库，通过 `watchPerformance` 报告首帧和滚动帧摘要，并在
+测试使用 120 条提交及一个额外本地分支的临时本地仓库，通过 `watchPerformance` 报告首帧和滚动帧摘要，
+并单独记录搜索防抖和引用导航的 UI 响应耗时，在
 `macos_memory_samples` 中记录进程 RSS 的启动前、启动后和滚动后值；同时会向标准输出写入
 `macos_performance_memory=…` JSON 行，并将完整结果写入系统临时目录
 `git_desktop_macos_performance_report.json`，便于手动保存。测试还会尝试调用 Dart 原生 VM API
@@ -38,7 +39,9 @@ RSS 只是可重复的粗粒度观测；Dart heap snapshot 只覆盖 VM 堆，�
 分配的完整 DevTools 应用内存快照。在固定参考机上实际运行并保存报告后，才能更新首帧、滚动 P95
 和内存预算的验收结论。
 
-滚动测量会交替向上、向下执行 8 次 fling，并将所有动画帧合并计算精确 P95，避免列表到达边界
+报告中的 `macos_search_performance` 验证搜索输入越过 220ms 防抖边界后的响应，
+`macos_reference_navigation_performance` 验证点击本地分支后的状态刷新耗时；两者是墙钟采样，
+不是发布预算。滚动测量会交替向上、向下执行 8 次 fling，并将所有动画帧合并计算精确 P95，避免列表到达边界
 后重复采样空操作。报告同时记录 `scroll_samples`，便于比较不同运行的采样覆盖范围。
 
 ## 2026-10-02 Flutter macOS 单次采样
@@ -127,3 +130,44 @@ Git 读取和 benchmark 进程 RSS P95。该结果用于后续回归比较，不
 RSS 字段已由 benchmark 工具输出并参与基线比较；这里的 RSS 是独立 benchmark 进程的粗粒度
 观测值，受 Dart 堆回收和进程启动状态影响，不能替代 Flutter DevTools 的应用内存快照。负的
 RSS 增量表示采样期间进程回收后低于启动值，不应解释为负内存使用。
+
+## 2026-10-05 Small/Medium/Stress 工具链复测
+
+本次在 arm64 macOS 26.5.2、Apple Git 2.50.1 环境使用固定 seed `20260907` 验证三档
+fixture 的离线生成和读取工具链。Small/Medium 使用 5 次迭代，Stress 使用 3 次迭代；结果
+只作为当前机器的可重复开发基线，不作为 Flutter UI 或发布性能验收。Stress fixture 已成功
+生成 100,000 个提交、100,000 个文件、1,000 个标签和 10,000 个未提交改动。
+
+| fixture | 迭代 | status P95 | refs P95 | 500 条历史 P95 | benchmark RSS P95 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Small（1,000 commits、20 tags） | 5 | 142ms | 82ms | 158ms | 193,871,872B |
+| Medium（10,000 commits、200 tags） | 5 | 165ms | 87ms | 149ms | 231,424,000B |
+| Stress（100,000 commits、1,000 tags、10,000 changes） | 3 | 2,916ms | 413ms | 1,796ms | 109,559,808B |
+
+原始 JSON 和临时 fixture 保留在本次运行的 `/private/tmp`，不提交到仓库；RSS 仍是独立
+benchmark 进程的粗粒度观测，Stress 仅用于定时/手动回归比较。Flutter 首帧、滚动帧和完整
+Engine/native 内存快照仍需图形环境下的 profile 专项采样。
+
+## 2026-10-05 Flutter macOS UI 入口复测
+
+在当前图形环境以 Debug macOS integration test 运行更新后的测量入口，临时仓库包含 120 个提交
+和一个 `perf-navigation` 本地分支。该轮用于验证搜索防抖、引用导航、滚动和快照字段均能实际产出，
+不作为稳定发布预算；profile 多轮采样仍需单独完成。
+
+| 项目 | 结果 |
+| --- | ---: |
+| Startup first frame build（2 帧样本中的首帧） | 397.407ms |
+| Startup to interactive | 4,327.581ms |
+| History scroll frame build P95（488 帧） | 10.908ms |
+| Search response wall time（含 220ms 防抖边界） | 856.109ms |
+| Local reference navigation wall time | 847.609ms |
+| RSS before startup | 230,457,344B |
+| RSS after startup | 409,862,144B |
+| RSS after history scroll | 411,893,760B |
+| Startup RSS delta | 179,404,800B |
+| Scroll RSS delta | 2,031,616B |
+| Dart heap snapshot after startup | 32,117,676B |
+| Dart heap snapshot after history scroll | 36,496,139B |
+
+墙钟测量包含测试驱动和状态刷新开销，只用于回归趋势；RSS 与 Dart heap snapshot 仍不覆盖完整
+Flutter Engine/native 分配。原始报告位于运行机临时目录，不提交到仓库。
