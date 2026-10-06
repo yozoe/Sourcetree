@@ -5,17 +5,76 @@ import 'dart:io';
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:git_desktop/src/app/repository_change_monitor.dart';
+import 'package:git_desktop/src/app/external_tool_configuration.dart';
+import 'package:git_desktop/src/app/external_tool_configuration_store.dart';
 import 'package:git_desktop/src/app/git_flow_semantics.dart';
 import 'package:git_desktop/src/app/repository_session.dart';
 import 'package:git_desktop/src/app/repository_library_controller.dart';
 import 'package:git_desktop/src/app/repository_session_store.dart';
 import 'package:git_desktop/src/app/repository_view_mapper.dart';
+import 'package:git_desktop/src/app/repository_trust.dart';
 import 'package:git_desktop/src/git/git.dart';
 import 'package:git_desktop/src/presentation/presentation.dart';
 
 import '../support/git_test_repository.dart';
 
 void main() {
+  test(
+    'hides selected working-tree entries only in the current session view',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      await repository.commit('base');
+      await repository.writeFile('README.md', 'changed\n');
+      await repository.writeFile('new.txt', 'new\n');
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      controller.selectUncommittedChanges();
+      final before = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      expect(before.changes, hasLength(2));
+      expect(before.visibleChanges, hasLength(2));
+
+      controller.hideChanges([before.visibleChanges.first]);
+      final hidden = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      expect(hidden.changes, hasLength(2));
+      expect(hidden.visibleChanges, hasLength(1));
+      expect(hidden.stagedChangeCount + hidden.unstagedChangeCount, 1);
+
+      controller.clearHiddenChanges();
+      final restored = mapRepositoryOverview(
+        container.read(repositorySessionProvider),
+      ).repository!;
+      expect(restored.visibleChanges, hasLength(2));
+
+      controller.hideChanges(restored.visibleChanges);
+      expect(
+        mapRepositoryOverview(
+          container.read(repositorySessionProvider),
+        ).repository!.visibleChanges,
+        isEmpty,
+      );
+      await controller.refresh();
+      expect(
+        container.read(repositorySessionProvider).hiddenChangeKeys,
+        isEmpty,
+      );
+      expect(
+        mapRepositoryOverview(
+          container.read(repositorySessionProvider),
+        ).repository!.visibleChanges,
+        hasLength(2),
+      );
+    },
+  );
+
   test(
     'keeps the workspace navigable while a remote task is running',
     () async {
@@ -4062,6 +4121,143 @@ void main() {
   });
 
   test(
+    'finishes Git-flow sources, tags release, and safely deletes sources',
+    () async {
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', 'base\n');
+      await repository.commit('base');
+      await repository.runGit(['switch', '-c', 'feature/one']);
+      await repository.writeFile('one.txt', 'one\n');
+      await repository.commit('one');
+      await repository.runGit(['switch', 'main']);
+      await repository.runGit(['switch', '-c', 'release/1.2.3']);
+      await repository.writeFile('release.txt', 'release\n');
+      await repository.commit('release');
+      await repository.runGit(['switch', 'main']);
+
+      final container = ProviderContainer();
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+      await controller.openRepository(repository.workingDirectory.path);
+      final state = container.read(repositorySessionProvider);
+      final validation = validateGitFlowBatchFinish(
+        sourceBranches: const ['feature/one', 'release/1.2.3'],
+        targetBranch: 'main',
+        existingBranches: state.localBranches.map((branch) => branch.name),
+        isAttachedHead: state.status?.branch.isDetached == false,
+        isWorkingTreeClean: state.status?.isClean == true,
+        hasActiveOperation:
+            state.operationState != GitRepositoryOperationState.none,
+        deleteSourceBranches: true,
+        releaseTag: 'v1.2.3',
+      );
+      expect(validation.error, isNull);
+      final result = await controller.finishGitFlowBatch(validation.plan!);
+      expect(result?.succeeded, isTrue);
+      expect(result?.tagCreated, isTrue);
+      expect(result?.items.every((item) => item.deleted), isTrue);
+      final branches = await repository.runGit([
+        'branch',
+        '--format=%(refname:short)',
+      ]);
+      expect(branches.stdout.toString(), isNot(contains('feature/one')));
+      expect(branches.stdout.toString(), isNot(contains('release/1.2.3')));
+      final tag = await repository.runGit(['show-ref', '--tags', 'v1.2.3']);
+      expect(tag.exitCode, 0);
+    },
+  );
+
+  test('writes back a successful external Merge result safely', () async {
+    if (Platform.isWindows) return;
+    final repository = await GitTestRepository.create();
+    addTearDown(repository.dispose);
+    await repository.writeFile('README.md', 'base\n');
+    await repository.commit('base');
+    await repository.runGit(['switch', '-c', 'feature/external-merge']);
+    await repository.writeFile('README.md', 'ours\n');
+    await repository.commit('ours');
+    await repository.runGit(['switch', 'main']);
+    await repository.writeFile('README.md', 'theirs\n');
+    await repository.commit('theirs');
+    try {
+      await repository.runGit([
+        'merge',
+        '--no-edit',
+        '--no-ff',
+        'feature/external-merge',
+      ]);
+      fail('Expected the merge to conflict.');
+    } on Object {
+      // The conflicted index is the fixture for the external Merge path.
+    }
+
+    final executable = File('${repository.rootDirectory.path}/merge.sh');
+    await executable.writeAsString(r'''#!/bin/sh
+cat "$4" > "$8"
+''');
+    final chmod = await Process.run('chmod', ['+x', executable.path]);
+    expect(chmod.exitCode, 0);
+    final mergeConfiguration = ExternalToolConfiguration(
+      displayName: 'Test Merge',
+      executablePath: executable.path,
+      kind: ExternalToolKind.mergeWriteBack,
+      arguments: const [
+        '--base',
+        '{base}',
+        '--ours',
+        '{ours}',
+        '--theirs',
+        '{theirs}',
+        '--result',
+        '{result}',
+      ],
+      enabled: true,
+    );
+    final container = ProviderContainer(
+      overrides: [
+        externalToolConfigurationStoreProvider.overrideWithValue(
+          _FixedExternalToolConfigurationStore(mergeConfiguration),
+        ),
+        repositoryTrustStoreProvider.overrideWithValue(
+          _FixedRepositoryTrustStore(),
+        ),
+      ],
+    );
+    addTearDown(container.dispose);
+    final controller = container.read(repositorySessionProvider.notifier);
+    await controller.openRepository(repository.workingDirectory.path);
+    final session = container.read(repositorySessionProvider);
+    final gitRepository = session.repository!;
+    await container
+        .read(repositoryTrustProvider.notifier)
+        .loadRepository(
+          RepositoryTrustId(
+            commonDirectory: gitRepository.commonDirectory,
+            workTreeRoot: gitRepository.workTreeRoot,
+          ),
+        );
+    await container
+        .read(repositoryTrustProvider.notifier)
+        .setStatus(RepositoryTrustStatus.trusted);
+    await container.read(externalToolConfigurationProvider.notifier).load();
+    final change = mapRepositoryOverview(
+      container.read(repositorySessionProvider),
+    ).repository!.changes.single;
+    expect(change.kind, RepositoryChangeKind.conflicted);
+
+    expect(await controller.resolveConflictWithExternalMerge(change), isTrue);
+    expect(
+      await File(
+        '${repository.workingDirectory.path}/README.md',
+      ).readAsString(),
+      'theirs\n',
+    );
+    final status = await repository.runGit(['status', '--porcelain=v1']);
+    expect(status.stdout.toString(), isNot(contains('UU README.md')));
+  });
+
+  test(
     'cancels Git-flow Finish during the merge and does not delete source',
     () async {
       if (Platform.isWindows) return;
@@ -6467,6 +6663,7 @@ exec git "\$@"
         ).exists(),
         isTrue,
       );
+      expect(await controller.updateFromUpstream(), isTrue);
     },
   );
 
@@ -6837,4 +7034,29 @@ final class _MemoryRepositorySessionStore implements RepositorySessionStore {
   Future<void> save(RepositorySessionSnapshot next) async {
     snapshot = next;
   }
+}
+
+final class _FixedExternalToolConfigurationStore
+    implements ExternalToolConfigurationStore {
+  _FixedExternalToolConfigurationStore(this.configuration);
+
+  final ExternalToolConfiguration configuration;
+
+  @override
+  Future<ExternalToolConfiguration?> load() async => configuration;
+
+  @override
+  Future<void> save(ExternalToolConfiguration? configuration) async {}
+}
+
+final class _FixedRepositoryTrustStore implements RepositoryTrustStore {
+  @override
+  Future<RepositoryTrustStatus> load(RepositoryTrustId repository) async =>
+      RepositoryTrustStatus.unconfirmed;
+
+  @override
+  Future<void> save(
+    RepositoryTrustId repository,
+    RepositoryTrustStatus status,
+  ) async {}
 }

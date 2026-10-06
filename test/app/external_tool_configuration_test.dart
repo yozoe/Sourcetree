@@ -91,22 +91,67 @@ void main() {
     );
   });
 
-  test('rejects incomplete, unknown, relative, and merge templates', () {
-    expect(
-      configuration(arguments: const ['{before}', '{unknown}']).validate(),
-      containsAll([
-        ExternalToolConfigurationIssue.unknownPlaceholder,
-        ExternalToolConfigurationIssue.missingAfterPlaceholder,
-      ]),
+  test(
+    'rejects incomplete, unknown, relative, and validates merge templates',
+    () {
+      expect(
+        configuration(arguments: const ['{before}', '{unknown}']).validate(),
+        containsAll([
+          ExternalToolConfigurationIssue.unknownPlaceholder,
+          ExternalToolConfigurationIssue.missingAfterPlaceholder,
+        ]),
+      );
+      expect(
+        configuration(executablePath: 'relative/tool').validate(),
+        contains(ExternalToolConfigurationIssue.executableMustBeAbsolute),
+      );
+      final merge = configuration(
+        kind: ExternalToolKind.mergeWriteBack,
+        arguments: const ['{base}', '{ours}', '{theirs}', '{result}', '{path}'],
+      );
+      expect(merge.validate(), isEmpty);
+      expect(
+        configuration(
+          kind: ExternalToolKind.mergeWriteBack,
+          arguments: const ['{base}', '{ours}', '{theirs}'],
+        ).validate(),
+        contains(ExternalToolConfigurationIssue.missingResultPlaceholder),
+      );
+    },
+  );
+
+  test('builds a literal three-way merge invocation', () {
+    final merge = configuration(
+      kind: ExternalToolKind.mergeWriteBack,
+      arguments: const [
+        '--base',
+        '{base}',
+        '--ours',
+        '{ours}',
+        '--theirs',
+        '{theirs}',
+        '--result',
+        '{result}',
+      ],
     );
-    expect(
-      configuration(executablePath: 'relative/tool').validate(),
-      contains(ExternalToolConfigurationIssue.executableMustBeAbsolute),
+    final invocation = merge.buildMergeInvocation(
+      baseSnapshotPath: '/private/tmp/base',
+      oursSnapshotPath: '/private/tmp/ours',
+      theirsSnapshotPath: '/private/tmp/theirs',
+      resultSnapshotPath: '/private/tmp/result',
+      repositoryRoot: repositoryRoot,
+      repositoryRelativePath: 'lib/a.dart',
     );
-    expect(
-      configuration(kind: ExternalToolKind.mergeWriteBack).validate(),
-      contains(ExternalToolConfigurationIssue.mergeWriteBackUnsupported),
-    );
+    expect(invocation.arguments, [
+      '--base',
+      '/private/tmp/base',
+      '--ours',
+      '/private/tmp/ours',
+      '--theirs',
+      '/private/tmp/theirs',
+      '--result',
+      '/private/tmp/result',
+    ]);
   });
 
   test('rejects request paths that escape or are not absolute', () {

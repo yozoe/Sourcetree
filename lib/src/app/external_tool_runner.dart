@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 import 'dart:io';
 
 import 'package:path/path.dart' as path_utils;
@@ -44,6 +45,10 @@ final class ExternalToolRunner {
   final ExternalToolTemporaryDirectoryFactory _temporaryDirectoryFactory;
   final GitProcessTerminator _processTerminator;
   final Set<ExternalToolRun> _activeRuns = <ExternalToolRun>{};
+  int _pendingStarts = 0;
+  Completer<void>? _pendingStartsCompleter;
+  Future<void>? _closeAllFuture;
+  bool _isClosing = false;
 
   /// Starts a trusted, explicitly enabled read-only Diff process.
   ///
@@ -63,6 +68,12 @@ final class ExternalToolRunner {
     required List<int> afterBytes,
     GitCancellationToken? cancellationToken,
   }) async {
+    if (_isClosing) {
+      throw StateError('External tool runner is closing.');
+    }
+    if (configuration.kind != ExternalToolKind.readOnlyDiff) {
+      throw StateError('A read-only Diff configuration is required.');
+    }
     if (!canActivateExternalTool(
       trustStatus: trustStatus,
       configuration: configuration,
@@ -79,8 +90,10 @@ final class ExternalToolRunner {
       throw const GitCancelledException();
     }
 
-    final directory = await _temporaryDirectoryFactory();
+    _beginStart();
+    Directory? directory;
     try {
+      directory = await _temporaryDirectoryFactory();
       if (cancellationToken?.isCancelled ?? false) {
         throw const GitCancelledException();
       }
@@ -116,10 +129,108 @@ final class ExternalToolRunner {
       );
       _activeRuns.add(run);
       run._attachCancellation(cancellationToken);
+      if (_isClosing) {
+        await run.close();
+        throw StateError('External tool runner is closing.');
+      }
       return run;
     } on Object {
-      await _deleteDirectory(directory);
+      if (directory != null) await _deleteDirectory(directory);
       rethrow;
+    } finally {
+      _endStart();
+    }
+  }
+
+  /// Starts a trusted three-way merge tool whose result is written to a
+  /// private result file and read back only after a successful exit.
+  /// 中文：启动受信任的三方合并工具；仅在进程成功退出后读取私有结果文件。
+  Future<ExternalMergeToolRun> startMergeWriteBack({
+    required ExternalToolConfiguration configuration,
+    required RepositoryTrustStatus trustStatus,
+    required String repositoryRoot,
+    required String repositoryRelativePath,
+    required List<int> baseBytes,
+    required List<int> oursBytes,
+    required List<int> theirsBytes,
+    GitCancellationToken? cancellationToken,
+  }) async {
+    if (configuration.kind != ExternalToolKind.mergeWriteBack) {
+      throw StateError('A merge write-back configuration is required.');
+    }
+    if (_isClosing) throw StateError('External tool runner is closing.');
+    if (!canActivateExternalTool(
+      trustStatus: trustStatus,
+      configuration: configuration,
+    )) {
+      throw StateError('External Merge is not trusted and explicitly enabled.');
+    }
+    final snapshots = <List<int>>[baseBytes, oursBytes, theirsBytes];
+    if (snapshots.any(
+      (bytes) => bytes.length > ExternalToolConfiguration.snapshotByteLimit,
+    )) {
+      throw StateError(
+        'External Merge snapshots exceed the configured size limit.',
+      );
+    }
+    if (cancellationToken?.isCancelled ?? false) {
+      throw const GitCancelledException();
+    }
+    _beginStart();
+    Directory? directory;
+    try {
+      directory = await _temporaryDirectoryFactory();
+      if (cancellationToken?.isCancelled ?? false) {
+        throw const GitCancelledException();
+      }
+      final extension = path_utils.extension(repositoryRelativePath);
+      final base = File(
+        path_utils.join(directory.path, 'base${_safeExtension(extension)}'),
+      );
+      final ours = File(
+        path_utils.join(directory.path, 'ours${_safeExtension(extension)}'),
+      );
+      final theirs = File(
+        path_utils.join(directory.path, 'theirs${_safeExtension(extension)}'),
+      );
+      final result = File(
+        path_utils.join(directory.path, 'result${_safeExtension(extension)}'),
+      );
+      await base.writeAsBytes(baseBytes, flush: true);
+      await ours.writeAsBytes(oursBytes, flush: true);
+      await theirs.writeAsBytes(theirsBytes, flush: true);
+      final invocation = configuration.buildMergeInvocation(
+        baseSnapshotPath: base.path,
+        oursSnapshotPath: ours.path,
+        theirsSnapshotPath: theirs.path,
+        resultSnapshotPath: result.path,
+        repositoryRoot: repositoryRoot,
+        repositoryRelativePath: repositoryRelativePath,
+      );
+      final process = await _processStarter(
+        invocation.executablePath,
+        invocation.arguments,
+        workingDirectory: repositoryRoot,
+      );
+      late final ExternalToolRun run;
+      run = ExternalToolRun._(
+        process: process,
+        snapshotDirectory: directory,
+        processTerminator: _processTerminator,
+        onClosed: () => _activeRuns.remove(run),
+      );
+      _activeRuns.add(run);
+      run._attachCancellation(cancellationToken);
+      if (_isClosing) {
+        await run.close();
+        throw StateError('External tool runner is closing.');
+      }
+      return ExternalMergeToolRun._(run: run, resultFile: result);
+    } on Object {
+      if (directory != null) await _deleteDirectory(directory);
+      rethrow;
+    } finally {
+      _endStart();
     }
   }
 
@@ -128,9 +239,43 @@ final class ExternalToolRunner {
   /// 中文：关闭此 Runner 启动的全部外部工具并等待快照清理；窗口关闭或仓库
   /// Engine 销毁时应调用此边界。
   Future<void> closeAll() async {
-    await Future.wait<void>([
-      for (final run in List<ExternalToolRun>.of(_activeRuns)) run.close(),
-    ]);
+    final existing = _closeAllFuture;
+    if (existing != null) return existing;
+    final future = _closeAll();
+    _closeAllFuture = future;
+    return future;
+  }
+
+  void _beginStart() {
+    _pendingStarts += 1;
+  }
+
+  void _endStart() {
+    _pendingStarts -= 1;
+    if (_pendingStarts == 0) {
+      _pendingStartsCompleter?.complete();
+      _pendingStartsCompleter = null;
+    }
+  }
+
+  Future<void> _waitForPendingStarts() {
+    if (_pendingStarts == 0) return Future<void>.value();
+    return (_pendingStartsCompleter ??= Completer<void>()).future;
+  }
+
+  Future<void> _closeAll() async {
+    _isClosing = true;
+    try {
+      await _waitForPendingStarts();
+      await Future.wait<void>([
+        for (final run in List<ExternalToolRun>.of(_activeRuns)) run.close(),
+      ]);
+    } finally {
+      // Repository switches reuse this runner; the barrier only covers this
+      // close cycle and must not permanently disable later Diff launches.
+      _isClosing = false;
+      _closeAllFuture = null;
+    }
   }
 
   /// Starts one process without shell interpretation or argument rewriting.
@@ -268,4 +413,48 @@ final class ExternalToolRun {
       }
     }
   }
+}
+
+/// Owns a merge process and validates its UTF-8 result snapshot.
+/// 中文：拥有一次合并进程，并校验其 UTF-8 结果快照。
+final class ExternalMergeToolRun {
+  ExternalMergeToolRun._({
+    required ExternalToolRun run,
+    required File resultFile,
+  }) : _run = run,
+       _resultFile = resultFile;
+
+  final ExternalToolRun _run;
+  final File _resultFile;
+
+  Future<int> get exitCode => _run.exitCode;
+  bool get isClosed => _run.isClosed;
+  Directory get snapshotDirectory => _run.snapshotDirectory;
+
+  /// Waits for successful process completion and returns a bounded UTF-8 result.
+  /// 中文：等待进程成功退出并返回有大小上限的 UTF-8 结果。
+  Future<String> readResultUtf8() async {
+    final code = await exitCode;
+    if (code != 0) {
+      throw StateError('External Merge exited with status $code.');
+    }
+    if (await FileSystemEntity.type(_resultFile.path, followLinks: false) !=
+        FileSystemEntityType.file) {
+      throw StateError('External Merge did not produce a result file.');
+    }
+    final length = await _resultFile.length();
+    if (length > ExternalToolConfiguration.snapshotByteLimit) {
+      throw StateError(
+        'External Merge result exceeds the configured size limit.',
+      );
+    }
+    final bytes = await _resultFile.readAsBytes();
+    try {
+      return utf8.decode(bytes, allowMalformed: false);
+    } on FormatException {
+      throw StateError('External Merge result is not valid UTF-8.');
+    }
+  }
+
+  Future<void> close() => _run.close();
 }

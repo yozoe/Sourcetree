@@ -5,6 +5,54 @@ import QuickLookUI
 let gitDesktopEngineCleanupTimeout: TimeInterval = 3.5
 let gitDesktopWorkspaceRestorationTimeout: TimeInterval = 30
 
+/// Stable MethodChannel identifiers for native workspace-menu actions.
+/// 中文：原生工作区菜单动作使用的稳定 MethodChannel 标识；菜单标题或方法名
+/// 改变时不得修改 raw value。
+enum GitDesktopWorkspaceActionID: String, CaseIterable {
+  case createPatch
+  case applyPatch
+  case repositoryDetails
+  case refresh
+  case fetch
+  case commit
+  case commitAll
+  case commitSelected
+  case resetRepository
+  case resetSelected
+  case resetToSelectedCommit
+  case checkout
+  case merge
+  case interactiveRebase
+  case addRemote
+  case tag
+  case pull
+  case push
+  case createBranch
+  case startGitFlow
+  case stash
+  case repositoryFeaturePending
+  case continueOperation
+  case skipOperation
+  case abortOperation
+  case useConflictStage2
+  case useConflictStage3
+  case markConflictResolved
+  case viewSelectedFileHistory
+  case externalDiffSelected
+  case ignoreSelected
+  case copySelected
+  case moveSelected
+  case reviewSelected
+  case stopTracking
+  case stageSelected
+  case unstageSelected
+  case removeSelected
+
+  case hideChanges
+  case refreshRemoteStatus
+  case updateFromUpstream
+}
+
 enum GitDesktopWindowHostError: LocalizedError {
   case engineStartFailed
   case invalidRepositoryRegistration
@@ -59,6 +107,22 @@ func gitDesktopCanPerformSkipOperationMenuAction(
     hasValidatedSkipCapability
 }
 
+/// Returns whether a validated custom action may be dispatched to the key
+/// workspace.
+/// 中文：判断经过 Flutter 校验的自定义操作是否仍可投递给当前前台工作区。
+func gitDesktopCanPerformCustomActionMenuAction(
+  hasKeyWorkspace: Bool,
+  actionID: String?,
+  actions: [GitDesktopCustomActionMenuItem]
+) -> Bool {
+  guard hasKeyWorkspace,
+        let actionID,
+        GitDesktopCustomActionMenuItem.isValidID(actionID) else {
+    return false
+  }
+  return actions.contains { $0.id == actionID && $0.isEnabled }
+}
+
 /// A recoverable Git operation reported by one Flutter workspace Engine.
 /// 中文：由单个 Flutter 工作区 Engine 上报、可继续或中止的 Git 操作。
 enum GitDesktopRepositoryOperation: String {
@@ -76,6 +140,36 @@ enum GitDesktopRepositoryOperation: String {
     case .cherryPick: return "遴选"
     case .revert: return "回滚"
     }
+  }
+}
+
+/// One Flutter-validated custom action shown in the native Action menu.
+/// 中文：由 Flutter 校验后交给原生动作菜单展示的一个自定义操作；原生层只保存
+/// 稳定 ID、显示名称和当前可用性，不接触可执行路径或 argv。
+struct GitDesktopCustomActionMenuItem {
+  let id: String
+  let displayName: String
+  let requiresFilePath: Bool
+  let isEnabled: Bool
+
+  init?(dictionary: [String: Any]) {
+    guard let id = dictionary["id"] as? String,
+          let displayName = dictionary["displayName"] as? String,
+          let requiresFilePath = dictionary["requiresFilePath"] as? Bool,
+          let isEnabled = dictionary["isEnabled"] as? Bool,
+          !displayName.isEmpty,
+          !displayName.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty,
+          GitDesktopCustomActionMenuItem.isValidID(id) else {
+      return nil
+    }
+    self.id = id
+    self.displayName = displayName
+    self.requiresFilePath = requiresFilePath
+    self.isEnabled = isEnabled
+  }
+
+  static func isValidID(_ id: String) -> Bool {
+    id.range(of: "^[a-z0-9][a-z0-9._-]{0,63}$", options: .regularExpression) != nil
   }
 }
 

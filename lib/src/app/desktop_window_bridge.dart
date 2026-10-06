@@ -2,6 +2,118 @@ import 'dart:async';
 
 import 'package:flutter/services.dart';
 
+/// Stable wire identifiers shared by the native workspace menu and Flutter.
+///
+/// These values are an IPC contract and must not be renamed when labels or
+/// implementation method names change. Reserved identifiers are declared
+/// before implementation so they cannot accidentally reuse Fetch, Pull or
+/// Stash routes.
+///
+/// 中文：原生工作区菜单与 Flutter 共用的稳定线协议标识。菜单标题或实现方法
+/// 改名时不得修改这些值；尚未实现的标识会提前保留，避免误复用 Fetch、Pull
+/// 或 Stash 路由。
+abstract final class DesktopWorkspaceActionId {
+  static const createPatch = 'createPatch';
+  static const applyPatch = 'applyPatch';
+  static const repositoryDetails = 'repositoryDetails';
+  static const refresh = 'refresh';
+  static const fetch = 'fetch';
+  static const commit = 'commit';
+  static const commitAll = 'commitAll';
+  static const commitSelected = 'commitSelected';
+  static const resetRepository = 'resetRepository';
+  static const resetSelected = 'resetSelected';
+  static const resetToSelectedCommit = 'resetToSelectedCommit';
+  static const checkout = 'checkout';
+  static const merge = 'merge';
+  static const interactiveRebase = 'interactiveRebase';
+  static const addRemote = 'addRemote';
+  static const tag = 'tag';
+  static const pull = 'pull';
+  static const push = 'push';
+  static const createBranch = 'createBranch';
+  static const startGitFlow = 'startGitFlow';
+  static const stash = 'stash';
+  static const repositoryFeaturePending = 'repositoryFeaturePending';
+  static const continueOperation = 'continueOperation';
+  static const skipOperation = 'skipOperation';
+  static const abortOperation = 'abortOperation';
+  static const useConflictStage2 = 'useConflictStage2';
+  static const useConflictStage3 = 'useConflictStage3';
+  static const markConflictResolved = 'markConflictResolved';
+  static const viewSelectedFileHistory = 'viewSelectedFileHistory';
+  static const externalDiffSelected = 'externalDiffSelected';
+  static const ignoreSelected = 'ignoreSelected';
+  static const copySelected = 'copySelected';
+  static const moveSelected = 'moveSelected';
+  static const reviewSelected = 'reviewSelected';
+  static const stopTracking = 'stopTracking';
+  static const stageSelected = 'stageSelected';
+  static const unstageSelected = 'unstageSelected';
+  static const removeSelected = 'removeSelected';
+  static const customActionPrefix = 'customAction:';
+
+  /// Session-local, non-destructive working-tree view action.
+  /// 中文：当前会话级、非破坏性的工作区改动视图操作。
+  static const hideChanges = 'hideChanges';
+  static const refreshRemoteStatus = 'refreshRemoteStatus';
+  static const updateFromUpstream = 'updateFromUpstream';
+
+  static const routable = <String>{
+    createPatch,
+    applyPatch,
+    repositoryDetails,
+    refresh,
+    fetch,
+    commit,
+    commitAll,
+    commitSelected,
+    resetRepository,
+    resetSelected,
+    resetToSelectedCommit,
+    checkout,
+    merge,
+    interactiveRebase,
+    addRemote,
+    tag,
+    pull,
+    push,
+    createBranch,
+    startGitFlow,
+    stash,
+    repositoryFeaturePending,
+    continueOperation,
+    skipOperation,
+    abortOperation,
+    useConflictStage2,
+    useConflictStage3,
+    markConflictResolved,
+    viewSelectedFileHistory,
+    externalDiffSelected,
+    ignoreSelected,
+    copySelected,
+    moveSelected,
+    reviewSelected,
+    stopTracking,
+    stageSelected,
+    unstageSelected,
+    removeSelected,
+    hideChanges,
+    refreshRemoteStatus,
+    updateFromUpstream,
+  };
+
+  static const reserved = <String>{};
+
+  /// Returns whether [action] is a validated dynamic custom-action route.
+  /// 中文：判断 [action] 是否是格式安全的动态自定义操作路由。
+  static bool isCustomAction(String action) {
+    if (!action.startsWith(customActionPrefix)) return false;
+    final id = action.substring(customActionPrefix.length);
+    return RegExp(r'^[a-z0-9][a-z0-9._-]{0,63}$').hasMatch(id);
+  }
+}
+
 /// Sends window-management requests from Flutter to the macOS application.
 ///
 /// The single native process owns every window and Flutter Engine so repository
@@ -131,6 +243,9 @@ final class DesktopWindowBridge {
     required bool canMarkConflictResolved,
     required bool canCommitAll,
     required bool canCommitSelected,
+    bool canHideChanges = false,
+    bool canRefreshRemoteStatus = false,
+    bool canUpdateFromUpstream = false,
     required bool canCommit,
     required bool canContinueOperation,
     required bool canExternalDiffSelected,
@@ -163,6 +278,7 @@ final class DesktopWindowBridge {
     required String? repositoryRootPath,
     required List<String> selectedFilePaths,
     required bool hasFileSelection,
+    required List<Map<String, Object?>> customActions,
   }) {
     return _channel
         .invokeMethod<void>('setWorkspaceMenuState', <String, Object?>{
@@ -175,6 +291,9 @@ final class DesktopWindowBridge {
           'canMarkConflictResolved': canMarkConflictResolved,
           'canCommitAll': canCommitAll,
           'canCommitSelected': canCommitSelected,
+          'canHideChanges': canHideChanges,
+          'canRefreshRemoteStatus': canRefreshRemoteStatus,
+          'canUpdateFromUpstream': canUpdateFromUpstream,
           'canCommit': canCommit,
           'canContinueOperation': canContinueOperation,
           'canExternalDiffSelected': canExternalDiffSelected,
@@ -207,6 +326,7 @@ final class DesktopWindowBridge {
           'repositoryRootPath': repositoryRootPath,
           'selectedFilePaths': selectedFilePaths,
           'hasFileSelection': hasFileSelection,
+          'customActions': customActions,
         });
   }
 
@@ -299,7 +419,10 @@ final class DesktopWindowBridge {
             ? (call.arguments as Map)['action'] as String?
             : null;
         final handler = _workspaceActionHandler;
-        if (handler != null && action != null && action.isNotEmpty) {
+        if (handler != null &&
+            action != null &&
+            (DesktopWorkspaceActionId.routable.contains(action) ||
+                DesktopWorkspaceActionId.isCustomAction(action))) {
           await handler(action);
         }
         return;

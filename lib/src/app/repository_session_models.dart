@@ -130,6 +130,14 @@ final class SelectedRepositoryChange {
   }
 }
 
+/// Returns the stable session-local key used to hide one working-tree entry.
+///
+/// 中文：返回单个工作区改动的会话级隐藏键；仅用于视图过滤，不进入 Git。
+String repositoryChangeViewKey({
+  required bool isStaged,
+  required String path,
+}) => '${isStaged ? 'staged' : 'unstaged'}\u0000$path';
+
 /// Outcome of deleting selected paths from the working tree.
 ///
 /// 中文：从工作区删除所选路径的逐项结果。已移除、执行前已不存在和删除失败
@@ -335,6 +343,7 @@ final class RepositorySessionState {
     this.isCommitLoading = false,
     this.isCommitDiffLoading = false,
     this.selectedChange,
+    this.hiddenChangeKeys = const {},
     this.diff,
     this.diffWhitespaceMode = GitDiffWhitespaceMode.preserve,
     this.isDiffLoading = false,
@@ -412,6 +421,10 @@ final class RepositorySessionState {
   final bool isCommitLoading;
   final bool isCommitDiffLoading;
   final SelectedRepositoryChange? selectedChange;
+
+  /// Session-local working-tree entries hidden from the Changes pane.
+  /// 中文：仅当前工作区会话有效的文件状态隐藏键，不会写入 Git 或持久化。
+  final Set<String> hiddenChangeKeys;
   final GitUnifiedDiff? diff;
 
   /// Whitespace mode used for the currently selected main Diff.
@@ -470,6 +483,7 @@ final class RepositorySessionState {
     bool? isCommitLoading,
     bool? isCommitDiffLoading,
     SelectedRepositoryChange? selectedChange,
+    Set<String>? hiddenChangeKeys,
     GitUnifiedDiff? diff,
     GitDiffWhitespaceMode? diffWhitespaceMode,
     bool? isDiffLoading,
@@ -538,6 +552,7 @@ final class RepositorySessionState {
       selectedChange: clearSelectedChange
           ? null
           : selectedChange ?? this.selectedChange,
+      hiddenChangeKeys: hiddenChangeKeys ?? this.hiddenChangeKeys,
       diff: clearDiff ? null : diff ?? this.diff,
       diffWhitespaceMode: diffWhitespaceMode ?? this.diffWhitespaceMode,
       isDiffLoading: isDiffLoading ?? this.isDiffLoading,

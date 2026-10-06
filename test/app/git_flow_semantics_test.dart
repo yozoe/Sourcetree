@@ -162,4 +162,59 @@ void main() {
       expect(result.error, isNotNull);
     }
   });
+
+  test('validates ordered batch Finish with safe cleanup and release tag', () {
+    final result = validateGitFlowBatchFinish(
+      sourceBranches: const ['feature/one', 'release/1.2.3'],
+      targetBranch: 'main',
+      existingBranches: const ['main', 'feature/one', 'release/1.2.3'],
+      isAttachedHead: true,
+      isWorkingTreeClean: true,
+      hasActiveOperation: false,
+      deleteSourceBranches: true,
+      releaseTag: 'v1.2.3',
+    );
+
+    expect(result.error, isNull);
+    expect(result.plan?.sourceBranches, const ['feature/one', 'release/1.2.3']);
+    expect(result.plan?.targetBranch, 'main');
+    expect(result.plan?.deleteSourceBranches, isTrue);
+    expect(result.plan?.releaseTag, 'v1.2.3');
+  });
+
+  test('rejects batch release tags without a release or hotfix source', () {
+    final result = validateGitFlowBatchFinish(
+      sourceBranches: const ['feature/one'],
+      targetBranch: 'main',
+      existingBranches: const ['main', 'feature/one'],
+      isAttachedHead: true,
+      isWorkingTreeClean: true,
+      hasActiveOperation: false,
+      releaseTag: 'v1.2.3',
+    );
+
+    expect(result.plan, isNull);
+    expect(result.error, contains('release 或 hotfix'));
+  });
+
+  test(
+    'does not report batch Finish success when the requested tag failed',
+    () {
+      const result = GitFlowBatchFinishExecutionResult(
+        items: [
+          GitFlowBatchFinishItemResult(
+            sourceBranch: 'release/1.2.3',
+            merged: true,
+            deleted: false,
+          ),
+        ],
+        targetCheckedOut: true,
+        tagCreated: false,
+        cancelled: false,
+        message: '标签创建失败',
+      );
+
+      expect(result.succeeded, isFalse);
+    },
+  );
 }

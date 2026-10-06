@@ -1,4 +1,6 @@
 import 'dart:io';
+import 'dart:async';
+import 'dart:convert';
 
 import 'package:flutter_riverpod/flutter_riverpod.dart';
 import 'package:flutter_test/flutter_test.dart';
@@ -111,6 +113,44 @@ sleep 10
     expect(run.isClosed, isTrue);
   });
 
+  test('closeAll waits for an in-flight process start', () async {
+    if (Platform.isWindows) return;
+    final root = await Directory.systemTemp.createTemp('external-tool-race-');
+    addTearDown(() async {
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+    final executable = await _writeScript(
+      root,
+      'wait.sh',
+      '#!/bin/sh\nsleep 10\n',
+    );
+    final startGate = Completer<void>();
+    final runner = ExternalToolRunner(
+      processStarter: (executable, arguments, {workingDirectory}) async {
+        await startGate.future;
+        return Process.start(
+          executable,
+          arguments,
+          workingDirectory: workingDirectory,
+          runInShell: false,
+        );
+      },
+    );
+    final start = runner.startReadOnlyDiff(
+      configuration: _configuration(executable),
+      trustStatus: RepositoryTrustStatus.trusted,
+      repositoryRoot: root.path,
+      repositoryRelativePath: 'README.md',
+      beforeBytes: <int>[1],
+      afterBytes: <int>[2],
+    );
+    final closing = runner.closeAll();
+    startGate.complete();
+
+    await expectLater(start, throwsStateError);
+    await closing;
+  });
+
   test('repository shutdown closes Engine-owned external Diff runs', () async {
     if (Platform.isWindows) return;
     final repository = await GitTestRepository.create();
@@ -167,6 +207,25 @@ sleep 10
   );
 
   test(
+    'rejects a Merge configuration from the read-only Diff entry point',
+    () async {
+      final runner = ExternalToolRunner();
+      final executable = Platform.isWindows ? r'C:\tool.exe' : '/tool';
+      await expectLater(
+        runner.startReadOnlyDiff(
+          configuration: _mergeConfiguration(executable),
+          trustStatus: RepositoryTrustStatus.trusted,
+          repositoryRoot: Platform.isWindows ? r'C:\repo' : '/repo',
+          repositoryRelativePath: 'README.md',
+          beforeBytes: const <int>[1],
+          afterBytes: const <int>[2],
+        ),
+        throwsStateError,
+      );
+    },
+  );
+
+  test(
     'rejects snapshots above the configured limit before starting',
     () async {
       final runner = ExternalToolRunner();
@@ -187,6 +246,53 @@ sleep 10
       );
     },
   );
+  test('reads a successful UTF-8 merge result and cleans snapshots', () async {
+    if (Platform.isWindows) return;
+    final root = await Directory.systemTemp.createTemp('external-merge-');
+    addTearDown(() async {
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+    final executable = await _writeScript(root, 'merge.sh', r'''#!/bin/sh
+cat "$4" > "$8"
+''');
+    final run = await ExternalToolRunner().startMergeWriteBack(
+      configuration: _mergeConfiguration(executable),
+      trustStatus: RepositoryTrustStatus.trusted,
+      repositoryRoot: root.path,
+      repositoryRelativePath: 'README.md',
+      baseBytes: utf8.encode('base\n'),
+      oursBytes: utf8.encode('ours\n'),
+      theirsBytes: utf8.encode('theirs\n'),
+    );
+    final snapshotDirectory = run.snapshotDirectory;
+    expect(await run.readResultUtf8(), 'ours\n');
+    await run.close();
+    expect(await snapshotDirectory.exists(), isFalse);
+  });
+
+  test('rejects malformed merge results', () async {
+    if (Platform.isWindows) return;
+    final root = await Directory.systemTemp.createTemp(
+      'external-merge-invalid-',
+    );
+    addTearDown(() async {
+      if (await root.exists()) await root.delete(recursive: true);
+    });
+    final executable = await _writeScript(root, 'invalid.sh', r'''#!/bin/sh
+printf "\377" > "$8"
+''');
+    final run = await ExternalToolRunner().startMergeWriteBack(
+      configuration: _mergeConfiguration(executable),
+      trustStatus: RepositoryTrustStatus.trusted,
+      repositoryRoot: root.path,
+      repositoryRelativePath: 'README.md',
+      baseBytes: const <int>[],
+      oursBytes: const <int>[1],
+      theirsBytes: const <int>[2],
+    );
+    await expectLater(run.readResultUtf8(), throwsStateError);
+    await run.close();
+  });
 }
 
 ExternalToolConfiguration _configuration(
@@ -200,6 +306,24 @@ ExternalToolConfiguration _configuration(
       const ['--before', '{before}', '--after', '{after}', '--path', '{path}'],
   enabled: true,
 );
+
+ExternalToolConfiguration _mergeConfiguration(String executable) =>
+    ExternalToolConfiguration(
+      displayName: 'Test Merge',
+      executablePath: executable,
+      kind: ExternalToolKind.mergeWriteBack,
+      arguments: const [
+        '--base',
+        '{base}',
+        '--ours',
+        '{ours}',
+        '--theirs',
+        '{theirs}',
+        '--result',
+        '{result}',
+      ],
+      enabled: true,
+    );
 
 Future<String> _writeScript(Directory root, String name, String source) async {
   final file = File('${root.path}/$name');

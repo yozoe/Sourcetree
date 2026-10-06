@@ -23,15 +23,10 @@ void main() {
     expect(xib, isNot(contains('创建拉取请求')));
   });
 
-  test('keeps unresolved repository menu semantics visibly pending', () {
+  test('keeps frozen but unimplemented repository actions visibly pending', () {
     final xib = File('macos/Runner/Base.lproj/MainMenu.xib').readAsStringSync();
 
-    const pendingItems = <String, String>{
-      'GDA-repository-hide-changes': '隐藏变更…（待实现）',
-      'GDA-repository-refresh-remote': '刷新远程仓库状态（待实现）',
-      'GDA-repository-update': '更新（待实现）',
-      'GDA-repository-lfs': 'Git LFS（待实现）',
-    };
+    const pendingItems = <String, String>{'GDA-repository-lfs': 'Git LFS（待实现）'};
 
     for (final entry in pendingItems.entries) {
       final itemPattern = RegExp(
@@ -44,8 +39,32 @@ void main() {
         isTrue,
         reason:
             '${entry.key} must remain visibly pending and use the no-op '
-            'repositoryFeaturePendingFromMenu: route until its semantics are frozen.',
+            'repositoryFeaturePendingFromMenu: route until its frozen contract is implemented.',
       );
     }
+  });
+
+  test('routes hide changes through its delivered native action', () {
+    final xib = File('macos/Runner/Base.lproj/MainMenu.xib').readAsStringSync();
+    expect(xib, contains('title="隐藏变更…" id="GDA-repository-hide-changes"'));
+    expect(xib, contains('<action selector="hideChangesFromMenu:"'));
+    expect(xib, isNot(contains('title="隐藏变更…（待实现）"')));
+  });
+
+  test('routes remote status refresh through its delivered native action', () {
+    final xib = File('macos/Runner/Base.lproj/MainMenu.xib').readAsStringSync();
+    expect(
+      xib,
+      contains('title="刷新远程仓库状态…" id="GDA-repository-refresh-remote"'),
+    );
+    expect(xib, contains('<action selector="refreshRemoteStatusFromMenu:"'));
+    expect(xib, isNot(contains('title="刷新远程仓库状态（待实现）"')));
+  });
+
+  test('routes upstream update through its delivered native action', () {
+    final xib = File('macos/Runner/Base.lproj/MainMenu.xib').readAsStringSync();
+    expect(xib, contains('title="更新…" id="GDA-repository-update"'));
+    expect(xib, contains('<action selector="updateFromUpstreamFromMenu:"'));
+    expect(xib, isNot(contains('title="更新（待实现）"')));
   });
 }

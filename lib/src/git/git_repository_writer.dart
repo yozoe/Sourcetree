@@ -1248,6 +1248,7 @@ final class GitRepositoryWriter {
     String? annotation,
     bool? annotated,
     bool sign = false,
+    GitCancellationToken? cancellationToken,
   }) async {
     final normalizedName = name.trim();
     final normalizedObjectId = objectId.trim();
@@ -1282,6 +1283,7 @@ final class GitRepositoryWriter {
           normalizedObjectId,
         ],
         workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
         outputLimit: const GitOutputLimit(
           stdoutBytes: 256 * 1024,
           stderrBytes: 512 * 1024,
@@ -1572,6 +1574,7 @@ final class GitRepositoryWriter {
     GitRepository repository, {
     required String name,
     required bool force,
+    GitCancellationToken? cancellationToken,
   }) async {
     final normalizedName = name.trim();
     if (normalizedName.isEmpty) {
@@ -1587,6 +1590,7 @@ final class GitRepositoryWriter {
           normalizedName,
         ],
         workingDirectory: repository.commandDirectory,
+        cancellationToken: cancellationToken,
         outputLimit: const GitOutputLimit(
           stdoutBytes: 256 * 1024,
           stderrBytes: 512 * 1024,

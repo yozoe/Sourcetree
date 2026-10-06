@@ -31,6 +31,8 @@ typedef RepositoryChangeStageCallback =
     void Function(RepositoryChangeViewData change);
 typedef RepositoryChangeFilesCallback =
     FutureOr<void> Function(List<RepositoryChangeViewData> changes);
+typedef RepositoryChangeCustomActionCallback =
+    FutureOr<void> Function(RepositoryChangeViewData change, String actionId);
 typedef RepositoryChangeGroupStageCallback =
     FutureOr<void> Function(List<RepositoryChangeViewData> changes, bool stage);
 typedef RepositoryDiffHunkActionCallback =
@@ -53,6 +55,8 @@ typedef RepositoryCommitFileContextActionCallback =
       CommitFileViewData file,
       RepositoryCommitFileContextAction action,
     );
+typedef RepositoryCommitFileCustomActionCallback =
+    void Function(CommitFileViewData file, String actionId);
 
 /// Interaction surface for [RepositoryOverview].
 ///
@@ -83,15 +87,19 @@ final class RepositoryOverviewCallbacks {
     this.onChangeReview,
     this.onChangeIgnore,
     this.onChangeExternalDiff,
+    this.onChangeCustomAction,
     this.onCreatePatch,
     this.onApplyPatch,
     this.onChangeRemove,
     this.onChangeStopTracking,
     this.onChangeReset,
+    this.onClearHiddenChanges,
     this.onDiffHunkAction,
     this.onDiffWhitespaceModeChanged,
     this.onCommitFileSelected,
     this.onCommitFileContextAction,
+    this.customActions = const <RepositoryCustomActionViewData>[],
+    this.onCommitFileCustomAction,
     this.onLayoutChanged,
     this.onVerifyAllTagSignatures,
     this.onCheckAllTagRemoteStatuses,
@@ -125,15 +133,19 @@ final class RepositoryOverviewCallbacks {
   final RepositoryChangeFilesCallback? onChangeReview;
   final RepositoryChangeFilesCallback? onChangeIgnore;
   final RepositoryChangeFilesCallback? onChangeExternalDiff;
+  final RepositoryChangeCustomActionCallback? onChangeCustomAction;
   final RepositoryChangeFilesCallback? onCreatePatch;
   final VoidCallback? onApplyPatch;
   final RepositoryChangeFilesCallback? onChangeRemove;
   final RepositoryChangeFilesCallback? onChangeStopTracking;
   final RepositoryChangeFilesCallback? onChangeReset;
+  final VoidCallback? onClearHiddenChanges;
   final RepositoryDiffHunkActionCallback? onDiffHunkAction;
   final RepositoryDiffWhitespaceModeCallback? onDiffWhitespaceModeChanged;
   final RepositoryCommitFileCallback? onCommitFileSelected;
   final RepositoryCommitFileContextActionCallback? onCommitFileContextAction;
+  final List<RepositoryCustomActionViewData> customActions;
+  final RepositoryCommitFileCustomActionCallback? onCommitFileCustomAction;
   final ValueChanged<RepositoryOverviewLayout>? onLayoutChanged;
 
   /// Verifies every loaded tag through one cancellable read-only task.
@@ -298,6 +310,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         repository: repository,
         onSelected: widget.callbacks.onCommitFileSelected,
         onContextAction: widget.callbacks.onCommitFileContextAction,
+        customActions: widget.callbacks.customActions,
+        onCustomAction: widget.callbacks.onCommitFileCustomAction,
         onDiffWhitespaceModeChanged:
             widget.callbacks.onDiffWhitespaceModeChanged,
         title: '贮藏改动',
@@ -322,11 +336,14 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         onReview: widget.callbacks.onChangeReview,
         onIgnore: widget.callbacks.onChangeIgnore,
         onExternalDiff: widget.callbacks.onChangeExternalDiff,
+        customActions: widget.callbacks.customActions,
+        onCustomAction: widget.callbacks.onChangeCustomAction,
         onCreatePatch: widget.callbacks.onCreatePatch,
         onApplyPatch: widget.callbacks.onApplyPatch,
         onRemove: widget.callbacks.onChangeRemove,
         onStopTracking: widget.callbacks.onChangeStopTracking,
         onReset: widget.callbacks.onChangeReset,
+        onClearHiddenChanges: widget.callbacks.onClearHiddenChanges,
         onHunkAction: widget.callbacks.onDiffHunkAction,
         onDiffWhitespaceModeChanged:
             widget.callbacks.onDiffWhitespaceModeChanged,
@@ -499,6 +516,11 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                           Expanded(
                             child: _SelectedChangesPane(
                               repository: repository,
+                              customActions: widget.callbacks.customActions,
+                              onCommitFileCustomAction:
+                                  widget.callbacks.onCommitFileCustomAction,
+                              onCustomAction:
+                                  widget.callbacks.onChangeCustomAction,
                               onSelected: widget.callbacks.onChangeSelected,
                               onSelectionChanged:
                                   widget.callbacks.onChangeSelectionChanged,
@@ -526,6 +548,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                               onStopTracking:
                                   widget.callbacks.onChangeStopTracking,
                               onReset: widget.callbacks.onChangeReset,
+                              onClearHiddenChanges:
+                                  widget.callbacks.onClearHiddenChanges,
                               onHunkAction: widget.callbacks.onDiffHunkAction,
                               onDiffWhitespaceModeChanged:
                                   widget.callbacks.onDiffWhitespaceModeChanged,
@@ -661,6 +685,8 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                         onRemove: widget.callbacks.onChangeRemove,
                         onStopTracking: widget.callbacks.onChangeStopTracking,
                         onReset: widget.callbacks.onChangeReset,
+                        onClearHiddenChanges:
+                            widget.callbacks.onClearHiddenChanges,
                         onHunkAction: widget.callbacks.onDiffHunkAction,
                         onDiffWhitespaceModeChanged:
                             widget.callbacks.onDiffWhitespaceModeChanged,
@@ -668,6 +694,10 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                             widget.callbacks.onCommitFileSelected,
                         onCommitFileContextAction:
                             widget.callbacks.onCommitFileContextAction,
+                        customActions: widget.callbacks.customActions,
+                        onCommitFileCustomAction:
+                            widget.callbacks.onCommitFileCustomAction,
+                        onCustomAction: widget.callbacks.onChangeCustomAction,
                       ),
                     ),
                   ],
@@ -713,6 +743,9 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
       ),
       _CompactPane.changes => _SelectedChangesPane(
         repository: repository,
+        customActions: widget.callbacks.customActions,
+        onCommitFileCustomAction: widget.callbacks.onCommitFileCustomAction,
+        onCustomAction: widget.callbacks.onChangeCustomAction,
         onSelected: widget.callbacks.onChangeSelected,
         onSelectionChanged: widget.callbacks.onChangeSelectionChanged,
         onStageToggled: widget.callbacks.onChangeStageToggled,
@@ -731,6 +764,7 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         onRemove: widget.callbacks.onChangeRemove,
         onStopTracking: widget.callbacks.onChangeStopTracking,
         onReset: widget.callbacks.onChangeReset,
+        onClearHiddenChanges: widget.callbacks.onClearHiddenChanges,
         onHunkAction: widget.callbacks.onDiffHunkAction,
         onDiffWhitespaceModeChanged:
             widget.callbacks.onDiffWhitespaceModeChanged,
@@ -1311,6 +1345,7 @@ class _RefsNavigation extends StatelessWidget {
     return Material(
       color: Theme.of(context).colorScheme.surfaceContainerLowest,
       child: CustomScrollView(
+        key: const ValueKey<String>('refs-navigation-list'),
         slivers: [
           const SliverToBoxAdapter(
             child: _PaneHeader(title: '仓库', icon: Icons.folder_open_outlined),
@@ -1526,6 +1561,7 @@ class _RefsNavigation extends StatelessWidget {
         ? null
         : () => onSelected!(ref);
     return _RefTile(
+      key: ValueKey<String>('ref-nav:${ref.id}'),
       ref: ref,
       label: label,
       indent: indent,
@@ -2275,6 +2311,7 @@ class _RefDirectoryTileState extends State<_RefDirectoryTile> {
 
 class _RefTile extends StatelessWidget {
   const _RefTile({
+    super.key,
     required this.ref,
     this.label,
     this.indent = 0,
@@ -2764,10 +2801,14 @@ class _TabbedInspector extends StatelessWidget {
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
+    required this.onClearHiddenChanges,
     required this.onHunkAction,
     this.onDiffWhitespaceModeChanged,
     required this.onCommitFileSelected,
     required this.onCommitFileContextAction,
+    this.customActions = const <RepositoryCustomActionViewData>[],
+    this.onCommitFileCustomAction,
+    this.onCustomAction,
   });
 
   final _InspectorTab selectedTab;
@@ -2791,10 +2832,14 @@ class _TabbedInspector extends StatelessWidget {
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
+  final VoidCallback? onClearHiddenChanges;
   final RepositoryDiffHunkActionCallback? onHunkAction;
   final RepositoryDiffWhitespaceModeCallback? onDiffWhitespaceModeChanged;
   final RepositoryCommitFileCallback? onCommitFileSelected;
   final RepositoryCommitFileContextActionCallback? onCommitFileContextAction;
+  final List<RepositoryCustomActionViewData> customActions;
+  final RepositoryCommitFileCustomActionCallback? onCommitFileCustomAction;
+  final RepositoryChangeCustomActionCallback? onCustomAction;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -2814,6 +2859,9 @@ class _TabbedInspector extends StatelessWidget {
           child: switch (selectedTab) {
             _InspectorTab.changes => _SelectedChangesPane(
               repository: repository,
+              customActions: customActions,
+              onCommitFileCustomAction: onCommitFileCustomAction,
+              onCustomAction: onCustomAction,
               onSelected: onChangeSelected,
               onSelectionChanged: onChangeSelectionChanged,
               onStageToggled: onChangeStageToggled,
@@ -2832,6 +2880,7 @@ class _TabbedInspector extends StatelessWidget {
               onRemove: onRemove,
               onStopTracking: onStopTracking,
               onReset: onReset,
+              onClearHiddenChanges: onClearHiddenChanges,
               onHunkAction: onHunkAction,
               onDiffWhitespaceModeChanged: onDiffWhitespaceModeChanged,
               onCommitFileSelected: onCommitFileSelected,
@@ -2953,12 +3002,14 @@ class _PaneHeader extends StatelessWidget {
     required this.title,
     required this.icon,
     this.trailing,
+    this.trailingWidget,
     this.isBusy = false,
   });
 
   final String title;
   final IconData icon;
   final String? trailing;
+  final Widget? trailingWidget;
   final bool isBusy;
 
   /// 中文：构建当前组件的界面。
@@ -3002,7 +3053,9 @@ class _PaneHeader extends StatelessWidget {
                 color: colors.onSurfaceVariant,
               ),
             ),
-          ] else if (trailing != null)
+          ] else if (trailingWidget != null)
+            trailingWidget!
+          else if (trailing != null)
             Text(
               trailing!,
               style: theme.textTheme.labelSmall?.copyWith(

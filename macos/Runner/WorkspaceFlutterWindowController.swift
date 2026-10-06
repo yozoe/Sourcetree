@@ -63,6 +63,18 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// 中文：此 Engine 最近一次由 Flutter 校验的“提交选中项”可用状态。
   private(set) var canCommitSelectedFromMenu = false
 
+  /// Whether Flutter validated a session-local hide-changes target.
+  /// 中文：Flutter 是否校验出可隐藏的当前会话工作区改动选择。
+  private(set) var canHideChangesFromMenu = false
+
+  /// Whether Flutter validated a refresh across configured remotes.
+  /// 中文：Flutter 是否校验出可刷新当前仓库已配置远端的能力。
+  private(set) var canRefreshRemoteStatusFromMenu = false
+
+  /// Whether Flutter validated a safe fast-forward update from upstream.
+  /// 中文：Flutter 是否校验出可从当前 upstream 执行安全快进更新的能力。
+  private(set) var canUpdateFromUpstreamFromMenu = false
+
   /// The active recoverable Git operation and its latest validated actions.
   /// 中文：当前可恢复 Git 操作及其最近一次校验的继续、跳过、中止能力。
   private(set) var activeRepositoryOperationFromMenu: GitDesktopRepositoryOperation?
@@ -188,6 +200,10 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   /// 中文：此 Engine 最近一次由 Flutter 校验的“从索引中取消暂存”可用状态。
   private(set) var canUnstageSelectedFromMenu = false
 
+  /// Flutter-validated custom actions shown by the native Action menu.
+  /// 中文：由 Flutter 校验并动态展示在原生“动作”菜单中的自定义操作。
+  private(set) var customActionMenuItems: [GitDesktopCustomActionMenuItem] = []
+
   /// Flutter-validated paths used only by read-only native file actions.
   /// 中文：仅供原生只读文件动作使用、由 Flutter 校验的路径快照。
   private(set) var fileMenuTargets = GitDesktopWorkspaceFileMenuTargets(
@@ -285,8 +301,24 @@ final class WorkspaceFlutterWindowController: NSWindowController,
   }
 
   /// Delivers a native menu action to this workspace's Flutter Engine.
-  func performWorkspaceAction(_ action: String) {
-    windowChannel.invokeMethod("workspaceAction", arguments: ["action": action])
+  func performWorkspaceAction(_ action: GitDesktopWorkspaceActionID) {
+    windowChannel.invokeMethod(
+      "workspaceAction",
+      arguments: ["action": action.rawValue]
+    )
+  }
+
+  /// Delivers one validated custom-action ID to this workspace's Flutter
+  /// Engine; Flutter performs the final trust, selection and Git-state checks.
+  /// 中文：将已校验的自定义操作 ID 投递给当前工作区；最终信任、选择和 Git
+  /// 状态复核仍由 Flutter 完成。
+  func performCustomAction(_ id: String) {
+    guard customActionMenuItems.contains(where: { $0.id == id && $0.isEnabled })
+    else { return }
+    windowChannel.invokeMethod(
+      "workspaceAction",
+      arguments: ["action": "customAction:\(id)"]
+    )
   }
 
   func requestClose() {
@@ -724,6 +756,11 @@ final class WorkspaceFlutterWindowController: NSWindowController,
     canCommitAllFromMenu = arguments?["canCommitAll"] as? Bool ?? false
     canCommitSelectedFromMenu =
       arguments?["canCommitSelected"] as? Bool ?? false
+    canHideChangesFromMenu = arguments?["canHideChanges"] as? Bool ?? false
+    canRefreshRemoteStatusFromMenu =
+      arguments?["canRefreshRemoteStatus"] as? Bool ?? false
+    canUpdateFromUpstreamFromMenu =
+      arguments?["canUpdateFromUpstream"] as? Bool ?? false
     let activeOperation =
       (arguments?["activeRepositoryOperation"] as? String).flatMap(
         GitDesktopRepositoryOperation.init(rawValue:)
@@ -780,6 +817,8 @@ final class WorkspaceFlutterWindowController: NSWindowController,
       arguments?["canStageSelected"] as? Bool ?? false
     canUnstageSelectedFromMenu =
       arguments?["canUnstageSelected"] as? Bool ?? false
+    customActionMenuItems = (arguments?["customActions"] as? [[String: Any]] ?? [])
+      .compactMap(GitDesktopCustomActionMenuItem.init(dictionary:))
     fileMenuTargets = GitDesktopWorkspaceFileMenuTargets(
       repositoryRootPath: arguments?["repositoryRootPath"] as? String,
       selectedFilePaths: arguments?["selectedFilePaths"] as? [String] ?? [],

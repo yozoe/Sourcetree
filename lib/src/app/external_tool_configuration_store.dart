@@ -9,7 +9,7 @@ import 'package:path_provider/path_provider.dart';
 
 import 'external_tool_configuration.dart';
 
-/// Persists the application-owned external Diff configuration only.
+/// Persists the application-owned external Diff/Merge configuration only.
 ///
 /// 中文：仅持久化应用自有的外部 Diff 配置；仓库信任、凭据和远端信息不属于此接口。
 abstract interface class ExternalToolConfigurationStore {
@@ -22,7 +22,7 @@ abstract interface class ExternalToolConfigurationStore {
   Future<void> save(ExternalToolConfiguration? configuration);
 }
 
-/// A small atomically replaced store for one read-only external Diff template.
+/// A small atomically replaced store for one external Diff/Merge template.
 ///
 /// 中文：保存一个只读外部 Diff 模板的小型原子替换存储。
 final class FileExternalToolConfigurationStore
@@ -134,7 +134,7 @@ final class ExternalToolConfigurationState {
   );
 }
 
-/// Loads, validates, and serializes the app-owned external Diff configuration.
+/// Loads, validates, and serializes the app-owned external Diff/Merge configuration.
 ///
 /// 中文：加载、校验并顺序持久化应用自有的外部 Diff 配置。配置读取或写入失败
 /// 都回退为不可用状态，不会绕过信任门槛或自动启用外部进程。

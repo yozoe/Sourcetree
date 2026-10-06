@@ -107,6 +107,91 @@ final class GitFlowFinishExecutionResult {
   final String message;
 }
 
+/// A validated multi-source Git-flow Finish plan.
+/// 中文：经过校验的多来源 Git-flow Finish 计划；可选择安全删除来源并创建本地版本标签。
+final class GitFlowBatchFinishPlan {
+  factory GitFlowBatchFinishPlan({
+    required List<String> sourceBranches,
+    required String targetBranch,
+    bool deleteSourceBranches = false,
+    String? releaseTag,
+  }) => GitFlowBatchFinishPlan._(
+    sourceBranches: List.unmodifiable(sourceBranches),
+    targetBranch: targetBranch,
+    deleteSourceBranches: deleteSourceBranches,
+    releaseTag: releaseTag,
+  );
+
+  const GitFlowBatchFinishPlan._({
+    required this.sourceBranches,
+    required this.targetBranch,
+    required this.deleteSourceBranches,
+    required this.releaseTag,
+  });
+
+  /// Sources are merged in this explicit order.
+  /// 中文：来源分支按此明确顺序逐个合并。
+  final List<String> sourceBranches;
+
+  /// The local branch that receives every merge.
+  /// 中文：接收全部合并的本地目标分支。
+  final String targetBranch;
+
+  /// Whether to delete each source with Git's safe merged-only mode after the
+  /// requested merges and optional tag creation succeed.
+  /// 中文：合并及可选标签成功后，是否用 Git 安全模式删除每个来源分支。
+  final bool deleteSourceBranches;
+
+  /// Optional local annotated release tag, normally `v<semver>`.
+  /// 中文：可选的本地附注版本标签，通常为 `v<semver>`。
+  final String? releaseTag;
+}
+
+/// One source branch outcome from a batch Finish.
+/// 中文：批量 Finish 中一个来源分支的逐项结果。
+final class GitFlowBatchFinishItemResult {
+  const GitFlowBatchFinishItemResult({
+    required this.sourceBranch,
+    required this.merged,
+    required this.deleted,
+    this.message,
+  });
+
+  final String sourceBranch;
+  final bool merged;
+  final bool deleted;
+  final String? message;
+}
+
+/// Result of a multi-source Finish, optional source cleanup, and release tag.
+/// 中文：多来源 Finish、可选来源清理和版本标签的分阶段结果。
+final class GitFlowBatchFinishExecutionResult {
+  const GitFlowBatchFinishExecutionResult({
+    required this.items,
+    required this.targetCheckedOut,
+    required this.tagCreated,
+    required this.cancelled,
+    required this.message,
+    this.deletionsSucceeded = true,
+  });
+
+  final List<GitFlowBatchFinishItemResult> items;
+  final bool targetCheckedOut;
+  final bool tagCreated;
+  final bool cancelled;
+  final String message;
+  final bool deletionsSucceeded;
+
+  bool get allMerged => items.isNotEmpty && items.every((item) => item.merged);
+
+  bool get succeeded =>
+      targetCheckedOut &&
+      allMerged &&
+      !cancelled &&
+      deletionsSucceeded &&
+      tagCreated;
+}
+
 /// Infers the supported Git-flow family from a local branch name.
 /// 中文：从本地分支名推断受支持的 Git-flow 类型；不符合规范时返回 null。
 GitFlowBranchKind? gitFlowBranchKindForName(String branchName) {
@@ -210,6 +295,78 @@ List<String> orderGitFlowFinishTargets({
       sourceBranch: source,
       targetBranch: target,
       kind: kind,
+    ),
+    error: null,
+  );
+}
+
+/// Validates a multi-source local Git-flow Finish request without writing Git.
+/// 中文：校验多来源本地 Git-flow Finish 请求，不执行 Git 写操作。
+({GitFlowBatchFinishPlan? plan, String? error}) validateGitFlowBatchFinish({
+  required Iterable<String> sourceBranches,
+  required String targetBranch,
+  required Iterable<String> existingBranches,
+  required bool isAttachedHead,
+  required bool isWorkingTreeClean,
+  required bool hasActiveOperation,
+  bool deleteSourceBranches = false,
+  String? releaseTag,
+}) {
+  if (!isAttachedHead) {
+    return (plan: null, error: 'Git-flow Finish 需要附着在本地分支上。');
+  }
+  if (!isWorkingTreeClean) {
+    return (plan: null, error: 'Git-flow Finish 需要干净的工作区。');
+  }
+  if (hasActiveOperation) {
+    return (plan: null, error: '当前存在未完成的 Git 操作，暂时不能完成 Git-flow 分支。');
+  }
+  final target = targetBranch.trim();
+  if (!_isLocalBranchName(target)) {
+    return (plan: null, error: '请选择有效的本地目标分支。');
+  }
+  final existing = existingBranches.map((branch) => branch.trim()).toSet();
+  if (!existing.contains(target)) {
+    return (plan: null, error: '目标分支 $target 不存在或未加载。');
+  }
+  final sources = <String>[];
+  final seen = <String>{};
+  for (final raw in sourceBranches) {
+    final source = raw.trim();
+    if (source.isEmpty || !seen.add(source)) continue;
+    if (source == target) {
+      return (plan: null, error: '来源分支不能与目标分支相同。');
+    }
+    if (!_isLocalBranchName(source) ||
+        gitFlowBranchKindForName(source) == null) {
+      return (plan: null, error: '来源分支 $source 不是受支持的 Git-flow 分支。');
+    }
+    if (!existing.contains(source)) {
+      return (plan: null, error: '来源分支 $source 不存在或未加载。');
+    }
+    sources.add(source);
+  }
+  if (sources.isEmpty) {
+    return (plan: null, error: '至少选择一个 Git-flow 来源分支。');
+  }
+  final normalizedTag = releaseTag?.trim();
+  if (normalizedTag != null && !_isReleaseTagName(normalizedTag)) {
+    return (plan: null, error: '版本标签必须使用安全的本地标签名，例如 v1.2.3。');
+  }
+  if (normalizedTag != null &&
+      !sources.any((source) {
+        final kind = gitFlowBranchKindForName(source);
+        return kind == GitFlowBranchKind.release ||
+            kind == GitFlowBranchKind.hotfix;
+      })) {
+    return (plan: null, error: '只有 release 或 hotfix 来源才能创建版本标签。');
+  }
+  return (
+    plan: GitFlowBatchFinishPlan(
+      sourceBranches: sources,
+      targetBranch: target,
+      deleteSourceBranches: deleteSourceBranches,
+      releaseTag: normalizedTag,
     ),
     error: null,
   );
@@ -324,3 +481,8 @@ final _semanticVersionPattern = RegExp(
 
 bool _isSemanticVersion(String value) =>
     _semanticVersionPattern.hasMatch(value);
+
+bool _isReleaseTagName(String value) {
+  final version = value.startsWith('v') ? value.substring(1) : value;
+  return _isSemanticVersion(version) && value.length <= 128;
+}

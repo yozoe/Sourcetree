@@ -7,6 +7,47 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:git_desktop/src/presentation/presentation.dart';
 
 void main() {
+  testWidgets('offers a visible action to restore hidden changes', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(900, 700));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    final first = const RepositoryChangeViewData(
+      path: 'first.txt',
+      kind: RepositoryChangeKind.modified,
+    );
+    final second = const RepositoryChangeViewData(
+      path: 'second.txt',
+      kind: RepositoryChangeKind.modified,
+    );
+    var restored = false;
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'example',
+              path: '/tmp/example',
+              currentBranch: 'main',
+              changes: [first, second],
+              visibleChanges: [first],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onClearHiddenChanges: () => restored = true,
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('显示全部隐藏变更'), findsOneWidget);
+    await tester.tap(
+      find.byKey(const ValueKey<String>('show-all-hidden-changes')),
+    );
+    expect(restored, isTrue);
+  });
+
   testWidgets('shows a three-pane skeleton while initially loading', (
     tester,
   ) async {
@@ -558,6 +599,7 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.text('打开内部 Diff 工具'), findsOneWidget);
+    expect(find.text('打开外部 Merge 并写回'), findsOneWidget);
     expect(find.textContaining('使用当前基线版本解决'), findsOneWidget);
     expect(find.textContaining('使用待应用版本解决'), findsOneWidget);
     expect(find.text('重新合并'), findsOneWidget);
@@ -835,6 +877,209 @@ void main() {
       expect(selectedAction, RepositoryCommitFileContextAction.externalDiff);
     },
   );
+
+  testWidgets('shows enabled custom actions with their stable IDs', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    CommitFileViewData? selectedFile;
+    String? selectedCustomAction;
+    const commitFile = CommitFileViewData(
+      path: 'lib/main.dart',
+      kind: RepositoryChangeKind.modified,
+    );
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              selectedCommit: CommitDetailsViewData(
+                oid: '0123456789abcdef',
+                subject: 'Custom action menu',
+                author: 'Test User',
+                authoredAt: '2026-08-25 12:00',
+              ),
+              commitChanges: [commitFile],
+            ),
+          ),
+          callbacks: RepositoryOverviewCallbacks(
+            onCommitFileSelected: (file) => selectedFile = file,
+            customActions: const [
+              RepositoryCustomActionViewData(
+                id: 'format',
+                displayName: '格式化',
+                isEnabled: true,
+                requiresFilePath: true,
+              ),
+            ],
+            onCommitFileCustomAction: (file, actionId) {
+              selectedFile = file;
+              selectedCustomAction = actionId;
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('main.dart')),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+    expect(find.text('自定义操作'), findsOneWidget);
+    expect(find.text('自定义操作（待实现）'), findsNothing);
+    await tester.tap(find.text('自定义操作'));
+    await tester.pumpAndSettle();
+    expect(find.text('格式化'), findsOneWidget);
+    expect(
+      tester
+          .widget<MenuItemButton>(find.widgetWithText(MenuItemButton, '格式化'))
+          .onPressed,
+      isNotNull,
+    );
+    await tester.tap(find.text('格式化'));
+    await tester.pumpAndSettle();
+    expect(selectedFile, commitFile);
+    expect(selectedCustomAction, 'format');
+  });
+
+  testWidgets(
+    'shows and invokes enabled custom actions for one workspace file',
+    (tester) async {
+      await tester.binding.setSurfaceSize(const Size(1280, 800));
+      addTearDown(() => tester.binding.setSurfaceSize(null));
+      RepositoryChangeViewData? selectedChange;
+      String? selectedCustomAction;
+      const change = RepositoryChangeViewData(
+        path: 'lib/main.dart',
+        kind: RepositoryChangeKind.modified,
+      );
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: RepositoryOverview(
+            data: const RepositoryOverviewViewData.ready(
+              RepositoryViewData(
+                name: 'playground',
+                path: '/tmp/playground',
+                currentBranch: 'main',
+                isWorkingTreeClean: false,
+                changes: [change],
+              ),
+            ),
+            callbacks: RepositoryOverviewCallbacks(
+              customActions: const [
+                RepositoryCustomActionViewData(
+                  id: 'format',
+                  displayName: '格式化',
+                  isEnabled: true,
+                  requiresFilePath: true,
+                ),
+              ],
+              onChangeCustomAction: (file, actionId) {
+                selectedChange = file;
+                selectedCustomAction = actionId;
+              },
+            ),
+          ),
+        ),
+      );
+      await tester.pumpAndSettle();
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.text('main.dart')),
+        kind: PointerDeviceKind.mouse,
+        buttons: kSecondaryMouseButton,
+      );
+      await gesture.up();
+      await tester.pumpAndSettle();
+
+      expect(find.text('自定义操作'), findsOneWidget);
+      final submenu = tester.widget<SubmenuButton>(
+        find.ancestor(
+          of: find.text('自定义操作'),
+          matching: find.byType(SubmenuButton),
+        ),
+      );
+      final action = submenu.menuChildren.single as MenuItemButton;
+      expect(action.onPressed, isNotNull);
+      action.onPressed!();
+      expect(selectedChange, change);
+      expect(selectedCustomAction, 'format');
+    },
+  );
+
+  testWidgets('disables file custom actions for a multi-selection', (
+    tester,
+  ) async {
+    await tester.binding.setSurfaceSize(const Size(1280, 800));
+    addTearDown(() => tester.binding.setSurfaceSize(null));
+    const changes = [
+      RepositoryChangeViewData(
+        path: 'one.dart',
+        kind: RepositoryChangeKind.modified,
+      ),
+      RepositoryChangeViewData(
+        path: 'two.dart',
+        kind: RepositoryChangeKind.modified,
+      ),
+    ];
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: RepositoryOverview(
+          data: const RepositoryOverviewViewData.ready(
+            RepositoryViewData(
+              name: 'playground',
+              path: '/tmp/playground',
+              currentBranch: 'main',
+              isWorkingTreeClean: false,
+              changes: changes,
+            ),
+          ),
+          callbacks: const RepositoryOverviewCallbacks(
+            customActions: [
+              RepositoryCustomActionViewData(
+                id: 'format',
+                displayName: '格式化',
+                isEnabled: true,
+                requiresFilePath: true,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    await tester.tap(find.text('one.dart'));
+    await tester.sendKeyDownEvent(LogicalKeyboardKey.meta);
+    await tester.tap(find.text('two.dart'));
+    await tester.sendKeyUpEvent(LogicalKeyboardKey.meta);
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('two.dart')),
+      kind: PointerDeviceKind.mouse,
+      buttons: kSecondaryMouseButton,
+    );
+    await gesture.up();
+    await tester.pumpAndSettle();
+
+    expect(find.text('自定义操作'), findsOneWidget);
+    final submenu = tester.widget<SubmenuButton>(
+      find.ancestor(
+        of: find.text('自定义操作'),
+        matching: find.byType(SubmenuButton),
+      ),
+    );
+    final action = submenu.menuChildren.single as MenuItemButton;
+    expect(action.onPressed, isNull);
+  });
 
   testWidgets('resizes the historical commit file list', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1280, 800));

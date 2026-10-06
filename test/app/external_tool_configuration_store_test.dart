@@ -8,7 +8,7 @@ import 'package:git_desktop/src/app/external_tool_configuration.dart';
 import 'package:git_desktop/src/app/external_tool_configuration_store.dart';
 
 void main() {
-  test('persists a valid read-only configuration atomically', () async {
+  test('persists a valid external-tool configuration atomically', () async {
     final directory = await Directory.systemTemp.createTemp(
       'external-tool-store-',
     );
@@ -66,32 +66,37 @@ void main() {
     expect(await store.load(), isNull);
   });
 
-  test('does not persist merge write-back or invalid configurations', () async {
-    final directory = await Directory.systemTemp.createTemp(
-      'external-tool-store-',
-    );
-    addTearDown(() => directory.delete(recursive: true));
-    final store = FileExternalToolConfigurationStore(
-      file: File('${directory.path}/external-tool.json'),
-    );
-    final merge = ExternalToolConfiguration(
-      displayName: 'Merge',
-      executablePath: '/tool',
-      arguments: const ['{before}', '{after}'],
-      kind: ExternalToolKind.mergeWriteBack,
-    );
-    await expectLater(store.save(merge), throwsArgumentError);
-    await expectLater(
-      store.save(
-        ExternalToolConfiguration(
-          displayName: 'Invalid',
-          executablePath: 'relative/tool',
-          arguments: const ['{before}', '{after}'],
+  test(
+    'persists merge write-back and rejects invalid configurations',
+    () async {
+      final directory = await Directory.systemTemp.createTemp(
+        'external-tool-store-',
+      );
+      addTearDown(() => directory.delete(recursive: true));
+      final store = FileExternalToolConfigurationStore(
+        file: File('${directory.path}/external-tool.json'),
+      );
+      final merge = ExternalToolConfiguration(
+        displayName: 'Merge',
+        executablePath: '/tool',
+        arguments: const ['{base}', '{ours}', '{theirs}', '{result}'],
+        kind: ExternalToolKind.mergeWriteBack,
+        enabled: true,
+      );
+      await store.save(merge);
+      expect((await store.load())?.kind, ExternalToolKind.mergeWriteBack);
+      await expectLater(
+        store.save(
+          ExternalToolConfiguration(
+            displayName: 'Invalid',
+            executablePath: 'relative/tool',
+            arguments: const ['{before}', '{after}'],
+          ),
         ),
-      ),
-      throwsArgumentError,
-    );
-  });
+        throwsArgumentError,
+      );
+    },
+  );
 
   test('clearing configuration is an explicit atomic record', () async {
     final directory = await Directory.systemTemp.createTemp(

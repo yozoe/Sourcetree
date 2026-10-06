@@ -106,6 +106,146 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testCustomActionMenuItemValidatesStablePayloadAndPreservesFileScope() {
+    let item = GitDesktopCustomActionMenuItem(
+      dictionary: [
+        "id": "format.swift",
+        "displayName": "格式化",
+        "requiresFilePath": true,
+        "isEnabled": true,
+      ]
+    )
+
+    XCTAssertEqual(item?.id, "format.swift")
+    XCTAssertEqual(item?.displayName, "格式化")
+    XCTAssertEqual(item?.requiresFilePath, true)
+    XCTAssertEqual(item?.isEnabled, true)
+
+    XCTAssertNil(
+      GitDesktopCustomActionMenuItem(
+        dictionary: [
+          "displayName": "缺少 ID",
+          "requiresFilePath": false,
+          "isEnabled": true,
+        ]
+      )
+    )
+    XCTAssertNil(
+      GitDesktopCustomActionMenuItem(
+        dictionary: [
+          "id": "invalid id",
+          "displayName": "非法 ID",
+          "requiresFilePath": false,
+          "isEnabled": true,
+        ]
+      )
+    )
+    XCTAssertNil(
+      GitDesktopCustomActionMenuItem(
+        dictionary: [
+          "id": "missing-scope",
+          "displayName": "缺少范围",
+          "isEnabled": true,
+        ]
+      )
+    )
+    XCTAssertNil(
+      GitDesktopCustomActionMenuItem(
+        dictionary: [
+          "id": "missing-enabled",
+          "displayName": "缺少启用状态",
+          "requiresFilePath": false,
+        ]
+      )
+    )
+    XCTAssertNil(
+      GitDesktopCustomActionMenuItem(
+        dictionary: [
+          "id": "wrong-enabled-type",
+          "displayName": "错误启用类型",
+          "requiresFilePath": false,
+          "isEnabled": "true",
+        ]
+      )
+    )
+    XCTAssertNil(
+      GitDesktopCustomActionMenuItem(
+        dictionary: [
+          "id": "empty-name",
+          "displayName": "",
+          "requiresFilePath": false,
+          "isEnabled": true,
+        ]
+      )
+    )
+    XCTAssertNil(
+      GitDesktopCustomActionMenuItem(
+        dictionary: [
+          "id": "blank-name",
+          "displayName": " \n ",
+          "requiresFilePath": false,
+          "isEnabled": true,
+        ]
+      )
+    )
+  }
+
+  func testCustomActionMenuDispatchRequiresKeyWorkspaceAndEnabledValidatedID() {
+    let enabled = GitDesktopCustomActionMenuItem(
+      dictionary: [
+        "id": "format",
+        "displayName": "格式化",
+        "requiresFilePath": true,
+        "isEnabled": true,
+      ]
+    )!
+    let disabled = GitDesktopCustomActionMenuItem(
+      dictionary: [
+        "id": "lint",
+        "displayName": "检查",
+        "requiresFilePath": false,
+        "isEnabled": false,
+      ]
+    )!
+    let actions = [enabled, disabled]
+
+    XCTAssertFalse(
+      gitDesktopCanPerformCustomActionMenuAction(
+        hasKeyWorkspace: false,
+        actionID: "format",
+        actions: actions
+      )
+    )
+    XCTAssertFalse(
+      gitDesktopCanPerformCustomActionMenuAction(
+        hasKeyWorkspace: true,
+        actionID: "lint",
+        actions: actions
+      )
+    )
+    XCTAssertFalse(
+      gitDesktopCanPerformCustomActionMenuAction(
+        hasKeyWorkspace: true,
+        actionID: "unknown",
+        actions: actions
+      )
+    )
+    XCTAssertFalse(
+      gitDesktopCanPerformCustomActionMenuAction(
+        hasKeyWorkspace: true,
+        actionID: "invalid id",
+        actions: actions
+      )
+    )
+    XCTAssertTrue(
+      gitDesktopCanPerformCustomActionMenuAction(
+        hasKeyWorkspace: true,
+        actionID: "format",
+        actions: actions
+      )
+    )
+  }
+
   func testRepositoryOperationMenuNamesUseStableProtocolIdentifiers() {
     XCTAssertEqual(GitDesktopRepositoryOperation(rawValue: "merge")?.menuName, "合并")
     XCTAssertEqual(GitDesktopRepositoryOperation(rawValue: "rebase")?.menuName, "变基")
@@ -648,6 +788,79 @@ class RunnerTests: XCTestCase {
     )
   }
 
+  func testScreenParameterNotificationRecoversAnOffscreenWorkspaceWindow() throws {
+    let coordinator = WindowCoordinator()
+    let workspace = try WorkspaceFlutterWindowController(
+      repositoryPath: "/tmp/screen-parameter-workspace",
+      initialAction: nil,
+      coordinator: coordinator
+    )
+    defer { workspace.close() }
+    coordinator.registerRepository(
+      "/tmp/screen-parameter-workspace",
+      for: workspace
+    )
+
+    let window = try XCTUnwrap(workspace.window as? MainFlutterWindow)
+    let visibleFrame = (window.screen ?? NSScreen.main)?.visibleFrame
+    let visible = try XCTUnwrap(visibleFrame)
+    let offscreen = NSRect(
+      x: visible.maxX + 500,
+      y: visible.maxY + 500,
+      width: min(900, visible.width),
+      height: min(600, visible.height)
+    )
+    window.setFrame(offscreen, display: false)
+    XCTAssertFalse(visible.intersects(window.frame))
+
+    NotificationCenter.default.post(
+      name: NSApplication.didChangeScreenParametersNotification,
+      object: nil
+    )
+    RunLoop.main.run(until: Date(timeIntervalSinceNow: 0.05))
+
+    XCTAssertTrue(visible.contains(window.frame))
+  }
+
+  func testRealMultipleScreensMoveWorkspaceBetweenVisibleFrames() throws {
+    let screens = NSScreen.screens
+    try XCTSkipUnless(
+      screens.count >= 2,
+      "Requires at least two physical displays in the macOS test environment."
+    )
+    let sourceScreen = screens[0]
+    let targetScreen = screens[1]
+    let coordinator = WindowCoordinator()
+    let workspace = try WorkspaceFlutterWindowController(
+      repositoryPath: "/tmp/real-multiple-screen-workspace",
+      initialAction: nil,
+      coordinator: coordinator
+    )
+    defer { workspace.close() }
+    coordinator.registerRepository(
+      "/tmp/real-multiple-screen-workspace",
+      for: workspace
+    )
+
+    let window = try XCTUnwrap(workspace.window as? MainFlutterWindow)
+    let source = sourceScreen.visibleFrame
+    let target = targetScreen.visibleFrame
+    let startingFrame = gitDesktopWindowFrame(
+      moving: NSRect(
+        x: source.minX + 40,
+        y: source.minY + 40,
+        width: min(900, source.width),
+        height: min(600, source.height)
+      ),
+      from: source,
+      to: target
+    )
+    window.setFrame(startingFrame, display: false)
+
+    XCTAssertTrue(target.contains(window.frame))
+    XCTAssertEqual(window.frame.size, startingFrame.size)
+  }
+
   func testMergedWorkspaceTabToggleAndDetachmentKeepEnginesAlive() throws {
     let suiteName = "git-desktop-tab-detach-test-\(UUID().uuidString)"
     let defaults = UserDefaults(suiteName: suiteName)!
@@ -1018,6 +1231,26 @@ class RunnerTests: XCTestCase {
     XCTAssertEqual(workspace.workspaceMenuGeneration, 2)
     XCTAssertTrue(workspace.canPushFromMenu)
     XCTAssertEqual(workspace.fileMenuTargets.repositoryRootPath, "/tmp/newer")
+  }
+
+  func testWorkspaceActionIDsAreStableAndReservedActionsAreExplicit() {
+    let values = GitDesktopWorkspaceActionID.allCases.map(\.rawValue)
+    XCTAssertEqual(Set(values).count, values.count)
+    XCTAssertEqual(GitDesktopWorkspaceActionID.fetch.rawValue, "fetch")
+    XCTAssertEqual(GitDesktopWorkspaceActionID.pull.rawValue, "pull")
+    XCTAssertEqual(GitDesktopWorkspaceActionID.stash.rawValue, "stash")
+    XCTAssertEqual(
+      GitDesktopWorkspaceActionID.hideChanges.rawValue,
+      "hideChanges"
+    )
+    XCTAssertEqual(
+      GitDesktopWorkspaceActionID.refreshRemoteStatus.rawValue,
+      "refreshRemoteStatus"
+    )
+    XCTAssertEqual(
+      GitDesktopWorkspaceActionID.updateFromUpstream.rawValue,
+      "updateFromUpstream"
+    )
   }
 
   func testWorkspaceHistoryReturnsThePreviouslyFocusedRemainingWindow() {

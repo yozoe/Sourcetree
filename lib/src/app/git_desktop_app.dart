@@ -11,11 +11,15 @@ import 'package:path/path.dart' as path_utils;
 import '../git/git.dart';
 import '../presentation/presentation.dart';
 import 'desktop_window_bridge.dart';
+import 'custom_action_configuration.dart';
+import 'custom_action_configuration_store.dart';
+import 'custom_action_runner.dart';
 import 'external_tool_configuration.dart';
 import 'external_tool_configuration_store.dart';
 import 'external_tool_runner.dart';
 import 'git_flow_start_dialog.dart';
 import 'git_flow_finish_dialog.dart';
+import 'git_flow_batch_finish_dialog.dart';
 import 'git_flow_semantics.dart';
 import 'git_desktop_theme.dart';
 import 'git_askpass_prompt_coordinator.dart';
@@ -107,6 +111,9 @@ bool _isLoadedAncestorOfHead({
   bool canCheckout,
   bool canCommitAll,
   bool canCommitSelected,
+  bool canHideChanges,
+  bool canRefreshRemoteStatus,
+  bool canUpdateFromUpstream,
   bool canCreateBranch,
   bool canStartGitFlow,
   bool canCommit,
@@ -190,6 +197,27 @@ nativeWorkspaceMenuAvailability(
       menuSelection.every(
         (change) => change.isActionEnabled && change.isPathValidUtf8,
       );
+  final canHideChanges =
+      session.phase == RepositorySessionPhase.ready &&
+      repository != null &&
+      repository.selectedCommit == null &&
+      menuSelection.isNotEmpty;
+  final canRefreshRemoteStatus =
+      session.phase == RepositorySessionPhase.ready &&
+      repository != null &&
+      session.remoteNames.isNotEmpty &&
+      !repository.blocksRepositoryMutations;
+  final canUpdateFromUpstream =
+      session.phase == RepositorySessionPhase.ready &&
+      repository != null &&
+      repository.isWorkingTreeClean &&
+      session.status?.isClean == true &&
+      !repository.isDetachedHead &&
+      session.status?.branch.isDetached != true &&
+      session.status?.branch.isUnborn != true &&
+      session.status?.branch.upstream != null &&
+      session.operationState == GitRepositoryOperationState.none &&
+      !repository.blocksRepositoryMutations;
   final hasRecoverableOperation =
       repository != null &&
       session.repository != null &&
@@ -290,6 +318,9 @@ nativeWorkspaceMenuAvailability(
     canCheckout: canApplyPatch && hasCheckoutTarget,
     canCommitAll: canApplyPatch && commitAllChanges.isNotEmpty,
     canCommitSelected: canApplyPatch && canCommitSelection,
+    canHideChanges: canHideChanges,
+    canRefreshRemoteStatus: canRefreshRemoteStatus,
+    canUpdateFromUpstream: canUpdateFromUpstream,
     canContinueOperation:
         hasRecoverableOperation &&
         session.status != null &&
@@ -401,6 +432,52 @@ nativeWorkspaceMenuAvailability(
     canViewSelectedFileHistory: canViewSelectedFileHistory,
   );
 }
+
+/// Maps enabled, valid custom-action definitions to historical-file menu data.
+///
+/// 中文：将已启用且有效的自定义操作映射为历史文件菜单数据；信任、仓库会话和
+/// 当前操作状态只决定 capability，不会把可执行路径或 argv 暴露给视图层。
+List<RepositoryCustomActionViewData> customActionMenuItems(
+  RepositorySessionState session,
+  Iterable<CustomActionConfiguration> configurations,
+  RepositoryTrustStatus trustStatus,
+) {
+  final canOffer =
+      session.phase == RepositorySessionPhase.ready &&
+      session.repository?.workTreeRoot != null &&
+      session.operationState == GitRepositoryOperationState.none &&
+      !session.isWorkingTreeBusy;
+  return [
+    for (final configuration in configurations)
+      if (configuration.enabled && configuration.validate().isEmpty)
+        RepositoryCustomActionViewData(
+          id: configuration.id,
+          displayName: configuration.displayName,
+          isEnabled:
+              canOffer &&
+              canActivateCustomAction(
+                trustStatus: trustStatus,
+                configuration: configuration,
+              ),
+          requiresFilePath:
+              configuration.scope == CustomActionScope.selectedFile,
+        ),
+  ];
+}
+
+/// Returns whether a validated custom action can appear as a native menu item.
+///
+/// 中文：判断已通过仓库 capability 的自定义操作能否出现在原生菜单；只有
+/// 单文件范围要求当前存在一个有效的单文件选择，仓库范围不依赖文件选择。
+bool canExposeNativeCustomAction({
+  required bool actionEnabled,
+  required bool requiresFilePath,
+  required bool hasSelectedCommit,
+  required bool hasSingleValidFileSelection,
+}) =>
+    actionEnabled &&
+    !hasSelectedCommit &&
+    (!requiresFilePath || hasSingleValidFileSelection);
 
 /// Resolves the current Flutter file selection into absolute workspace paths
 /// for read-only native macOS actions.
@@ -868,6 +945,9 @@ class _RepositoryWorkspaceScreenState
   bool? _lastNativeMarkConflictResolvedAvailability;
   bool? _lastNativeCommitAllAvailability;
   bool? _lastNativeCommitSelectedAvailability;
+  bool? _lastNativeHideChangesAvailability;
+  bool? _lastNativeRefreshRemoteStatusAvailability;
+  bool? _lastNativeUpdateFromUpstreamAvailability;
   bool? _lastNativeCommitAvailability;
   bool? _lastNativeContinueOperationAvailability;
   bool? _lastNativeExternalDiffSelectedAvailability;
@@ -898,6 +978,7 @@ class _RepositoryWorkspaceScreenState
   String? _lastNativeConflictStage2Label;
   String? _lastNativeConflictStage3Label;
   String? _lastNativeFileTargetSignature;
+  String? _lastNativeCustomActionSignature;
   int _nativeWorkspaceMenuGeneration = 0;
   Set<String>? _nativeSelectedChangeKeys;
   String? _nativeSelectionRepositoryId;
@@ -947,10 +1028,17 @@ class _RepositoryWorkspaceScreenState
   /// 使用历史文件选择，其余选择在进入会话写入流程前仍会重新校验。
   Future<void> _handleWorkspaceMenuAction(String action) async {
     if (!mounted) return;
+    if (DesktopWorkspaceActionId.isCustomAction(action)) {
+      final actionId = action.substring(
+        DesktopWorkspaceActionId.customActionPrefix.length,
+      );
+      await _handleNativeCustomAction(actionId);
+      return;
+    }
     switch (action) {
-      case 'refresh':
+      case DesktopWorkspaceActionId.refresh:
         await ref.read(repositorySessionProvider.notifier).refresh();
-      case 'fetch':
+      case DesktopWorkspaceActionId.fetch:
         final overview = mapRepositoryOverview(
           ref.read(repositorySessionProvider),
         );
@@ -960,7 +1048,7 @@ class _RepositoryWorkspaceScreenState
             false) {
           _showFetchDialog();
         }
-      case 'commit':
+      case DesktopWorkspaceActionId.commit:
         final overview = mapRepositoryOverview(
           ref.read(repositorySessionProvider),
         );
@@ -970,7 +1058,7 @@ class _RepositoryWorkspaceScreenState
             false) {
           _showCommitDialog();
         }
-      case 'commitAll':
+      case DesktopWorkspaceActionId.commitAll:
         final session = ref.read(repositorySessionProvider);
         final overview = mapRepositoryOverview(session);
         final availability = nativeWorkspaceMenuAvailability(
@@ -986,7 +1074,7 @@ class _RepositoryWorkspaceScreenState
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('当前没有可由“提交所有”包含的已跟踪改动。')));
-      case 'commitSelected':
+      case DesktopWorkspaceActionId.commitSelected:
         final session = ref.read(repositorySessionProvider);
         final overview = mapRepositoryOverview(session);
         final selected = _nativeSelectedChanges(overview);
@@ -1006,39 +1094,91 @@ class _RepositoryWorkspaceScreenState
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('请选择至少一个可提交的工作区文件。')));
-      case 'continueOperation':
+      case DesktopWorkspaceActionId.hideChanges:
+        final session = ref.read(repositorySessionProvider);
+        final overview = mapRepositoryOverview(session);
+        final selected = _nativeSelectedChanges(overview);
+        final availability = nativeWorkspaceMenuAvailability(
+          session,
+          overview,
+          selectedChanges: selected,
+        );
+        if (availability.canHideChanges && selected.isNotEmpty) {
+          ref.read(repositorySessionProvider.notifier).hideChanges(selected);
+          _nativeSelectedChangeKeys = const {};
+          return;
+        }
+        if (!mounted) return;
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('请选择要隐藏的工作区变更。')));
+      case DesktopWorkspaceActionId.refreshRemoteStatus:
+        final session = ref.read(repositorySessionProvider);
+        final overview = mapRepositoryOverview(session);
+        final availability = nativeWorkspaceMenuAvailability(
+          session,
+          overview,
+          selectedChanges: _nativeSelectedChanges(overview),
+        );
+        if (availability.canRefreshRemoteStatus) {
+          await _showRefreshRemoteStatusDialog();
+          return;
+        }
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(content: Text('当前没有可刷新的远端，或仓库正在执行其他操作。')),
+        );
+      case DesktopWorkspaceActionId.updateFromUpstream:
+        final session = ref.read(repositorySessionProvider);
+        final overview = mapRepositoryOverview(session);
+        final availability = nativeWorkspaceMenuAvailability(
+          session,
+          overview,
+          selectedChanges: _nativeSelectedChanges(overview),
+        );
+        if (availability.canUpdateFromUpstream) {
+          await _showUpdateFromUpstreamDialog();
+          return;
+        }
+        if (!mounted) return;
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('当前分支无法安全执行更新，请确认 upstream、工作区和 Git 操作状态。'),
+          ),
+        );
+      case DesktopWorkspaceActionId.continueOperation:
         await _continueActiveRepositoryOperation();
-      case 'skipOperation':
+      case DesktopWorkspaceActionId.skipOperation:
         await _skipActiveRepositoryOperation();
-      case 'abortOperation':
+      case DesktopWorkspaceActionId.abortOperation:
         await _confirmAbortActiveRepositoryOperation();
-      case 'useConflictStage2':
+      case DesktopWorkspaceActionId.useConflictStage2:
         await _resolveSelectedConflictFromNativeMenu(
           RepositoryConflictAction.useOurs,
         );
-      case 'useConflictStage3':
+      case DesktopWorkspaceActionId.useConflictStage3:
         await _resolveSelectedConflictFromNativeMenu(
           RepositoryConflictAction.useTheirs,
         );
-      case 'markConflictResolved':
+      case DesktopWorkspaceActionId.markConflictResolved:
         await _resolveSelectedConflictFromNativeMenu(
           RepositoryConflictAction.markResolved,
         );
-      case 'viewSelectedFileHistory':
+      case DesktopWorkspaceActionId.viewSelectedFileHistory:
         await _showNativeSelectedFileHistory();
-      case 'externalDiffSelected':
+      case DesktopWorkspaceActionId.externalDiffSelected:
         await _showNativeSelectedExternalDiff();
-      case 'ignoreSelected':
+      case DesktopWorkspaceActionId.ignoreSelected:
         await _showIgnoreSelectedDialog();
-      case 'copySelected':
+      case DesktopWorkspaceActionId.copySelected:
         await _showCopySelectedDialog();
-      case 'moveSelected':
+      case DesktopWorkspaceActionId.moveSelected:
         await _showMoveSelectedDialog();
-      case 'reviewSelected':
+      case DesktopWorkspaceActionId.reviewSelected:
         await _showNativeSelectedReview();
-      case 'resetRepository':
+      case DesktopWorkspaceActionId.resetRepository:
         await _showRepositoryResetDialog();
-      case 'resetSelected':
+      case DesktopWorkspaceActionId.resetSelected:
         final session = ref.read(repositorySessionProvider);
         final overview = mapRepositoryOverview(session);
         final selected = _nativeSelectedChanges(overview);
@@ -1055,7 +1195,7 @@ class _RepositoryWorkspaceScreenState
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('请选择可恢复到 HEAD 的已跟踪修改或删除文件。')),
         );
-      case 'resetToSelectedCommit':
+      case DesktopWorkspaceActionId.resetToSelectedCommit:
         final session = ref.read(repositorySessionProvider);
         final overview = mapRepositoryOverview(session);
         final availability = nativeWorkspaceMenuAvailability(
@@ -1072,9 +1212,9 @@ class _RepositoryWorkspaceScreenState
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('请选择一个已加载的历史提交。')));
-      case 'checkout':
+      case DesktopWorkspaceActionId.checkout:
         await _showCheckoutDialog();
-      case 'merge':
+      case DesktopWorkspaceActionId.merge:
         final overview = mapRepositoryOverview(
           ref.read(repositorySessionProvider),
         );
@@ -1084,7 +1224,7 @@ class _RepositoryWorkspaceScreenState
             false) {
           await _showMergeBranchDialog();
         }
-      case 'interactiveRebase':
+      case DesktopWorkspaceActionId.interactiveRebase:
         final session = ref.read(repositorySessionProvider);
         final overview = mapRepositoryOverview(session);
         final availability = nativeWorkspaceMenuAvailability(
@@ -1101,9 +1241,9 @@ class _RepositoryWorkspaceScreenState
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(content: Text('请选择当前分支 HEAD 之前的提交，并确保工作区干净。')),
         );
-      case 'addRemote':
+      case DesktopWorkspaceActionId.addRemote:
         await _showAddRemoteDialog();
-      case 'tag':
+      case DesktopWorkspaceActionId.tag:
         final session = ref.read(repositorySessionProvider);
         final overview = mapRepositoryOverview(session);
         final targetCommitId =
@@ -1116,7 +1256,7 @@ class _RepositoryWorkspaceScreenState
         if (availability.canTag && targetCommitId != null) {
           await _showTagDialog(defaultCommitId: targetCommitId);
         }
-      case 'pull':
+      case DesktopWorkspaceActionId.pull:
         final overview = mapRepositoryOverview(
           ref.read(repositorySessionProvider),
         );
@@ -1126,7 +1266,7 @@ class _RepositoryWorkspaceScreenState
             false) {
           _confirmPull();
         }
-      case 'push':
+      case DesktopWorkspaceActionId.push:
         final overview = mapRepositoryOverview(
           ref.read(repositorySessionProvider),
         );
@@ -1136,7 +1276,7 @@ class _RepositoryWorkspaceScreenState
             false) {
           _confirmPush();
         }
-      case 'createBranch':
+      case DesktopWorkspaceActionId.createBranch:
         final overview = mapRepositoryOverview(
           ref.read(repositorySessionProvider),
         );
@@ -1146,7 +1286,7 @@ class _RepositoryWorkspaceScreenState
             false) {
           _showBranchManagerDialog();
         }
-      case 'startGitFlow':
+      case DesktopWorkspaceActionId.startGitFlow:
         final session = ref.read(repositorySessionProvider);
         final overview = mapRepositoryOverview(session);
         final availability = nativeWorkspaceMenuAvailability(
@@ -1164,7 +1304,7 @@ class _RepositoryWorkspaceScreenState
             content: Text('Git-flow Start 需要附着 HEAD、干净工作区且没有其他 Git 操作。'),
           ),
         );
-      case 'stash':
+      case DesktopWorkspaceActionId.stash:
         final overview = mapRepositoryOverview(
           ref.read(repositorySessionProvider),
         );
@@ -1174,17 +1314,17 @@ class _RepositoryWorkspaceScreenState
             false) {
           await _showCreateStashDialog();
         }
-      case 'createPatch':
+      case DesktopWorkspaceActionId.createPatch:
         await _showCreatePatchDialog();
-      case 'applyPatch':
+      case DesktopWorkspaceActionId.applyPatch:
         await _showApplyPatchDialog();
-      case 'repositoryDetails':
+      case DesktopWorkspaceActionId.repositoryDetails:
         await _showRepositoryDetailsDialog();
-      case 'repositoryFeaturePending':
+      case DesktopWorkspaceActionId.repositoryFeaturePending:
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('该菜单功能待实现。')));
-      case 'stopTracking':
+      case DesktopWorkspaceActionId.stopTracking:
         final session = ref.read(repositorySessionProvider);
         final overview = mapRepositoryOverview(session);
         final selected = _nativeSelectedChanges(overview);
@@ -1205,8 +1345,8 @@ class _RepositoryWorkspaceScreenState
         ScaffoldMessenger.of(
           context,
         ).showSnackBar(const SnackBar(content: Text('请选择一个可停止追踪的已跟踪或已暂存文件。')));
-      case 'stageSelected':
-      case 'unstageSelected':
+      case DesktopWorkspaceActionId.stageSelected:
+      case DesktopWorkspaceActionId.unstageSelected:
         final session = ref.read(repositorySessionProvider);
         final overview = mapRepositoryOverview(session);
         final selected = _nativeSelectedChanges(overview);
@@ -1215,7 +1355,7 @@ class _RepositoryWorkspaceScreenState
           overview,
           selectedChanges: selected,
         );
-        final shouldStage = action == 'stageSelected';
+        final shouldStage = action == DesktopWorkspaceActionId.stageSelected;
         final canPerform = shouldStage
             ? availability.canStageSelected
             : availability.canUnstageSelected;
@@ -1236,7 +1376,7 @@ class _RepositoryWorkspaceScreenState
             content: Text(shouldStage ? '请选择一个可暂存的文件。' : '请选择一个可取消暂存的文件。'),
           ),
         );
-      case 'removeSelected':
+      case DesktopWorkspaceActionId.removeSelected:
         final session = ref.read(repositorySessionProvider);
         final overview = mapRepositoryOverview(session);
         final selected = _nativeSelectedChanges(overview);
@@ -1275,6 +1415,9 @@ class _RepositoryWorkspaceScreenState
     final canMarkConflictResolved = availability.canMarkConflictResolved;
     final canCommitAll = availability.canCommitAll;
     final canCommitSelected = availability.canCommitSelected;
+    final canHideChanges = availability.canHideChanges;
+    final canRefreshRemoteStatus = availability.canRefreshRemoteStatus;
+    final canUpdateFromUpstream = availability.canUpdateFromUpstream;
     final canCommit = availability.canCommit;
     final canContinueOperation = availability.canContinueOperation;
     final canExternalDiffSelected = availability.canExternalDiffSelected;
@@ -1315,6 +1458,38 @@ class _RepositoryWorkspaceScreenState
       overview,
       selectedChanges: _nativeSelectedChanges(overview),
     );
+    final selectedChanges = _nativeSelectedChanges(overview);
+    final customActionItems = [
+      for (final action in customActionMenuItems(
+        session,
+        ref.read(customActionConfigurationProvider).configurations,
+        ref.read(repositoryTrustProvider).status,
+      ))
+        <String, Object?>{
+          'id': action.id,
+          'displayName': action.displayName,
+          'requiresFilePath': action.requiresFilePath,
+          'isEnabled': canExposeNativeCustomAction(
+            actionEnabled: action.isEnabled,
+            requiresFilePath: action.requiresFilePath,
+            hasSelectedCommit: overview.repository?.selectedCommit != null,
+            hasSingleValidFileSelection:
+                selectedChanges.length == 1 &&
+                selectedChanges.single.isActionEnabled &&
+                selectedChanges.single.isPathValidUtf8,
+          ),
+        },
+    ];
+    final customActionSignature = customActionItems
+        .map(
+          (action) => [
+            action['id'],
+            action['displayName'],
+            action['requiresFilePath'],
+            action['isEnabled'],
+          ].join('\u0000'),
+        )
+        .join('\u0001');
     final fileTargetSignature = [
       fileTargets.repositoryRootPath ?? '',
       fileTargets.hasFileSelection.toString(),
@@ -1329,6 +1504,9 @@ class _RepositoryWorkspaceScreenState
             canMarkConflictResolved &&
         _lastNativeCommitAllAvailability == canCommitAll &&
         _lastNativeCommitSelectedAvailability == canCommitSelected &&
+        _lastNativeHideChangesAvailability == canHideChanges &&
+        _lastNativeRefreshRemoteStatusAvailability == canRefreshRemoteStatus &&
+        _lastNativeUpdateFromUpstreamAvailability == canUpdateFromUpstream &&
         _lastNativeCommitAvailability == canCommit &&
         _lastNativeContinueOperationAvailability == canContinueOperation &&
         _lastNativeExternalDiffSelectedAvailability ==
@@ -1361,7 +1539,8 @@ class _RepositoryWorkspaceScreenState
         _lastNativeActiveRepositoryOperation == activeRepositoryOperation &&
         _lastNativeConflictStage2Label == conflictLabels.$1 &&
         _lastNativeConflictStage3Label == conflictLabels.$2 &&
-        _lastNativeFileTargetSignature == fileTargetSignature) {
+        _lastNativeFileTargetSignature == fileTargetSignature &&
+        _lastNativeCustomActionSignature == customActionSignature) {
       return;
     }
     _lastNativeAddRemoteAvailability = canAddRemote;
@@ -1372,6 +1551,9 @@ class _RepositoryWorkspaceScreenState
     _lastNativeMarkConflictResolvedAvailability = canMarkConflictResolved;
     _lastNativeCommitAllAvailability = canCommitAll;
     _lastNativeCommitSelectedAvailability = canCommitSelected;
+    _lastNativeHideChangesAvailability = canHideChanges;
+    _lastNativeRefreshRemoteStatusAvailability = canRefreshRemoteStatus;
+    _lastNativeUpdateFromUpstreamAvailability = canUpdateFromUpstream;
     _lastNativeCommitAvailability = canCommit;
     _lastNativeContinueOperationAvailability = canContinueOperation;
     _lastNativeExternalDiffSelectedAvailability = canExternalDiffSelected;
@@ -1402,6 +1584,7 @@ class _RepositoryWorkspaceScreenState
     _lastNativeConflictStage2Label = conflictLabels.$1;
     _lastNativeConflictStage3Label = conflictLabels.$2;
     _lastNativeFileTargetSignature = fileTargetSignature;
+    _lastNativeCustomActionSignature = customActionSignature;
     try {
       final generation = ++_nativeWorkspaceMenuGeneration;
       await DesktopWindowBridge.setWorkspaceMenuState(
@@ -1414,6 +1597,9 @@ class _RepositoryWorkspaceScreenState
         canMarkConflictResolved: canMarkConflictResolved,
         canCommitAll: canCommitAll,
         canCommitSelected: canCommitSelected,
+        canHideChanges: canHideChanges,
+        canRefreshRemoteStatus: canRefreshRemoteStatus,
+        canUpdateFromUpstream: canUpdateFromUpstream,
         canCommit: canCommit,
         canContinueOperation: canContinueOperation,
         canExternalDiffSelected: canExternalDiffSelected,
@@ -1446,6 +1632,7 @@ class _RepositoryWorkspaceScreenState
         repositoryRootPath: fileTargets.repositoryRootPath,
         selectedFilePaths: fileTargets.selectedFilePaths,
         hasFileSelection: fileTargets.hasFileSelection,
+        customActions: customActionItems,
       );
     } on Object {
       // The Engine can be closing while a state notification is in flight.
@@ -1668,6 +1855,10 @@ class _RepositoryWorkspaceScreenState
           'Git 在变基过程中暂停了当前提交，通常是因为冲突。请解决冲突并暂存后继续变基，也可以跳过当前提交或放弃整个变基。跳过只放弃本次提交的应用，不会删除已有历史。',
         ),
         actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop('batch'),
+            child: const Text('批量完成/发布…'),
+          ),
           TextButton(
             onPressed: () =>
                 Navigator.of(context).pop(_RebasePromptAction.cancel),
@@ -2039,6 +2230,104 @@ class _RepositoryWorkspaceScreenState
       SnackBar(
         content: Text(fetched ? '已抓取远端更新。' : '抓取未完成，请查看仓库状态和错误信息。'),
         duration: const Duration(seconds: 3),
+      ),
+    );
+  }
+
+  /// Confirms a read-only remote-status refresh across all configured remotes.
+  ///
+  /// 中文：确认刷新当前仓库的全部已配置远端；固定不启用 prune 或全量标签，
+  /// 不检出、合并、变基、提交或推送，实际认证、取消和写后刷新复用 Fetch 边界。
+  Future<void> _showRefreshRemoteStatusDialog() async {
+    final session = ref.read(repositorySessionProvider);
+    final remoteNames = List<String>.of(session.remoteNames);
+    if (remoteNames.isEmpty || !mounted) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('刷新远程仓库状态'),
+        content: SizedBox(
+          width: 420,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Text('将从以下远端读取最新跟踪引用，不会删除已失效分支、抓取全部标签或改变当前工作树：'),
+              const SizedBox(height: 12),
+              for (final remoteName in remoteNames)
+                Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Text('• $remoteName'),
+                ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('刷新远端'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final refreshed = await ref
+        .read(repositorySessionProvider.notifier)
+        .fetchWithOptions(const GitFetchOptions(fetchAllRemotes: true));
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(refreshed ? '已刷新远程仓库状态。' : '远程状态刷新未完成，请查看仓库状态并重试。'),
+        duration: const Duration(seconds: 4),
+      ),
+    );
+  }
+
+  /// Confirms and performs the fixed fast-forward update from the current
+  /// branch's configured upstream.
+  ///
+  /// 中文：确认并执行当前分支针对已配置 upstream 的固定快进更新；不创建合并
+  /// 提交、不变基、不推送，取消不会启动 Git。
+  Future<void> _showUpdateFromUpstreamDialog() async {
+    final session = ref.read(repositorySessionProvider);
+    final branch = session.status?.branch;
+    final localBranch = branch?.head;
+    final upstream = branch?.upstream;
+    if (!mounted || localBranch == null || upstream == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        title: const Text('更新'),
+        content: Text(
+          '将把当前分支 $localBranch 从 $upstream 快进更新。\n\n'
+          '仅执行 git pull --ff-only：不会创建合并提交、不会变基、不会推送。\n'
+          '工作区和索引必须保持干净。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(dialogContext).pop(false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.of(dialogContext).pop(true),
+            child: const Text('更新'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !mounted) return;
+    final updated = await ref
+        .read(repositorySessionProvider.notifier)
+        .updateFromUpstream();
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(updated ? '已更新当前分支。' : '更新未完成，请查看仓库状态和错误信息。'),
+        duration: const Duration(seconds: 4),
       ),
     );
   }
@@ -2908,7 +3197,39 @@ class _RepositoryWorkspaceScreenState
       await _showGitFlowStartDialog();
     } else if (action == 'finish') {
       await _showGitFlowFinishDialog();
+    } else if (action == 'batch') {
+      await _showGitFlowBatchFinishDialog();
     }
+  }
+
+  /// Shows and executes the multi-source Git-flow Finish and local release flow.
+  /// 中文：显示并执行多来源 Git-flow Finish 及本地版本发布流程。
+  Future<void> _showGitFlowBatchFinishDialog() async {
+    final session = ref.read(repositorySessionProvider);
+    final plan = await showDialog<GitFlowBatchFinishPlan>(
+      context: context,
+      builder: (context) => GitFlowBatchFinishDialog(
+        localBranchNames: [
+          for (final branch in session.localBranches) branch.name,
+        ],
+        currentBranch: session.status?.branch.head,
+        isAttachedHead: session.status?.branch.isDetached == false,
+        isWorkingTreeClean: session.status?.isClean == true,
+        hasActiveOperation:
+            session.operationState != GitRepositoryOperationState.none,
+      ),
+    );
+    if (plan == null || !mounted) return;
+    final result = await ref
+        .read(repositorySessionProvider.notifier)
+        .finishGitFlowBatch(plan);
+    if (!mounted || result == null) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(result.message),
+        duration: const Duration(seconds: 5),
+      ),
+    );
   }
 
   /// Shows the frozen single-target Git-flow Finish form and executes only a
@@ -5062,6 +5383,24 @@ class _RepositoryWorkspaceScreenState
     RepositoryConflictAction action,
   ) async {
     final controller = ref.read(repositorySessionProvider.notifier);
+    if (action == RepositoryConflictAction.launchExternalMergeTool) {
+      final resolved = await controller.resolveConflictWithExternalMerge(
+        change,
+      );
+      if (!mounted) return;
+      ScaffoldMessenger.of(context)
+        ..hideCurrentSnackBar()
+        ..showSnackBar(
+          SnackBar(
+            content: Text(
+              resolved
+                  ? '已通过外部 Merge 保存 ${change.path} 并标记为已解决。'
+                  : '外部 Merge 未写回结果；请确认工具配置、仓库信任和冲突状态。',
+            ),
+          ),
+        );
+      return;
+    }
     if (action != RepositoryConflictAction.launchInternalDiffTool) {
       await controller.resolveConflict(change, action);
       return;
@@ -6135,6 +6474,443 @@ class _RepositoryWorkspaceScreenState
     ).showSnackBar(SnackBar(content: Text('“${file.path}”的该菜单功能待实现。')));
   }
 
+  /// Confirms and runs one configured custom action for the current historical
+  /// file selection, revalidating trust and selection after confirmation.
+  ///
+  /// 中文：确认并运行当前历史文件选择对应的自定义操作；确认后重新校验信任、
+  /// 仓库状态和提交文件选择，进程始终走取消与 Engine 关闭生命周期。
+  Future<void> _handleCommitFileCustomAction(
+    CommitFileViewData file,
+    String actionId,
+  ) async {
+    final configuration = ref
+        .read(customActionConfigurationProvider)
+        .configurations
+        .where((candidate) => candidate.id == actionId)
+        .firstOrNull;
+    final session = ref.read(repositorySessionProvider);
+    final root = session.repository?.workTreeRoot;
+    final selected = session.selectedCommitFile;
+    if (configuration == null || root == null || selected == null) {
+      _showCustomActionMessage('自定义操作配置或当前仓库选择已失效。');
+      return;
+    }
+    if (session.phase != RepositorySessionPhase.ready ||
+        session.operationState != GitRepositoryOperationState.none ||
+        session.isWorkingTreeBusy ||
+        selected.objectId != session.selectedCommitId ||
+        selected.file.path.display != file.path ||
+        !file.isPathValidUtf8) {
+      _showCustomActionMessage('仓库状态或提交文件选择已变化，请刷新后重试。');
+      return;
+    }
+    if (configuration.scope == CustomActionScope.selectedFile &&
+        !File(path_utils.join(root, file.path)).existsSync()) {
+      _showCustomActionMessage('当前工作树中找不到该文件，不能按单文件范围执行。');
+      return;
+    }
+    final target = configuration.scope == CustomActionScope.repository
+        ? CustomActionTarget.repository(repositoryRoot: root)
+        : CustomActionTarget.selectedFile(
+            repositoryRoot: root,
+            repositoryRelativePath: file.path,
+          );
+    final invocation = _buildCustomActionInvocation(configuration, target);
+    if (invocation == null) return;
+    final confirmed = await _showCustomActionConfirmation(
+      configuration: configuration,
+      invocation: invocation,
+      target: target,
+    );
+    if (!confirmed || !mounted) return;
+
+    final latestSession = ref.read(repositorySessionProvider);
+    final latestTrust = ref.read(repositoryTrustProvider).status;
+    final latestConfiguration = ref
+        .read(customActionConfigurationProvider)
+        .configurations
+        .where((candidate) => candidate.id == actionId)
+        .firstOrNull;
+    final latestSelected = latestSession.selectedCommitFile;
+    if (latestConfiguration == null ||
+        !configuration.hasSameDefinitionAs(latestConfiguration) ||
+        !canActivateCustomAction(
+          trustStatus: latestTrust,
+          configuration: latestConfiguration,
+        ) ||
+        latestSession.repository?.workTreeRoot != root ||
+        latestSession.phase != RepositorySessionPhase.ready ||
+        latestSession.selectedCommitId != selected.objectId ||
+        latestSelected?.file.path.display != file.path ||
+        latestSession.operationState != GitRepositoryOperationState.none ||
+        latestSession.isWorkingTreeBusy) {
+      _showCustomActionMessage('确认后配置、仓库、信任或文件选择已变化，未启动外部进程。');
+      return;
+    }
+    if (latestConfiguration.scope == CustomActionScope.selectedFile &&
+        !File(path_utils.join(root, file.path)).existsSync()) {
+      _showCustomActionMessage('确认后当前工作树文件已不存在，未启动外部进程。');
+      return;
+    }
+    final latestTarget =
+        latestConfiguration.scope == CustomActionScope.repository
+        ? CustomActionTarget.repository(repositoryRoot: root)
+        : CustomActionTarget.selectedFile(
+            repositoryRoot: root,
+            repositoryRelativePath: file.path,
+          );
+    await _executeCustomAction(
+      configuration: latestConfiguration,
+      trustStatus: latestTrust,
+      target: latestTarget,
+    );
+  }
+
+  /// Runs a prevalidated custom action and owns its progress, output and refresh.
+  ///
+  /// 中文：执行已完成最新状态复核的自定义操作，管理进度、输出、取消和写后刷新；
+  /// 本方法不负责选择目标或显示执行入口。
+  Future<void> _executeCustomAction({
+    required CustomActionConfiguration configuration,
+    required RepositoryTrustStatus trustStatus,
+    required CustomActionTarget target,
+  }) async {
+    final cancellation = GitCancellationToken();
+    CustomActionRun? run;
+    try {
+      run = await ref
+          .read(customActionRunnerProvider)
+          .start(
+            configuration: configuration,
+            trustStatus: trustStatus,
+            target: target,
+            cancellationToken: cancellation,
+          );
+      await _showCustomActionProgress(
+        run,
+        cancellation,
+        configuration.displayName,
+      );
+      final exitCode = await run.exitCode;
+      final stdout = await run.stdout;
+      final stderr = await run.stderr;
+      await run.close();
+      if (!mounted) return;
+      await _showCustomActionResult(
+        name: configuration.displayName,
+        exitCode: exitCode,
+        cancelled: cancellation.isCancelled,
+        stdout: stdout,
+        stderr: stderr,
+      );
+      if (!mounted) return;
+      await ref.read(repositorySessionProvider.notifier).refresh();
+    } on GitCancelledException {
+      if (mounted) _showCustomActionMessage('自定义操作已取消。');
+    } on Object catch (error) {
+      if (mounted) _showCustomActionMessage('无法启动自定义操作：$error');
+    } finally {
+      if (run != null) await run.close();
+    }
+  }
+
+  /// Routes a native custom action to its configured repository or file scope.
+  ///
+  /// 中文：根据配置的目标范围路由原生自定义操作；仓库范围不要求文件选择，
+  /// 单文件范围则必须重新验证当前唯一工作区文件。
+  Future<void> _handleNativeCustomAction(String actionId) async {
+    final configuration = ref
+        .read(customActionConfigurationProvider)
+        .configurations
+        .where((candidate) => candidate.id == actionId)
+        .firstOrNull;
+    if (configuration == null) {
+      _showCustomActionMessage('自定义操作配置已失效，请刷新后重试。');
+      return;
+    }
+    if (configuration.scope == CustomActionScope.selectedFile) {
+      final overview = mapRepositoryOverview(
+        ref.read(repositorySessionProvider),
+      );
+      final selected = _nativeSelectedChanges(overview);
+      if (selected.length == 1) {
+        await _handleWorkingTreeCustomAction(selected.single, actionId);
+      } else {
+        _showCustomActionMessage('请选择一个有效的工作区文件后重试。');
+      }
+      return;
+    }
+    await _handleRepositoryCustomAction(actionId);
+  }
+
+  /// Confirms and runs one configured custom action for the current repository.
+  ///
+  /// 中文：确认并运行仓库范围的原生自定义操作；执行前后复核当前仓库、信任、
+  /// Git 状态和配置，允许没有文件选择的工作区菜单调用。
+  Future<void> _handleRepositoryCustomAction(String actionId) async {
+    final session = ref.read(repositorySessionProvider);
+    final root = session.repository?.workTreeRoot;
+    final configuration = ref
+        .read(customActionConfigurationProvider)
+        .configurations
+        .where((candidate) => candidate.id == actionId)
+        .firstOrNull;
+    final overview = mapRepositoryOverview(session);
+    if (configuration == null || root == null) {
+      _showCustomActionMessage('自定义操作配置或当前仓库已失效。');
+      return;
+    }
+    if (session.phase != RepositorySessionPhase.ready ||
+        session.operationState != GitRepositoryOperationState.none ||
+        session.isWorkingTreeBusy ||
+        overview.repository?.selectedCommit != null ||
+        !canActivateCustomAction(
+          trustStatus: ref.read(repositoryTrustProvider).status,
+          configuration: configuration,
+        )) {
+      _showCustomActionMessage('当前仓库状态、信任或自定义操作配置不可用。');
+      return;
+    }
+    final target = CustomActionTarget.repository(repositoryRoot: root);
+    final invocation = _buildCustomActionInvocation(configuration, target);
+    if (invocation == null) return;
+    final confirmed = await _showCustomActionConfirmation(
+      configuration: configuration,
+      invocation: invocation,
+      target: target,
+    );
+    if (!confirmed || !mounted) return;
+
+    final latestSession = ref.read(repositorySessionProvider);
+    final latestOverview = mapRepositoryOverview(latestSession);
+    final latestTrust = ref.read(repositoryTrustProvider).status;
+    final latestConfiguration = ref
+        .read(customActionConfigurationProvider)
+        .configurations
+        .where((candidate) => candidate.id == actionId)
+        .firstOrNull;
+    if (latestConfiguration == null ||
+        !configuration.hasSameDefinitionAs(latestConfiguration) ||
+        !canActivateCustomAction(
+          trustStatus: latestTrust,
+          configuration: latestConfiguration,
+        ) ||
+        latestSession.repository?.workTreeRoot != root ||
+        latestSession.phase != RepositorySessionPhase.ready ||
+        latestSession.operationState != GitRepositoryOperationState.none ||
+        latestSession.isWorkingTreeBusy ||
+        latestOverview.repository?.selectedCommit != null ||
+        latestConfiguration.scope != CustomActionScope.repository) {
+      _showCustomActionMessage('确认后配置、仓库、信任或 Git 状态已变化，未启动外部进程。');
+      return;
+    }
+    final latestTarget = CustomActionTarget.repository(repositoryRoot: root);
+    await _executeCustomAction(
+      configuration: latestConfiguration,
+      trustStatus: latestTrust,
+      target: latestTarget,
+    );
+  }
+
+  /// Confirms and runs one configured custom action for a single work-tree file.
+  ///
+  /// 中文：确认并运行当前工作区单文件选择对应的自定义操作；多选、冲突、任务占用
+  /// 或过期选择均拒绝启动，执行后重新读取真实 Git 状态。
+  Future<void> _handleWorkingTreeCustomAction(
+    RepositoryChangeViewData change,
+    String actionId,
+  ) async {
+    final session = ref.read(repositorySessionProvider);
+    final overview = mapRepositoryOverview(session);
+    final selected = _nativeSelectedChanges(overview);
+    final root = session.repository?.workTreeRoot;
+    final configuration = ref
+        .read(customActionConfigurationProvider)
+        .configurations
+        .where((candidate) => candidate.id == actionId)
+        .firstOrNull;
+    if (configuration == null || root == null || selected.length != 1) {
+      _showCustomActionMessage('请选择一个有效的工作区文件后重试。');
+      return;
+    }
+    final selectedChange = selected.single;
+    if (selectedChange.path != change.path ||
+        selectedChange.isStaged != change.isStaged ||
+        session.phase != RepositorySessionPhase.ready ||
+        session.operationState != GitRepositoryOperationState.none ||
+        session.isWorkingTreeBusy ||
+        !change.isActionEnabled ||
+        !change.isPathValidUtf8) {
+      _showCustomActionMessage('仓库状态或工作区文件选择已变化，请刷新后重试。');
+      return;
+    }
+    if (configuration.scope == CustomActionScope.selectedFile &&
+        !File(path_utils.join(root, change.path)).existsSync()) {
+      _showCustomActionMessage('当前工作树中找不到该文件，不能按单文件范围执行。');
+      return;
+    }
+    final target = configuration.scope == CustomActionScope.repository
+        ? CustomActionTarget.repository(repositoryRoot: root)
+        : CustomActionTarget.selectedFile(
+            repositoryRoot: root,
+            repositoryRelativePath: change.path,
+          );
+    final invocation = _buildCustomActionInvocation(configuration, target);
+    if (invocation == null) return;
+    final confirmed = await _showCustomActionConfirmation(
+      configuration: configuration,
+      invocation: invocation,
+      target: target,
+    );
+    if (!confirmed || !mounted) return;
+
+    final latestSession = ref.read(repositorySessionProvider);
+    final latestOverview = mapRepositoryOverview(latestSession);
+    final latestSelected = _nativeSelectedChanges(latestOverview);
+    final latestTrust = ref.read(repositoryTrustProvider).status;
+    final latestConfiguration = ref
+        .read(customActionConfigurationProvider)
+        .configurations
+        .where((candidate) => candidate.id == actionId)
+        .firstOrNull;
+    if (latestConfiguration == null ||
+        !configuration.hasSameDefinitionAs(latestConfiguration) ||
+        !canActivateCustomAction(
+          trustStatus: latestTrust,
+          configuration: latestConfiguration,
+        ) ||
+        latestSession.repository?.workTreeRoot != root ||
+        latestSession.phase != RepositorySessionPhase.ready ||
+        latestSelected.length != 1 ||
+        latestSelected.single.path != change.path ||
+        latestSelected.single.isStaged != change.isStaged ||
+        latestSession.operationState != GitRepositoryOperationState.none ||
+        latestSession.isWorkingTreeBusy ||
+        !latestSelected.single.isActionEnabled ||
+        !latestSelected.single.isPathValidUtf8) {
+      _showCustomActionMessage('确认后配置、仓库、信任或文件选择已变化，未启动外部进程。');
+      return;
+    }
+    if (latestConfiguration.scope == CustomActionScope.selectedFile &&
+        !File(path_utils.join(root, change.path)).existsSync()) {
+      _showCustomActionMessage('确认后当前工作树文件已不存在，未启动外部进程。');
+      return;
+    }
+    final latestTarget =
+        latestConfiguration.scope == CustomActionScope.repository
+        ? CustomActionTarget.repository(repositoryRoot: root)
+        : CustomActionTarget.selectedFile(
+            repositoryRoot: root,
+            repositoryRelativePath: change.path,
+          );
+    await _executeCustomAction(
+      configuration: latestConfiguration,
+      trustStatus: latestTrust,
+      target: latestTarget,
+    );
+  }
+
+  /// Builds the expanded invocation used by the confirmation dialog.
+  ///
+  /// 中文：构建确认框展示的展开后调用；配置或目标不安全时不启动进程。
+  CustomActionInvocation? _buildCustomActionInvocation(
+    CustomActionConfiguration configuration,
+    CustomActionTarget target,
+  ) {
+    try {
+      return configuration.buildInvocation(target);
+    } on Object catch (error) {
+      _showCustomActionMessage('自定义操作配置无效：$error');
+      return null;
+    }
+  }
+
+  /// Shows one explicit target-and-argv confirmation before execution.
+  ///
+  /// 中文：执行前展示明确目标和完整 argv 的确认框。
+  Future<bool> _showCustomActionConfirmation({
+    required CustomActionConfiguration configuration,
+    required CustomActionInvocation invocation,
+    required CustomActionTarget target,
+  }) async {
+    final scope = target.repositoryRelativePath == null
+        ? '整个仓库'
+        : '文件：${target.repositoryRelativePath}';
+    return await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: Text('确认运行：${configuration.displayName}'),
+            content: SingleChildScrollView(
+              child: SelectableText(
+                '目标范围：$scope\n'
+                '工作目录：${invocation.workingDirectory}\n'
+                '可执行文件：${invocation.executablePath}\n'
+                'argv：\n${invocation.arguments.map((argument) => '  $argument').join('\n')}\n'
+                '环境：${invocation.environment.isEmpty ? '无（不继承父环境）' : invocation.environment.entries.map((entry) => '${entry.key}=${entry.value}').join(', ')}',
+              ),
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.of(context).pop(false),
+                child: const Text('取消'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.of(context).pop(true),
+                child: const Text('运行'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+  }
+
+  /// Shows a cancellable progress surface while the process is alive.
+  ///
+  /// 中文：进程运行期间显示可取消的进度界面；窗口关闭由 Engine 生命周期继续终止。
+  Future<void> _showCustomActionProgress(
+    CustomActionRun run,
+    GitCancellationToken cancellation,
+    String displayName,
+  ) => showDialog<void>(
+    context: context,
+    barrierDismissible: false,
+    builder: (context) => _CustomActionProgressDialog(
+      run: run,
+      cancellation: cancellation,
+      displayName: displayName,
+    ),
+  );
+
+  /// Shows bounded process output and the final exit state.
+  ///
+  /// 中文：显示有上限的标准输出、错误输出和最终退出状态，不把无限输出写入界面。
+  Future<void> _showCustomActionResult({
+    required String name,
+    required int exitCode,
+    required bool cancelled,
+    required CustomActionOutput stdout,
+    required CustomActionOutput stderr,
+  }) => showDialog<void>(
+    context: context,
+    builder: (context) => _CustomActionResultDialog(
+      name: name,
+      exitCode: exitCode,
+      cancelled: cancelled,
+      stdout: stdout,
+      stderr: stderr,
+    ),
+  );
+
+  /// Publishes a recoverable custom-action message without changing Git state.
+  ///
+  /// 中文：显示可恢复的自定义操作提示，不改变 Git 状态。
+  void _showCustomActionMessage(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(message)));
+  }
+
   /// Copies the repository-relative path of the current historical-file
   /// selection without reading or modifying the work tree.
   ///
@@ -6278,6 +7054,7 @@ class _RepositoryWorkspaceScreenState
         .configuration;
     final trustStatus = ref.read(repositoryTrustProvider).status;
     if (configuration == null ||
+        configuration.kind != ExternalToolKind.readOnlyDiff ||
         !canActivateExternalTool(
           trustStatus: trustStatus,
           configuration: configuration,
@@ -6689,8 +7466,19 @@ class _RepositoryWorkspaceScreenState
       _handleRepositoryStateChange,
     );
     final session = ref.watch(repositorySessionProvider);
+    final customActionConfigurations = ref.watch(
+      customActionConfigurationProvider.select((state) => state.configurations),
+    );
+    final repositoryTrustStatus = ref.watch(
+      repositoryTrustProvider.select((state) => state.status),
+    );
     final controller = ref.read(repositorySessionProvider.notifier);
     final overview = mapRepositoryOverview(session);
+    final customActions = customActionMenuItems(
+      session,
+      customActionConfigurations,
+      repositoryTrustStatus,
+    );
     unawaited(_syncNativeWorkspaceMenuAvailability(session, overview));
     return Scaffold(
       body: Stack(
@@ -6722,6 +7510,8 @@ class _RepositoryWorkspaceScreenState
               onCommitFileSelected: (file) =>
                   unawaited(controller.selectCommitFile(file)),
               onCommitFileContextAction: _handleCommitFileContextAction,
+              customActions: customActions,
+              onCommitFileCustomAction: _handleCommitFileCustomAction,
               onChangeSelected: controller.selectChange,
               onChangeSelectionChanged: _handleChangeSelectionChanged,
               onChangeStageToggled: controller.toggleStage,
@@ -6745,6 +7535,8 @@ class _RepositoryWorkspaceScreenState
                   unawaited(_showIgnoreSelectedDialog(changes)),
               onChangeExternalDiff: (changes) =>
                   unawaited(_openWorkingTreeExternalDiff(changes)),
+              onChangeCustomAction: (change, actionId) =>
+                  unawaited(_handleWorkingTreeCustomAction(change, actionId)),
               onCreatePatch: (changes) =>
                   unawaited(_createPatchForWorkingTreeChanges(changes)),
               onApplyPatch: () => unawaited(_showApplyPatchDialog()),
@@ -6753,6 +7545,7 @@ class _RepositoryWorkspaceScreenState
                   unawaited(_stopTrackingChanges(changes)),
               onChangeReset: (changes) =>
                   unawaited(_resetChangesToHead(changes)),
+              onClearHiddenChanges: controller.clearHiddenChanges,
               onDiffHunkAction: (action, hunkIndex) =>
                   unawaited(_handleDiffHunkAction(action, hunkIndex)),
               onDiffWhitespaceModeChanged: (mode) => unawaited(
@@ -8434,6 +9227,143 @@ final class _PatchApplyRequest {
   final bool checkOnly;
 }
 
+/// Displays the cancellation boundary for one running custom action.
+///
+/// 中文：显示单个运行中自定义操作的取消边界；进程退出后自动关闭。
+final class _CustomActionProgressDialog extends StatefulWidget {
+  const _CustomActionProgressDialog({
+    required this.run,
+    required this.cancellation,
+    required this.displayName,
+  });
+
+  final CustomActionRun run;
+  final GitCancellationToken cancellation;
+  final String displayName;
+
+  @override
+  State<_CustomActionProgressDialog> createState() =>
+      _CustomActionProgressDialogState();
+}
+
+final class _CustomActionProgressDialogState
+    extends State<_CustomActionProgressDialog> {
+  var _isCancelling = false;
+
+  @override
+  void initState() {
+    super.initState();
+    unawaited(_waitForExit());
+  }
+
+  Future<void> _waitForExit() async {
+    await widget.run.exitCode;
+    if (mounted) Navigator.of(context).pop();
+  }
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: Text('正在运行：${widget.displayName}'),
+    content: const Row(
+      children: [
+        SizedBox(
+          width: 20,
+          height: 20,
+          child: CircularProgressIndicator(strokeWidth: 2),
+        ),
+        SizedBox(width: 12),
+        Expanded(child: Text('外部进程正在运行；输出会在结束后按上限显示。')),
+      ],
+    ),
+    actions: [
+      TextButton(
+        onPressed: _isCancelling
+            ? null
+            : () {
+                setState(() => _isCancelling = true);
+                widget.cancellation.cancel();
+              },
+        child: Text(_isCancelling ? '正在取消…' : '取消'),
+      ),
+    ],
+  );
+}
+
+/// Displays bounded output and the exit result of one custom action.
+///
+/// 中文：显示单个自定义操作的有上限输出和退出结果。
+final class _CustomActionResultDialog extends StatelessWidget {
+  const _CustomActionResultDialog({
+    required this.name,
+    required this.exitCode,
+    required this.cancelled,
+    required this.stdout,
+    required this.stderr,
+  });
+
+  final String name;
+  final int exitCode;
+  final bool cancelled;
+  final CustomActionOutput stdout;
+  final CustomActionOutput stderr;
+
+  @override
+  Widget build(BuildContext context) {
+    final status = cancelled
+        ? '已取消'
+        : exitCode == 0
+        ? '已完成'
+        : '失败（退出码 $exitCode）';
+    return AlertDialog(
+      title: Text('$name：$status'),
+      content: SizedBox(
+        width: 560,
+        child: SingleChildScrollView(
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _CustomActionOutputSection(title: '标准输出', output: stdout),
+              const SizedBox(height: 12),
+              _CustomActionOutputSection(title: '错误输出', output: stderr),
+            ],
+          ),
+        ),
+      ),
+      actions: [
+        FilledButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('关闭'),
+        ),
+      ],
+    );
+  }
+}
+
+final class _CustomActionOutputSection extends StatelessWidget {
+  const _CustomActionOutputSection({required this.title, required this.output});
+
+  final String title;
+  final CustomActionOutput output;
+
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      Text(
+        output.truncated ? '$title（已截断）' : title,
+        style: const TextStyle(fontWeight: FontWeight.w600),
+      ),
+      const SizedBox(height: 4),
+      SelectableText(
+        output.text.isEmpty ? '（无输出）' : output.text,
+        style: Theme.of(
+          context,
+        ).textTheme.bodySmall?.copyWith(fontFamily: 'monospace'),
+      ),
+    ],
+  );
+}
+
 final class _RepositoryDetailsDialog extends ConsumerStatefulWidget {
   const _RepositoryDetailsDialog({required this.repositoryName});
 
@@ -8474,8 +9404,8 @@ final class _RepositoryDetailsDialogState
 
   @override
   Widget build(BuildContext context) => _ResizableDialogSurface(
-    initialSize: const Size(660, 670),
-    minimumSize: const Size(520, 420),
+    initialSize: const Size(720, 760),
+    minimumSize: const Size(560, 520),
     builder: (context, _) {
       final details = _details;
       final trust = ref.watch(repositoryTrustProvider);
@@ -8574,6 +9504,8 @@ final class _RepositoryDetailsDialogState
                   const SizedBox(height: 16),
                   _ExternalToolConfigurationPanel(trustStatus: trust.status),
                   const SizedBox(height: 16),
+                  _CustomActionConfigurationPanel(trustStatus: trust.status),
+                  const SizedBox(height: 16),
                   _RepositoryDetailsFacts(details: details),
                   const SizedBox(height: 16),
                   _RepositoryAuthorTable(
@@ -8651,7 +9583,7 @@ String _repositoryTrustStatusLabel(RepositoryTrustStatus status) =>
       RepositoryTrustStatus.restricted => '受限',
     };
 
-/// Edits the application-owned read-only external Diff template.
+/// Edits the application-owned external Diff or Merge template.
 ///
 /// 中文：编辑应用自有的只读外部 Diff 模板；保存前执行完整安全校验，Merge 写回
 /// 和仓库配置中的 external diff/textconv 不在此面板开放。
@@ -8671,6 +9603,7 @@ final class _ExternalToolConfigurationPanelState
   final _executableController = TextEditingController();
   final _argumentsController = TextEditingController();
   var _enabled = false;
+  var _kind = ExternalToolKind.readOnlyDiff;
   var _didHydrate = false;
   String? _message;
   bool _messageIsError = false;
@@ -8703,6 +9636,7 @@ final class _ExternalToolConfigurationPanelState
     _executableController.text = configuration.executablePath;
     _argumentsController.text = configuration.arguments.join('\n');
     _enabled = configuration.enabled;
+    _kind = configuration.kind;
   }
 
   Future<void> _save() async {
@@ -8715,6 +9649,7 @@ final class _ExternalToolConfigurationPanelState
       displayName: _displayNameController.text,
       executablePath: _executableController.text,
       arguments: arguments,
+      kind: _kind,
       enabled: _enabled,
     );
     final issues = configuration.validate();
@@ -8745,6 +9680,7 @@ final class _ExternalToolConfigurationPanelState
       _executableController.clear();
       _argumentsController.text = '{before}\n{after}\n{path}';
       _enabled = false;
+      _kind = ExternalToolKind.readOnlyDiff;
       _message = cleared ? '外部 Diff 配置已清除。' : '配置清除失败。';
       _messageIsError = !cleared;
     });
@@ -8778,7 +9714,7 @@ final class _ExternalToolConfigurationPanelState
                 const SizedBox(width: 8),
                 const Expanded(
                   child: Text(
-                    '外部 Diff（只读）',
+                    '外部 Diff / Merge',
                     style: TextStyle(fontWeight: FontWeight.w700),
                   ),
                 ),
@@ -8792,7 +9728,7 @@ final class _ExternalToolConfigurationPanelState
             ),
             const SizedBox(height: 6),
             Text(
-              '使用应用级 argv 模板比较私有快照；不会调用仓库 external diff/textconv，也不会写回工作区。',
+              '使用应用级 argv 模板比较或合并私有快照；不会调用仓库 external diff/textconv。Merge 只在工具成功退出且结果通过安全校验后写回。',
               style: Theme.of(context).textTheme.bodySmall,
             ),
             const SizedBox(height: 10),
@@ -8816,13 +9752,48 @@ final class _ExternalToolConfigurationPanelState
                 ),
               ),
               const SizedBox(height: 8),
+              DropdownButtonFormField<ExternalToolKind>(
+                initialValue: _kind,
+                decoration: const InputDecoration(
+                  labelText: '工具类型',
+                  isDense: true,
+                ),
+                items: const [
+                  DropdownMenuItem(
+                    value: ExternalToolKind.readOnlyDiff,
+                    child: Text('只读 Diff'),
+                  ),
+                  DropdownMenuItem(
+                    value: ExternalToolKind.mergeWriteBack,
+                    child: Text('三方 Merge（写回）'),
+                  ),
+                ],
+                onChanged: (value) {
+                  if (value == null) return;
+                  setState(() {
+                    _kind = value;
+                    if (_argumentsController.text ==
+                            '{before}\n{after}\n{path}' ||
+                        _argumentsController.text ==
+                            '{base}\n{ours}\n{theirs}\n{result}\n{path}') {
+                      _argumentsController.text =
+                          value == ExternalToolKind.readOnlyDiff
+                          ? '{before}\n{after}\n{path}'
+                          : '{base}\n{ours}\n{theirs}\n{result}\n{path}';
+                    }
+                  });
+                },
+              ),
+              const SizedBox(height: 8),
               TextField(
                 controller: _argumentsController,
                 minLines: 3,
                 maxLines: 5,
-                decoration: const InputDecoration(
+                decoration: InputDecoration(
                   labelText: '参数（每行一个）',
-                  helperText: '必须包含 {before} 和 {after}；可选 {repository}、{path}。',
+                  helperText: _kind == ExternalToolKind.readOnlyDiff
+                      ? '必须包含 {before} 和 {after}；可选 {repository}、{path}。'
+                      : '必须包含 {base}、{ours}、{theirs} 和 {result}；可选 {repository}、{path}。',
                   isDense: true,
                 ),
               ),
@@ -8831,7 +9802,11 @@ final class _ExternalToolConfigurationPanelState
                 contentPadding: EdgeInsets.zero,
                 value: _enabled,
                 onChanged: (value) => setState(() => _enabled = value ?? false),
-                title: const Text('启用此只读工具'),
+                title: Text(
+                  _kind == ExternalToolKind.readOnlyDiff
+                      ? '启用此只读工具'
+                      : '启用此 Merge 写回工具',
+                ),
                 subtitle: Text(
                   widget.trustStatus == RepositoryTrustStatus.trusted
                       ? '当前仓库已信任；仍需保存后才会允许调用。'
@@ -8867,6 +9842,435 @@ final class _ExternalToolConfigurationPanelState
   }
 }
 
+/// Edits application-owned custom-action definitions without executing them
+/// during save.
+///
+/// 中文：编辑应用自有自定义操作定义；本面板只更新安全配置，不在保存时执行
+/// 外部进程或 Git，菜单执行仍由各工作区的运行时复核流程负责。
+final class _CustomActionConfigurationPanel extends ConsumerStatefulWidget {
+  const _CustomActionConfigurationPanel({required this.trustStatus});
+
+  final RepositoryTrustStatus trustStatus;
+
+  @override
+  ConsumerState<_CustomActionConfigurationPanel> createState() =>
+      _CustomActionConfigurationPanelState();
+}
+
+final class _CustomActionConfigurationPanelState
+    extends ConsumerState<_CustomActionConfigurationPanel> {
+  final _idController = TextEditingController();
+  final _displayNameController = TextEditingController();
+  final _executableController = TextEditingController();
+  final _argumentsController = TextEditingController();
+  final _environmentController = TextEditingController();
+  CustomActionScope _scope = CustomActionScope.repository;
+  String? _selectedId;
+  bool _enabled = false;
+  bool _didHydrate = false;
+  String? _message;
+  bool _messageIsError = false;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _hydrateFromState(ref.read(customActionConfigurationProvider));
+    });
+  }
+
+  @override
+  void dispose() {
+    _idController.dispose();
+    _displayNameController.dispose();
+    _executableController.dispose();
+    _argumentsController.dispose();
+    _environmentController.dispose();
+    super.dispose();
+  }
+
+  /// Loads the first persisted definition once, leaving an empty form when
+  /// no definition exists yet.
+  ///
+  /// 中文：首次读取已保存定义；没有定义时保留空白表单，不自动创建配置。
+  void _hydrateFromState(CustomActionConfigurationState state) {
+    if (_didHydrate) return;
+    _didHydrate = true;
+    final first = state.configurations.firstOrNull;
+    if (first == null) {
+      _resetDraft();
+    } else {
+      _loadDraft(first);
+    }
+  }
+
+  /// Loads one selected definition into the editable form.
+  ///
+  /// 中文：将选中的定义载入编辑表单；不会启动工具或改变仓库状态。
+  void _loadDraft(CustomActionConfiguration configuration) {
+    setState(() {
+      _selectedId = configuration.id;
+      _idController.text = configuration.id;
+      _displayNameController.text = configuration.displayName;
+      _executableController.text = configuration.executablePath;
+      _argumentsController.text = configuration.arguments.join('\n');
+      _environmentController.text = configuration.environment.entries
+          .map((entry) => '${entry.key}=${entry.value}')
+          .join('\n');
+      _scope = configuration.scope;
+      _enabled = configuration.enabled;
+      _message = null;
+    });
+  }
+
+  /// Clears the form for a new stable-ID definition.
+  ///
+  /// 中文：清空表单以新建一个稳定 ID 的定义；新定义默认关闭。
+  void _resetDraft() {
+    setState(() {
+      _selectedId = null;
+      _idController.clear();
+      _displayNameController.clear();
+      _executableController.clear();
+      _argumentsController.text = '{repository}';
+      _environmentController.clear();
+      _scope = CustomActionScope.repository;
+      _enabled = false;
+      _message = null;
+    });
+  }
+
+  List<String> _arguments() => _argumentsController.text
+      .split('\n')
+      .map((argument) => argument.trimRight())
+      .where((argument) => argument.isNotEmpty)
+      .toList(growable: false);
+
+  Map<String, String>? _environment() {
+    final result = <String, String>{};
+    for (final line in _environmentController.text.split('\n')) {
+      final trimmed = line.trim();
+      if (trimmed.isEmpty) continue;
+      final separator = trimmed.indexOf('=');
+      if (separator <= 0) return null;
+      result[trimmed.substring(0, separator)] = trimmed.substring(
+        separator + 1,
+      );
+    }
+    return result;
+  }
+
+  /// Persists the complete edited set after model validation.
+  ///
+  /// 中文：先执行完整模型校验，再原子保存全部定义；失败时保留当前编辑内容。
+  Future<void> _save() async {
+    final environment = _environment();
+    if (environment == null) {
+      setState(() {
+        _message = '环境变量必须使用 KEY=VALUE 格式。';
+        _messageIsError = true;
+      });
+      return;
+    }
+    final configuration = CustomActionConfiguration(
+      id: _idController.text.trim(),
+      displayName: _displayNameController.text,
+      executablePath: _executableController.text.trim(),
+      arguments: _arguments(),
+      scope: _scope,
+      environment: environment,
+      enabled: _enabled,
+    );
+    final issues = configuration.validate();
+    if (issues.isNotEmpty) {
+      setState(() {
+        _message = _customActionIssueMessage(issues.first);
+        _messageIsError = true;
+      });
+      return;
+    }
+    final current = ref.read(customActionConfigurationProvider).configurations;
+    final updated = [...current];
+    final oldIndex = _selectedId == null
+        ? -1
+        : updated.indexWhere((item) => item.id == _selectedId);
+    if (oldIndex >= 0) {
+      updated[oldIndex] = configuration;
+    } else {
+      updated.add(configuration);
+    }
+    final saved = await ref
+        .read(customActionConfigurationProvider.notifier)
+        .save(updated);
+    if (!mounted) return;
+    setState(() {
+      if (saved) _selectedId = configuration.id;
+      _message = saved ? '配置已保存；当前不会启动外部进程。' : '配置保存失败，原配置仍然有效。';
+      _messageIsError = !saved;
+    });
+  }
+
+  /// Removes the selected definition through the same atomic store path.
+  ///
+  /// 中文：通过同一原子存储路径删除选中的定义；不会影响 Git 或工作区文件。
+  Future<void> _delete() async {
+    final selectedId = _selectedId;
+    if (selectedId == null) return;
+    final current = ref.read(customActionConfigurationProvider).configurations;
+    final updated = current.where((item) => item.id != selectedId).toList();
+    final deleted = await ref
+        .read(customActionConfigurationProvider.notifier)
+        .save(updated);
+    if (!mounted) return;
+    if (deleted) {
+      if (updated.isEmpty) {
+        _resetDraft();
+      } else {
+        _loadDraft(updated.first);
+      }
+    }
+    setState(() {
+      _message = deleted ? '配置已删除。' : '配置删除失败，原配置仍然有效。';
+      _messageIsError = !deleted;
+    });
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final state = ref.watch(customActionConfigurationProvider);
+    final configurations = state.configurations;
+    final selected = configurations
+        .where((configuration) => configuration.id == _selectedId)
+        .firstOrNull;
+    final usable =
+        selected != null &&
+        canActivateCustomAction(
+          trustStatus: widget.trustStatus,
+          configuration: selected,
+        );
+    final colors = Theme.of(context).colorScheme;
+    final selectedValue =
+        configurations.any((configuration) => configuration.id == _selectedId)
+        ? _selectedId
+        : null;
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerLow,
+        border: Border.all(color: colors.outlineVariant),
+        borderRadius: BorderRadius.circular(6),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(14, 12, 14, 10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(Icons.launch_outlined, size: 18, color: colors.primary),
+                const SizedBox(width: 8),
+                const Expanded(
+                  child: Text(
+                    '自定义操作配置',
+                    style: TextStyle(fontWeight: FontWeight.w700),
+                  ),
+                ),
+                Text(
+                  selected == null
+                      ? '未选择配置'
+                      : usable
+                      ? '已满足信任门槛'
+                      : '当前不可用',
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: usable ? colors.primary : colors.onSurfaceVariant,
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text(
+              '仅保存不经 Shell 的 argv 配置；保存不会启动外部程序。历史文件、工作区文件和 macOS 原生菜单会在每次执行前复核信任、选择和 Git 状态，支持逐次确认、取消和写后刷新。',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 10),
+            if (state.isLoading)
+              const LinearProgressIndicator(minHeight: 2)
+            else ...[
+              if (configurations.isNotEmpty)
+                Row(
+                  children: [
+                    const Text('已保存配置'),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: DropdownButton<String>(
+                        isExpanded: true,
+                        value: selectedValue,
+                        hint: const Text('选择配置'),
+                        items: [
+                          for (final configuration in configurations)
+                            DropdownMenuItem<String>(
+                              value: configuration.id,
+                              child: Text(
+                                '${configuration.displayName} (${configuration.id})',
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                        ],
+                        onChanged: (id) {
+                          final configuration = configurations
+                              .where((item) => item.id == id)
+                              .firstOrNull;
+                          if (configuration != null) _loadDraft(configuration);
+                        },
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    TextButton(onPressed: _resetDraft, child: const Text('新建')),
+                  ],
+                )
+              else
+                Align(
+                  alignment: Alignment.centerLeft,
+                  child: TextButton.icon(
+                    onPressed: _resetDraft,
+                    icon: const Icon(Icons.add, size: 18),
+                    label: const Text('新建自定义操作'),
+                  ),
+                ),
+              const SizedBox(height: 4),
+              TextField(
+                controller: _idController,
+                decoration: const InputDecoration(
+                  labelText: '稳定 ID',
+                  helperText: '仅允许小写字母、数字、点、短横线和下划线。',
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _displayNameController,
+                decoration: const InputDecoration(
+                  labelText: '显示名称',
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _executableController,
+                decoration: const InputDecoration(
+                  labelText: '绝对可执行路径',
+                  hintText: '/Applications/Tool.app/Contents/MacOS/Tool',
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 8),
+              DropdownButtonFormField<CustomActionScope>(
+                initialValue: _scope,
+                decoration: const InputDecoration(
+                  labelText: '目标范围',
+                  isDense: true,
+                ),
+                items: const [
+                  DropdownMenuItem(
+                    value: CustomActionScope.repository,
+                    child: Text('整个仓库'),
+                  ),
+                  DropdownMenuItem(
+                    value: CustomActionScope.selectedFile,
+                    child: Text('单个仓库相对文件'),
+                  ),
+                ],
+                onChanged: (scope) {
+                  if (scope != null) setState(() => _scope = scope);
+                },
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _argumentsController,
+                minLines: 2,
+                maxLines: 5,
+                decoration: InputDecoration(
+                  labelText: '参数（每行一个）',
+                  helperText: _scope == CustomActionScope.repository
+                      ? '可用占位符：{repository}。'
+                      : '必须包含 {path}；也可使用 {repository}。',
+                  isDense: true,
+                ),
+              ),
+              const SizedBox(height: 8),
+              TextField(
+                controller: _environmentController,
+                minLines: 1,
+                maxLines: 3,
+                decoration: const InputDecoration(
+                  labelText: '环境白名单（每行 KEY=VALUE）',
+                  helperText: '目前只允许 LANG 和 LC_ALL；不会继承桌面应用环境。',
+                  isDense: true,
+                ),
+              ),
+              CheckboxListTile(
+                dense: true,
+                contentPadding: EdgeInsets.zero,
+                value: _enabled,
+                onChanged: (value) => setState(() => _enabled = value ?? false),
+                title: const Text('启用此配置'),
+                subtitle: Text(
+                  widget.trustStatus == RepositoryTrustStatus.trusted
+                      ? '当前仓库已信任；执行时仍会逐次确认，并支持取消。'
+                      : '当前仓库未信任；启用不会绕过信任限制，菜单会保持不可用。',
+                ),
+                controlAffinity: ListTileControlAffinity.leading,
+              ),
+              Row(
+                mainAxisAlignment: MainAxisAlignment.end,
+                children: [
+                  TextButton(
+                    onPressed: _selectedId == null ? null : _delete,
+                    child: const Text('删除'),
+                  ),
+                  const SizedBox(width: 8),
+                  FilledButton.tonal(
+                    onPressed: _save,
+                    child: const Text('保存配置'),
+                  ),
+                ],
+              ),
+              if (_message != null) ...[
+                const SizedBox(height: 4),
+                Text(
+                  _message!,
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: _messageIsError ? colors.error : colors.primary,
+                  ),
+                ),
+              ],
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+String _customActionIssueMessage(
+  CustomActionConfigurationIssue issue,
+) => switch (issue) {
+  CustomActionConfigurationIssue.invalidId => '稳定 ID 格式不合法。',
+  CustomActionConfigurationIssue.emptyDisplayName => '请填写显示名称。',
+  CustomActionConfigurationIssue.executableMustBeAbsolute => '可执行路径必须是绝对路径。',
+  CustomActionConfigurationIssue.invalidExecutable => '可执行路径包含无效字符。',
+  CustomActionConfigurationIssue.tooManyArguments => '参数数量超过安全上限。',
+  CustomActionConfigurationIssue.invalidArgument => '参数包含无效字符或过长。',
+  CustomActionConfigurationIssue.unknownPlaceholder => '参数包含未知占位符。',
+  CustomActionConfigurationIssue.pathPlaceholderNotAllowed =>
+    '整个仓库范围不能使用 {path}。',
+  CustomActionConfigurationIssue.missingPathPlaceholder => '单文件范围必须包含 {path}。',
+  CustomActionConfigurationIssue.tooManyEnvironmentEntries => '环境变量数量超过安全上限。',
+  CustomActionConfigurationIssue.environmentVariableNotAllowed =>
+    '环境变量只允许 LANG 和 LC_ALL。',
+  CustomActionConfigurationIssue.invalidEnvironmentValue => '环境变量值包含无效字符或过长。',
+};
+
 String _externalToolIssueMessage(
   ExternalToolConfigurationIssue issue,
 ) => switch (issue) {
@@ -8878,7 +10282,14 @@ String _externalToolIssueMessage(
   ExternalToolConfigurationIssue.unknownPlaceholder => '参数包含未知占位符。',
   ExternalToolConfigurationIssue.missingBeforePlaceholder => '参数必须包含 {before}。',
   ExternalToolConfigurationIssue.missingAfterPlaceholder => '参数必须包含 {after}。',
-  ExternalToolConfigurationIssue.mergeWriteBackUnsupported => 'Merge 写回尚未支持。',
+  ExternalToolConfigurationIssue.missingBasePlaceholder =>
+    'Merge 参数必须包含 {base}。',
+  ExternalToolConfigurationIssue.missingOursPlaceholder =>
+    'Merge 参数必须包含 {ours}。',
+  ExternalToolConfigurationIssue.missingTheirsPlaceholder =>
+    'Merge 参数必须包含 {theirs}。',
+  ExternalToolConfigurationIssue.missingResultPlaceholder =>
+    'Merge 参数必须包含 {result}。',
 };
 
 final class _RepositoryDetailsFacts extends StatelessWidget {

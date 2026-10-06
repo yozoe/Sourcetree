@@ -97,6 +97,24 @@ enum RepositoryCommitFileContextAction {
   externalDiff,
 }
 
+/// One configured custom action shown for a historical file target.
+///
+/// 中文：历史文件目标菜单中展示的一条自定义操作；视图只接收稳定 ID 和当前
+/// capability 结果，不接触可执行路径或进程细节。
+final class RepositoryCustomActionViewData {
+  const RepositoryCustomActionViewData({
+    required this.id,
+    required this.displayName,
+    required this.isEnabled,
+    required this.requiresFilePath,
+  });
+
+  final String id;
+  final String displayName;
+  final bool isEnabled;
+  final bool requiresFilePath;
+}
+
 enum RepositoryChangeKind {
   modified,
   added,
@@ -110,6 +128,7 @@ enum RepositoryChangeKind {
 /// Actions available from the context menu of a conflicted working-tree file.
 enum RepositoryConflictAction {
   launchInternalDiffTool,
+  launchExternalMergeTool,
   useOurs,
   useTheirs,
   restartMerge,
@@ -210,6 +229,7 @@ final class RepositoryViewData {
     this.historyLoadError,
     this.focusedRefCommitId,
     this.changes = const [],
+    List<RepositoryChangeViewData>? visibleChanges,
     this.selectedCommit,
     this.commitChanges = const [],
     this.selectedCommitFile,
@@ -220,7 +240,7 @@ final class RepositoryViewData {
     this.footer = const RepositoryFooterViewData(),
     this.disabledActions = const {},
     this.searchQuery = '',
-  });
+  }) : _visibleChanges = visibleChanges;
 
   final String name;
   final String path;
@@ -263,6 +283,13 @@ final class RepositoryViewData {
   final String? historyLoadError;
   final String? focusedRefCommitId;
   final List<RepositoryChangeViewData> changes;
+  final List<RepositoryChangeViewData>? _visibleChanges;
+
+  /// Working-tree changes currently visible in the session-local view.
+  /// 中文：当前会话视图中可见的工作区改动；为空时回退到完整 Git 改动列表，
+  /// 兼容未提供过滤结果的静态视图模型。
+  List<RepositoryChangeViewData> get visibleChanges =>
+      _visibleChanges ?? changes;
   final CommitDetailsViewData? selectedCommit;
   final List<CommitFileViewData> commitChanges;
   final CommitFileViewData? selectedCommitFile;
@@ -274,11 +301,11 @@ final class RepositoryViewData {
   final Set<RepositoryAction> disabledActions;
   final String searchQuery;
 
-  int get stagedChangeCount => changes
+  int get stagedChangeCount => visibleChanges
       .where((RepositoryChangeViewData change) => change.isStaged)
       .length;
 
-  int get unstagedChangeCount => changes.length - stagedChangeCount;
+  int get unstagedChangeCount => visibleChanges.length - stagedChangeCount;
 
   /// Whether a live repository task currently owns the workspace mutation
   /// boundary.

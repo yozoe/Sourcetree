@@ -12,6 +12,24 @@ void main() {
         .setMockMethodCallHandler(channel, null);
   });
 
+  test('keeps routable and reserved workspace action IDs disjoint', () {
+    expect(
+      DesktopWorkspaceActionId.routable.intersection(
+        DesktopWorkspaceActionId.reserved,
+      ),
+      isEmpty,
+    );
+    expect(DesktopWorkspaceActionId.reserved, isEmpty);
+    expect(
+      DesktopWorkspaceActionId.routable,
+      containsAll(<String>[
+        DesktopWorkspaceActionId.fetch,
+        DesktopWorkspaceActionId.pull,
+        DesktopWorkspaceActionId.stash,
+      ]),
+    );
+  });
+
   test(
     'sends mutation capability snapshots to the native workspace menu',
     () async {
@@ -32,6 +50,8 @@ void main() {
         canMarkConflictResolved: true,
         canCommitAll: true,
         canCommitSelected: true,
+        canHideChanges: false,
+        canRefreshRemoteStatus: false,
         canCommit: true,
         canContinueOperation: false,
         canExternalDiffSelected: true,
@@ -64,6 +84,14 @@ void main() {
         repositoryRootPath: '/tmp/example-repository',
         selectedFilePaths: const ['/tmp/example-repository/lib/example.dart'],
         hasFileSelection: true,
+        customActions: const [
+          <String, Object?>{
+            'id': 'format',
+            'displayName': '格式化',
+            'requiresFilePath': true,
+            'isEnabled': true,
+          },
+        ],
       );
 
       expect(receivedCall?.method, 'setWorkspaceMenuState');
@@ -77,6 +105,9 @@ void main() {
         'canMarkConflictResolved': true,
         'canCommitAll': true,
         'canCommitSelected': true,
+        'canHideChanges': false,
+        'canRefreshRemoteStatus': false,
+        'canUpdateFromUpstream': false,
         'canCommit': true,
         'canContinueOperation': false,
         'canExternalDiffSelected': true,
@@ -111,6 +142,14 @@ void main() {
           '/tmp/example-repository/lib/example.dart',
         ],
         'hasFileSelection': true,
+        'customActions': const [
+          <String, Object?>{
+            'id': 'format',
+            'displayName': '格式化',
+            'requiresFilePath': true,
+            'isEnabled': true,
+          },
+        ],
       });
     },
   );

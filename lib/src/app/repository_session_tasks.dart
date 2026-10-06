@@ -123,6 +123,7 @@ extension on RepositorySessionController {
     _remoteTagDeletionCancellation?.cancel();
     _gitFlowStartCancellation?.cancel();
     _gitFlowFinishCancellation?.cancel();
+    _externalMergeCancellation?.cancel();
   }
 }
 
@@ -203,6 +204,11 @@ extension on RepositorySessionController {
   set _gitFlowFinishCancellation(GitCancellationToken? value) =>
       _taskTracker.gitFlowFinishCancellation = value;
 
+  GitCancellationToken? get _externalMergeCancellation =>
+      _taskTracker.externalMergeCancellation;
+  set _externalMergeCancellation(GitCancellationToken? value) =>
+      _taskTracker.externalMergeCancellation = value;
+
   Set<Future<void>> get _activeGitTasks => _taskTracker.activeGitTasks;
   bool get _isShuttingDown => _taskTracker.isShuttingDown;
   set _isShuttingDown(bool value) => _taskTracker.isShuttingDown = value;
@@ -229,6 +235,7 @@ final class _RepositoryTaskTracker {
   GitCancellationToken? remoteTagDeletionCancellation;
   GitCancellationToken? gitFlowStartCancellation;
   GitCancellationToken? gitFlowFinishCancellation;
+  GitCancellationToken? externalMergeCancellation;
   final Set<Future<void>> activeGitTasks = <Future<void>>{};
   var isShuttingDown = false;
 }

@@ -4,7 +4,7 @@ import 'repository_trust.dart';
 
 /// The application-owned capability requested from an external tool.
 ///
-/// 中文：应用准备交给外部工具的能力类型；当前只允许只读 Diff。
+/// 中文：应用准备交给外部工具的能力类型。
 enum ExternalToolKind { readOnlyDiff, mergeWriteBack }
 
 /// Stable validation issues for an application-owned external-tool template.
@@ -19,7 +19,10 @@ enum ExternalToolConfigurationIssue {
   unknownPlaceholder,
   missingBeforePlaceholder,
   missingAfterPlaceholder,
-  mergeWriteBackUnsupported,
+  missingBasePlaceholder,
+  missingOursPlaceholder,
+  missingTheirsPlaceholder,
+  missingResultPlaceholder,
 }
 
 /// An immutable argv-only external-tool template that is never interpreted by
@@ -40,11 +43,19 @@ final class ExternalToolConfiguration {
   static const int snapshotByteLimit = 16 * 1024 * 1024;
   static const String beforePlaceholder = '{before}';
   static const String afterPlaceholder = '{after}';
+  static const String basePlaceholder = '{base}';
+  static const String oursPlaceholder = '{ours}';
+  static const String theirsPlaceholder = '{theirs}';
+  static const String resultPlaceholder = '{result}';
   static const String repositoryPlaceholder = '{repository}';
   static const String relativePathPlaceholder = '{path}';
   static const Set<String> _allowedPlaceholders = <String>{
     beforePlaceholder,
     afterPlaceholder,
+    basePlaceholder,
+    oursPlaceholder,
+    theirsPlaceholder,
+    resultPlaceholder,
     repositoryPlaceholder,
     relativePathPlaceholder,
   };
@@ -81,10 +92,14 @@ final class ExternalToolConfiguration {
       return null;
     }
     final kindName = value['kind'] as String;
-    final kind = ExternalToolKind.values.firstWhere(
-      (candidate) => candidate.name == kindName,
-      orElse: () => ExternalToolKind.mergeWriteBack,
-    );
+    ExternalToolKind? kind;
+    for (final candidate in ExternalToolKind.values) {
+      if (candidate.name == kindName) {
+        kind = candidate;
+        break;
+      }
+    }
+    if (kind == null) return null;
     final rawArguments = value['arguments'] as List;
     if (rawArguments.any((argument) => argument is! String)) return null;
     final configuration = ExternalToolConfiguration(
@@ -116,6 +131,10 @@ final class ExternalToolConfiguration {
     }
     var hasBefore = false;
     var hasAfter = false;
+    var hasBase = false;
+    var hasOurs = false;
+    var hasTheirs = false;
+    var hasResult = false;
     var hasUnknownPlaceholder = false;
     for (final argument in arguments) {
       if (!_isSafeText(argument) || argument.length > 4096) {
@@ -124,6 +143,10 @@ final class ExternalToolConfiguration {
       }
       hasBefore = hasBefore || argument.contains(beforePlaceholder);
       hasAfter = hasAfter || argument.contains(afterPlaceholder);
+      hasBase = hasBase || argument.contains(basePlaceholder);
+      hasOurs = hasOurs || argument.contains(oursPlaceholder);
+      hasTheirs = hasTheirs || argument.contains(theirsPlaceholder);
+      hasResult = hasResult || argument.contains(resultPlaceholder);
       for (final match in _placeholderPattern.allMatches(argument)) {
         if (!_allowedPlaceholders.contains(match.group(0))) {
           hasUnknownPlaceholder = true;
@@ -133,14 +156,26 @@ final class ExternalToolConfiguration {
     if (hasUnknownPlaceholder) {
       issues.add(ExternalToolConfigurationIssue.unknownPlaceholder);
     }
-    if (!hasBefore) {
-      issues.add(ExternalToolConfigurationIssue.missingBeforePlaceholder);
-    }
-    if (!hasAfter) {
-      issues.add(ExternalToolConfigurationIssue.missingAfterPlaceholder);
-    }
-    if (kind == ExternalToolKind.mergeWriteBack) {
-      issues.add(ExternalToolConfigurationIssue.mergeWriteBackUnsupported);
+    if (kind == ExternalToolKind.readOnlyDiff) {
+      if (!hasBefore) {
+        issues.add(ExternalToolConfigurationIssue.missingBeforePlaceholder);
+      }
+      if (!hasAfter) {
+        issues.add(ExternalToolConfigurationIssue.missingAfterPlaceholder);
+      }
+    } else {
+      if (!hasBase) {
+        issues.add(ExternalToolConfigurationIssue.missingBasePlaceholder);
+      }
+      if (!hasOurs) {
+        issues.add(ExternalToolConfigurationIssue.missingOursPlaceholder);
+      }
+      if (!hasTheirs) {
+        issues.add(ExternalToolConfigurationIssue.missingTheirsPlaceholder);
+      }
+      if (!hasResult) {
+        issues.add(ExternalToolConfigurationIssue.missingResultPlaceholder);
+      }
     }
     return List<ExternalToolConfigurationIssue>.unmodifiable(issues);
   }
@@ -166,6 +201,50 @@ final class ExternalToolConfiguration {
     final replacements = <String, String>{
       beforePlaceholder: beforeSnapshotPath,
       afterPlaceholder: afterSnapshotPath,
+      repositoryPlaceholder: repositoryRoot,
+      relativePathPlaceholder: repositoryRelativePath,
+    };
+    return ExternalToolInvocation(
+      executablePath: executablePath,
+      arguments: [
+        for (final argument in arguments)
+          replacements.entries.fold<String>(
+            argument,
+            (expanded, entry) => expanded.replaceAll(entry.key, entry.value),
+          ),
+      ],
+    );
+  }
+
+  /// Builds a literal argv invocation for a three-way merge and a result file.
+  /// 中文：为三方合并及结果文件构建不经 Shell 的字面 argv 调用。
+  ExternalToolInvocation buildMergeInvocation({
+    required String baseSnapshotPath,
+    required String oursSnapshotPath,
+    required String theirsSnapshotPath,
+    required String resultSnapshotPath,
+    required String repositoryRoot,
+    required String repositoryRelativePath,
+  }) {
+    final issues = validate();
+    if (issues.isNotEmpty) {
+      throw StateError('External tool configuration is invalid: $issues');
+    }
+    for (final entry in <String, String>{
+      'baseSnapshotPath': baseSnapshotPath,
+      'oursSnapshotPath': oursSnapshotPath,
+      'theirsSnapshotPath': theirsSnapshotPath,
+      'resultSnapshotPath': resultSnapshotPath,
+    }.entries) {
+      _requireAbsolutePath(entry.value, entry.key);
+    }
+    _requireAbsolutePath(repositoryRoot, 'repositoryRoot');
+    _requireRepositoryRelativePath(repositoryRelativePath);
+    final replacements = <String, String>{
+      basePlaceholder: baseSnapshotPath,
+      oursPlaceholder: oursSnapshotPath,
+      theirsPlaceholder: theirsSnapshotPath,
+      resultPlaceholder: resultSnapshotPath,
       repositoryPlaceholder: repositoryRoot,
       relativePathPlaceholder: repositoryRelativePath,
     };

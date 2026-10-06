@@ -16,15 +16,19 @@ class _SelectedChangesPane extends StatelessWidget {
     required this.onReview,
     required this.onIgnore,
     required this.onExternalDiff,
+    this.customActions = const <RepositoryCustomActionViewData>[],
+    this.onCustomAction,
     required this.onCreatePatch,
     required this.onApplyPatch,
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
     required this.onHunkAction,
+    this.onClearHiddenChanges,
     this.onDiffWhitespaceModeChanged,
     required this.onCommitFileSelected,
     required this.onCommitFileContextAction,
+    this.onCommitFileCustomAction,
   });
 
   final RepositoryViewData repository;
@@ -41,15 +45,19 @@ class _SelectedChangesPane extends StatelessWidget {
   final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onIgnore;
   final RepositoryChangeFilesCallback? onExternalDiff;
+  final List<RepositoryCustomActionViewData> customActions;
+  final RepositoryChangeCustomActionCallback? onCustomAction;
   final RepositoryChangeFilesCallback? onCreatePatch;
   final VoidCallback? onApplyPatch;
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
+  final VoidCallback? onClearHiddenChanges;
   final RepositoryDiffHunkActionCallback? onHunkAction;
   final RepositoryDiffWhitespaceModeCallback? onDiffWhitespaceModeChanged;
   final RepositoryCommitFileCallback? onCommitFileSelected;
   final RepositoryCommitFileContextActionCallback? onCommitFileContextAction;
+  final RepositoryCommitFileCustomActionCallback? onCommitFileCustomAction;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -60,6 +68,8 @@ class _SelectedChangesPane extends StatelessWidget {
         repository: repository,
         onSelected: onCommitFileSelected,
         onContextAction: onCommitFileContextAction,
+        customActions: customActions,
+        onCustomAction: onCommitFileCustomAction,
         onHunkAction: onHunkAction,
         onDiffWhitespaceModeChanged: onDiffWhitespaceModeChanged,
       );
@@ -79,11 +89,14 @@ class _SelectedChangesPane extends StatelessWidget {
       onReview: onReview,
       onIgnore: onIgnore,
       onExternalDiff: onExternalDiff,
+      customActions: customActions,
+      onCustomAction: onCustomAction,
       onCreatePatch: onCreatePatch,
       onApplyPatch: onApplyPatch,
       onRemove: onRemove,
       onStopTracking: onStopTracking,
       onReset: onReset,
+      onClearHiddenChanges: onClearHiddenChanges,
       onHunkAction: onHunkAction,
       onDiffWhitespaceModeChanged: onDiffWhitespaceModeChanged,
     );
@@ -101,6 +114,8 @@ class RepositoryCommitChangesPane extends StatelessWidget {
     required this.repository,
     required this.onSelected,
     this.onContextAction,
+    this.customActions = const <RepositoryCustomActionViewData>[],
+    this.onCustomAction,
     this.onHunkAction,
     this.onDiffWhitespaceModeChanged,
     this.title = '提交改动',
@@ -109,6 +124,8 @@ class RepositoryCommitChangesPane extends StatelessWidget {
   final RepositoryViewData repository;
   final RepositoryCommitFileCallback? onSelected;
   final RepositoryCommitFileContextActionCallback? onContextAction;
+  final List<RepositoryCustomActionViewData> customActions;
+  final RepositoryCommitFileCustomActionCallback? onCustomAction;
   final RepositoryDiffHunkActionCallback? onHunkAction;
   final RepositoryDiffWhitespaceModeCallback? onDiffWhitespaceModeChanged;
   final String title;
@@ -118,6 +135,8 @@ class RepositoryCommitChangesPane extends StatelessWidget {
     repository: repository,
     onSelected: onSelected,
     onContextAction: onContextAction,
+    customActions: customActions,
+    onCustomAction: onCustomAction,
     onHunkAction: onHunkAction,
     onDiffWhitespaceModeChanged: onDiffWhitespaceModeChanged,
     title: title,
@@ -129,6 +148,8 @@ class _CommitChangesPane extends StatefulWidget {
     required this.repository,
     required this.onSelected,
     this.onContextAction,
+    this.customActions = const <RepositoryCustomActionViewData>[],
+    this.onCustomAction,
     this.onHunkAction,
     this.onDiffWhitespaceModeChanged,
     this.title = '提交改动',
@@ -137,6 +158,8 @@ class _CommitChangesPane extends StatefulWidget {
   final RepositoryViewData repository;
   final RepositoryCommitFileCallback? onSelected;
   final RepositoryCommitFileContextActionCallback? onContextAction;
+  final List<RepositoryCustomActionViewData> customActions;
+  final RepositoryCommitFileCustomActionCallback? onCustomAction;
   final RepositoryDiffHunkActionCallback? onHunkAction;
   final RepositoryDiffWhitespaceModeCallback? onDiffWhitespaceModeChanged;
   final String title;
@@ -174,6 +197,8 @@ class _CommitChangesPaneState extends State<_CommitChangesPane> {
                         files: files,
                         onSelected: widget.onSelected,
                         onContextAction: widget.onContextAction,
+                        customActions: widget.customActions,
+                        onCustomAction: widget.onCustomAction,
                         canResetToCommit: !repository.blocksRepositoryMutations,
                       );
                       if (constraints.maxWidth < 530) {
@@ -235,12 +260,16 @@ class _CommitFileList extends StatelessWidget {
     required this.onSelected,
     required this.onContextAction,
     required this.canResetToCommit,
+    required this.customActions,
+    required this.onCustomAction,
   });
 
   final List<CommitFileViewData> files;
   final RepositoryCommitFileCallback? onSelected;
   final RepositoryCommitFileContextActionCallback? onContextAction;
   final bool canResetToCommit;
+  final List<RepositoryCustomActionViewData> customActions;
+  final RepositoryCommitFileCustomActionCallback? onCustomAction;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -261,6 +290,8 @@ class _CommitFileList extends StatelessWidget {
         onTap: onSelected == null ? null : () => onSelected!(files[index]),
         onContextAction: onContextAction,
         canResetToCommit: canResetToCommit,
+        customActions: customActions,
+        onCustomAction: onCustomAction,
       ),
     );
   }
@@ -272,12 +303,16 @@ class _CommitFileTile extends StatelessWidget {
     required this.onTap,
     required this.onContextAction,
     required this.canResetToCommit,
+    required this.customActions,
+    required this.onCustomAction,
   });
 
   final CommitFileViewData file;
   final VoidCallback? onTap;
   final RepositoryCommitFileContextActionCallback? onContextAction;
   final bool canResetToCommit;
+  final List<RepositoryCustomActionViewData> customActions;
+  final RepositoryCommitFileCustomActionCallback? onCustomAction;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -384,10 +419,30 @@ class _CommitFileTile extends StatelessWidget {
           enabled: supportsExternalDiff,
         ),
         SubmenuButton(
-          menuChildren: const [
-            MenuItemButton(onPressed: null, child: Text('暂无可用操作（待实现）')),
-          ],
-          child: const Text('自定义操作（待实现）'),
+          menuChildren: customActions.isEmpty
+              ? const [
+                  MenuItemButton(onPressed: null, child: Text('暂无可用操作（待实现）')),
+                ]
+              : [
+                  for (final customAction in customActions)
+                    MenuItemButton(
+                      onPressed:
+                          customAction.isEnabled &&
+                              (!customAction.requiresFilePath ||
+                                  file.isPathValidUtf8) &&
+                              onCustomAction != null
+                          ? () => onCustomAction!(file, customAction.id)
+                          : null,
+                      child: Text(
+                        customAction.isEnabled &&
+                                (!customAction.requiresFilePath ||
+                                    file.isPathValidUtf8)
+                            ? customAction.displayName
+                            : '${customAction.displayName}（当前不可用）',
+                      ),
+                    ),
+                ],
+          child: Text(customActions.isEmpty ? '自定义操作（待实现）' : '自定义操作'),
         ),
       ],
       builder: (context, controller, child) => CallbackShortcuts(
@@ -500,12 +555,15 @@ class _ChangesPane extends StatefulWidget {
     required this.onReview,
     required this.onIgnore,
     required this.onExternalDiff,
+    this.customActions = const <RepositoryCustomActionViewData>[],
+    this.onCustomAction,
     required this.onCreatePatch,
     required this.onApplyPatch,
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
     required this.onHunkAction,
+    this.onClearHiddenChanges,
     this.onDiffWhitespaceModeChanged,
   });
 
@@ -523,11 +581,14 @@ class _ChangesPane extends StatefulWidget {
   final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onIgnore;
   final RepositoryChangeFilesCallback? onExternalDiff;
+  final List<RepositoryCustomActionViewData> customActions;
+  final RepositoryChangeCustomActionCallback? onCustomAction;
   final RepositoryChangeFilesCallback? onCreatePatch;
   final VoidCallback? onApplyPatch;
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
+  final VoidCallback? onClearHiddenChanges;
   final RepositoryDiffHunkActionCallback? onHunkAction;
   final RepositoryDiffWhitespaceModeCallback? onDiffWhitespaceModeChanged;
 
@@ -553,6 +614,17 @@ class _ChangesPaneState extends State<_ChangesPane> {
             isBusy: repository.isWorkingTreeBusy,
             trailing:
                 '${repository.stagedChangeCount} 已暂存 · ${repository.unstagedChangeCount} 未暂存',
+            trailingWidget:
+                repository.visibleChanges.length != repository.changes.length &&
+                    widget.onClearHiddenChanges != null
+                ? TextButton(
+                    key: const ValueKey<String>('show-all-hidden-changes'),
+                    onPressed: widget.onClearHiddenChanges,
+                    child: Text(
+                      '显示全部隐藏变更 (${repository.changes.length - repository.visibleChanges.length})',
+                    ),
+                  )
+                : null,
           ),
           Expanded(
             child: LayoutBuilder(
@@ -560,7 +632,7 @@ class _ChangesPaneState extends State<_ChangesPane> {
                 if (constraints.maxWidth < 530) {
                   return repository.selectedChange == null
                       ? _ChangeList(
-                          changes: repository.changes,
+                          changes: repository.visibleChanges,
                           isWorkingTreeBusy: repository.isWorkingTreeBusy,
                           ordinaryMutationsEnabled:
                               !repository.blocksRepositoryMutations,
@@ -579,6 +651,8 @@ class _ChangesPaneState extends State<_ChangesPane> {
                           onReview: widget.onReview,
                           onIgnore: widget.onIgnore,
                           onExternalDiff: widget.onExternalDiff,
+                          customActions: widget.customActions,
+                          onCustomAction: widget.onCustomAction,
                           onCreatePatch: widget.onCreatePatch,
                           onApplyPatch: widget.onApplyPatch,
                           onRemove: widget.onRemove,
@@ -613,7 +687,7 @@ class _ChangesPaneState extends State<_ChangesPane> {
                     SizedBox(
                       width: fileListWidth,
                       child: _ChangeList(
-                        changes: repository.changes,
+                        changes: repository.visibleChanges,
                         isWorkingTreeBusy: repository.isWorkingTreeBusy,
                         ordinaryMutationsEnabled:
                             !repository.blocksRepositoryMutations,
@@ -632,6 +706,8 @@ class _ChangesPaneState extends State<_ChangesPane> {
                         onReview: widget.onReview,
                         onIgnore: widget.onIgnore,
                         onExternalDiff: widget.onExternalDiff,
+                        customActions: widget.customActions,
+                        onCustomAction: widget.onCustomAction,
                         onCreatePatch: widget.onCreatePatch,
                         onApplyPatch: widget.onApplyPatch,
                         onRemove: widget.onRemove,
@@ -687,12 +763,15 @@ class _WorkspaceChangesView extends StatelessWidget {
     required this.onReview,
     required this.onIgnore,
     required this.onExternalDiff,
+    this.customActions = const <RepositoryCustomActionViewData>[],
+    this.onCustomAction,
     required this.onCreatePatch,
     required this.onApplyPatch,
     required this.onRemove,
     required this.onStopTracking,
     required this.onReset,
     required this.onHunkAction,
+    this.onClearHiddenChanges,
     this.onDiffWhitespaceModeChanged,
     required this.onCommit,
   });
@@ -711,11 +790,14 @@ class _WorkspaceChangesView extends StatelessWidget {
   final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onIgnore;
   final RepositoryChangeFilesCallback? onExternalDiff;
+  final List<RepositoryCustomActionViewData> customActions;
+  final RepositoryChangeCustomActionCallback? onCustomAction;
   final RepositoryChangeFilesCallback? onCreatePatch;
   final VoidCallback? onApplyPatch;
   final RepositoryChangeFilesCallback? onRemove;
   final RepositoryChangeFilesCallback? onStopTracking;
   final RepositoryChangeFilesCallback? onReset;
+  final VoidCallback? onClearHiddenChanges;
   final RepositoryDiffHunkActionCallback? onHunkAction;
   final RepositoryDiffWhitespaceModeCallback? onDiffWhitespaceModeChanged;
   final VoidCallback? onCommit;
@@ -746,11 +828,14 @@ class _WorkspaceChangesView extends StatelessWidget {
             onReview: onReview,
             onIgnore: onIgnore,
             onExternalDiff: onExternalDiff,
+            customActions: customActions,
+            onCustomAction: onCustomAction,
             onCreatePatch: onCreatePatch,
             onApplyPatch: onApplyPatch,
             onRemove: onRemove,
             onStopTracking: onStopTracking,
             onReset: onReset,
+            onClearHiddenChanges: onClearHiddenChanges,
             onHunkAction: onHunkAction,
             onDiffWhitespaceModeChanged: onDiffWhitespaceModeChanged,
           ),
@@ -805,6 +890,8 @@ class _ChangeList extends StatefulWidget {
     required this.onReview,
     required this.onIgnore,
     required this.onExternalDiff,
+    required this.customActions,
+    required this.onCustomAction,
     required this.onCreatePatch,
     required this.onApplyPatch,
     required this.onRemove,
@@ -829,6 +916,8 @@ class _ChangeList extends StatefulWidget {
   final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onIgnore;
   final RepositoryChangeFilesCallback? onExternalDiff;
+  final List<RepositoryCustomActionViewData> customActions;
+  final RepositoryChangeCustomActionCallback? onCustomAction;
   final RepositoryChangeFilesCallback? onCreatePatch;
   final VoidCallback? onApplyPatch;
   final RepositoryChangeFilesCallback? onRemove;
@@ -973,6 +1062,8 @@ class _ChangeListState extends State<_ChangeList> {
       onReview: widget.onReview,
       onIgnore: widget.onIgnore,
       onExternalDiff: widget.onExternalDiff,
+      customActions: widget.customActions,
+      onCustomAction: widget.onCustomAction,
       onCreatePatch: widget.onCreatePatch,
       onApplyPatch: widget.onApplyPatch,
       onRemove: widget.onRemove,
@@ -1075,6 +1166,8 @@ class _ChangeGroup extends StatelessWidget {
     required this.onReview,
     required this.onIgnore,
     required this.onExternalDiff,
+    required this.customActions,
+    required this.onCustomAction,
     required this.onCreatePatch,
     required this.onApplyPatch,
     required this.onRemove,
@@ -1104,6 +1197,8 @@ class _ChangeGroup extends StatelessWidget {
   final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onIgnore;
   final RepositoryChangeFilesCallback? onExternalDiff;
+  final List<RepositoryCustomActionViewData> customActions;
+  final RepositoryChangeCustomActionCallback? onCustomAction;
   final RepositoryChangeFilesCallback? onCreatePatch;
   final VoidCallback? onApplyPatch;
   final RepositoryChangeFilesCallback? onRemove;
@@ -1203,6 +1298,8 @@ class _ChangeGroup extends StatelessWidget {
               onReview: onReview,
               onIgnore: onIgnore,
               onExternalDiff: onExternalDiff,
+              customActions: customActions,
+              onCustomAction: onCustomAction,
               onCreatePatch: onCreatePatch,
               onApplyPatch: onApplyPatch,
               onRemove: onRemove,
@@ -1239,6 +1336,8 @@ class _ChangeTile extends StatelessWidget {
     required this.onReview,
     required this.onIgnore,
     required this.onExternalDiff,
+    required this.customActions,
+    required this.onCustomAction,
     required this.onCreatePatch,
     required this.onApplyPatch,
     required this.onRemove,
@@ -1264,6 +1363,8 @@ class _ChangeTile extends StatelessWidget {
   final RepositoryChangeFilesCallback? onReview;
   final RepositoryChangeFilesCallback? onIgnore;
   final RepositoryChangeFilesCallback? onExternalDiff;
+  final List<RepositoryCustomActionViewData> customActions;
+  final RepositoryChangeCustomActionCallback? onCustomAction;
   final RepositoryChangeFilesCallback? onCreatePatch;
   final VoidCallback? onApplyPatch;
   final RepositoryChangeFilesCallback? onRemove;
@@ -1665,6 +1766,39 @@ class _ChangeTile extends StatelessWidget {
                 : '审查选定的项目（待实现）',
           ),
         ),
+        SubmenuButton(
+          menuChildren: customActions.isEmpty
+              ? const [
+                  MenuItemButton(onPressed: null, child: Text('暂无可用操作（待实现）')),
+                ]
+              : [
+                  for (final customAction in customActions)
+                    MenuItemButton(
+                      onPressed:
+                          selectedChanges().length == 1 &&
+                              selectedChanges().single.isActionEnabled &&
+                              customAction.isEnabled &&
+                              (!customAction.requiresFilePath ||
+                                  selectedChanges().single.isPathValidUtf8) &&
+                              onCustomAction != null
+                          ? () => onCustomAction!(
+                              selectedChanges().single,
+                              customAction.id,
+                            )
+                          : null,
+                      child: Text(
+                        selectedChanges().length == 1 &&
+                                selectedChanges().single.isActionEnabled &&
+                                customAction.isEnabled &&
+                                (!customAction.requiresFilePath ||
+                                    selectedChanges().single.isPathValidUtf8)
+                            ? customAction.displayName
+                            : '${customAction.displayName}（当前不可用）',
+                      ),
+                    ),
+                ],
+          child: Text(customActions.isEmpty ? '自定义操作（待实现）' : '自定义操作'),
+        ),
       ],
       builder: (context, controller, child) => CallbackShortcuts(
         bindings: <ShortcutActivator, VoidCallback>{
@@ -1697,6 +1831,11 @@ class _ChangeTile extends StatelessWidget {
         onPressed: () =>
             handler(RepositoryConflictAction.launchInternalDiffTool),
         child: const Text('打开内部 Diff 工具'),
+      ),
+      MenuItemButton(
+        onPressed: () =>
+            handler(RepositoryConflictAction.launchExternalMergeTool),
+        child: const Text('打开外部 Merge 并写回'),
       ),
       MenuItemButton(
         onPressed: () => handler(RepositoryConflictAction.useOurs),

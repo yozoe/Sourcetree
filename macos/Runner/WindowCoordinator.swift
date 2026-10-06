@@ -289,7 +289,7 @@ final class WindowCoordinator {
 
   /// Sends a menu action only to the workspace that currently owns keyboard
   /// focus. A repository-library window must never mutate a background repo.
-  func performWorkspaceAction(_ action: String) {
+  func performWorkspaceAction(_ action: GitDesktopWorkspaceActionID) {
     currentWorkspaceController?.performWorkspaceAction(action)
   }
 
@@ -374,6 +374,24 @@ final class WindowCoordinator {
   /// 中文：当前前台工作区是否有经过校验、可用于提交的可见文件选择。
   var canCommitSelectedFromMenu: Bool {
     currentWorkspaceController?.canCommitSelectedFromMenu == true
+  }
+
+  /// Whether the key workspace permits hiding its selected changes.
+  /// 中文：当前前台工作区是否允许隐藏所选改动。
+  var canHideChangesFromMenu: Bool {
+    currentWorkspaceController?.canHideChangesFromMenu == true
+  }
+
+  /// Whether the key workspace permits refreshing configured remotes.
+  /// 中文：当前前台工作区是否允许刷新已配置远端状态。
+  var canRefreshRemoteStatusFromMenu: Bool {
+    currentWorkspaceController?.canRefreshRemoteStatusFromMenu == true
+  }
+
+  /// Whether the key workspace permits a confirmed fast-forward update.
+  /// 中文：当前前台工作区是否允许确认后执行 upstream 快进更新。
+  var canUpdateFromUpstreamFromMenu: Bool {
+    currentWorkspaceController?.canUpdateFromUpstreamFromMenu == true
   }
 
   /// The key workspace's active recoverable Git operation.
@@ -588,6 +606,28 @@ final class WindowCoordinator {
       hasValidatedSelection:
         currentWorkspaceController?.canRemoveSelectedFromMenu == true
     )
+  }
+
+  /// Returns the current key workspace's Flutter-validated custom actions.
+  /// 中文：返回当前前台工作区由 Flutter 校验的自定义操作快照。
+  var customActionMenuItemsFromMenu: [GitDesktopCustomActionMenuItem] {
+    currentWorkspaceController?.customActionMenuItems ?? []
+  }
+
+  /// Whether one validated custom action can be dispatched to the key workspace.
+  /// 中文：判断指定自定义操作是否仍可投递给当前前台工作区。
+  func canPerformCustomActionFromMenu(_ id: String) -> Bool {
+    gitDesktopCanPerformCustomActionMenuAction(
+      hasKeyWorkspace: currentWorkspaceController != nil,
+      actionID: id,
+      actions: currentWorkspaceController?.customActionMenuItems ?? []
+    )
+  }
+
+  /// Dispatches one validated custom-action ID to the key workspace.
+  /// 中文：将一个已校验的自定义操作 ID 投递给当前前台工作区。
+  func performCustomActionFromMenu(_ id: String) {
+    currentWorkspaceController?.performCustomAction(id)
   }
 
   /// Whether the key workspace can open the repository reset target picker.

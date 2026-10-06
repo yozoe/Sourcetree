@@ -221,6 +221,13 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
       ? 'Detached HEAD'
       : branch.head ?? (branch.isUnborn ? '未创建提交' : '未知分支');
   final changes = _mapChanges(state);
+  final visibleChanges = List<RepositoryChangeViewData>.unmodifiable(
+    changes.where(
+      (change) => !state.hiddenChangeKeys.contains(
+        repositoryChangeViewKey(isStaged: change.isStaged, path: change.path),
+      ),
+    ),
+  );
   final commits = _mapCommits(
     state,
     branch,
@@ -472,6 +479,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     historyLoadError: state.historyLoadError,
     focusedRefCommitId: focusedRefCommitId,
     changes: changes,
+    visibleChanges: visibleChanges,
     selectedCommit: selectedCommit == null
         ? null
         : CommitDetailsViewData(
@@ -503,7 +511,7 @@ RepositoryViewData? _mapRepository(RepositorySessionState state) {
     ),
     commitDiff: _mapCommitDiff(state),
     isCommitLoading: state.isCommitLoading || state.isCommitDiffLoading,
-    selectedChange: _findSelectedChange(changes, state.selectedChange),
+    selectedChange: _findSelectedChange(visibleChanges, state.selectedChange),
     diff: _mapDiff(state),
     footer: RepositoryFooterViewData(
       message: _footerMessage(state, changes.length),

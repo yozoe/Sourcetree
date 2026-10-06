@@ -103,7 +103,68 @@ void main() {
 
     final rssAfterScroll = ProcessInfo.currentRss;
     final heapAfterScroll = _captureHeapSnapshot('after_history_scroll');
+
+    final searchField = find.byKey(
+      const ValueKey<String>('history-search-field'),
+    );
+    expect(searchField, findsOneWidget);
+    final searchStopwatch = Stopwatch()..start();
+    await tester.enterText(searchField, 'Performance fixture 11');
+    await tester.pump();
+    // The integration binding is live, so this pump waits through the
+    // debounce timer and lets the filtered history render before measuring
+    // the complete response.
+    await tester.pump(const Duration(milliseconds: 240));
+    await tester.pumpAndSettle();
+    searchStopwatch.stop();
+    expect(
+      container.read(repositorySessionProvider).searchQuery,
+      'Performance fixture 11',
+    );
+    expect(
+      find.bySemanticsLabel(RegExp(r'^Performance fixture 11，')),
+      findsOneWidget,
+    );
+    final searchReport = <String, Object>{
+      'query': 'Performance fixture 11',
+      'elapsedMillis': searchStopwatch.elapsedMicroseconds / 1000,
+      'debounceMillis': 220,
+    };
+
+    final navigationBranch = find.byKey(
+      const ValueKey<String>('ref-nav:refs/heads/perf-navigation'),
+    );
+    final navigationScrollable = find.descendant(
+      of: find.byKey(const ValueKey<String>('refs-navigation-list')),
+      matching: find.byType(Scrollable),
+    );
+    expect(navigationScrollable, findsOneWidget);
+    for (
+      var attempt = 0;
+      attempt < 12 && navigationBranch.evaluate().isEmpty;
+      attempt += 1
+    ) {
+      await tester.drag(navigationScrollable, const Offset(0, -240));
+      await tester.pumpAndSettle();
+    }
+    expect(navigationBranch, findsOneWidget);
+    final navigationStopwatch = Stopwatch()..start();
+    await tester.tap(navigationBranch);
+    await tester.pumpAndSettle();
+    navigationStopwatch.stop();
+    expect(
+      container.read(repositorySessionProvider).selectedRefId,
+      'refs/heads/perf-navigation',
+    );
+    final navigationReport = <String, Object>{
+      'branch': 'perf-navigation',
+      'elapsedMillis': navigationStopwatch.elapsedMicroseconds / 1000,
+    };
+
     _binding.reportData ??= <String, dynamic>{};
+    _binding.reportData!['macos_search_performance'] = searchReport;
+    _binding.reportData!['macos_reference_navigation_performance'] =
+        navigationReport;
     _binding.reportData!['macos_memory_samples'] = <String, Object>{
       'rssBeforeStartupBytes': rssBeforeStartup,
       'rssAfterStartupBytes': rssAfterStartup,
@@ -133,6 +194,10 @@ void main() {
     );
     stdout.writeln(
       'macos_performance_heap_snapshots=${jsonEncode(_binding.reportData!['heap_snapshots'])}',
+    );
+    stdout.writeln('macos_performance_search=${jsonEncode(searchReport)}');
+    stdout.writeln(
+      'macos_performance_reference_navigation=${jsonEncode(navigationReport)}',
     );
     stdout.writeln('macos_performance_report=${reportFile.path}');
   });
@@ -227,5 +292,6 @@ Future<GitTestRepository> _createHistoryFixture({
     await repository.writeFile('history.txt', 'revision $index\n');
     await repository.commit('Performance fixture $index');
   }
+  await repository.runGit(['branch', 'perf-navigation']);
   return repository;
 }

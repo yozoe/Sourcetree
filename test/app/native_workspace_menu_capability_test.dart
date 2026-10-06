@@ -6,6 +6,48 @@ import 'package:git_desktop/src/presentation/presentation.dart';
 
 void main() {
   test(
+    'native custom action capability respects only the configured target scope',
+    () {
+      expect(
+        canExposeNativeCustomAction(
+          actionEnabled: true,
+          requiresFilePath: false,
+          hasSelectedCommit: false,
+          hasSingleValidFileSelection: false,
+        ),
+        isTrue,
+      );
+      expect(
+        canExposeNativeCustomAction(
+          actionEnabled: true,
+          requiresFilePath: true,
+          hasSelectedCommit: false,
+          hasSingleValidFileSelection: false,
+        ),
+        isFalse,
+      );
+      expect(
+        canExposeNativeCustomAction(
+          actionEnabled: true,
+          requiresFilePath: true,
+          hasSelectedCommit: false,
+          hasSingleValidFileSelection: true,
+        ),
+        isTrue,
+      );
+      expect(
+        canExposeNativeCustomAction(
+          actionEnabled: true,
+          requiresFilePath: false,
+          hasSelectedCommit: true,
+          hasSingleValidFileSelection: true,
+        ),
+        isFalse,
+      );
+    },
+  );
+
+  test(
     'native mutation menus follow running and paused repository boundaries',
     () {
       final signature = GitSignature(
@@ -481,6 +523,20 @@ void main() {
       expect(
         nativeWorkspaceMenuAvailability(
           session,
+          unstagedSelection,
+        ).canHideChanges,
+        isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session.copyWith(remoteNames: const ['origin']),
+          unstagedSelection,
+        ).canRefreshRemoteStatus,
+        isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
           untrackedSelection,
         ).canCommitAll,
         isFalse,
@@ -673,6 +729,9 @@ void main() {
         canCheckout: false,
         canCommitAll: false,
         canCommitSelected: false,
+        canHideChanges: false,
+        canRefreshRemoteStatus: false,
+        canUpdateFromUpstream: false,
         canCommit: false,
         canContinueOperation: false,
         canExternalDiffSelected: false,
@@ -1153,4 +1212,98 @@ void main() {
       isFalse,
     );
   });
+
+  test(
+    'native upstream update requires a clean attached branch with upstream',
+    () {
+      const overview = RepositoryOverviewViewData.ready(
+        RepositoryViewData(
+          name: 'example',
+          path: '/tmp/example',
+          currentBranch: 'main',
+        ),
+      );
+      final session = RepositorySessionState(
+        phase: RepositorySessionPhase.ready,
+        status: GitStatusSnapshot(
+          branch: const GitBranchStatus(
+            head: 'main',
+            upstream: 'origin/main',
+            objectId: 'head123',
+          ),
+          entries: const [],
+        ),
+      );
+
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session,
+          overview,
+        ).canUpdateFromUpstream,
+        isTrue,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session.copyWith(
+            status: GitStatusSnapshot(
+              branch: const GitBranchStatus(
+                head: 'main',
+                upstream: 'origin/main',
+                objectId: 'head123',
+              ),
+              entries: [
+                GitStatusEntry(
+                  kind: GitFileStatusKind.ordinary,
+                  path: GitPath.fromString('dirty.txt'),
+                  indexStatus: GitChangeType.unmodified,
+                  workTreeStatus: GitChangeType.modified,
+                ),
+              ],
+            ),
+          ),
+          overview,
+        ).canUpdateFromUpstream,
+        isFalse,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session.copyWith(
+            status: GitStatusSnapshot(
+              branch: const GitBranchStatus(
+                head: 'HEAD',
+                upstream: 'origin/main',
+                isDetached: true,
+              ),
+              entries: const [],
+            ),
+          ),
+          overview,
+        ).canUpdateFromUpstream,
+        isFalse,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session.copyWith(
+            status: GitStatusSnapshot(
+              branch: const GitBranchStatus(
+                head: 'main',
+                upstream: 'origin/main',
+                isUnborn: true,
+              ),
+              entries: const [],
+            ),
+          ),
+          overview,
+        ).canUpdateFromUpstream,
+        isFalse,
+      );
+      expect(
+        nativeWorkspaceMenuAvailability(
+          session.copyWith(operationState: GitRepositoryOperationState.merge),
+          overview,
+        ).canUpdateFromUpstream,
+        isFalse,
+      );
+    },
+  );
 }
