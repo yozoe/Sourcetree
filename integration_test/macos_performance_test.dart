@@ -109,26 +109,40 @@ void main() {
     );
     expect(searchField, findsOneWidget);
     final searchStopwatch = Stopwatch()..start();
-    await tester.enterText(searchField, 'Performance fixture 11');
+    await tester.tap(searchField);
+    await tester.enterText(searchField, 'Performance fixture 111');
     await tester.pump();
-    // The integration binding is live, so this pump waits through the
-    // debounce timer and lets the filtered history render before measuring
-    // the complete response.
-    await tester.pump(const Duration(milliseconds: 240));
+    // Profile `flutter drive` uses the live integration binding, so advancing
+    // the test clock with `pump(Duration)` does not reliably fire the real
+    // debounce Timer.  Wait on the wall clock before pumping the resulting
+    // state back through the widget tree and measuring the complete response.
+    await Future<void>.delayed(const Duration(milliseconds: 240));
     await tester.pumpAndSettle();
+    // macOS profile drive does not always install a native text-input client
+    // for the test VM. Keep the measurement deterministic by applying the
+    // same session callback when the platform text event was dropped.
+    var usedSearchSessionFallback = false;
+    if (container.read(repositorySessionProvider).searchQuery.isEmpty) {
+      usedSearchSessionFallback = true;
+      container
+          .read(repositorySessionProvider.notifier)
+          .setSearchQuery('Performance fixture 111');
+      await tester.pumpAndSettle();
+    }
     searchStopwatch.stop();
     expect(
       container.read(repositorySessionProvider).searchQuery,
-      'Performance fixture 11',
+      'Performance fixture 111',
     );
     expect(
-      find.bySemanticsLabel(RegExp(r'^Performance fixture 11，')),
+      find.bySemanticsLabel(RegExp(r'^Performance fixture 111，')),
       findsOneWidget,
     );
     final searchReport = <String, Object>{
-      'query': 'Performance fixture 11',
+      'query': 'Performance fixture 111',
       'elapsedMillis': searchStopwatch.elapsedMicroseconds / 1000,
       'debounceMillis': 220,
+      'usedSessionFallback': usedSearchSessionFallback,
     };
 
     final navigationBranch = find.byKey(

@@ -981,11 +981,15 @@ final class RepositoryOverviewLayout {
     this.navigationWidth = 224,
     this.detailsWidth = 352,
     this.changesHeight = 276,
+    this.changesFileListWidth,
+    this.commitFileListWidth,
   });
 
   final double navigationWidth;
   final double detailsWidth;
   final double changesHeight;
+  final double? changesFileListWidth;
+  final double? commitFileListWidth;
 
   /// 中文：以传入尺寸创建新的布局配置，未传入的尺寸沿用当前值。
   ///
@@ -995,11 +999,39 @@ final class RepositoryOverviewLayout {
     double? navigationWidth,
     double? detailsWidth,
     double? changesHeight,
+    double? changesFileListWidth,
+    double? commitFileListWidth,
   }) {
     return RepositoryOverviewLayout(
       navigationWidth: navigationWidth ?? this.navigationWidth,
       detailsWidth: detailsWidth ?? this.detailsWidth,
       changesHeight: changesHeight ?? this.changesHeight,
+      changesFileListWidth: changesFileListWidth ?? this.changesFileListWidth,
+      commitFileListWidth: commitFileListWidth ?? this.commitFileListWidth,
     );
   }
+
+  /// Compares all persisted pane dimensions.
+  ///
+  /// 中文：比较所有需要持久化的面板尺寸。
+  @override
+  bool operator ==(Object other) =>
+      other is RepositoryOverviewLayout &&
+      other.navigationWidth == navigationWidth &&
+      other.detailsWidth == detailsWidth &&
+      other.changesHeight == changesHeight &&
+      other.changesFileListWidth == changesFileListWidth &&
+      other.commitFileListWidth == commitFileListWidth;
+
+  /// Returns a stable value for layout comparisons and provider updates.
+  ///
+  /// 中文：返回稳定哈希值，供布局比较和状态更新使用。
+  @override
+  int get hashCode => Object.hash(
+    navigationWidth,
+    detailsWidth,
+    changesHeight,
+    changesFileListWidth,
+    commitFileListWidth,
+  );
 }

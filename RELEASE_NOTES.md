@@ -4,6 +4,11 @@
 
 ## Unreleased
 
+- 工作区的引用导航、提交详情以及文件列表与 Diff 的分栏尺寸现在会持久化到本地布局偏好；重新打开工作区
+  或创建第二个工作区窗口时恢复最近一次调整，偏好损坏或不可写时安全回退默认布局，不影响 Git 状态。
+- 修复多个工作区窗口同时调整布局时旧写入覆盖新尺寸的竞态；布局偏好现在按跨窗口版本顺序写入，任一非法尺寸字段
+  都会让整份偏好回退默认值。
+
 - 修复外部 Diff 在仓库切换或窗口关闭期间的启动竞态：关闭屏障现在会等待快照创建和进程启动完成，并终止迟到的进程；仓库切换完成后 runner 仍可安全复用。
 
 - 外部工具配置现在支持受信任且明确启用的三方 Merge 写回：工具通过 `{base}`、`{ours}`、`{theirs}` 和 `{result}` 接收私有快照，成功退出后仅接受 16 MiB 以内的普通 UTF-8 结果；冲突阶段变化、结果含冲突标记、取消、非零退出或非法结果都会拒绝写回，安全写回后自动暂存并刷新冲突状态。
@@ -73,7 +78,10 @@
 - 性能专项现在会在支持的 VM 模式下生成启动后和历史滚动后的 Dart heap snapshot，并新增
   Flutter Drive profile 桥接入口；快照与 RSS 均明确标注不包含 Flutter Engine/native 分配。
 - 修复 macOS Profile 性能驱动在当前 Flutter engine 中重复注册 `ext.flutter.exit` 导致无法启动的问题；
-  Profile 测试现在使用专用 binding，并已完成一轮 `--no-dds` 采样，结果写入性能基线。
+  Profile 测试现在使用专用 binding，并已完成 `--no-dds` 采样，结果写入性能基线。
+- 性能验收补充两轮独立 macOS Profile 采样：当前参考机可交互耗时中位数为 2,756.541ms，历史滚动
+  构建 P95 中位数为 2.729ms，均低于现行预算；报告继续明确区分 RSS/Dart heap 与完整
+  Flutter Engine/native 内存，后者仍需 DevTools 专项快照。
 - 受控真实认证测试在执行 `ls-remote` 前拒绝 userinfo、query、fragment 和 SCP 密码形态，避免
   测试配置把凭据或控制字符带入 Git 参数；期望 ref 也会拒绝控制字符，避免断言歧义。
 - 受控认证测试现在会按 `GIT_DESKTOP_AUTH_TEST_MODE` 先检查 Keychain helper 或 SSH Agent socket

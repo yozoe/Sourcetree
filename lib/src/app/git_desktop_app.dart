@@ -24,6 +24,7 @@ import 'git_flow_semantics.dart';
 import 'git_desktop_theme.dart';
 import 'git_askpass_prompt_coordinator.dart';
 import 'repository_library_controller.dart';
+import 'repository_overview_layout_preferences.dart';
 import 'repository_session.dart';
 import 'repository_session_store.dart';
 import 'repository_trust.dart';
@@ -7473,6 +7474,10 @@ class _RepositoryWorkspaceScreenState
       repositoryTrustProvider.select((state) => state.status),
     );
     final controller = ref.read(repositorySessionProvider.notifier);
+    final overviewLayout = ref.watch(repositoryOverviewLayoutProvider);
+    final overviewLayoutController = ref.read(
+      repositoryOverviewLayoutProvider.notifier,
+    );
     final overview = mapRepositoryOverview(session);
     final customActions = customActionMenuItems(
       session,
@@ -7485,6 +7490,7 @@ class _RepositoryWorkspaceScreenState
         children: [
           RepositoryOverview(
             data: overview,
+            initialLayout: overviewLayout,
             toolbarTrailing: widget.themeControl,
             callbacks: RepositoryOverviewCallbacks(
               onAction: _handleAction,
@@ -7546,6 +7552,7 @@ class _RepositoryWorkspaceScreenState
               onChangeReset: (changes) =>
                   unawaited(_resetChangesToHead(changes)),
               onClearHiddenChanges: controller.clearHiddenChanges,
+              onLayoutChanged: overviewLayoutController.setLayout,
               onDiffHunkAction: (action, hunkIndex) =>
                   unawaited(_handleDiffHunkAction(action, hunkIndex)),
               onDiffWhitespaceModeChanged: (mode) => unawaited(

@@ -1084,9 +1084,10 @@ void main() {
   testWidgets('resizes the historical commit file list', (tester) async {
     await tester.binding.setSurfaceSize(const Size(1280, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
+    RepositoryOverviewLayout? persistedLayout;
 
     await tester.pumpWidget(
-      const MaterialApp(
+      MaterialApp(
         home: RepositoryOverview(
           data: RepositoryOverviewViewData.ready(
             RepositoryViewData(
@@ -1107,6 +1108,9 @@ void main() {
               ],
             ),
           ),
+          callbacks: RepositoryOverviewCallbacks(
+            onLayoutChanged: (layout) => persistedLayout = layout,
+          ),
         ),
       ),
     );
@@ -1117,6 +1121,7 @@ void main() {
     await tester.drag(divider, const Offset(80, 0));
     await tester.pump();
     expect(tester.getCenter(divider).dx, greaterThan(before));
+    expect(persistedLayout?.commitFileListWidth, greaterThan(286));
   });
 
   testWidgets('marks file history pending for a non-UTF-8 Git path', (

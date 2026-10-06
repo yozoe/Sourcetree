@@ -29,6 +29,10 @@ class _SelectedChangesPane extends StatelessWidget {
     required this.onCommitFileSelected,
     required this.onCommitFileContextAction,
     this.onCommitFileCustomAction,
+    this.changesFileListWidth,
+    this.commitFileListWidth,
+    this.onChangesFileListWidthChanged,
+    this.onCommitFileListWidthChanged,
   });
 
   final RepositoryViewData repository;
@@ -58,6 +62,10 @@ class _SelectedChangesPane extends StatelessWidget {
   final RepositoryCommitFileCallback? onCommitFileSelected;
   final RepositoryCommitFileContextActionCallback? onCommitFileContextAction;
   final RepositoryCommitFileCustomActionCallback? onCommitFileCustomAction;
+  final double? changesFileListWidth;
+  final double? commitFileListWidth;
+  final ValueChanged<double>? onChangesFileListWidthChanged;
+  final ValueChanged<double>? onCommitFileListWidthChanged;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -72,6 +80,8 @@ class _SelectedChangesPane extends StatelessWidget {
         onCustomAction: onCommitFileCustomAction,
         onHunkAction: onHunkAction,
         onDiffWhitespaceModeChanged: onDiffWhitespaceModeChanged,
+        fileListWidth: commitFileListWidth,
+        onFileListWidthChanged: onCommitFileListWidthChanged,
       );
     }
     return _ChangesPane(
@@ -99,6 +109,8 @@ class _SelectedChangesPane extends StatelessWidget {
       onClearHiddenChanges: onClearHiddenChanges,
       onHunkAction: onHunkAction,
       onDiffWhitespaceModeChanged: onDiffWhitespaceModeChanged,
+      fileListWidth: changesFileListWidth,
+      onFileListWidthChanged: onChangesFileListWidthChanged,
     );
   }
 }
@@ -118,6 +130,8 @@ class RepositoryCommitChangesPane extends StatelessWidget {
     this.onCustomAction,
     this.onHunkAction,
     this.onDiffWhitespaceModeChanged,
+    this.fileListWidth,
+    this.onFileListWidthChanged,
     this.title = '提交改动',
   });
 
@@ -128,6 +142,8 @@ class RepositoryCommitChangesPane extends StatelessWidget {
   final RepositoryCommitFileCustomActionCallback? onCustomAction;
   final RepositoryDiffHunkActionCallback? onHunkAction;
   final RepositoryDiffWhitespaceModeCallback? onDiffWhitespaceModeChanged;
+  final double? fileListWidth;
+  final ValueChanged<double>? onFileListWidthChanged;
   final String title;
 
   @override
@@ -139,6 +155,8 @@ class RepositoryCommitChangesPane extends StatelessWidget {
     onCustomAction: onCustomAction,
     onHunkAction: onHunkAction,
     onDiffWhitespaceModeChanged: onDiffWhitespaceModeChanged,
+    fileListWidth: fileListWidth,
+    onFileListWidthChanged: onFileListWidthChanged,
     title: title,
   );
 }
@@ -152,6 +170,8 @@ class _CommitChangesPane extends StatefulWidget {
     this.onCustomAction,
     this.onHunkAction,
     this.onDiffWhitespaceModeChanged,
+    this.fileListWidth,
+    this.onFileListWidthChanged,
     this.title = '提交改动',
   });
 
@@ -162,6 +182,8 @@ class _CommitChangesPane extends StatefulWidget {
   final RepositoryCommitFileCustomActionCallback? onCustomAction;
   final RepositoryDiffHunkActionCallback? onHunkAction;
   final RepositoryDiffWhitespaceModeCallback? onDiffWhitespaceModeChanged;
+  final double? fileListWidth;
+  final ValueChanged<double>? onFileListWidthChanged;
   final String title;
 
   @override
@@ -170,6 +192,21 @@ class _CommitChangesPane extends StatefulWidget {
 
 class _CommitChangesPaneState extends State<_CommitChangesPane> {
   double? _fileListWidth;
+
+  @override
+  void initState() {
+    super.initState();
+    _fileListWidth = widget.fileListWidth;
+  }
+
+  @override
+  void didUpdateWidget(_CommitChangesPane oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.fileListWidth != oldWidget.fileListWidth &&
+        widget.fileListWidth != _fileListWidth) {
+      _fileListWidth = widget.fileListWidth;
+    }
+  }
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -231,9 +268,13 @@ class _CommitChangesPaneState extends State<_CommitChangesPane> {
                           _ResizeDivider(
                             axis: Axis.vertical,
                             semanticsLabel: '调整提交文件列表宽度',
-                            onDelta: (delta) => setState(() {
-                              _fileListWidth = fileListWidth + delta;
-                            }),
+                            onDelta: (delta) {
+                              final nextWidth = (fileListWidth + delta)
+                                  .clamp(180.0, maximumWidth)
+                                  .toDouble();
+                              setState(() => _fileListWidth = nextWidth);
+                              widget.onFileListWidthChanged?.call(nextWidth);
+                            },
                           ),
                           Expanded(
                             child: _DiffPreview(
@@ -565,6 +606,8 @@ class _ChangesPane extends StatefulWidget {
     required this.onHunkAction,
     this.onClearHiddenChanges,
     this.onDiffWhitespaceModeChanged,
+    this.fileListWidth,
+    this.onFileListWidthChanged,
   });
 
   final RepositoryViewData repository;
@@ -591,6 +634,8 @@ class _ChangesPane extends StatefulWidget {
   final VoidCallback? onClearHiddenChanges;
   final RepositoryDiffHunkActionCallback? onHunkAction;
   final RepositoryDiffWhitespaceModeCallback? onDiffWhitespaceModeChanged;
+  final double? fileListWidth;
+  final ValueChanged<double>? onFileListWidthChanged;
 
   @override
   State<_ChangesPane> createState() => _ChangesPaneState();
@@ -598,6 +643,21 @@ class _ChangesPane extends StatefulWidget {
 
 class _ChangesPaneState extends State<_ChangesPane> {
   double? _fileListWidth;
+
+  @override
+  void initState() {
+    super.initState();
+    _fileListWidth = widget.fileListWidth;
+  }
+
+  @override
+  void didUpdateWidget(_ChangesPane oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.fileListWidth != oldWidget.fileListWidth &&
+        widget.fileListWidth != _fileListWidth) {
+      _fileListWidth = widget.fileListWidth;
+    }
+  }
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -718,9 +778,13 @@ class _ChangesPaneState extends State<_ChangesPane> {
                     _ResizeDivider(
                       axis: Axis.vertical,
                       semanticsLabel: '调整文件列表宽度',
-                      onDelta: (delta) => setState(() {
-                        _fileListWidth = fileListWidth + delta;
-                      }),
+                      onDelta: (delta) {
+                        final nextWidth = (fileListWidth + delta)
+                            .clamp(180.0, maximumWidth)
+                            .toDouble();
+                        setState(() => _fileListWidth = nextWidth);
+                        widget.onFileListWidthChanged?.call(nextWidth);
+                      },
                     ),
                     Expanded(
                       child: _DiffPreview(
@@ -773,6 +837,8 @@ class _WorkspaceChangesView extends StatelessWidget {
     required this.onHunkAction,
     this.onClearHiddenChanges,
     this.onDiffWhitespaceModeChanged,
+    this.fileListWidth,
+    this.onFileListWidthChanged,
     required this.onCommit,
   });
 
@@ -800,6 +866,8 @@ class _WorkspaceChangesView extends StatelessWidget {
   final VoidCallback? onClearHiddenChanges;
   final RepositoryDiffHunkActionCallback? onHunkAction;
   final RepositoryDiffWhitespaceModeCallback? onDiffWhitespaceModeChanged;
+  final double? fileListWidth;
+  final ValueChanged<double>? onFileListWidthChanged;
   final VoidCallback? onCommit;
 
   /// 中文：构建工作区文件、Diff 和提交信息入口。
@@ -838,6 +906,8 @@ class _WorkspaceChangesView extends StatelessWidget {
             onClearHiddenChanges: onClearHiddenChanges,
             onHunkAction: onHunkAction,
             onDiffWhitespaceModeChanged: onDiffWhitespaceModeChanged,
+            fileListWidth: fileListWidth,
+            onFileListWidthChanged: onFileListWidthChanged,
           ),
         ),
         Material(

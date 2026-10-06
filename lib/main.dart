@@ -9,6 +9,7 @@ import 'src/app/custom_action_runner.dart';
 import 'src/app/external_tool_configuration_store.dart';
 import 'src/app/git_desktop_app.dart';
 import 'src/app/repository_library_controller.dart';
+import 'src/app/repository_overview_layout_preferences.dart';
 import 'src/app/repository_session.dart';
 import 'src/app/theme_preferences.dart';
 
@@ -39,13 +40,17 @@ Future<void> _runGitDesktop({
 }) async {
   WidgetsFlutterBinding.ensureInitialized();
   final themeStore = FileGitDesktopThemePreferencesStore();
+  final layoutStore = FileRepositoryOverviewLayoutStore();
   final themePreferences = await themeStore.load();
+  final overviewLayout = await layoutStore.load();
   final container = ProviderContainer(
     overrides: [
       gitDesktopThemePreferencesStoreProvider.overrideWithValue(themeStore),
       initialGitDesktopThemePreferencesProvider.overrideWithValue(
         themePreferences,
       ),
+      repositoryOverviewLayoutStoreProvider.overrideWithValue(layoutStore),
+      initialRepositoryOverviewLayoutProvider.overrideWithValue(overviewLayout),
     ],
   );
   await container.read(externalToolConfigurationProvider.notifier).load();
@@ -93,6 +98,9 @@ Future<void> _prepareEngineToClose(ProviderContainer container) async {
         container.read(repositoryLibraryProvider.notifier).prepareForShutdown(),
         container
             .read(gitDesktopThemePreferencesProvider.notifier)
+            .prepareForShutdown(),
+        container
+            .read(repositoryOverviewLayoutProvider.notifier)
             .prepareForShutdown(),
         container
             .read(externalToolConfigurationProvider.notifier)

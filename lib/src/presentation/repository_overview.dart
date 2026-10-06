@@ -314,6 +314,9 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         onCustomAction: widget.callbacks.onCommitFileCustomAction,
         onDiffWhitespaceModeChanged:
             widget.callbacks.onDiffWhitespaceModeChanged,
+        fileListWidth: _layout.commitFileListWidth,
+        onFileListWidthChanged: (width) =>
+            _updateLayout(_layout.copyWith(commitFileListWidth: width)),
         title: '贮藏改动',
       );
 
@@ -344,6 +347,9 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         onStopTracking: widget.callbacks.onChangeStopTracking,
         onReset: widget.callbacks.onChangeReset,
         onClearHiddenChanges: widget.callbacks.onClearHiddenChanges,
+        fileListWidth: _layout.changesFileListWidth,
+        onFileListWidthChanged: (width) =>
+            _updateLayout(_layout.copyWith(changesFileListWidth: width)),
         onHunkAction: widget.callbacks.onDiffHunkAction,
         onDiffWhitespaceModeChanged:
             widget.callbacks.onDiffWhitespaceModeChanged,
@@ -550,6 +556,21 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                               onReset: widget.callbacks.onChangeReset,
                               onClearHiddenChanges:
                                   widget.callbacks.onClearHiddenChanges,
+                              changesFileListWidth:
+                                  _layout.changesFileListWidth,
+                              commitFileListWidth: _layout.commitFileListWidth,
+                              onChangesFileListWidthChanged: (width) =>
+                                  _updateLayout(
+                                    _layout.copyWith(
+                                      changesFileListWidth: width,
+                                    ),
+                                  ),
+                              onCommitFileListWidthChanged: (width) =>
+                                  _updateLayout(
+                                    _layout.copyWith(
+                                      commitFileListWidth: width,
+                                    ),
+                                  ),
                               onHunkAction: widget.callbacks.onDiffHunkAction,
                               onDiffWhitespaceModeChanged:
                                   widget.callbacks.onDiffWhitespaceModeChanged,
@@ -687,6 +708,14 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
                         onReset: widget.callbacks.onChangeReset,
                         onClearHiddenChanges:
                             widget.callbacks.onClearHiddenChanges,
+                        changesFileListWidth: _layout.changesFileListWidth,
+                        commitFileListWidth: _layout.commitFileListWidth,
+                        onChangesFileListWidthChanged: (width) => _updateLayout(
+                          _layout.copyWith(changesFileListWidth: width),
+                        ),
+                        onCommitFileListWidthChanged: (width) => _updateLayout(
+                          _layout.copyWith(commitFileListWidth: width),
+                        ),
                         onHunkAction: widget.callbacks.onDiffHunkAction,
                         onDiffWhitespaceModeChanged:
                             widget.callbacks.onDiffWhitespaceModeChanged,
@@ -765,6 +794,12 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
         onStopTracking: widget.callbacks.onChangeStopTracking,
         onReset: widget.callbacks.onChangeReset,
         onClearHiddenChanges: widget.callbacks.onClearHiddenChanges,
+        changesFileListWidth: _layout.changesFileListWidth,
+        commitFileListWidth: _layout.commitFileListWidth,
+        onChangesFileListWidthChanged: (width) =>
+            _updateLayout(_layout.copyWith(changesFileListWidth: width)),
+        onCommitFileListWidthChanged: (width) =>
+            _updateLayout(_layout.copyWith(commitFileListWidth: width)),
         onHunkAction: widget.callbacks.onDiffHunkAction,
         onDiffWhitespaceModeChanged:
             widget.callbacks.onDiffWhitespaceModeChanged,
@@ -2809,6 +2844,10 @@ class _TabbedInspector extends StatelessWidget {
     this.customActions = const <RepositoryCustomActionViewData>[],
     this.onCommitFileCustomAction,
     this.onCustomAction,
+    this.changesFileListWidth,
+    this.commitFileListWidth,
+    this.onChangesFileListWidthChanged,
+    this.onCommitFileListWidthChanged,
   });
 
   final _InspectorTab selectedTab;
@@ -2840,6 +2879,10 @@ class _TabbedInspector extends StatelessWidget {
   final List<RepositoryCustomActionViewData> customActions;
   final RepositoryCommitFileCustomActionCallback? onCommitFileCustomAction;
   final RepositoryChangeCustomActionCallback? onCustomAction;
+  final double? changesFileListWidth;
+  final double? commitFileListWidth;
+  final ValueChanged<double>? onChangesFileListWidthChanged;
+  final ValueChanged<double>? onCommitFileListWidthChanged;
 
   /// 中文：构建当前组件的界面。
   /// English: Builds the current component UI.
@@ -2883,6 +2926,10 @@ class _TabbedInspector extends StatelessWidget {
               onClearHiddenChanges: onClearHiddenChanges,
               onHunkAction: onHunkAction,
               onDiffWhitespaceModeChanged: onDiffWhitespaceModeChanged,
+              changesFileListWidth: changesFileListWidth,
+              commitFileListWidth: commitFileListWidth,
+              onChangesFileListWidthChanged: onChangesFileListWidthChanged,
+              onCommitFileListWidthChanged: onCommitFileListWidthChanged,
               onCommitFileSelected: onCommitFileSelected,
               onCommitFileContextAction: onCommitFileContextAction,
             ),

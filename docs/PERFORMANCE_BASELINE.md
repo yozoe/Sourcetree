@@ -171,3 +171,28 @@ Engine/native 内存快照仍需图形环境下的 profile 专项采样。
 
 墙钟测量包含测试驱动和状态刷新开销，只用于回归趋势；RSS 与 Dart heap snapshot 仍不覆盖完整
 Flutter Engine/native 分配。原始报告位于运行机临时目录，不提交到仓库。
+
+## 2026-10-06 Flutter macOS Profile 两轮采样
+
+在同一 Apple M4/macOS 图形环境、Flutter 3.47.1 / Dart 3.13.1 下，使用
+`flutter drive --profile --no-dds -d macos --target=integration_test/macos_performance_test.dart`
+完成两轮独立成功采样。每轮都使用 120 条提交和 `perf-navigation` 本地分支的临时仓库；启动阶段仍只
+采集到 2 帧，因此首帧数值是每轮的首帧样本，不宣称启动帧 P95。下表的“中位数”是两轮结果的
+中位数（n=2），不是正式发布 P95；第三次运行在连接后无进展，已中止且未计入统计。
+
+| 项目 | 第 1 轮 | 第 2 轮 | 两轮中位数 |
+| --- | ---: | ---: | ---: |
+| Startup first frame build（每轮 2 帧中的首帧） | 81.124ms | 68.193ms | 74.659ms |
+| Startup to interactive | 2,788.947ms | 2,724.134ms | 2,756.541ms |
+| History scroll frame build P95（469/472 帧） | 1.646ms | 3.812ms | 2.729ms |
+| Search response wall time（含 220ms 防抖边界） | 1,089.023ms | 1,042.100ms | 1,065.562ms |
+| Local reference navigation wall time | 831.061ms | 228.600ms | 529.831ms |
+| Startup RSS delta | 49,709,056B | 58,015,744B | 53,862,400B |
+| Scroll RSS delta | 2,244,608B | 4,784,128B | 3,514,368B |
+| Dart heap snapshot after startup | 11,997,672B | 11,976,108B | 11,986,890B |
+| Dart heap snapshot after history scroll | 14,569,368B | 14,211,162B | 14,390,265B |
+
+两轮可交互耗时均低于当前冷启动预算 3 秒，滚动 P95 也低于 24ms；这些结果支持当前参考机上
+Profile 路径没有明显预算回退，但样本数量仍不足以把首帧或可交互耗时称为稳定 P95。RSS 是进程级
+粗粒度观测，Dart heap snapshot 只覆盖 VM 堆；完整 Flutter Engine/native 应用内存仍需在具备
+DevTools 应用内存快照的专项环境中验收。原始两轮 JSON 保留在运行机的系统临时目录，不提交到仓库。
