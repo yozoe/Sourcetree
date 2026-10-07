@@ -271,6 +271,9 @@ flutter test integration_test/macos_performance_test.dart -d macos
 flutter drive --profile --no-pub --no-dds -d macos --target=integration_test/macos_performance_test.dart
 # Engine/native 内存专项：同步生成附加后的 Allocations/VM Tracker trace 和两阶段 footprint
 ./tool/profile_macos_memory.sh /private/tmp/git-desktop-macos-memory
+# 汇总已保存的内存 JSON 和 Profile 报告，校验 trace 并输出 Markdown 基线摘要
+./tool/summarize_macos_performance.sh /private/tmp/git-desktop-macos-memory-followup \
+  /private/tmp/git-desktop-macos-memory-followup/summary.md
 flutter build macos --debug
 ```
 
@@ -303,11 +306,12 @@ Instruments Allocations 模板，并持续录制到目标进程正常退出。`.
 不得提交或未经检查直接分享。Instruments 本身会引入 `performance tool data` 等开销，因此阶段增量和
 分类用于诊断，不直接作为发布预算。
 
-2026-10-07 在同一 Apple M4/macOS 图形环境完成三轮新口径 Profile 采样：可交互耗时中位数
-2,617.391ms、历史滚动构建 P95 中位数 3.323ms，均低于当前 3 秒/24ms 预算。启动每轮只采集到
-1 帧，因此首帧、可交互耗时和滚动指标尚不宣称为稳定 P95。新口径在首屏历史 ready 后停止启动计时，
-并在内存与滚动采样前等待初始提交预览完成；同日已完成两轮 Allocations/VM Tracker 与两阶段 footprint
-专项采样，滚动阶段 `phys_footprint` 增量中位数为 20,504,672B，完整内存稳定基线仍需更多独立轮次。
+2026-10-07 在同一 Apple M4/macOS 图形环境完成五轮新口径 Profile 采样：可交互耗时中位数
+2,271.536ms、样本 P95 2,391.968ms，历史滚动构建 P95 中位数 1.948ms、样本 P95 4.125ms，均低于当前
+3 秒/24ms 预算；五轮启动首帧样本 P95 为 77.704ms，仍作为描述性数据而非发布门槛。新口径在首屏历史 ready
+后停止启动计时，并在内存与滚动采样前等待初始提交预览完成；同日完成五轮 Allocations/VM Tracker 与两阶段
+footprint 专项采样，滚动阶段 `phys_footprint` 增量中位数为 16,105,472B、样本 P95 为 25,870,336B，
+稳定内存预算仍需后续版本在同一环境复测。
 原始报告仅保留在运行机临时目录用于核对，不提交到仓库。
 
 可把一轮结果保存为基线，并在后续采样中以 P95 比较；默认回退超过 15% 会以非零状态退出：

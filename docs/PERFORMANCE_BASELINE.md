@@ -29,6 +29,9 @@ flutter test integration_test/macos_performance_test.dart -d macos
 flutter drive --profile --no-pub --no-dds -d macos --target=integration_test/macos_performance_test.dart
 # Engine/native 内存专项（需要 Instruments xctrace 与 footprint 权限）
 ./tool/profile_macos_memory.sh /private/tmp/git-desktop-macos-memory
+# 汇总已保存的内存 JSON 和 Profile 报告，并校验预算与 trace 完整性
+./tool/summarize_macos_performance.sh /private/tmp/git-desktop-macos-memory-followup \
+  /private/tmp/git-desktop-macos-memory-followup/summary.md
 ```
 
 测试使用 120 条提交及一个额外本地分支的临时本地仓库，通过 `watchPerformance` 报告首帧和滚动帧摘要，
@@ -49,6 +52,10 @@ TOC、驱动日志及摘要 JSON；若 TOC 未记录 `Target app exited`，脚�
 Instruments 会增加 `performance tool data` 等自身开销，因此应优先比较
 同一 trace 内的阶段增量和类别变化，不能把单轮绝对值直接定为发布预算。trace/TOC 可能包含本机路径和进程
 环境，只保存在受控临时目录，不提交或未经检查直接分享。
+
+`tool/summarize_macos_performance.sh` 读取同一目录下的内存摘要 JSON 和保存的 Profile 报告，逐轮校验退出码、
+TOC 结束原因及 Allocations/VM Tracker 条目，再计算中位数、样本 P95、最小值和最大值。它会检查启动可交互
+3 秒与滚动构建 24ms 预算，并可将 Markdown 摘要写入指定路径；预算失败或样本校验失败时返回非零状态。
 
 报告中的 `macos_search_performance` 验证搜索输入越过 220ms 防抖边界后的响应，
 `macos_reference_navigation_performance` 验证点击本地分支后的状态刷新耗时；两者是墙钟采样，
@@ -209,13 +216,13 @@ P95；下表中位数为 n=3 的描述性统计，不是正式发布 P95。
 | Dart heap snapshot after startup | 11,739,606B | 11,001,625B | 10,149,769B | 11,001,625B |
 | Dart heap snapshot after history scroll | 14,115,112B | 15,990,008B | 15,846,131B | 15,846,131B |
 
-三轮可交互耗时均低于当前冷启动预算 3 秒，滚动构建 P95 也低于 24ms；这支持当前参考机上的
-Profile 路径没有明显预算回退，但 n=3 仍不足以把首帧、可交互耗时或滚动指标称为稳定 P95。RSS 是进程级
+早期三轮可交互耗时均低于当前冷启动预算 3 秒，滚动构建 P95 也低于 24ms；这支持当前参考机上的
+Profile 路径没有明显预算回退，但该早期 n=3 样本不足以把首帧、可交互耗时或滚动指标称为稳定 P95。RSS 是进程级
 粗粒度观测，滚动 RSS 可因回收出现负增量；Dart heap snapshot 只覆盖 VM 堆。完整 Flutter Engine/native
 分配已在下节通过 Instruments/footprint 开始专项采样，但稳定内存预算仍需更多独立轮次。原始 JSON 仅保留在
 运行机的系统临时目录用于核对，不提交到仓库。
 
-## 2026-10-07 Flutter macOS Engine/native 内存专项两轮采样
+## 2026-10-07 Flutter macOS Engine/native 内存专项两轮采样（历史记录）
 
 同一 Apple M4/macOS 图形环境使用 `tool/profile_macos_memory.sh` 完成两轮独立成功专项采样。两轮 Profile
 测试、Instruments Allocations/VM Tracker 和两个 `footprint` 协调点均正常结束；trace 分别录制
@@ -242,3 +249,21 @@ Profile 路径没有明显预算回退，但 n=3 仍不足以把首帧、可交�
 包含滚动缓存及尚未回收的分配，不能直接解释为泄漏。原始 `.trace`、TOC、footprint 与日志保留在本机
 `/private/tmp/git-desktop-macos-memory`，不提交到仓库；后续需要在同一环境重复采样，并用 Allocations 的
 调用树和 VM Tracker 区分可回收缓存、图形表面、Dart/Engine 分配及真正持续增长的 native 分配。
+
+## 2026-10-07 Flutter macOS Profile 与 Engine/native 内存专项五轮复测
+
+同一 Apple M4/macOS 图形环境使用当前脚本完成五轮独立成功采样。五轮 Profile 测试均通过，滚动阶段每轮
+收集 472 帧；五轮内存 trace 均包含 Allocations/VM Tracker，TOC 均以 `Target app exited` 结束。
+
+| 指标 | 五轮样本值 | 中位数 | 样本 P95 |
+| --- | ---: | ---: | ---: |
+| 启动到可交互（ms） | 2,391.968 / 2,271.536 / 2,255.214 / 2,249.908 / 2,276.268 | 2,271.536 | 2,391.968 |
+| 首帧构建（ms） | 77.704 / 21.675 / 19.065 / 23.805 / 32.426 | 23.805 | 77.704 |
+| 历史滚动构建 P95（ms） | 1.948 / 1.362 / 1.397 / 4.125 / 3.947 | 1.948 | 4.125 |
+| 启动完成 phys_footprint（B） | 183,684,288 / 179,408,000 / 184,880,192 / 179,326,080 / 183,389,376 | 183,389,376 | 184,880,192 |
+| 滚动完成 phys_footprint（B） | 197,840,064 / 205,278,336 / 199,462,080 / 200,232,128 / 199,494,848 | 199,494,848 | 205,278,336 |
+| 滚动阶段增量（B） | 14,155,776 / 25,870,336 / 14,581,888 / 20,906,048 / 16,105,472 | 16,105,472 | 25,870,336 |
+
+可交互中位数和滚动构建样本 P95 低于当前 3 秒/24ms 预算；启动每轮只有一个首帧样本，首帧统计只作描述性
+参考。内存阶段增量包含滚动缓存及尚未回收的分配，不能直接解释为泄漏或发布预算；原始五轮产物保留在本机
+`/private/tmp/git-desktop-macos-memory-followup`，不提交到仓库。

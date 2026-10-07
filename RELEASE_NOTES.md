@@ -17,6 +17,11 @@
 - 性能专项新增 macOS Engine/native 内存画像入口：在启动预览和历史滚动两个稳定点采集分类 footprint，
   并从附加到 Profile 进程后生成 Instruments Allocations/VM Tracker trace、TOC 和摘要；原始产物仅保存在
   受控临时目录，不纳入普通门禁。
+- 完成同一 Apple M4/macOS 环境下五轮独立 Engine/native 内存专项和五轮 Profile 采样：可交互耗时中位数
+  2,271.536ms，滚动构建 P95 中位数 1.948ms；`phys_footprint` 滚动增量中位数 16,105,472B。
+  这些结果用于当前环境的描述性基线，仍不直接作为发布内存预算。
+- 新增 `tool/summarize_macos_performance.sh`，可复核内存 JSON、Allocations/VM Tracker TOC 和 Profile 报告，
+  自动输出中位数、样本 P95、最小值、最大值，并检查启动与滚动性能预算。
 
 - 修复外部 Diff 在仓库切换或窗口关闭期间的启动竞态：关闭屏障现在会等待快照创建和进程启动完成，并终止迟到的进程；仓库切换完成后 runner 仍可安全复用。
 
