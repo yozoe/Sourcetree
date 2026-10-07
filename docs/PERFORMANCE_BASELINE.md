@@ -27,6 +27,8 @@ Git、Flutter 和构建模式上更新；更新前须说明测量环境或已批
 flutter test integration_test/macos_performance_test.dart -d macos
 # profile 模式（通过 test_driver 桥接，需图形环境和可用的 Flutter VM service）
 flutter drive --profile --no-pub --no-dds -d macos --target=integration_test/macos_performance_test.dart
+# Engine/native 内存专项（需要 Instruments xctrace 与 footprint 权限）
+./tool/profile_macos_memory.sh /private/tmp/git-desktop-macos-memory
 ```
 
 测试使用 120 条提交及一个额外本地分支的临时本地仓库，通过 `watchPerformance` 报告首帧和滚动帧摘要，
@@ -38,6 +40,15 @@ flutter drive --profile --no-pub --no-dds -d macos --target=integration_test/mac
 RSS 只是可重复的粗粒度观测；Dart heap snapshot 只覆盖 VM 堆，不代表包含 Flutter Engine/native
 分配的完整 DevTools 应用内存快照。在固定参考机上实际运行并保存报告后，才能更新首帧、滚动 P95
 和内存预算的验收结论。
+
+`tool/profile_macos_memory.sh` 会为同一 Profile 场景设置测试专用协调目录，在初始提交预览完成和历史滚动
+完成两个稳定点分别采集 macOS `footprint` 分类。脚本发现 Profile 应用进程后附加 Instruments Allocations
+模板，并持续录制到目标进程正常退出；trace 包含 Allocations 和 VM Tracker，可覆盖附加后的 Flutter Engine、
+Skia/Metal、IOSurface、原生插件与宿主分配，但不包含进程创建到附加成功前的完整分配调用记录。输出还包括
+TOC、驱动日志及摘要 JSON；若 TOC 未记录 `Target app exited`，脚本会把该轮视为失败，避免接受截断 trace。
+Instruments 会增加 `performance tool data` 等自身开销，因此应优先比较
+同一 trace 内的阶段增量和类别变化，不能把单轮绝对值直接定为发布预算。trace/TOC 可能包含本机路径和进程
+环境，只保存在受控临时目录，不提交或未经检查直接分享。
 
 报告中的 `macos_search_performance` 验证搜索输入越过 220ms 防抖边界后的响应，
 `macos_reference_navigation_performance` 验证点击本地分支后的状态刷新耗时；两者是墙钟采样，
@@ -200,6 +211,34 @@ P95；下表中位数为 n=3 的描述性统计，不是正式发布 P95。
 
 三轮可交互耗时均低于当前冷启动预算 3 秒，滚动构建 P95 也低于 24ms；这支持当前参考机上的
 Profile 路径没有明显预算回退，但 n=3 仍不足以把首帧、可交互耗时或滚动指标称为稳定 P95。RSS 是进程级
-粗粒度观测，滚动 RSS 可因回收出现负增量；Dart heap snapshot 只覆盖 VM 堆，完整 Flutter Engine/native
-应用内存仍需在具备 DevTools 应用内存快照的专项环境中验收。原始 JSON 仅保留在运行机的系统临时目录
-用于核对，不提交到仓库。
+粗粒度观测，滚动 RSS 可因回收出现负增量；Dart heap snapshot 只覆盖 VM 堆。完整 Flutter Engine/native
+分配已在下节通过 Instruments/footprint 开始专项采样，但稳定内存预算仍需更多独立轮次。原始 JSON 仅保留在
+运行机的系统临时目录用于核对，不提交到仓库。
+
+## 2026-10-07 Flutter macOS Engine/native 内存专项两轮采样
+
+同一 Apple M4/macOS 图形环境使用 `tool/profile_macos_memory.sh` 完成两轮独立成功专项采样。两轮 Profile
+测试、Instruments Allocations/VM Tracker 和两个 `footprint` 协调点均正常结束；trace 分别录制
+33.557 秒和 32.231 秒，并随目标进程正常退出。
+
+| 指标 | 第 1 轮 | 第 2 轮 | 两轮中位数 |
+| --- | ---: | ---: | ---: |
+| 初始预览完成 phys_footprint | 179,850,368B | 181,931,072B | 180,890,720B |
+| 历史滚动完成 phys_footprint | 200,740,032B | 202,050,752B | 201,395,392B |
+| 历史滚动阶段增量 | 20,889,664B | 20,119,680B | 20,504,672B |
+| 初始预览阶段进程峰值 | 194,055,296B | 181,996,608B | 188,025,952B |
+| 历史滚动阶段进程峰值 | 216,108,224B | 210,914,432B | 213,511,328B |
+
+| footprint 分类增量 | 第 1 轮 | 第 2 轮 |
+| --- | ---: | ---: |
+| untagged (VM_ALLOCATE) | +6,766,592B | +7,569,408B |
+| MALLOC_SMALL | +9,240,576B | +8,634,368B |
+| MALLOC_LARGE | +4,259,840B | +4,259,840B |
+| IOSurface | 0B | 0B |
+| IOAccelerator (graphics) | -442,368B | -409,600B |
+| performance tool data | 0B | +49,152B |
+
+这是两轮诊断样本，不是稳定内存预算。`performance tool data` 明确显示 Instruments 的测量开销；阶段增量也
+包含滚动缓存及尚未回收的分配，不能直接解释为泄漏。原始 `.trace`、TOC、footprint 与日志保留在本机
+`/private/tmp/git-desktop-macos-memory`，不提交到仓库；后续需要在同一环境重复采样，并用 Allocations 的
+调用树和 VM Tracker 区分可回收缓存、图形表面、Dart/Engine 分配及真正持续增长的 native 分配。

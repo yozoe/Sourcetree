@@ -14,6 +14,9 @@
   关闭屏障跟踪的后台任务继续加载；性能报告明确记录新的“历史 ready”可交互口径，后续内存和滚动采样仍等待预览完成。
 - 完成三轮新口径 macOS Profile 采样：可交互耗时中位数 2,617.391ms、滚动构建 P95 中位数 3.323ms，均低于当前预算；
   样本仍不足以宣称稳定 P95，RSS 与 Dart heap 结果继续明确不代表完整 Flutter Engine/native 内存。
+- 性能专项新增 macOS Engine/native 内存画像入口：在启动预览和历史滚动两个稳定点采集分类 footprint，
+  并从附加到 Profile 进程后生成 Instruments Allocations/VM Tracker trace、TOC 和摘要；原始产物仅保存在
+  受控临时目录，不纳入普通门禁。
 
 - 修复外部 Diff 在仓库切换或窗口关闭期间的启动竞态：关闭屏障现在会等待快照创建和进程启动完成，并终止迟到的进程；仓库切换完成后 runner 仍可安全复用。
 

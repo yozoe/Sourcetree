@@ -269,6 +269,8 @@ flutter test integration_test/macos_core_workflow_test.dart -d macos
 flutter test integration_test/macos_performance_test.dart -d macos
 # profile 驱动入口（需要本机 Flutter Drive/VM service 可用；当前 Flutter 版本使用 --no-dds）
 flutter drive --profile --no-pub --no-dds -d macos --target=integration_test/macos_performance_test.dart
+# Engine/native 内存专项：同步生成附加后的 Allocations/VM Tracker trace 和两阶段 footprint
+./tool/profile_macos_memory.sh /private/tmp/git-desktop-macos-memory
 flutter build macos --debug
 ```
 
@@ -292,11 +294,21 @@ Git 历史，不连接远端或读取用户凭据。它通过 integration_test �
 `git_desktop_macos_performance_report.json`。该入口只用于 macOS 性能任务，不纳入普通 PR 门禁。
 RSS 是粗粒度进程采样；Dart heap snapshot 只覆盖 VM 堆，不等同于包含 Flutter Engine/native 分配的完整 DevTools 内存快照。
 
+Engine/native 内存专项入口 `tool/profile_macos_memory.sh` 会运行同一 Profile 场景，并在初始提交预览完成及
+历史滚动完成两个稳定点暂停测试，分别采集 macOS `footprint` 分类；脚本发现 Profile 应用进程后会附加
+Instruments Allocations 模板，并持续录制到目标进程正常退出。`.trace` 包含 Allocations 与 VM Tracker，
+可检查附加后的 Flutter Engine、Skia、Metal、IOSurface、原生插件和宿主分配，但不包含进程创建到附加成功前
+的完整分配调用记录。原始 trace、TOC、footprint、驱动日志及摘要 JSON 默认写入
+`/private/tmp/git-desktop-macos-memory`。这些文件可能包含本机路径和进程环境，只应保存在受控本地环境，
+不得提交或未经检查直接分享。Instruments 本身会引入 `performance tool data` 等开销，因此阶段增量和
+分类用于诊断，不直接作为发布预算。
+
 2026-10-07 在同一 Apple M4/macOS 图形环境完成三轮新口径 Profile 采样：可交互耗时中位数
 2,617.391ms、历史滚动构建 P95 中位数 3.323ms，均低于当前 3 秒/24ms 预算。启动每轮只采集到
-1 帧，因此首帧、可交互耗时和滚动指标尚不宣称为稳定 P95；完整 Flutter Engine/native 内存仍需专用
-DevTools 快照环境验收。新口径在首屏历史 ready 后停止启动计时，并在内存与滚动采样前等待初始提交预览
-完成。原始报告仅保留在运行机临时目录用于核对，不提交到仓库。
+1 帧，因此首帧、可交互耗时和滚动指标尚不宣称为稳定 P95。新口径在首屏历史 ready 后停止启动计时，
+并在内存与滚动采样前等待初始提交预览完成；同日已完成两轮 Allocations/VM Tracker 与两阶段 footprint
+专项采样，滚动阶段 `phys_footprint` 增量中位数为 20,504,672B，完整内存稳定基线仍需更多独立轮次。
+原始报告仅保留在运行机临时目录用于核对，不提交到仓库。
 
 可把一轮结果保存为基线，并在后续采样中以 P95 比较；默认回退超过 15% 会以非零状态退出：
 

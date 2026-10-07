@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:developer' as developer;
 import 'dart:io';
@@ -101,6 +102,7 @@ void main() {
     expect(previewReadySession.isCommitLoading, isFalse);
     expect(previewReadySession.isCommitDiffLoading, isFalse);
     await tester.pumpAndSettle();
+    await _coordinateNativeMemorySample('after_startup');
 
     final rssAfterStartup = ProcessInfo.currentRss;
     final heapAfterStartup = _captureHeapSnapshot('after_startup');
@@ -118,6 +120,7 @@ void main() {
       }
     }, reportKey: 'macos_history_scroll_performance');
     _addP95FrameMetrics('macos_history_scroll_performance');
+    await _coordinateNativeMemorySample('after_history_scroll');
     final historyReport =
         _binding.reportData?['macos_history_scroll_performance'];
     if (historyReport is Map) {
@@ -262,6 +265,31 @@ Map<String, Object> _captureHeapSnapshot(String label) {
 }
 
 const int _historyScrollSamples = 8;
+
+/// Pauses an opt-in Instruments run at a stable UI phase for host sampling.
+///
+/// 中文：仅在宿主提供协调目录时，于稳定界面阶段写入 ready 标记并等待
+/// continue 标记，让宿主采集包含 Flutter Engine/native 分类的 footprint。
+Future<void> _coordinateNativeMemorySample(String label) async {
+  final path = Platform.environment['GIT_DESKTOP_MEMORY_PROFILE_DIR']?.trim();
+  if (path == null || path.isEmpty) return;
+  final directory = Directory(path);
+  await directory.create(recursive: true);
+  final ready = File('${directory.path}/$label.ready');
+  final resume = File('${directory.path}/$label.continue');
+  if (await resume.exists()) await resume.delete();
+  await ready.writeAsString(
+    '${DateTime.now().toIso8601String()}\n',
+    flush: true,
+  );
+  final deadline = DateTime.now().add(const Duration(seconds: 90));
+  while (!await resume.exists()) {
+    if (DateTime.now().isAfter(deadline)) {
+      throw TimeoutException('Native memory sample timed out at $label.');
+    }
+    await Future<void>.delayed(const Duration(milliseconds: 50));
+  }
+}
 
 /// Adds the first startup frame timing to the raw performance report.
 ///
