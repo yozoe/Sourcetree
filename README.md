@@ -272,8 +272,8 @@ flutter drive --profile --no-pub --no-dds -d macos --target=integration_test/mac
 # Engine/native 内存专项：同步生成附加后的 Allocations/VM Tracker trace 和两阶段 footprint
 ./tool/profile_macos_memory.sh /private/tmp/git-desktop-macos-memory
 # 汇总已保存的内存 JSON 和 Profile 报告，校验 trace 并输出 Markdown 基线摘要
-./tool/summarize_macos_performance.sh /private/tmp/git-desktop-macos-memory-followup \
-  /private/tmp/git-desktop-macos-memory-followup/summary.md
+./tool/summarize_macos_performance.sh /private/tmp/git-desktop-macos-memory \
+  /private/tmp/git-desktop-macos-memory/summary.md
 flutter build macos --debug
 ```
 
@@ -301,7 +301,8 @@ Engine/native 内存专项入口 `tool/profile_macos_memory.sh` 会运行同一 
 历史滚动完成两个稳定点暂停测试，分别采集 macOS `footprint` 分类；脚本发现 Profile 应用进程后会附加
 Instruments Allocations 模板，并持续录制到目标进程正常退出。`.trace` 包含 Allocations 与 VM Tracker，
 可检查附加后的 Flutter Engine、Skia、Metal、IOSurface、原生插件和宿主分配，但不包含进程创建到附加成功前
-的完整分配调用记录。原始 trace、TOC、footprint、驱动日志及摘要 JSON 默认写入
+的完整分配调用记录。脚本也会把 Flutter Drive 生成的 Profile 报告归档到同一输出目录；原始 trace、TOC、
+footprint、驱动日志及摘要 JSON 默认写入
 `/private/tmp/git-desktop-macos-memory`。这些文件可能包含本机路径和进程环境，只应保存在受控本地环境，
 不得提交或未经检查直接分享。Instruments 本身会引入 `performance tool data` 等开销，因此阶段增量和
 分类用于诊断，不直接作为发布预算。

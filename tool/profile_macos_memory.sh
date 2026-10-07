@@ -18,6 +18,7 @@ toc_path="$output_dir/git_desktop_macos_memory_${stamp}.toc.xml"
 drive_log="$output_dir/git_desktop_macos_memory_${stamp}.drive.log"
 xctrace_log="$output_dir/git_desktop_macos_memory_${stamp}.xctrace.log"
 metadata_path="$output_dir/git_desktop_macos_memory_${stamp}.json"
+profile_report_path="$output_dir/profile_${stamp}.json"
 coordination_dir="$output_dir/git_desktop_macos_memory_${stamp}.coordination"
 metadata_plist="$coordination_dir/metadata.plist"
 startup_footprint="$output_dir/git_desktop_macos_memory_${stamp}.after_startup.footprint.txt"
@@ -25,6 +26,7 @@ scroll_footprint="$output_dir/git_desktop_macos_memory_${stamp}.after_history_sc
 drive_status=0
 trace_status=0
 footprint_status=0
+profile_report_status=0
 drive_pid=""
 trace_pid=""
 app_pid=""
@@ -111,6 +113,13 @@ for label in after_startup after_history_scroll; do
 done
 
 wait "$drive_pid" || drive_status="$?"
+profile_report_source="$(awk -F= '/^macos_performance_report=/{print substr($0, index($0, "=") + 1); exit}' "$drive_log")"
+if [[ -n "$profile_report_source" ]] && [[ -f "$profile_report_source" ]]; then
+  cp "$profile_report_source" "$profile_report_path"
+else
+  profile_report_status=1
+  print -u2 "Could not archive the Profile report. See $drive_log"
+fi
 wait "$trace_pid" || trace_status="$?"
 trace_pid=""
 drive_pid=""
@@ -155,11 +164,14 @@ plutil -insert driveLog -string "$drive_log" "$metadata_plist"
 plutil -insert xctraceLog -string "$xctrace_log" "$metadata_plist"
 plutil -insert startupFootprint -string "$startup_footprint" "$metadata_plist"
 plutil -insert historyScrollFootprint -string "$scroll_footprint" "$metadata_plist"
+plutil -insert profileReport -string "$profile_report_path" "$metadata_plist"
+plutil -insert profileReportSource -string "$profile_report_source" "$metadata_plist"
 plutil -insert recordingEndReason -string "$trace_end_reason" "$metadata_plist"
 plutil -insert appPid -integer "$app_pid" "$metadata_plist"
 plutil -insert driveExitCode -integer "$drive_status" "$metadata_plist"
 plutil -insert xctraceExitCode -integer "$trace_status" "$metadata_plist"
 plutil -insert footprintExitCode -integer "$footprint_status" "$metadata_plist"
+plutil -insert profileReportExitCode -integer "$profile_report_status" "$metadata_plist"
 if [[ "$startup_phys_footprint" != null ]]; then
   plutil -insert startupPhysFootprintBytes -integer "$startup_phys_footprint" "$metadata_plist"
 fi
@@ -185,4 +197,7 @@ if [[ "$trace_status" -ne 0 ]]; then
 fi
 if [[ "$footprint_status" -ne 0 ]]; then
   exit "$footprint_status"
+fi
+if [[ "$profile_report_status" -ne 0 ]]; then
+  exit "$profile_report_status"
 fi

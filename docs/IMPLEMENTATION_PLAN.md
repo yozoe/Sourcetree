@@ -720,8 +720,8 @@ Apple FileMerge 是默认的内置外部 Diff 适配；仓库详情已提供应�
   `flutter drive --profile --no-pub --no-dds -d macos --target=integration_test/macos_performance_test.dart` 请求
   profile 构建；Profile 专用 binding 避免当前 Flutter engine 已注册的 `ext.flutter.exit` 重复注册，
  2026-10-02 已在当前图形环境完成一次完整采样并写入性能基线；2026-10-05 又完成一轮 Debug
- macOS 采样，2026-10-06 完成两轮旧口径 Profile 采样，2026-10-07 完成三轮新口径 Profile 采样，
- 实际记录搜索防抖、引用导航、滚动帧、RSS 与 Dart heap snapshot。三轮新口径 Profile 的可交互中位数为
+ macOS 采样，2026-10-06 完成两轮旧口径 Profile 采样，2026-10-07 完成五轮新口径 Profile 采样，
+ 实际记录搜索防抖、引用导航、滚动帧、RSS 与 Dart heap snapshot。五轮新口径 Profile 的可交互中位数为
  2,271.536ms、样本 P95 为 2,391.968ms，滚动构建 P95 中位数为 1.948ms、样本 P95 为 4.125ms，均低于当前预算；
  五轮启动每轮仍只有 1 帧，首帧样本 P95 为 77.704ms，作为描述性数据而非稳定发布 P95。RSS/Dart heap snapshot 也不等同完整应用内存；
  已新增 `tool/profile_macos_memory.sh`，通过两个稳定测试协调点采集 `footprint` 分类，并同步录制包含
@@ -789,8 +789,8 @@ LFS 不在后续功能评估范围内；仅维护仓库详情中的只读摘要�
 按当前实现状态，下一阶段按以下顺序推进：
 
 1. [x] 完成性能任务：引用导航懒构建、历史搜索防抖，并在 Small/Medium/Stress fixture 上记录
-   可比较的 P95 和 benchmark 进程 RSS 结果；Flutter 首帧/滚动测量入口及两轮 Profile 采样已交付。
-   当前参考机两轮 Profile 的可交互中位数为 2,756.541ms、滚动 P95 中位数为 2.729ms，均低于预算；
+   可比较的 P95 和 benchmark 进程 RSS 结果；Flutter 首帧/滚动测量入口及五轮 Profile 采样已交付。
+   当前参考机五轮 Profile 的可交互中位数为 2,271.536ms、滚动 P95 中位数为 1.948ms，均低于预算；
    启动阶段每轮只有 1 帧，五轮样本已补齐但仍需后续版本复测；Engine/native 内存专项已交付五轮附加后
    Allocations/VM Tracker 与两阶段 footprint 采样，当前滚动增量中位数为 16,105,472B、样本 P95 为
    25,870,336B，暂不将其作为发布预算。

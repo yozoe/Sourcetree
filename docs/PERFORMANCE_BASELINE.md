@@ -30,8 +30,8 @@ flutter drive --profile --no-pub --no-dds -d macos --target=integration_test/mac
 # Engine/native 内存专项（需要 Instruments xctrace 与 footprint 权限）
 ./tool/profile_macos_memory.sh /private/tmp/git-desktop-macos-memory
 # 汇总已保存的内存 JSON 和 Profile 报告，并校验预算与 trace 完整性
-./tool/summarize_macos_performance.sh /private/tmp/git-desktop-macos-memory-followup \
-  /private/tmp/git-desktop-macos-memory-followup/summary.md
+./tool/summarize_macos_performance.sh /private/tmp/git-desktop-macos-memory \
+  /private/tmp/git-desktop-macos-memory/summary.md
 ```
 
 测试使用 120 条提交及一个额外本地分支的临时本地仓库，通过 `watchPerformance` 报告首帧和滚动帧摘要，
@@ -53,7 +53,8 @@ Instruments 会增加 `performance tool data` 等自身开销，因此应优先�
 同一 trace 内的阶段增量和类别变化，不能把单轮绝对值直接定为发布预算。trace/TOC 可能包含本机路径和进程
 环境，只保存在受控临时目录，不提交或未经检查直接分享。
 
-`tool/summarize_macos_performance.sh` 读取同一目录下的内存摘要 JSON 和保存的 Profile 报告，逐轮校验退出码、
+`tool/profile_macos_memory.sh` 会把 Flutter Drive 生成的 Profile 报告复制为同一输出目录下的 `profile_<stamp>.json`；
+随后 `tool/summarize_macos_performance.sh` 读取同一目录下的内存摘要 JSON 和 Profile 报告，逐轮校验退出码、
 TOC 结束原因及 Allocations/VM Tracker 条目，再计算中位数、样本 P95、最小值和最大值。它会检查启动可交互
 3 秒与滚动构建 24ms 预算，并可将 Markdown 摘要写入指定路径；预算失败或样本校验失败时返回非零状态。
 
