@@ -101,6 +101,7 @@ final class RepositoryOverviewCallbacks {
     this.customActions = const <RepositoryCustomActionViewData>[],
     this.onCommitFileCustomAction,
     this.onLayoutChanged,
+    this.onLayoutInteractionEnd,
     this.onVerifyAllTagSignatures,
     this.onCheckAllTagRemoteStatuses,
     this.onCancelTagInspection,
@@ -147,6 +148,7 @@ final class RepositoryOverviewCallbacks {
   final List<RepositoryCustomActionViewData> customActions;
   final RepositoryCommitFileCustomActionCallback? onCommitFileCustomAction;
   final ValueChanged<RepositoryOverviewLayout>? onLayoutChanged;
+  final VoidCallback? onLayoutInteractionEnd;
 
   /// Verifies every loaded tag through one cancellable read-only task.
   /// 中文：请求验证全部已加载标签的签名。
@@ -396,48 +398,53 @@ class _RepositoryOverviewState extends State<RepositoryOverview> {
       );
     }
 
-    return ColoredBox(
-      color: Theme.of(context).colorScheme.surface,
-      child: SafeArea(
-        child: Column(
-          children: [
-            _RepositoryToolbar(
-              repository: repository,
-              callbacks: widget.callbacks,
-              trailing: widget.toolbarTrailing,
-            ),
-            if (widget.data.state == RepositoryOverviewState.error)
-              _StaleDataErrorBanner(
-                message: widget.data.message ?? '刷新仓库失败',
-                onRetry: widget.callbacks.onAction == null
-                    ? null
-                    : () => widget.callbacks.onAction!(RepositoryAction.retry),
+    return Listener(
+      onPointerUp: (_) => widget.callbacks.onLayoutInteractionEnd?.call(),
+      onPointerCancel: (_) => widget.callbacks.onLayoutInteractionEnd?.call(),
+      child: ColoredBox(
+        color: Theme.of(context).colorScheme.surface,
+        child: SafeArea(
+          child: Column(
+            children: [
+              _RepositoryToolbar(
+                repository: repository,
+                callbacks: widget.callbacks,
+                trailing: widget.toolbarTrailing,
               ),
-            Expanded(
-              child: Stack(
-                children: [
-                  LayoutBuilder(
-                    builder:
-                        (BuildContext context, BoxConstraints constraints) {
-                          if (constraints.maxWidth >= 1180) {
-                            return _buildWide(repository, constraints);
-                          }
-                          if (constraints.maxWidth >= 760) {
-                            return _buildMedium(repository, constraints);
-                          }
-                          return _buildCompact(repository);
-                        },
-                  ),
-                  if (widget.data.state == RepositoryOverviewState.loading)
-                    const _StaleDataLoadingOverlay(),
-                ],
+              if (widget.data.state == RepositoryOverviewState.error)
+                _StaleDataErrorBanner(
+                  message: widget.data.message ?? '刷新仓库失败',
+                  onRetry: widget.callbacks.onAction == null
+                      ? null
+                      : () =>
+                            widget.callbacks.onAction!(RepositoryAction.retry),
+                ),
+              Expanded(
+                child: Stack(
+                  children: [
+                    LayoutBuilder(
+                      builder:
+                          (BuildContext context, BoxConstraints constraints) {
+                            if (constraints.maxWidth >= 1180) {
+                              return _buildWide(repository, constraints);
+                            }
+                            if (constraints.maxWidth >= 760) {
+                              return _buildMedium(repository, constraints);
+                            }
+                            return _buildCompact(repository);
+                          },
+                    ),
+                    if (widget.data.state == RepositoryOverviewState.loading)
+                      const _StaleDataLoadingOverlay(),
+                  ],
+                ),
               ),
-            ),
-            _RepositoryStatusBar(
-              data: repository.footer,
-              onAction: widget.callbacks.onAction,
-            ),
-          ],
+              _RepositoryStatusBar(
+                data: repository.footer,
+                onAction: widget.callbacks.onAction,
+              ),
+            ],
+          ),
         ),
       ),
     );

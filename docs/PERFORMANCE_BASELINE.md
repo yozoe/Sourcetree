@@ -26,7 +26,7 @@ Git、Flutter 和构建模式上更新；更新前须说明测量环境或已批
 ```sh
 flutter test integration_test/macos_performance_test.dart -d macos
 # profile 模式（通过 test_driver 桥接，需图形环境和可用的 Flutter VM service）
-flutter drive --profile --no-dds -d macos --target=integration_test/macos_performance_test.dart
+flutter drive --profile --no-pub --no-dds -d macos --target=integration_test/macos_performance_test.dart
 ```
 
 测试使用 120 条提交及一个额外本地分支的临时本地仓库，通过 `watchPerformance` 报告首帧和滚动帧摘要，
@@ -43,6 +43,11 @@ RSS 只是可重复的粗粒度观测；Dart heap snapshot 只覆盖 VM 堆，�
 `macos_reference_navigation_performance` 验证点击本地分支后的状态刷新耗时；两者是墙钟采样，
 不是发布预算。滚动测量会交替向上、向下执行 8 次 fling，并将所有动画帧合并计算精确 P95，避免列表到达边界
 后重复采样空操作。报告同时记录 `scroll_samples`，便于比较不同运行的采样覆盖范围。
+
+当前启动报告的 `interactive_definition` 为 `history_ready_before_initial_commit_preview`：状态、引用和首屏历史
+ready 且完成一次绘制即停止启动计时，默认提交的文件摘要与首个 Diff 继续由关闭屏障跟踪的后台任务加载；测试在
+采集启动后内存和滚动数据前仍明确等待该预览完成。2026-10-06 及更早的结果包含初始提交预览，因此只能保留为旧口径
+历史记录；首次新口径 Profile 采样应建立独立基线，不直接计算相对回退。
 
 ## 2026-10-02 Flutter macOS 单次采样
 
@@ -172,27 +177,29 @@ Engine/native 内存快照仍需图形环境下的 profile 专项采样。
 墙钟测量包含测试驱动和状态刷新开销，只用于回归趋势；RSS 与 Dart heap snapshot 仍不覆盖完整
 Flutter Engine/native 分配。原始报告位于运行机临时目录，不提交到仓库。
 
-## 2026-10-06 Flutter macOS Profile 两轮采样
+## 2026-10-07 Flutter macOS Profile 新口径三轮采样
 
 在同一 Apple M4/macOS 图形环境、Flutter 3.47.1 / Dart 3.13.1 下，使用
-`flutter drive --profile --no-dds -d macos --target=integration_test/macos_performance_test.dart`
-完成两轮独立成功采样。每轮都使用 120 条提交和 `perf-navigation` 本地分支的临时仓库；启动阶段仍只
-采集到 2 帧，因此首帧数值是每轮的首帧样本，不宣称启动帧 P95。下表的“中位数”是两轮结果的
-中位数（n=2），不是正式发布 P95；第三次运行在连接后无进展，已中止且未计入统计。
+`flutter drive --profile --no-pub --no-dds -d macos --target=integration_test/macos_performance_test.dart`
+完成三轮独立成功采样。每轮都使用 120 条提交和 `perf-navigation` 本地分支的临时仓库；启动计时口径为
+`history_ready_before_initial_commit_preview`，即状态、引用和首屏历史 ready 且完成一次绘制后停止，
+默认提交摘要与首个 Diff 在后续采样前等待完成。启动阶段每轮只采集到 1 帧，因此首帧数值不宣称启动帧
+P95；下表中位数为 n=3 的描述性统计，不是正式发布 P95。
 
-| 项目 | 第 1 轮 | 第 2 轮 | 两轮中位数 |
-| --- | ---: | ---: | ---: |
-| Startup first frame build（每轮 2 帧中的首帧） | 81.124ms | 68.193ms | 74.659ms |
-| Startup to interactive | 2,788.947ms | 2,724.134ms | 2,756.541ms |
-| History scroll frame build P95（469/472 帧） | 1.646ms | 3.812ms | 2.729ms |
-| Search response wall time（含 220ms 防抖边界） | 1,089.023ms | 1,042.100ms | 1,065.562ms |
-| Local reference navigation wall time | 831.061ms | 228.600ms | 529.831ms |
-| Startup RSS delta | 49,709,056B | 58,015,744B | 53,862,400B |
-| Scroll RSS delta | 2,244,608B | 4,784,128B | 3,514,368B |
-| Dart heap snapshot after startup | 11,997,672B | 11,976,108B | 11,986,890B |
-| Dart heap snapshot after history scroll | 14,569,368B | 14,211,162B | 14,390,265B |
+| 项目 | 第 1 轮 | 第 2 轮 | 第 3 轮 | 三轮中位数 |
+| --- | ---: | ---: | ---: | ---: |
+| Startup first frame build | 150.605ms | 155.705ms | 116.937ms | 150.605ms |
+| Startup to interactive | 2,617.391ms | 2,782.608ms | 2,517.993ms | 2,617.391ms |
+| History scroll frame build P95 | 2.662ms | 3.334ms | 3.323ms | 3.323ms |
+| Search response wall time（含 220ms 防抖边界） | 1,032.855ms | 1,239.424ms | 874.943ms | 1,032.855ms |
+| Local reference navigation wall time | 885.221ms | 967.678ms | 228.164ms | 885.221ms |
+| Startup RSS delta | 69,861,376B | 73,449,472B | 60,424,192B | 69,861,376B |
+| Scroll RSS delta | 2,555,904B | 6,799,360B | 8,437,760B | 6,799,360B |
+| Dart heap snapshot after startup | 11,739,606B | 11,001,625B | 10,149,769B | 11,001,625B |
+| Dart heap snapshot after history scroll | 14,115,112B | 15,990,008B | 15,846,131B | 15,846,131B |
 
-两轮可交互耗时均低于当前冷启动预算 3 秒，滚动 P95 也低于 24ms；这些结果支持当前参考机上
-Profile 路径没有明显预算回退，但样本数量仍不足以把首帧或可交互耗时称为稳定 P95。RSS 是进程级
-粗粒度观测，Dart heap snapshot 只覆盖 VM 堆；完整 Flutter Engine/native 应用内存仍需在具备
-DevTools 应用内存快照的专项环境中验收。原始两轮 JSON 保留在运行机的系统临时目录，不提交到仓库。
+三轮可交互耗时均低于当前冷启动预算 3 秒，滚动构建 P95 也低于 24ms；这支持当前参考机上的
+Profile 路径没有明显预算回退，但 n=3 仍不足以把首帧、可交互耗时或滚动指标称为稳定 P95。RSS 是进程级
+粗粒度观测，滚动 RSS 可因回收出现负增量；Dart heap snapshot 只覆盖 VM 堆，完整 Flutter Engine/native
+应用内存仍需在具备 DevTools 应用内存快照的专项环境中验收。原始 JSON 仅保留在运行机的系统临时目录
+用于核对，不提交到仓库。

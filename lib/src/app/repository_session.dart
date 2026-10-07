@@ -251,6 +251,9 @@ final class RepositorySessionController
   /// 可预览文件差异会异步填充。内部刷新可要求保留“文件状态”或仍有效的
   /// `Uncommitted changes` 入口及文件选择；仓库切换、刷新或控制器销毁会使
   /// 过期读取失效。
+  /// [waitForInitialCommit] 为 false 时，首屏历史 ready 后立即返回，提交详情和
+  /// 首个 Diff 继续作为受关闭屏障管理的后台任务加载；显式调用默认等待完整选择，
+  /// 保持现有应用层契约。
   ///
   /// English: Opens a repository, loads its initial state and first history
   /// page, then selects the newest commit automatically.
@@ -260,29 +263,41 @@ final class RepositorySessionController
   /// and first previewable file diff. Internal refreshes may preserve the File
   /// Status or still-valid Uncommitted Changes surface and file selection.
   /// Repository switches, refreshes and controller disposal invalidate stale
-  /// reads.
+  /// reads. When [waitForInitialCommit] is false, the method returns after the
+  /// first history page becomes ready while commit details and the first Diff
+  /// continue in a shutdown-tracked background task. Explicit callers retain
+  /// the existing fully-awaited behavior by default.
   Future<void> openRepository(
     String path, {
     bool preserveWorkingTreeSurface = false,
+    bool waitForInitialCommit = true,
   }) async {
-    await _trackGitTask<void>(
+    final initialCommitId = await _trackGitTask<String?>(
       () => _openRepository(
         path,
         preserveWorkingTreeSurface: preserveWorkingTreeSurface,
       ),
     );
+    if (initialCommitId == null) return;
+    if (waitForInitialCommit) {
+      await selectCommit(initialCommitId);
+      return;
+    }
+    // Leave the opening task's Zone so selectCommit registers an independent
+    // Engine-owned task that the shutdown barrier can still cancel and join.
+    Zone.root.run<void>(() => unawaited(selectCommit(initialCommitId)));
   }
 
-  /// 中文：执行已纳入关闭屏障的仓库打开与初始读取。
-  /// English: Performs repository opening and initial reads inside the
-  /// shutdown barrier.
-  Future<void> _openRepository(
+  /// 中文：执行已纳入关闭屏障的仓库打开与首屏读取，并返回需要异步选中的初始提交。
+  /// English: Performs repository opening and first-page reads inside the
+  /// shutdown barrier, returning the initial commit that should be selected.
+  Future<String?> _openRepository(
     String path, {
     required bool preserveWorkingTreeSurface,
   }) async {
     final normalizedPath = path.trim();
     if (normalizedPath.isEmpty) {
-      return;
+      return null;
     }
     // A configured external Diff process owns snapshots for the previous
     // repository. Close it before publishing the new repository generation so
@@ -328,7 +343,7 @@ final class RepositorySessionController
       final historyRevisionSnapshot = await _reader.readHistoryRevisionSnapshot(
         repository,
       );
-      if (generation != _repositoryGeneration) return;
+      if (generation != _repositoryGeneration) return null;
 
       GitHistoryQuery? historyQuery;
       try {
@@ -356,7 +371,7 @@ final class RepositorySessionController
         _readGitVersion(),
       ]);
       if (generation != _repositoryGeneration) {
-        return;
+        return null;
       }
 
       final status = results[0] as GitStatusSnapshot;
@@ -416,12 +431,12 @@ final class RepositorySessionController
           previousSelection: previousSelection,
           previousRefId: previousRefId!,
         );
-      } else if (commits.isNotEmpty) {
-        await selectCommit(commits.first.objectId);
+        return null;
       }
+      return commits.firstOrNull?.objectId;
     } on Object catch (error, stackTrace) {
       if (generation != _repositoryGeneration) {
-        return;
+        return null;
       }
       state = state.copyWith(
         phase: RepositorySessionPhase.error,
@@ -429,6 +444,7 @@ final class RepositorySessionController
         message: _friendlyError(error),
         technicalDetails: _technicalDetails(error, stackTrace),
       );
+      return null;
     }
   }
 

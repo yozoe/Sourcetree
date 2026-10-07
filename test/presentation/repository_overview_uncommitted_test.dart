@@ -1085,6 +1085,7 @@ void main() {
     await tester.binding.setSurfaceSize(const Size(1280, 800));
     addTearDown(() => tester.binding.setSurfaceSize(null));
     RepositoryOverviewLayout? persistedLayout;
+    var layoutInteractionEndCount = 0;
 
     await tester.pumpWidget(
       MaterialApp(
@@ -1110,6 +1111,7 @@ void main() {
           ),
           callbacks: RepositoryOverviewCallbacks(
             onLayoutChanged: (layout) => persistedLayout = layout,
+            onLayoutInteractionEnd: () => layoutInteractionEndCount += 1,
           ),
         ),
       ),
@@ -1122,6 +1124,7 @@ void main() {
     await tester.pump();
     expect(tester.getCenter(divider).dx, greaterThan(before));
     expect(persistedLayout?.commitFileListWidth, greaterThan(286));
+    expect(layoutInteractionEndCount, 1);
   });
 
   testWidgets('marks file history pending for a non-UTF-8 Git path', (

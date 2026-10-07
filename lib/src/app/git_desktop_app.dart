@@ -1722,7 +1722,10 @@ class _RepositoryWorkspaceScreenState
     final String? repositoryPath = widget.initialRepositoryPath;
     if (repositoryPath != null && repositoryPath.isNotEmpty) {
       _hasHandledInitialAction = true;
-      await controller.openRepository(repositoryPath);
+      await controller.openRepository(
+        repositoryPath,
+        waitForInitialCommit: false,
+      );
       if (!mounted) return;
       if (widget.isRestoredWorkspace &&
           ref.read(repositorySessionProvider).phase !=
@@ -7474,7 +7477,11 @@ class _RepositoryWorkspaceScreenState
       repositoryTrustProvider.select((state) => state.status),
     );
     final controller = ref.read(repositorySessionProvider.notifier);
-    final overviewLayout = ref.watch(repositoryOverviewLayoutProvider);
+    // RepositoryOverview owns the live drag state. Reading rather than
+    // watching prevents every pointer delta from rebuilding and remapping the
+    // complete repository workspace; the controller still retains the latest
+    // value for later rebuilds and shutdown persistence.
+    final overviewLayout = ref.read(repositoryOverviewLayoutProvider);
     final overviewLayoutController = ref.read(
       repositoryOverviewLayoutProvider.notifier,
     );
@@ -7553,6 +7560,8 @@ class _RepositoryWorkspaceScreenState
                   unawaited(_resetChangesToHead(changes)),
               onClearHiddenChanges: controller.clearHiddenChanges,
               onLayoutChanged: overviewLayoutController.setLayout,
+              onLayoutInteractionEnd:
+                  overviewLayoutController.flushPendingWrite,
               onDiffHunkAction: (action, hunkIndex) =>
                   unawaited(_handleDiffHunkAction(action, hunkIndex)),
               onDiffWhitespaceModeChanged: (mode) => unawaited(

@@ -68,8 +68,15 @@ void main() {
       );
       await container
           .read(repositorySessionProvider.notifier)
-          .openRepository(repository.workingDirectory.path);
-      await tester.pumpAndSettle();
+          .openRepository(
+            repository.workingDirectory.path,
+            waitForInitialCommit: false,
+          );
+      await tester.pump();
+      expect(
+        find.byKey(const ValueKey<String>('history-list')),
+        findsOneWidget,
+      );
       startupStopwatch.stop();
     }, reportKey: 'macos_startup_performance');
     _addFirstFrameMetrics('macos_startup_performance');
@@ -77,7 +84,23 @@ void main() {
     if (startupReport is Map) {
       startupReport['startup_to_interactive_millis'] =
           startupStopwatch.elapsedMicroseconds / 1000;
+      startupReport['interactive_definition'] =
+          'history_ready_before_initial_commit_preview';
     }
+
+    // Keep scroll and memory sampling comparable after the interactive marker:
+    // the initial commit preview is intentionally outside startup timing, but
+    // must finish before later measurements begin.
+    for (var attempt = 0; attempt < 500; attempt += 1) {
+      final session = container.read(repositorySessionProvider);
+      if (!session.isCommitLoading && !session.isCommitDiffLoading) break;
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      await tester.pump();
+    }
+    final previewReadySession = container.read(repositorySessionProvider);
+    expect(previewReadySession.isCommitLoading, isFalse);
+    expect(previewReadySession.isCommitDiffLoading, isFalse);
+    await tester.pumpAndSettle();
 
     final rssAfterStartup = ProcessInfo.currentRss;
     final heapAfterStartup = _captureHeapSnapshot('after_startup');

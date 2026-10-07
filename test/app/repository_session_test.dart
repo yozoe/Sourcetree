@@ -153,6 +153,64 @@ void main() {
   );
 
   test(
+    'can publish ready history before the initial commit preview finishes',
+    () async {
+      if (Platform.isWindows) return;
+      final repository = await GitTestRepository.create();
+      addTearDown(repository.dispose);
+      await repository.writeFile('README.md', '# Ready first\n');
+      final commit = await repository.commit('ready before preview');
+      final marker = File(
+        '${repository.rootDirectory.path}/initial-preview-started',
+      );
+      final helper = File(
+        '${repository.rootDirectory.path}/delayed-initial-preview-git',
+      );
+      await helper.writeAsString('''#!/bin/sh
+for argument in "\$@"; do
+  if [ "\$argument" = "diff-tree" ]; then
+    printf started > "${marker.path}"
+    sleep 10
+    break
+  fi
+done
+exec git "\$@"
+''');
+      final chmod = await Process.run('chmod', ['+x', helper.path]);
+      expect(chmod.exitCode, 0);
+
+      final container = ProviderContainer(
+        overrides: [
+          gitRunnerProvider.overrideWithValue(
+            GitRunner(executable: helper.path),
+          ),
+        ],
+      );
+      addTearDown(container.dispose);
+      final controller = container.read(repositorySessionProvider.notifier);
+
+      await controller.openRepository(
+        repository.workingDirectory.path,
+        waitForInitialCommit: false,
+      );
+
+      final ready = container.read(repositorySessionProvider);
+      expect(ready.phase, RepositorySessionPhase.ready);
+      expect(ready.selectedCommitId, commit);
+      expect(ready.isCommitLoading, isTrue);
+      for (
+        var attempt = 0;
+        attempt < 200 && !await marker.exists();
+        attempt++
+      ) {
+        await Future<void>.delayed(const Duration(milliseconds: 10));
+      }
+      expect(await marker.exists(), isTrue);
+      await controller.prepareForShutdown(timeout: const Duration(seconds: 2));
+    },
+  );
+
+  test(
     'keeps uncommitted changes selected throughout a manual refresh',
     () async {
       final repository = await GitTestRepository.create();

@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 import 'dart:math';
@@ -12,7 +13,7 @@ import '../presentation/models/repository_overview_view_data.dart';
 abstract interface class RepositoryOverviewLayoutStore {
   Future<RepositoryOverviewLayout> load();
 
-  Future<void> save(RepositoryOverviewLayout layout);
+  Future<void> save(RepositoryOverviewLayout layout, {DateTime? changedAt});
 }
 
 /// File-backed layout preferences used by every Flutter Engine.
@@ -52,7 +53,10 @@ final class FileRepositoryOverviewLayoutStore
   }
 
   @override
-  Future<void> save(RepositoryOverviewLayout layout) async {
+  Future<void> save(
+    RepositoryOverviewLayout layout, {
+    DateTime? changedAt,
+  }) async {
     final file = _file();
     await file.parent.create(recursive: true);
     final lockFile = File('${file.path}.lock');
@@ -62,7 +66,10 @@ final class FileRepositoryOverviewLayoutStore
     try {
       await lock.lock(FileLock.exclusive);
       locked = true;
-      final savedAtMicros = _clock().microsecondsSinceEpoch;
+      // The version belongs to the user interaction, not to lock acquisition.
+      // An older resize delayed by another Engine must not become newer merely
+      // because its file write starts later.
+      final savedAtMicros = (changedAt ?? _clock()).microsecondsSinceEpoch;
       final existingVersion = await _readVersion(file);
       if (existingVersion != null &&
           (existingVersion.savedAtMicros > savedAtMicros ||
@@ -243,23 +250,45 @@ final repositoryOverviewLayoutProvider =
 
 final class RepositoryOverviewLayoutController
     extends Notifier<RepositoryOverviewLayout> {
+  static const _saveDebounce = Duration(milliseconds: 200);
+
   Future<void> _saveTail = Future<void>.value();
+  Timer? _saveTimer;
+  _PendingLayoutWrite? _pendingWrite;
 
   @override
-  RepositoryOverviewLayout build() =>
-      ref.watch(initialRepositoryOverviewLayoutProvider);
+  RepositoryOverviewLayout build() {
+    ref.onDispose(() => _saveTimer?.cancel());
+    return ref.watch(initialRepositoryOverviewLayoutProvider);
+  }
 
-  /// Updates the layout immediately and queues its persistent write.
+  /// Updates the live layout and coalesces rapid resize events before saving.
   ///
-  /// 中文：立即更新布局，并将持久化写入加入顺序队列。
+  /// 中文：立即更新实时布局，并在保存前合并连续拖动产生的高频尺寸变化。
   void setLayout(RepositoryOverviewLayout layout) {
     if (layout == state) return;
     state = layout;
+    _pendingWrite = _PendingLayoutWrite(layout, DateTime.now());
+    _saveTimer?.cancel();
+    _saveTimer = Timer(_saveDebounce, flushPendingWrite);
+  }
+
+  /// Moves the latest pending layout into the ordered persistence queue.
+  ///
+  /// 中文：把最后一个待保存布局加入顺序写入队列，丢弃已被后续拖动替代的中间尺寸。
+  void flushPendingWrite() {
+    _saveTimer?.cancel();
+    _saveTimer = null;
+    final pendingWrite = _pendingWrite;
+    _pendingWrite = null;
     final store = ref.read(repositoryOverviewLayoutStoreProvider);
-    if (store == null) return;
+    if (pendingWrite == null || store == null) return;
     _saveTail = _saveTail.then((_) async {
       try {
-        await store.save(layout);
+        await store.save(
+          pendingWrite.layout,
+          changedAt: pendingWrite.changedAt,
+        );
       } on Object {
         // A layout preference is non-critical; keep the live layout usable
         // when the preference directory is temporarily unavailable.
@@ -267,8 +296,18 @@ final class RepositoryOverviewLayoutController
     });
   }
 
-  /// Waits for layout writes queued by this Engine.
+  /// Flushes the latest resize and waits for this Engine's layout writes.
   ///
-  /// 中文：等待当前 Engine 已排队的布局写入完成。
-  Future<void> prepareForShutdown() => _saveTail;
+  /// 中文：立即提交最后一次尺寸变化，并等待当前 Engine 的布局写入完成。
+  Future<void> prepareForShutdown() async {
+    flushPendingWrite();
+    await _saveTail;
+  }
+}
+
+final class _PendingLayoutWrite {
+  const _PendingLayoutWrite(this.layout, this.changedAt);
+
+  final RepositoryOverviewLayout layout;
+  final DateTime changedAt;
 }
